@@ -1,0 +1,17 @@
+<section class="page-head">
+  <p class="eyebrow">Venues</p>
+  <h1>Sheffield rooms</h1>
+  <p class="lede">A small starting set of venues with upcoming live music.</p>
+</section>
+
+<section class="section-block">
+  <div class="venue-list">
+    {{range .Venues}}
+    <a class="venue-card wide" href="/venues/{{.Slug}}">
+      <span class="venue-title">{{.Name}}</span>
+      <span class="venue-meta">{{.Neighbourhood}} · {{.Address}}</span>
+      {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+    </a>
+    {{end}}
+  </div>
+</section>

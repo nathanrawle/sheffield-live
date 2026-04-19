@@ -1,0 +1,18 @@
+<section class="page-head">
+  <p class="eyebrow">Events</p>
+  <h1>Upcoming shows</h1>
+  <p class="lede">A simple date-first view of Sheffield gigs with a source link on every detail page.</p>
+</section>
+
+<section class="section-block">
+  <div class="event-list">
+    {{range .Events}}
+    <a class="event-card wide" href="/events/{{.Slug}}">
+      <span class="event-date">{{dateLong .Start}} · {{timeShort .Start}}</span>
+      <span class="event-title">{{.Name}}</span>
+      <span class="event-meta">{{venueName .VenueSlug}} · {{.Genre}} · {{.Status}}</span>
+      {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+    </a>
+    {{end}}
+  </div>
+</section>

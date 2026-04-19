@@ -1,0 +1,40 @@
+<section class="intro">
+  <p class="eyebrow">Sheffield live music</p>
+  <h1>Upcoming live music in Sheffield.</h1>
+  <p class="lede">
+    Shows from Sheffield venues, gathered into one place and linked back to the original listings.
+  </p>
+</section>
+
+<section class="section-block">
+  <div class="section-head">
+    <h2>Coming up</h2>
+    <a href="/events">All events</a>
+  </div>
+  <div class="event-list">
+    {{range .Events}}
+    <a class="event-card" href="/events/{{.Slug}}">
+      <span class="event-date">{{dateShort .Start}} · {{timeShort .Start}}</span>
+      <span class="event-title">{{.Name}}</span>
+      <span class="event-meta">{{venueName .VenueSlug}} · {{.Genre}}</span>
+      {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+    </a>
+    {{end}}
+  </div>
+</section>
+
+<section class="section-block">
+  <div class="section-head">
+    <h2>Rooms to know</h2>
+    <a href="/venues">All venues</a>
+  </div>
+  <div class="venue-list">
+    {{range .Venues}}
+    <a class="venue-card" href="/venues/{{.Slug}}">
+      <span class="venue-title">{{.Name}}</span>
+      <span class="venue-meta">{{.Neighbourhood}}</span>
+      {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+    </a>
+    {{end}}
+  </div>
+</section>

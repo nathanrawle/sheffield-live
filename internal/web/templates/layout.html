@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .PageTitle}}{{.PageTitle}} · {{end}}{{.SiteName}}</title>
+  <link rel="stylesheet" href="/static/site.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="/">Sheffield Live</a>
+      <nav class="nav">
+        <a class="{{if eq .Active "home"}}active{{end}}" href="/">Home</a>
+        <a class="{{if eq .Active "events"}}active{{end}}" href="/events">Events</a>
+        <a class="{{if eq .Active "venues"}}active{{end}}" href="/venues">Venues</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell main">
+    {{.Content}}
+  </main>
+
+  <footer class="shell footer">
+    <p>Sheffield listings with source links.</p>
+  </footer>
+</body>
+</html>

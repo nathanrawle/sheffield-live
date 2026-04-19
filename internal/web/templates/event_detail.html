@@ -1,0 +1,32 @@
+<article class="detail">
+  <header class="page-head">
+    <p class="eyebrow">Event</p>
+    <h1>{{.Event.Name}}</h1>
+    {{with originLabel .Event.Origin}}<p class="origin-badge">{{.}}</p>{{end}}
+    <p class="lede">{{.Event.Description}}</p>
+  </header>
+
+  <section class="detail-grid">
+    <div class="detail-card">
+      <h2>When</h2>
+      <p>{{dateLong .Event.Start}}</p>
+      <p>{{timeShort .Event.Start}} to {{timeShort .Event.End}}</p>
+      <p>{{.Event.Genre}} · {{.Event.Status}}</p>
+    </div>
+    <div class="detail-card">
+      <h2>Where</h2>
+      <p><a href="/venues/{{.Venue.Slug}}">{{.Venue.Name}}</a></p>
+      <p>{{.Venue.Address}}</p>
+      <p>{{.Venue.Neighbourhood}}</p>
+    </div>
+  </section>
+
+  <section class="section-block">
+    <h2>Source</h2>
+    <p>
+      Checked from
+      <a href="{{.Event.SourceURL}}">{{.Event.SourceName}}</a>
+      on {{dateShort .Event.LastChecked}}.
+    </p>
+  </section>
+</article>

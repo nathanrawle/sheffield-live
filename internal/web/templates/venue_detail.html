@@ -1,0 +1,30 @@
+<article class="detail">
+  <header class="page-head">
+    <p class="eyebrow">Venue</p>
+    <h1>{{.Venue.Name}}</h1>
+    {{with originLabel .Venue.Origin}}<p class="origin-badge">{{.}}</p>{{end}}
+    <p class="lede">{{.Venue.Description}}</p>
+  </header>
+
+  <section class="detail-grid single">
+    <div class="detail-card">
+      <h2>Address</h2>
+      <p>{{.Venue.Address}}</p>
+      <p>{{.Venue.Neighbourhood}}</p>
+      <p><a href="{{.Venue.Website}}">Website</a></p>
+    </div>
+  </section>
+
+  <section class="section-block">
+    <h2>Coming up here</h2>
+    <div class="event-list compact">
+      {{range .VenueEvents}}
+      <a class="event-card" href="/events/{{.Slug}}">
+        <span class="event-date">{{dateShort .Start}} · {{timeShort .Start}}</span>
+        <span class="event-title">{{.Name}}</span>
+        {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+      </a>
+      {{end}}
+    </div>
+  </section>
+</article>
