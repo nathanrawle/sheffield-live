@@ -3,22 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{with .MetaDescription}}<meta name="description" content="{{.}}">{{end}}
   <title>{{if .PageTitle}}{{.PageTitle}} · {{end}}{{.SiteName}}</title>
   <link rel="stylesheet" href="/static/site.css">
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <header class="topbar">
     <div class="shell topbar-inner">
       <a class="brand" href="/">Sheffield Live</a>
       <nav class="nav">
-        <a class="{{if eq .Active "home"}}active{{end}}" href="/">Home</a>
-        <a class="{{if eq .Active "events"}}active{{end}}" href="/events">Events</a>
-        <a class="{{if eq .Active "venues"}}active{{end}}" href="/venues">Venues</a>
+        <a class="{{if eq .Active "home"}}active{{end}}" {{if eq .Active "home"}}aria-current="page"{{end}} href="/">Home</a>
+        <a class="{{if eq .Active "events"}}active{{end}}" {{if eq .Active "events"}}aria-current="page"{{end}} href="/events">Events</a>
+        <a class="{{if eq .Active "venues"}}active{{end}}" {{if eq .Active "venues"}}aria-current="page"{{end}} href="/venues">Venues</a>
       </nav>
     </div>
   </header>
 
-  <main class="shell main">
+  <main id="main" class="shell main">
     {{.Content}}
   </main>
 

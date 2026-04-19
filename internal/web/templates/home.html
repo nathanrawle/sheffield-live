@@ -8,17 +8,38 @@
 
 <section class="section-block">
   <div class="section-head">
-    <h2>Coming up</h2>
+    <h2>Today</h2>
     <a href="/events">All events</a>
   </div>
   <div class="event-list">
-    {{range .Events}}
+    {{range .TodayEvents}}
     <a class="event-card" href="/events/{{.Slug}}">
       <span class="event-date">{{dateShort .Start}} · {{timeShort .Start}}</span>
       <span class="event-title">{{.Name}}</span>
       <span class="event-meta">{{venueName .VenueSlug}} · {{.Genre}}</span>
       {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
     </a>
+    {{else}}
+    <p class="empty-state">No shows listed for today.</p>
+    {{end}}
+  </div>
+</section>
+
+<section class="section-block">
+  <div class="section-head">
+    <h2>This week</h2>
+    <a href="/events?window=week">This week</a>
+  </div>
+  <div class="event-list">
+    {{range .ThisWeekEvents}}
+    <a class="event-card" href="/events/{{.Slug}}">
+      <span class="event-date">{{dateShort .Start}} · {{timeShort .Start}}</span>
+      <span class="event-title">{{.Name}}</span>
+      <span class="event-meta">{{venueName .VenueSlug}} · {{.Genre}}</span>
+      {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+    </a>
+    {{else}}
+    <p class="empty-state">No more shows listed this week.</p>
     {{end}}
   </div>
 </section>

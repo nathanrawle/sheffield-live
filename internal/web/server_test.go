@@ -109,6 +109,100 @@ func TestSQLiteStoreSmoke(t *testing.T) {
 	}
 }
 
+func TestHomeShowsTodayAndThisWeekWithFixedClock(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/")
+
+	assertContains(t, body, "<h2>Today</h2>")
+	assertContains(t, body, "Tonight Leadmill")
+	assertContains(t, body, "<h2>This week</h2>")
+	assertContains(t, body, "Tomorrow Yellow Arch")
+	assertContains(t, body, "Friday Leadmill")
+	assertNotContains(t, body, "Later Leadmill")
+}
+
+func TestHomeShowsEmptyStatesWithFixedClock(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(nil, nil))
+	body := renderPath(t, server, "/")
+
+	assertContains(t, body, "No shows listed for today.")
+	assertContains(t, body, "No more shows listed this week.")
+}
+
+func TestEventsFiltersToday(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/events?window=today")
+
+	assertContains(t, body, "Tonight Leadmill")
+	assertContains(t, body, "Sunday, 19 April 2026")
+	assertNotContains(t, body, "Tomorrow Yellow Arch")
+	assertNotContains(t, body, "Friday Leadmill")
+}
+
+func TestEventsFiltersWeekAndVenue(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/events?window=week&venue=leadmill")
+
+	assertContains(t, body, "Tonight Leadmill")
+	assertContains(t, body, "Friday Leadmill")
+	assertContains(t, body, `option value="week" selected`)
+	assertContains(t, body, `option value="leadmill" selected`)
+	assertNotContains(t, body, "Tomorrow Yellow Arch")
+	assertNotContains(t, body, "Later Leadmill")
+}
+
+func TestEventsGroupsByLocalDateInOrder(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/events?window=week")
+
+	assertInOrder(t, body, []string{
+		"Sunday, 19 April 2026",
+		"Tonight Leadmill",
+		"Monday, 20 April 2026",
+		"Tomorrow Yellow Arch",
+		"Friday, 24 April 2026",
+		"Friday Leadmill",
+	})
+}
+
+func TestEventsShowsEmptyState(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/events?window=today&venue=yellow-arch")
+
+	assertContains(t, body, "No shows match these filters.")
+	assertNotContains(t, body, "Tonight Leadmill")
+}
+
+func TestEventsUnknownVenueBehavesLikeAllVenues(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/events?venue=missing")
+
+	assertContains(t, body, "Tonight Leadmill")
+	assertContains(t, body, "Tomorrow Yellow Arch")
+	assertContains(t, body, "Friday Leadmill")
+	assertContains(t, body, "Later Leadmill")
+	assertContains(t, body, `<option value="">All venues</option>`)
+	assertNotContains(t, body, `option value="missing" selected`)
+	assertNotContains(t, body, "No shows match these filters.")
+}
+
+func TestVenueDetailShowsEmptyState(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/venues/empty-room")
+
+	assertContains(t, body, "No upcoming shows listed for this venue.")
+}
+
+func TestLayoutMetadataAndActiveNav(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/events")
+
+	assertContains(t, body, `<meta name="description" content="Browse Sheffield live music by date window and venue.">`)
+	assertContains(t, body, `<a class="skip-link" href="#main">Skip to content</a>`)
+	assertContains(t, body, `<main id="main" class="shell main">`)
+	assertContains(t, body, `<a class="active" aria-current="page" href="/events">Events</a>`)
+}
+
 type readOnlyStoreStub struct{}
 
 func (readOnlyStoreStub) Venues() []domain.Venue { return nil }
@@ -126,3 +220,155 @@ func (readOnlyStoreStub) EventBySlug(string) (domain.Event, bool) {
 func (readOnlyStoreStub) EventsForVenue(string) []domain.Event { return nil }
 
 func (readOnlyStoreStub) Validate() error { return nil }
+
+func mustFixtureServer(t *testing.T) *Server {
+	t.Helper()
+
+	return mustClockedServer(t, store.NewStore(
+		[]domain.Venue{
+			{
+				Slug:          "leadmill",
+				Name:          "The Leadmill",
+				Address:       "6 Leadmill Road, Sheffield",
+				Neighbourhood: "City Centre",
+				Description:   "A long-running Sheffield venue.",
+				Website:       "https://example.test/leadmill",
+				Origin:        domain.OriginSeed,
+			},
+			{
+				Slug:          "yellow-arch",
+				Name:          "Yellow Arch Studios",
+				Address:       "30 Burton Road, Sheffield",
+				Neighbourhood: "Neepsend",
+				Description:   "A Sheffield venue.",
+				Website:       "https://example.test/yellow-arch",
+				Origin:        domain.OriginSeed,
+			},
+			{
+				Slug:          "empty-room",
+				Name:          "Empty Room",
+				Address:       "1 Quiet Street, Sheffield",
+				Neighbourhood: "Centre",
+				Description:   "A venue with no listed shows.",
+				Website:       "https://example.test/empty",
+			},
+		},
+		[]domain.Event{
+			{
+				Slug:        "past-leadmill",
+				Name:        "Past Leadmill",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 18, 20, 0),
+				End:         fixtureLocalTime(2026, time.April, 18, 22, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Past show.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/leadmill",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "tonight-leadmill",
+				Name:        "Tonight Leadmill",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+				End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Tonight show.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/leadmill",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "tomorrow-yellow-arch",
+				Name:        "Tomorrow Yellow Arch",
+				VenueSlug:   "yellow-arch",
+				Start:       fixtureLocalTime(2026, time.April, 20, 19, 30),
+				End:         fixtureLocalTime(2026, time.April, 20, 22, 30),
+				Genre:       "Jazz",
+				Status:      "Listed",
+				Description: "Tomorrow show.",
+				SourceName:  "Yellow Arch listings",
+				SourceURL:   "https://example.test/yellow-arch",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "friday-leadmill",
+				Name:        "Friday Leadmill",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 24, 21, 0),
+				End:         fixtureLocalTime(2026, time.April, 24, 23, 0),
+				Genre:       "Rock",
+				Status:      "Listed",
+				Description: "Friday show.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/leadmill",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "later-leadmill",
+				Name:        "Later Leadmill",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 27, 20, 0),
+				End:         fixtureLocalTime(2026, time.April, 27, 22, 0),
+				Genre:       "Folk",
+				Status:      "Listed",
+				Description: "Later show.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/leadmill",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+}
+
+func mustClockedServer(t *testing.T, st *store.Store) *Server {
+	t.Helper()
+
+	server, err := NewServer(st)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 19, 10, 0)
+	})
+	return server
+}
+
+func fixtureLocalTime(year int, month time.Month, day, hour, minute int) time.Time {
+	loc, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		loc = time.FixedZone("Europe/London", 0)
+	}
+	return time.Date(year, month, day, hour, minute, 0, 0, loc).UTC()
+}
+
+func assertContains(t *testing.T, body, want string) {
+	t.Helper()
+
+	if !strings.Contains(body, want) {
+		t.Fatalf("body missing %q in %q", want, body)
+	}
+}
+
+func assertNotContains(t *testing.T, body, unwanted string) {
+	t.Helper()
+
+	if strings.Contains(body, unwanted) {
+		t.Fatalf("body contains %q in %q", unwanted, body)
+	}
+}
+
+func assertInOrder(t *testing.T, body string, parts []string) {
+	t.Helper()
+
+	offset := 0
+	for _, part := range parts {
+		index := strings.Index(body[offset:], part)
+		if index < 0 {
+			t.Fatalf("body missing %q after offset %d in %q", part, offset, body)
+		}
+		offset += index + len(part)
+	}
+}

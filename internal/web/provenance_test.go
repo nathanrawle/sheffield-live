@@ -12,10 +12,7 @@ import (
 )
 
 func TestSeedPagesShowOriginLabels(t *testing.T) {
-	server, err := NewServer(store.NewSeedStore())
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
+	server := mustServer(t, store.NewSeedStore())
 
 	for _, path := range []string{
 		"/events",
@@ -210,13 +207,16 @@ func renderPath(t *testing.T, server http.Handler, path string) string {
 	return rr.Body.String()
 }
 
-func mustServer(t *testing.T, st *store.Store) http.Handler {
+func mustServer(t *testing.T, st *store.Store) *Server {
 	t.Helper()
 
 	server, err := NewServer(st)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 19, 10, 0)
+	})
 	return server
 }
 

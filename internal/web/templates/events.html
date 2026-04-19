@@ -5,14 +5,44 @@
 </section>
 
 <section class="section-block">
-  <div class="event-list">
-    {{range .Events}}
-    <a class="event-card wide" href="/events/{{.Slug}}">
-      <span class="event-date">{{dateLong .Start}} · {{timeShort .Start}}</span>
-      <span class="event-title">{{.Name}}</span>
-      <span class="event-meta">{{venueName .VenueSlug}} · {{.Genre}} · {{.Status}}</span>
-      {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
-    </a>
-    {{end}}
+  <form class="filter-form" method="get" action="/events">
+    <label>
+      <span>When</span>
+      <select name="window">
+        <option value="all" {{if eq .EventFilters.Window "all"}}selected{{end}}>All upcoming</option>
+        <option value="today" {{if eq .EventFilters.Window "today"}}selected{{end}}>Today</option>
+        <option value="week" {{if eq .EventFilters.Window "week"}}selected{{end}}>This week</option>
+      </select>
+    </label>
+    <label>
+      <span>Venue</span>
+      <select name="venue">
+        <option value="">All venues</option>
+        {{range .Venues}}
+        <option value="{{.Slug}}" {{if eq $.EventFilters.Venue .Slug}}selected{{end}}>{{.Name}}</option>
+        {{end}}
+      </select>
+    </label>
+    <button type="submit">Apply</button>
+  </form>
+</section>
+
+<section class="section-block">
+  {{range .EventGroups}}
+  <div class="date-group">
+    <h2>{{dateLong .Date}}</h2>
+    <div class="event-list">
+      {{range .Events}}
+      <a class="event-card wide" href="/events/{{.Slug}}">
+        <span class="event-date">{{timeShort .Start}}</span>
+        <span class="event-title">{{.Name}}</span>
+        <span class="event-meta">{{venueName .VenueSlug}} · {{.Genre}} · {{.Status}}</span>
+        {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+      </a>
+      {{end}}
+    </div>
   </div>
+  {{else}}
+  <p class="empty-state">No shows match these filters.</p>
+  {{end}}
 </section>
