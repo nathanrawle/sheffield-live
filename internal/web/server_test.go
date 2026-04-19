@@ -3,12 +3,14 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/store"
+	sqlitestore "sheffield-live/internal/store/sqlite"
 )
 
 func TestRoutes(t *testing.T) {
@@ -68,3 +70,59 @@ func TestNewServerRejectsMissingEventVenue(t *testing.T) {
 		t.Fatal("expected missing venue validation error")
 	}
 }
+
+func TestNewServerAcceptsReadOnlyStore(t *testing.T) {
+	st := readOnlyStoreStub{}
+
+	if _, err := NewServer(st); err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+}
+
+func TestSQLiteStoreSmoke(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(st)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if !strings.Contains(rr.Body.String(), "ok") {
+		t.Fatalf("body = %q, want ok", rr.Body.String())
+	}
+}
+
+type readOnlyStoreStub struct{}
+
+func (readOnlyStoreStub) Venues() []domain.Venue { return nil }
+
+func (readOnlyStoreStub) Events() []domain.Event { return nil }
+
+func (readOnlyStoreStub) VenueBySlug(string) (domain.Venue, bool) {
+	return domain.Venue{}, false
+}
+
+func (readOnlyStoreStub) EventBySlug(string) (domain.Event, bool) {
+	return domain.Event{}, false
+}
+
+func (readOnlyStoreStub) EventsForVenue(string) []domain.Event { return nil }
+
+func (readOnlyStoreStub) Validate() error { return nil }

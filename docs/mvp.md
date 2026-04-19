@@ -12,11 +12,12 @@ Ship a small, readable Sheffield live-music browser that answers three questions
 
 - one deployable Go server
 - hand-seeded events and venues with source and freshness fields
+- SQLite persistence with seed bootstrap
 - simple list/detail browsing
 - static CSS only
 - no login, admin, or write path
 - no ingestion pipeline
-- no external dependencies
+- one lightweight SQLite driver dependency
 
 ## What this proves
 

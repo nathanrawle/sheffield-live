@@ -23,7 +23,7 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type Server struct {
-	store         *store.Store
+	store         store.ReadOnlyStore
 	localLocation *time.Location
 	layout        *template.Template
 	pages         map[string]*template.Template
@@ -44,7 +44,7 @@ type PageData struct {
 	VenueEvents   []domain.Event
 }
 
-func NewServer(st *store.Store) (*Server, error) {
+func NewServer(st store.ReadOnlyStore) (*Server, error) {
 	if err := st.Validate(); err != nil {
 		return nil, fmt.Errorf("validate store: %w", err)
 	}

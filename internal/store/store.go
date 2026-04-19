@@ -13,6 +13,17 @@ type Store struct {
 	events []domain.Event
 }
 
+type ReadOnlyStore interface {
+	Venues() []domain.Venue
+	Events() []domain.Event
+	VenueBySlug(slug string) (domain.Venue, bool)
+	EventBySlug(slug string) (domain.Event, bool)
+	EventsForVenue(venueSlug string) []domain.Event
+	Validate() error
+}
+
+var _ ReadOnlyStore = (*Store)(nil)
+
 func NewStore(venues []domain.Venue, events []domain.Event) *Store {
 	venueCopy := make([]domain.Venue, len(venues))
 	copy(venueCopy, venues)

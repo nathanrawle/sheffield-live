@@ -5,23 +5,40 @@ import (
 	"net/http"
 	"os"
 
-	"sheffield-live/internal/store"
+	"sheffield-live/internal/store/sqlite"
 	"sheffield-live/internal/web"
 )
 
 func main() {
-	addr := env("ADDR", ":8080")
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
 
-	st := store.NewSeedStore()
+func run() error {
+	addr := env("ADDR", ":8080")
+	dbPath := env("DB_PATH", "./data/sheffield-live.db")
+
+	st, err := sqlite.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := st.Close(); closeErr != nil {
+			log.Printf("close sqlite store: %v", closeErr)
+		}
+	}()
+
 	server, err := web.NewServer(st)
 	if err != nil {
-		log.Fatalf("build server: %v", err)
+		return err
 	}
 
 	log.Printf("listening on %s", addr)
 	if err := http.ListenAndServe(addr, server); err != nil {
-		log.Fatalf("listen: %v", err)
+		return err
 	}
+	return nil
 }
 
 func env(key, fallback string) string {

@@ -2,21 +2,23 @@
 
 ## Overview
 
-This project is one repository with one deployable Go application. The current slice uses in-memory data, but the package boundaries are intended to let Phase 2 add persistence without changing the public route shape.
+This project is one repository with one deployable Go application. The current slice uses a SQLite store, and the package boundaries are intended to let Phase 2 add ingestion without changing the public route shape.
 
 The codebase is split into a few small packages:
 
 - `cmd/web` starts the HTTP server
 - `internal/domain` holds the core venue and event types
 - `internal/store` keeps the in-memory seed data and lookups
+- `internal/store/sqlite` opens the SQLite database, bootstraps seed data on a fresh database, and keeps the read-only store interface
 - `internal/web` renders HTML and handles routing
 - `internal/web/static` holds embedded CSS
 
-The app currently uses the Go standard library only.
+The app currently uses SQLite via `modernc.org/sqlite` for persistence.
+`DB_PATH` must point to writable storage because the app bootstraps and updates the database on disk. If you keep the default path, `./data` must be writable.
 
 ## Request flow
 
-1. `cmd/web` builds the seed store.
+1. `cmd/web` opens the SQLite-backed store.
 2. `internal/web` loads embedded templates and CSS.
 3. The server dispatches by path.
 4. The page fragment renders first.
@@ -35,4 +37,4 @@ Times are stored as UTC and rendered for `Europe/London`.
 
 ## Phase 2 notes
 
-The current store is intentionally in-memory and fixed. Phase 2 should introduce a persistent store behind the same lookup methods before adding live ingestion. Source adapters should stay outside the web package and should preserve raw source/provenance data before normalization.
+The current store is backed by SQLite but still exposes the same read-only lookup methods. The next step is to add ingestion behind that boundary while preserving raw source/provenance data before normalization.
