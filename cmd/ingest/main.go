@@ -32,6 +32,7 @@ func run() error {
 		dbPath    = flag.String("db", "", "SQLite database path")
 		fixture   = flag.String("review-fixture", "", "offline ICS fixture path used to create an admin review group")
 		title     = flag.String("review-title", "", "title for a review group created from -review-fixture")
+		stage     = flag.Bool("stage-review", false, "stage duplicate ingest candidates into admin review groups")
 	)
 	flag.Parse()
 
@@ -85,10 +86,89 @@ func run() error {
 
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
+	if *stage {
+		stageReport, stageErr := reviewStageForReport(context.Background(), st, report, runErr)
+		if err := encoder.Encode(manualIngestReport{
+			Report:      report,
+			ReviewStage: stageReport,
+		}); err != nil {
+			return err
+		}
+		if stageErr != nil {
+			return stageErr
+		}
+		return runErr
+	}
+
 	if err := encoder.Encode(report); err != nil {
 		return err
 	}
 	return runErr
+}
+
+type reviewStageStore interface {
+	CreateReviewGroup(ctx context.Context, input review.GroupInput) (int64, error)
+}
+
+type manualIngestReport struct {
+	Report      ingest.Report     `json:"report"`
+	ReviewStage reviewStageReport `json:"review_stage"`
+}
+
+type reviewStageReport struct {
+	Enabled        bool                     `json:"enabled"`
+	GroupsCreated  int                      `json:"groups_created"`
+	CandidateCount int                      `json:"candidate_count"`
+	Groups         []reviewStageGroupReport `json:"groups"`
+	Errors         []string                 `json:"errors"`
+}
+
+type reviewStageGroupReport struct {
+	ID             int64  `json:"id"`
+	Title          string `json:"title"`
+	CandidateCount int    `json:"candidate_count"`
+	SourceURL      string `json:"source_url"`
+}
+
+func reviewStageForReport(ctx context.Context, st reviewStageStore, report ingest.Report, runErr error) (reviewStageReport, error) {
+	if runErr != nil {
+		return emptyReviewStageReport(), nil
+	}
+	return createReviewGroupsFromReport(ctx, st, report)
+}
+
+func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, report ingest.Report) (reviewStageReport, error) {
+	groups := ingest.ReviewGroupsFromReport(report)
+	stage := emptyReviewStageReport()
+	stage.Groups = make([]reviewStageGroupReport, 0, len(groups))
+	for _, group := range groups {
+		stage.CandidateCount += len(group.Candidates)
+	}
+
+	for _, group := range groups {
+		groupID, err := st.CreateReviewGroup(ctx, group)
+		if err != nil {
+			message := fmt.Sprintf("create review group %q: %v", group.Title, err)
+			stage.Errors = append(stage.Errors, message)
+			return stage, errors.New(message)
+		}
+		stage.Groups = append(stage.Groups, reviewStageGroupReport{
+			ID:             groupID,
+			Title:          group.Title,
+			CandidateCount: len(group.Candidates),
+			SourceURL:      group.SourceURL,
+		})
+		stage.GroupsCreated = len(stage.Groups)
+	}
+	return stage, nil
+}
+
+func emptyReviewStageReport() reviewStageReport {
+	return reviewStageReport{
+		Enabled: true,
+		Groups:  []reviewStageGroupReport{},
+		Errors:  []string{},
+	}
 }
 
 type reviewFixtureReport struct {

@@ -33,6 +33,14 @@ The command fetches the Sidney & Matilda source page, stores a JSON snapshot env
 
 It does not write public venue or event records. It only writes to `sources`, `import_runs`, and `snapshots`.
 
+To also stage duplicate candidate clusters for admin review after a successful manual ingest:
+
+```bash
+go run ./cmd/ingest -user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-review
+```
+
+This creates review groups only for likely duplicate clusters. It still does not publish public event rows.
+
 Flags:
 
 - `-source` defaults to `sidney-and-matilda`
@@ -40,6 +48,7 @@ Flags:
 - `-timeout` defaults to `10s`
 - `-user-agent` is required
 - `-db` overrides `DB_PATH`, which otherwise falls back to `./data/sheffield-live.db`
+- `-stage-review` stages likely duplicate clusters into `/admin/review` after a successful ingest
 
 To create an offline review group from a local ICS fixture without network access:
 
