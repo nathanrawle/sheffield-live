@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -320,9 +321,30 @@ func TestAdminReviewQueueShowsOnlyOpenGroups(t *testing.T) {
 		SourceURL:  "file:resolved.ics",
 		Candidates: []review.CandidateInput{
 			{
-				Name:       "Resolved candidate",
-				SourceName: "Fixture ICS",
-				SourceURL:  "file:resolved.ics",
+				ExternalID:  "utc-1",
+				Name:        "UTC Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First line",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/utc-show",
+				Provenance:  "fixture UID utc-1",
+			},
+			{
+				ExternalID:  "london-1",
+				Name:        "London Show",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-02T18:30:00Z",
+				EndAt:       "2026-05-02T21:30:00Z",
+				Genre:       "Rock",
+				Status:      "Listed",
+				Description: "London description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "file:resolved.ics",
+				Provenance:  "fixture UID london-1",
 			},
 		},
 	})
@@ -350,6 +372,7 @@ func TestAdminReviewQueueShowsOnlyOpenGroups(t *testing.T) {
 func TestAdminReviewRejectRejectsSubmittedChoices(t *testing.T) {
 	st, server, groupID := mustReviewServerWithGroup(t)
 	defer st.Close()
+	beforeEventCount := len(st.Events())
 
 	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
 	if err != nil {
@@ -372,6 +395,9 @@ func TestAdminReviewRejectRejectsSubmittedChoices(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
 	}
 	assertContains(t, rr.Body.String(), "rejecting a review group does not accept field choices")
+	if got := len(st.Events()); got != beforeEventCount {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	}
 }
 
 func TestAdminReviewResolveRequiresAllFields(t *testing.T) {
@@ -453,10 +479,30 @@ func TestAdminReviewResolveRedirectsAndRemovesFromQueue(t *testing.T) {
 	if updated.Status != review.StatusResolved {
 		t.Fatalf("status = %q, want %q", updated.Status, review.StatusResolved)
 	}
+	eventSlug := "live-london-show-sidney-and-matilda-20260501190000"
+	event, ok := st.EventBySlug(eventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", eventSlug)
+	}
+	if event.Name != "London Show" {
+		t.Fatalf("name = %q, want %q", event.Name, "London Show")
+	}
+	if event.VenueSlug != "sidney-and-matilda" {
+		t.Fatalf("venue slug = %q, want %q", event.VenueSlug, "sidney-and-matilda")
+	}
+	if event.SourceName != "Fixture ICS" {
+		t.Fatalf("source name = %q, want %q", event.SourceName, "Fixture ICS")
+	}
+	if event.SourceURL != "file:sidney.ics" {
+		t.Fatalf("source url = %q, want %q", event.SourceURL, "file:sidney.ics")
+	}
+	if event.Origin != domain.OriginLive {
+		t.Fatalf("origin = %q, want %q", event.Origin, domain.OriginLive)
+	}
 }
 
 func TestAdminReviewSingletonRendersAcceptAndReject(t *testing.T) {
-	st, server, groupID := mustReviewServerWithSingletonGroup(t)
+	st, server, groupID, _ := mustReviewServerWithSingletonGroup(t)
 	defer st.Close()
 
 	listBody := renderPath(t, server, "/admin/review")
@@ -475,7 +521,7 @@ func TestAdminReviewSingletonRendersAcceptAndReject(t *testing.T) {
 }
 
 func TestAdminReviewSingletonAcceptResolvesWithCanonicalChoices(t *testing.T) {
-	st, server, groupID := mustReviewServerWithSingletonGroup(t)
+	st, server, groupID, path := mustReviewServerWithSingletonGroup(t)
 	defer st.Close()
 
 	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
@@ -486,6 +532,17 @@ func TestAdminReviewSingletonAcceptResolvesWithCanonicalChoices(t *testing.T) {
 		t.Fatal("review group not found")
 	}
 	candidateID := group.Candidates[0].ID
+	db := mustRawDB(t, path)
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET source_name = '', source_url = ''
+		WHERE id = ?
+	`, candidateID); err != nil {
+		t.Fatalf("blank candidate source fields: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
 
 	form := url.Values{}
 	form.Set("action", "accept")
@@ -526,6 +583,20 @@ func TestAdminReviewSingletonAcceptResolvesWithCanonicalChoices(t *testing.T) {
 		if choice.CandidateID != candidateID {
 			t.Fatalf("choice candidate for %s = %d, want %d", field, choice.CandidateID, candidateID)
 		}
+	}
+	eventSlug := "live-solo-show-sidney-and-matilda-20260503190000"
+	event, ok := st.EventBySlug(eventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", eventSlug)
+	}
+	if event.SourceName != group.SourceName {
+		t.Fatalf("source name = %q, want %q", event.SourceName, group.SourceName)
+	}
+	if event.SourceURL != group.SourceURL {
+		t.Fatalf("source url = %q, want %q", event.SourceURL, group.SourceURL)
+	}
+	if event.Origin != domain.OriginLive {
+		t.Fatalf("origin = %q, want %q", event.Origin, domain.OriginLive)
 	}
 
 	closedBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
@@ -695,7 +766,7 @@ func mustReviewServerWithGroup(t *testing.T) (*sqlitestore.Store, *Server, int64
 	return st, server, groupID
 }
 
-func mustReviewServerWithSingletonGroup(t *testing.T) (*sqlitestore.Store, *Server, int64) {
+func mustReviewServerWithSingletonGroup(t *testing.T) (*sqlitestore.Store, *Server, int64, string) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -734,7 +805,20 @@ func mustReviewServerWithSingletonGroup(t *testing.T) (*sqlitestore.Store, *Serv
 		_ = st.Close()
 		t.Fatalf("new server: %v", err)
 	}
-	return st, server, groupID
+	return st, server, groupID, path
+}
+
+func mustRawDB(t *testing.T, path string) *sql.DB {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", "file://"+filepath.ToSlash(path)+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	if err := db.Ping(); err != nil {
+		t.Fatalf("ping raw db: %v", err)
+	}
+	return db
 }
 
 func contextForTesting() context.Context {

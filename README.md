@@ -39,7 +39,7 @@ To also stage candidate review groups after a successful manual ingest:
 go run ./cmd/ingest -user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-review
 ```
 
-This creates review groups for likely duplicate clusters and singleton new listings. It still does not publish public event rows.
+This creates review groups for likely duplicate clusters and singleton new listings. Resolved review groups now publish public event rows.
 
 Flags:
 
@@ -56,7 +56,7 @@ To create an offline review group from a local ICS fixture without network acces
 go run ./cmd/ingest -review-fixture internal/ingest/testdata/sidney.ics
 ```
 
-Review groups can be inspected at `/admin/review`. Duplicate reviews store field-level draft choices; new-listing reviews accept or reject the sole candidate. Neither flow publishes public event rows yet.
+Review groups can be inspected at `/admin/review`. Duplicate reviews store field-level draft choices; new-listing reviews accept or reject the sole candidate. Resolved review groups publish canonical public event rows.
 
 ## Routes
 

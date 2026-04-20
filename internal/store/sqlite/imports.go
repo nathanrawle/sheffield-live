@@ -29,6 +29,27 @@ func (s *Store) EnsureSource(ctx context.Context, name, sourceURL string) (int64
 		_ = tx.Rollback()
 	}()
 
+	id, err := ensureSourceTx(ctx, tx, name, sourceURL)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func ensureSourceTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, name, sourceURL string) (int64, error) {
+	if strings.TrimSpace(name) == "" {
+		return 0, errors.New("source name is required")
+	}
+	if strings.TrimSpace(sourceURL) == "" {
+		return 0, errors.New("source URL is required")
+	}
+
 	if _, err := tx.ExecContext(ctx, `
 		INSERT OR IGNORE INTO sources (name, url)
 		VALUES (?, ?)
@@ -43,9 +64,6 @@ func (s *Store) EnsureSource(ctx context.Context, name, sourceURL string) (int64
 		WHERE name = ? AND url = ?
 		LIMIT 1
 	`, name, sourceURL).Scan(&id); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return id, nil

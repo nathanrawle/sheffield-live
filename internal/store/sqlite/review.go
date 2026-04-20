@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"sheffield-live/internal/domain"
 	"sheffield-live/internal/review"
 )
 
@@ -264,6 +265,7 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	}
 
 	seen := make(map[review.Field]struct{}, len(choices))
+	selectedCandidates := make(map[review.Field]review.Candidate, len(choices))
 	now := time.Now().UTC()
 	for _, choice := range choices {
 		if !choice.Field.Valid() {
@@ -283,6 +285,7 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		if !ok {
 			return fmt.Errorf("review candidate %d not found in group %d", choice.CandidateID, groupID)
 		}
+		selectedCandidates[choice.Field] = candidate
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO review_draft_choices (
 				group_id,
@@ -298,6 +301,13 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		`, groupID, string(choice.Field), choice.CandidateID, review.CandidateValue(candidate, choice.Field), formatRFC3339UTC(now)); err != nil {
 			return err
 		}
+	}
+	event, err := buildResolvedEvent(group, selectedCandidates, now)
+	if err != nil {
+		return err
+	}
+	if err := upsertEventTx(ctx, tx, event); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE review_groups
@@ -426,6 +436,171 @@ func loadReviewGroup(ctx context.Context, q queryer, id int64) (review.Group, bo
 	group.CreatedAt = parsedCreatedAt
 	group.UpdatedAt = parsedUpdatedAt
 	return group, true, nil
+}
+
+func buildResolvedEvent(group review.Group, selected map[review.Field]review.Candidate, publishedAt time.Time) (domain.Event, error) {
+	name := strings.TrimSpace(review.CandidateValue(selected[review.FieldName], review.FieldName))
+	venueSlug := strings.TrimSpace(review.CandidateValue(selected[review.FieldVenueSlug], review.FieldVenueSlug))
+	startText := strings.TrimSpace(review.CandidateValue(selected[review.FieldStartAt], review.FieldStartAt))
+	endText := strings.TrimSpace(review.CandidateValue(selected[review.FieldEndAt], review.FieldEndAt))
+	genre := strings.TrimSpace(review.CandidateValue(selected[review.FieldGenre], review.FieldGenre))
+	status := strings.TrimSpace(review.CandidateValue(selected[review.FieldStatus], review.FieldStatus))
+	description := strings.TrimSpace(review.CandidateValue(selected[review.FieldDescription], review.FieldDescription))
+	sourceName := strings.TrimSpace(review.CandidateValue(selected[review.FieldSourceName], review.FieldSourceName))
+	if sourceName == "" {
+		sourceName = strings.TrimSpace(group.SourceName)
+	}
+	sourceURL := strings.TrimSpace(review.CandidateValue(selected[review.FieldSourceURL], review.FieldSourceURL))
+	if sourceURL == "" {
+		sourceURL = strings.TrimSpace(group.SourceURL)
+	}
+
+	if name == "" {
+		return domain.Event{}, errors.New("review event name is required")
+	}
+	if venueSlug == "" {
+		return domain.Event{}, errors.New("review event venue slug is required")
+	}
+	if startText == "" {
+		return domain.Event{}, errors.New("review event start time is required")
+	}
+	if endText == "" {
+		return domain.Event{}, errors.New("review event end time is required")
+	}
+	if sourceName == "" {
+		return domain.Event{}, errors.New("review event source name is required")
+	}
+	if sourceURL == "" {
+		return domain.Event{}, errors.New("review event source URL is required")
+	}
+
+	start, err := parseRFC3339UTC(startText)
+	if err != nil {
+		return domain.Event{}, fmt.Errorf("parse review event start time: %w", err)
+	}
+	end, err := parseRFC3339UTC(endText)
+	if err != nil {
+		return domain.Event{}, fmt.Errorf("parse review event end time: %w", err)
+	}
+	slug, err := buildLiveEventSlug(name, venueSlug, start)
+	if err != nil {
+		return domain.Event{}, err
+	}
+
+	return domain.Event{
+		Slug:        slug,
+		Name:        name,
+		VenueSlug:   venueSlug,
+		Start:       start,
+		End:         end,
+		Genre:       genre,
+		Status:      status,
+		Description: description,
+		SourceName:  sourceName,
+		SourceURL:   sourceURL,
+		LastChecked: publishedAt.UTC(),
+		Origin:      domain.OriginLive,
+	}, nil
+}
+
+func buildLiveEventSlug(name, venueSlug string, start time.Time) (string, error) {
+	nameSlug := slugFromText(name)
+	venueSlugPart := slugFromText(venueSlug)
+	if nameSlug == "" {
+		return "", errors.New("review event name cannot produce a slug")
+	}
+	if venueSlugPart == "" {
+		return "", errors.New("review event venue slug cannot produce a slug")
+	}
+	return fmt.Sprintf("live-%s-%s-%s", nameSlug, venueSlugPart, start.UTC().Format("20060102150405")), nil
+}
+
+func slugFromText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	wroteDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+			wroteDash = false
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			wroteDash = false
+		default:
+			if builder.Len() > 0 && !wroteDash {
+				builder.WriteByte('-')
+				wroteDash = true
+			}
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func upsertEventTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, event domain.Event) error {
+	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("venue %q not found", event.VenueSlug)
+	}
+	sourceID, err := ensureSourceTx(ctx, tx, event.SourceName, event.SourceURL)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			last_checked_at,
+			origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(slug) DO UPDATE SET
+			venue_id = excluded.venue_id,
+			source_id = excluded.source_id,
+			name = excluded.name,
+			start_at = excluded.start_at,
+			end_at = excluded.end_at,
+			genre = excluded.genre,
+			status = excluded.status,
+			description = excluded.description,
+			last_checked_at = excluded.last_checked_at,
+			origin = excluded.origin
+	`, event.Slug, venueID, sourceID, event.Name,
+		formatRFC3339UTC(event.Start),
+		formatRFC3339UTC(event.End),
+		event.Genre, event.Status, event.Description,
+		formatRFC3339UTC(event.LastChecked),
+		string(event.Origin))
+	return err
+}
+
+func loadVenueIDBySlugTx(ctx context.Context, q queryer, slug string) (int64, bool, error) {
+	row := q.QueryRowContext(ctx, `
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+		LIMIT 1
+	`, slug)
+	var id int64
+	switch err := row.Scan(&id); {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, err
+	}
+	return id, true, nil
 }
 
 func reviewGroupExists(ctx context.Context, q queryer, id int64) (bool, error) {
