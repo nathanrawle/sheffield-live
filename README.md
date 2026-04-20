@@ -21,6 +21,26 @@ go run ./cmd/web
 The app listens on `:8080` by default. Set `ADDR` to override it.
 Set `DB_PATH` to change the SQLite database path. It defaults to `./data/sheffield-live.db`, so `./data` must be writable when you use the default. The path you choose must point to writable storage because the app bootstraps and updates the database on disk.
 
+## Manual ingestion
+
+Phase 4A includes a manual snapshot and parse command for Sidney & Matilda:
+
+```bash
+go run ./cmd/ingest -user-agent "sheffield-live manual ingest (contact: you@example.com)"
+```
+
+The command fetches the Sidney & Matilda source page, stores a JSON snapshot envelope in SQLite, extracts bounded "Google Calendar ICS" links, snapshots each fetched ICS body, parses event candidates/skips/errors, finishes the import run, and prints a JSON report to stdout.
+
+It does not write public venue or event records. It only writes to `sources`, `import_runs`, and `snapshots`.
+
+Flags:
+
+- `-source` defaults to `sidney-and-matilda`
+- `-limit` defaults to `20` and must be between `1` and `50`
+- `-timeout` defaults to `10s`
+- `-user-agent` is required
+- `-db` overrides `DB_PATH`, which otherwise falls back to `./data/sheffield-live.db`
+
 ## Routes
 
 - `/`
@@ -35,7 +55,9 @@ Static CSS is served from `/static/site.css`.
 ## Repo layout
 
 - `cmd/web` - entrypoint
+- `cmd/ingest` - manual ingestion entrypoint
 - `internal/domain` - core data types
+- `internal/ingest` - manual snapshot, ICS extraction, parsing, and reporting
 - `internal/store` - in-memory seed store and store interface
 - `internal/store/sqlite` - SQLite persistence adapter
 - `internal/web` - HTTP server and templates
