@@ -1,32 +1,36 @@
 # MVP
 
-## Goal
+## Product Scope
 
-Ship a small, readable Sheffield live-music browser that answers three questions quickly:
+The product is a small, readable Sheffield live-music browser that answers three questions quickly:
 
 - what is coming up?
 - where is it happening?
 - where did this listing come from?
 
-## Current increment
+The current scope includes:
 
-- one deployable Go server
-- hand-seeded events and venues with source and freshness fields
 - SQLite persistence with seed bootstrap
-- simple list/detail browsing
-- static CSS only
-- no login, admin, or write path
-- no ingestion pipeline
+- manual Sidney & Matilda ingest
+- review staging
+- review-to-public-event publishing
+- server-rendered minimalist UI
+- public browsing for home, events, event detail, venues, and venue detail
+- visible provenance and freshness on records
+- visibly tagged seed, test, and dev data
+- live records that are not tagged
 - one lightweight SQLite driver dependency
 
-## What this proves
+## Non-Goals
 
-- the route model is stable
-- the content model can handle venues and events
-- source provenance belongs in the event detail experience from the beginning
-- the HTML layout is reusable
-- the site can stay dependency-light
+- broad source coverage
+- automated publishing without review
+- login or auth hardening
+- a recurring scheduler
+- image or media ingestion
+- a claim of complete Sheffield coverage
+- a rich JavaScript app or HTMX unless it earns its place
 
-## Phase 2 boundary
+## Current Constraints
 
-Phase 2 should add persistence behind the same public routes. The first persistence pass should preserve the distinction between canonical event fields and source/provenance fields.
+The site stays curated and source-led. Canonical public events are published only through review resolution, and the public surface stays simple and server-rendered.

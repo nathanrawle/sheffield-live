@@ -2,39 +2,76 @@
 
 ## Overview
 
-This project is one repository with one deployable Go application. The current slice uses a SQLite store, and the package boundaries are intended to let Phase 2 add ingestion without changing the public route shape.
+Sheffield Live is a single Go monolith. It serves server-rendered HTML from one SQLite-backed application and keeps the public browsing flow and the manual ingestion flow in the same repository.
 
-The codebase is split into a few small packages:
+`cmd/web` starts the site. `cmd/ingest` handles manual ingestion and review staging.
+
+## Packages
 
 - `cmd/web` starts the HTTP server
-- `internal/domain` holds the core venue and event types
-- `internal/store` keeps the in-memory seed data and lookups
-- `internal/store/sqlite` opens the SQLite database, bootstraps seed data on a fresh database, and keeps the read-only store interface
-- `internal/web` renders HTML and handles routing
-- `internal/web/static` holds embedded CSS
+- `cmd/ingest` runs manual ingestion and optional review staging
+- `internal/domain` defines shared venue, event, and origin types
+- `internal/ingest` fetches Sidney & Matilda pages, extracts ICS links, parses ICS data, and stages review groups from ingest reports
+- `internal/review` defines review group and draft-choice types
+- `internal/store` provides the seed-store implementation and read-only store interface
+- `internal/store/sqlite` opens SQLite, runs migrations, bootstraps seed data, and implements persistence
+- `internal/web` routes requests and renders pages
+- `internal/web/static` embeds `site.css`
+- `internal/web/templates` embeds HTML templates
 
-The app currently uses SQLite via `modernc.org/sqlite` for persistence.
-`DB_PATH` must point to writable storage because the app bootstraps and updates the database on disk. If you keep the default path, `./data` must be writable.
+## Runtime
 
-## Request flow
+The app uses SQLite through `modernc.org/sqlite`.
 
-1. `cmd/web` opens the SQLite-backed store.
-2. `internal/web` loads embedded templates and CSS.
-3. The server dispatches by path.
-4. The page fragment renders first.
-5. The shared layout wraps that fragment.
+`ADDR` defaults to `:8080`.
+`DB_PATH` defaults to `./data/sheffield-live.db`.
 
-## Rendering
+The database path must point to writable storage because the application creates or updates the SQLite file on startup.
 
-Rendering uses `html/template` from the standard library. The layout and the page fragment are separate templates so the shared shell stays consistent while the page body remains specific to each route.
+## Routes
 
-## Data model
+- `/`
+- `/events`
+- `/events/{slug}`
+- `/venues`
+- `/venues/{slug}`
+- `/admin/review`
+- `/admin/review/{groupID}`
+- `/healthz`
+- `/static/site.css`
 
-- `Venue` stores slug, name, address, neighbourhood, description, and website.
-- `Event` stores slug, name, venue slug, UTC times, genre, status, description, source name, source URL, and last checked time.
+## Request Flow
 
-Times are stored as UTC and rendered for `Europe/London`.
+1. `cmd/web` opens the SQLite store.
+2. `internal/web` loads templates and embedded CSS.
+3. The router matches the request path.
+4. The page-specific template renders.
+5. The shared layout wraps the page body.
 
-## Phase 2 notes
+## Data Model
 
-The current store is backed by SQLite but still exposes the same read-only lookup methods. The next step is to add ingestion behind that boundary while preserving raw source/provenance data before normalization.
+Public records live in SQLite and are served from canonical `venues` and `events` rows.
+
+- `Venue` stores slug, name, address, neighbourhood, description, website, and origin
+- `Event` stores slug, name, venue slug, UTC start and end times, genre, status, description, source name, source URL, last checked time, and origin
+
+Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
+
+## Data Lifecycle
+
+Raw source snapshots feed review groups, and review resolution publishes canonical public events.
+
+- raw snapshots capture fetched source pages and ICS payloads
+- review groups hold duplicate clusters or singleton new listings
+- resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
+- rejecting a review does not publish
+- the venue must already exist
+- the source row is ensured
+- the published event uses live origin
+- the live slug is deterministic and derived from name, venue, and UTC time
+- slug conflicts are handled with upsert semantics
+
+## Visibility
+
+Seed, test, and development records are visible in the UI through their origin labels.
+Live records are not tagged.

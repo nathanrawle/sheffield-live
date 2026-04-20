@@ -1,52 +1,43 @@
 # Sources
 
-## Current state
+## Current Flow
 
-This increment uses code-seeded public venue and event data only.
+The current manual source pipeline starts with Sidney & Matilda.
 
-The venue and event entries are illustrative and are not ingested from external systems yet. Phase 4A adds manual raw snapshotting and ICS parsing for review, but parsed candidates are report-only and are not written to public event tables.
+The ingest run fetches the source page, stores a raw source-page snapshot, extracts `Google Calendar ICS` links, fetches each ICS feed, stores raw ICS snapshots, and parses event candidates, skips, and parse errors.
 
-## Phase 4A manual source check
+Snapshots are kept as separate raw artifacts. They are not the same thing as canonical public event rows.
 
-Sidney & Matilda is the first manual ingestion source. The command fetches `https://www.sidneyandmatilda.com/`, stores a raw source-page snapshot, extracts anchors labelled "Google Calendar ICS", stores raw ICS snapshots, and prints a JSON report containing parsed candidates, skips, and errors.
+The ingest run writes to `sources`, `import_runs`, and `snapshots`, and it records the parsed report output rather than publishing public events directly.
 
-Snapshot payloads use a JSON envelope in `snapshots.payload` with base64 body content, content metadata, captured-body SHA-256, and a truncation flag.
+## Snapshot Payloads
 
-This path is intentionally fail-closed:
+Snapshot payloads are stored as JSON envelopes that contain the response body in base64, response metadata, a captured-body SHA-256, and a truncation flag.
 
-- zero ICS links is a report error
-- non-2xx responses are still snapshotted when a response body is available
-- all-day, cancelled, malformed, or incomplete events are skipped
-- no venue or event rows are written
+## Review Staging
 
-## First source candidates
+`cmd/ingest` can stage review groups from a successful ingest report.
 
-Official venue listings should be reviewed first:
+Review staging creates duplicate clusters and singleton new listings. Duplicate review groups support field-level canonical choices plus a canonical draft summary. Singleton review groups support accept or reject.
 
-- The Leadmill
-- Yellow Arch Studios
-- Sidney & Matilda
-- Corporation Sheffield
-- FoundrySU
-- The Greystones
-- Crookes Social Club
+## Publish Rules
 
-Aggregators can help with coverage and cross-checking after official pages are understood:
+Resolving a duplicate group or accepting a singleton publishes exactly one canonical public event in the same SQLite transaction.
 
-- Welcome to Sheffield gigs
-- Our Favourite Places music picks
-- SheffieldGigs
-- Sheffield Gig Guide
+Rejecting either a duplicate or singleton review does not publish an event.
 
-APIs should only be added where terms and value are clear. Ticketmaster Discovery and Eventbrite are plausible later candidates. Skiddle, Songkick, and Bandsintown need careful access and usage review before they are treated as reliable inputs.
+When a review group resolves:
 
-## Phase 2 expectations
+- selected review fields map to `internal/domain.Event`
+- source name and source URL fall back to the review-group source only when the selected field is blank
+- the venue must already exist
+- the source row is ensured transactionally
+- the published event origin is `live`
+- the slug is `live-<slug(name)>-<slug(venue)>-<YYYYMMDDHHMMSS UTC>`
+- slug conflicts are handled with upsert semantics
 
-Before any scraper or API import is built:
+## Source Strategy
 
-- check robots.txt and terms
-- prefer official feeds, APIs, or permission where available
-- store the canonical source URL
-- store fetch/import time
-- keep raw source snapshots separate from canonical event data
-- avoid copying long descriptions or images unless licensed
+Prefer official venue listings first.
+Use aggregators later for coverage and cross-checking.
+Add APIs only where terms and value are clear.
