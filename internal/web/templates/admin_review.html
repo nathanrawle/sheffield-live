@@ -1,8 +1,14 @@
 <section class="page-head">
   <p class="eyebrow">Admin</p>
   <h1>Review queue</h1>
-  <p class="lede">Unresolved staging groups waiting for field-level choices.</p>
+  <p class="lede">Open staging groups waiting for field-level choices.</p>
 </section>
+
+{{with .Flash}}
+<section class="section-block">
+  <p class="notice">{{.}}</p>
+</section>
+{{end}}
 
 <section class="section-block">
   <div class="review-list">
@@ -13,7 +19,7 @@
       <span class="review-group-meta">Updated {{dateShort .UpdatedAt}}</span>
     </a>
     {{else}}
-    <p class="empty-state">No unresolved review groups.</p>
+    <p class="empty-state">No open review groups.</p>
     {{end}}
   </div>
 </section>

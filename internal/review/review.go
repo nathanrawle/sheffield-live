@@ -22,6 +22,7 @@ const (
 const (
 	StatusOpen     = "open"
 	StatusResolved = "resolved"
+	StatusRejected = "rejected"
 )
 
 var CanonicalFields = []Field{
@@ -124,6 +125,15 @@ func (f Field) Valid() bool {
 		}
 	}
 	return false
+}
+
+func StatusValid(value string) bool {
+	switch value {
+	case StatusOpen, StatusResolved, StatusRejected:
+		return true
+	default:
+		return false
+	}
 }
 
 func (f Field) Label() string {

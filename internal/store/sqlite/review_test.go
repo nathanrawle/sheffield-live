@@ -109,6 +109,56 @@ func TestReviewGroupDraftRoundTripDoesNotPublishEvents(t *testing.T) {
 	}
 }
 
+func TestListOpenReviewGroupsOnlyReturnsOpenGroups(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+	db := mustRawDB(t, path)
+	defer db.Close()
+	eventCount := mustCount(t, db, "events")
+
+	openID := mustCreateReviewGroup(t, st, "Open group", "Open candidate")
+	resolvedID := mustCreateReviewGroup(t, st, "Resolved group", "Resolved candidate")
+	rejectedID := mustCreateReviewGroup(t, st, "Rejected group", "Rejected candidate")
+
+	resolved, ok, err := st.LoadReviewGroup(ctx, resolvedID)
+	if err != nil {
+		t.Fatalf("load resolved review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("resolved review group not found")
+	}
+	if err := st.ResolveReviewGroup(ctx, resolvedID, fullReviewChoices(t, resolved)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+	if err := st.UpdateReviewGroupStatus(ctx, rejectedID, review.StatusRejected); err != nil {
+		t.Fatalf("reject review group: %v", err)
+	}
+
+	groups, err := st.ListOpenReviewGroups(ctx)
+	if err != nil {
+		t.Fatalf("list open review groups: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("open review groups = %d, want 1", len(groups))
+	}
+	if groups[0].ID != openID {
+		t.Fatalf("open review group ID = %d, want %d", groups[0].ID, openID)
+	}
+	if got := mustCount(t, db, "events"); got != eventCount {
+		t.Fatalf("events rows = %d, want unchanged %d", got, eventCount)
+	}
+}
+
 func TestSaveReviewDraftRejectsCandidateFromAnotherGroup(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
@@ -176,6 +226,154 @@ func TestSaveReviewDraftRejectsEmptyChoicesWithoutUpdatingGroup(t *testing.T) {
 	if len(group.DraftChoices) != 0 {
 		t.Fatalf("draft choices = %d, want 0", len(group.DraftChoices))
 	}
+}
+
+func TestSaveReviewDraftRejectsClosedGroup(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreateReviewGroup(t, st, "Closed draft", "Draft candidate")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	if err := st.SaveReviewDraftChoices(ctx, groupID, []review.DraftChoiceInput{
+		{Field: review.FieldName, CandidateID: group.Candidates[0].ID},
+	}); err == nil {
+		t.Fatal("expected closed group draft save to be rejected")
+	}
+}
+
+func TestUpdateReviewGroupStatusRejectsClosedGroup(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreateReviewGroup(t, st, "Closed status", "Draft candidate")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	if err := st.UpdateReviewGroupStatus(ctx, groupID, review.StatusRejected); err == nil {
+		t.Fatal("expected closed group status flip to be rejected")
+	}
+}
+
+func TestResolveReviewGroupIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreateReviewGroup(t, st, "Atomic resolve", "Draft candidate")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	before, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found before resolve")
+	}
+
+	if err := st.ResolveReviewGroup(ctx, groupID, []review.DraftChoiceInput{
+		{Field: review.FieldName, CandidateID: group.Candidates[0].ID},
+	}); err == nil {
+		t.Fatal("expected incomplete resolve to be rejected")
+	}
+
+	after, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group after failed resolve: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after failed resolve")
+	}
+	if after.Status != before.Status {
+		t.Fatalf("status = %q, want unchanged %q", after.Status, before.Status)
+	}
+	if len(after.DraftChoices) != 0 {
+		t.Fatalf("draft choices = %d, want 0 after failed resolve", len(after.DraftChoices))
+	}
+
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+	final, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group after resolve: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after resolve")
+	}
+	if final.Status != review.StatusResolved {
+		t.Fatalf("status = %q, want %q", final.Status, review.StatusResolved)
+	}
+	if got := len(final.DraftChoices); got != len(review.CanonicalFields) {
+		t.Fatalf("draft choices = %d, want %d", got, len(review.CanonicalFields))
+	}
+}
+
+func TestUpdateReviewGroupStatusRejectsInvalidStatus(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreateReviewGroup(t, st, "Invalid status", "Draft candidate")
+
+	if err := st.UpdateReviewGroupStatus(ctx, groupID, "published"); err == nil {
+		t.Fatal("expected invalid status to be rejected")
+	}
+	if err := st.UpdateReviewGroupStatus(ctx, groupID, review.StatusResolved); err == nil {
+		t.Fatal("expected resolved status to require ResolveReviewGroup")
+	}
+}
+
+func fullReviewChoices(t *testing.T, group review.Group) []review.DraftChoiceInput {
+	t.Helper()
+
+	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
+	for _, field := range review.CanonicalFields {
+		choices = append(choices, review.DraftChoiceInput{
+			Field:       field,
+			CandidateID: group.Candidates[0].ID,
+		})
+	}
+	return choices
 }
 
 func assertDraftChoice(t *testing.T, group review.Group, field review.Field, candidateID int64, value string) {

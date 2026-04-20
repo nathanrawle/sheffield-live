@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"path"
 	"path/filepath"
 	"sort"
@@ -40,6 +41,8 @@ type ReviewStore interface {
 	ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary, error)
 	LoadReviewGroup(ctx context.Context, id int64) (review.Group, bool, error)
 	SaveReviewDraftChoices(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
+	ResolveReviewGroup(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
+	UpdateReviewGroupStatus(ctx context.Context, groupID int64, status string) error
 }
 
 type PageData struct {
@@ -224,13 +227,23 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load review groups", http.StatusInternalServerError)
 		return
 	}
+	flash := ""
+	switch {
+	case r.URL.Query().Get("saved") == "1":
+		flash = "Draft saved."
+	case r.URL.Query().Get("resolved") == "1":
+		flash = "Marked resolved."
+	case r.URL.Query().Get("rejected") == "1":
+		flash = "Marked not duplicate."
+	}
 	data := PageData{
 		SiteName:        "Sheffield Live",
 		PageTitle:       "Review",
-		MetaDescription: "Review staged event candidates.",
+		MetaDescription: "Review open staged event candidates.",
 		Active:          "admin-review",
 		Now:             s.now(),
 		ReviewGroups:    groups,
+		Flash:           flash,
 	}
 	s.renderPage(w, "templates/admin_review.html", data)
 }
@@ -253,43 +266,122 @@ func (s *Server) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		}
 		s.renderAdminReviewDetail(w, r, groupID, flash)
 	case http.MethodPost:
-		s.saveAdminReviewDraft(w, r, groupID)
+		s.postAdminReviewDecision(w, r, groupID)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (s *Server) saveAdminReviewDraft(w http.ResponseWriter, r *http.Request, groupID int64) {
+func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request, groupID int64) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse form", http.StatusBadRequest)
 		return
 	}
 
-	var choices []review.DraftChoiceInput
+	group, ok, err := s.reviewStore.LoadReviewGroup(r.Context(), groupID)
+	if err != nil {
+		http.Error(w, "load review group", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if group.Status != review.StatusOpen {
+		http.Error(w, "review group is closed", http.StatusConflict)
+		return
+	}
+
+	action := strings.TrimSpace(r.FormValue("action"))
+	switch action {
+	case "", "save":
+		if err := s.saveAdminReviewDraft(r.Context(), groupID, group, r.Form); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/admin/review/%d?saved=1", groupID), http.StatusSeeOther)
+	case review.StatusResolved:
+		choices, err := reviewChoicesFromForm(group, r.Form, true)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.reviewStore.ResolveReviewGroup(r.Context(), groupID, choices); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?resolved=1", http.StatusSeeOther)
+	case review.StatusRejected:
+		if err := rejectChoicesFromForm(r.Form); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.reviewStore.UpdateReviewGroupStatus(r.Context(), groupID, review.StatusRejected); err != nil {
+			http.Error(w, "update review status", http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?rejected=1", http.StatusSeeOther)
+	default:
+		http.Error(w, "invalid review action", http.StatusBadRequest)
+		return
+	}
+}
+
+func (s *Server) saveAdminReviewDraft(ctx context.Context, groupID int64, group review.Group, form url.Values) error {
+	choices, err := reviewChoicesFromForm(group, form, false)
+	if err != nil {
+		return err
+	}
+	if len(choices) == 0 {
+		return fmt.Errorf("at least one review choice is required")
+	}
+	if err := s.reviewStore.SaveReviewDraftChoices(ctx, groupID, choices); err != nil {
+		return fmt.Errorf("save review draft: %w", err)
+	}
+	return nil
+}
+
+func reviewChoicesFromForm(group review.Group, form url.Values, requireAll bool) ([]review.DraftChoiceInput, error) {
+	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
 	for _, field := range review.CanonicalFields {
-		rawCandidateID := strings.TrimSpace(r.FormValue("choice_" + string(field)))
+		rawCandidateID := strings.TrimSpace(form.Get("choice_" + string(field)))
 		if rawCandidateID == "" {
+			if requireAll {
+				return nil, fmt.Errorf("all review fields must be selected before resolving")
+			}
 			continue
 		}
 		candidateID, err := strconv.ParseInt(rawCandidateID, 10, 64)
 		if err != nil || candidateID <= 0 {
-			http.Error(w, "invalid candidate choice", http.StatusBadRequest)
-			return
+			return nil, fmt.Errorf("invalid candidate choice")
+		}
+		if !groupCandidateExists(group.Candidates, candidateID) {
+			return nil, fmt.Errorf("review candidate %d not found in group %d", candidateID, group.ID)
 		}
 		choices = append(choices, review.DraftChoiceInput{
 			Field:       field,
 			CandidateID: candidateID,
 		})
 	}
-	if len(choices) == 0 {
-		http.Error(w, "at least one review choice is required", http.StatusBadRequest)
-		return
+	return choices, nil
+}
+
+func rejectChoicesFromForm(form url.Values) error {
+	for key := range form {
+		if strings.HasPrefix(key, "choice_") {
+			return fmt.Errorf("marking not duplicate does not accept field choices")
+		}
 	}
-	if err := s.reviewStore.SaveReviewDraftChoices(r.Context(), groupID, choices); err != nil {
-		http.Error(w, "save review draft", http.StatusBadRequest)
-		return
+	return nil
+}
+
+func groupCandidateExists(candidates []review.Candidate, candidateID int64) bool {
+	for _, candidate := range candidates {
+		if candidate.ID == candidateID {
+			return true
+		}
 	}
-	http.Redirect(w, r, fmt.Sprintf("/admin/review/%d?saved=1", groupID), http.StatusSeeOther)
+	return false
 }
 
 func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request, groupID int64, flash string) {

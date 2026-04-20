@@ -242,6 +242,7 @@ func TestAdminReviewListDetailAndSave(t *testing.T) {
 	form.Set("choice_description", strconvFormatInt(group.Candidates[1].ID))
 	form.Set("choice_source_name", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_source_url", strconvFormatInt(group.Candidates[1].ID))
+	form.Set("action", "save")
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -260,6 +261,215 @@ func TestAdminReviewListDetailAndSave(t *testing.T) {
 	assertContains(t, saveBody, "<strong>Name</strong>: London Show")
 	assertContains(t, saveBody, "<strong>Venue slug</strong>: sidney-and-matilda")
 	assertContains(t, saveBody, `name="choice_name" value="`+strconvFormatInt(group.Candidates[1].ID)+`" checked`)
+}
+
+func TestAdminReviewQueueShowsOnlyOpenGroups(t *testing.T) {
+	st, server, openGroupID := mustReviewServerWithGroup(t)
+	defer st.Close()
+
+	resolvedID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Resolved review",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:resolved.ics",
+		Candidates: []review.CandidateInput{
+			{
+				Name:       "Resolved candidate",
+				SourceName: "Fixture ICS",
+				SourceURL:  "file:resolved.ics",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+	resolved, ok, err := st.LoadReviewGroup(contextForTesting(), resolvedID)
+	if err != nil {
+		t.Fatalf("load resolved review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("resolved review group not found")
+	}
+	if err := st.ResolveReviewGroup(contextForTesting(), resolvedID, fullWebReviewChoices(t, resolved)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review")
+	assertContains(t, body, "Fixture review")
+	assertNotContains(t, body, "No open review groups.")
+	assertNotContains(t, body, "Resolved review")
+	assertContains(t, body, "/admin/review/"+strconvFormatInt(openGroupID))
+}
+
+func TestAdminReviewRejectRejectsSubmittedChoices(t *testing.T) {
+	st, server, groupID := mustReviewServerWithGroup(t)
+	defer st.Close()
+
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	form := url.Values{}
+	form.Set("action", "rejected")
+	form.Set("choice_name", strconvFormatInt(group.Candidates[0].ID))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "does not accept field choices")
+}
+
+func TestAdminReviewResolveRequiresAllFields(t *testing.T) {
+	st, server, groupID := mustReviewServerWithGroup(t)
+	defer st.Close()
+
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	form := url.Values{}
+	form.Set("action", "resolved")
+	form.Set("choice_name", strconvFormatInt(group.Candidates[1].ID))
+	form.Set("choice_start_at", strconvFormatInt(group.Candidates[0].ID))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "all review fields must be selected before resolving")
+}
+
+func TestAdminReviewResolveRedirectsAndRemovesFromQueue(t *testing.T) {
+	st, server, groupID := mustReviewServerWithGroup(t)
+	defer st.Close()
+
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	form := url.Values{}
+	form.Set("action", "resolved")
+	form.Set("choice_name", strconvFormatInt(group.Candidates[1].ID))
+	form.Set("choice_venue_slug", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_start_at", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_end_at", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_genre", strconvFormatInt(group.Candidates[1].ID))
+	form.Set("choice_status", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_description", strconvFormatInt(group.Candidates[1].ID))
+	form.Set("choice_source_name", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_source_url", strconvFormatInt(group.Candidates[1].ID))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?resolved=1" {
+		t.Fatalf("Location = %q, want resolved review queue redirect", location)
+	}
+
+	queueBody := renderPath(t, server, "/admin/review?resolved=1")
+	assertContains(t, queueBody, "Marked resolved.")
+	assertContains(t, queueBody, "No open review groups.")
+	assertNotContains(t, queueBody, "Fixture review")
+
+	updated, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("reload review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after resolve")
+	}
+	if updated.Status != review.StatusResolved {
+		t.Fatalf("status = %q, want %q", updated.Status, review.StatusResolved)
+	}
+}
+
+func TestAdminReviewClosedGroupIsReadOnlyAndRejectsPost(t *testing.T) {
+	st, server, groupID := mustReviewServerWithGroup(t)
+	defer st.Close()
+
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if err := st.ResolveReviewGroup(contextForTesting(), groupID, []review.DraftChoiceInput{
+		{Field: review.FieldName, CandidateID: group.Candidates[1].ID},
+		{Field: review.FieldVenueSlug, CandidateID: group.Candidates[0].ID},
+		{Field: review.FieldStartAt, CandidateID: group.Candidates[0].ID},
+		{Field: review.FieldEndAt, CandidateID: group.Candidates[0].ID},
+		{Field: review.FieldGenre, CandidateID: group.Candidates[1].ID},
+		{Field: review.FieldStatus, CandidateID: group.Candidates[0].ID},
+		{Field: review.FieldDescription, CandidateID: group.Candidates[1].ID},
+		{Field: review.FieldSourceName, CandidateID: group.Candidates[0].ID},
+		{Field: review.FieldSourceURL, CandidateID: group.Candidates[1].ID},
+	}); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertContains(t, body, "This review is closed and read-only.")
+	assertNotContains(t, body, `name="choice_name"`)
+	assertNotContains(t, body, "Mark not duplicate")
+
+	before, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("reload review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	form := url.Values{}
+	form.Set("action", "save")
+	form.Set("choice_name", strconvFormatInt(group.Candidates[0].ID))
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusConflict, rr.Body.String())
+	}
+	after, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("reload review group after closed post: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after closed post")
+	}
+	if after.Status != before.Status {
+		t.Fatalf("status = %q, want unchanged %q", after.Status, before.Status)
+	}
+	if len(after.DraftChoices) != len(before.DraftChoices) {
+		t.Fatalf("draft choices = %d, want unchanged %d", len(after.DraftChoices), len(before.DraftChoices))
+	}
 }
 
 func TestAdminReviewEmptyPostDoesNotSaveOrUpdateGroup(t *testing.T) {
@@ -366,6 +576,22 @@ func waitForNextStoredSecond(t *testing.T) {
 	for !time.Now().UTC().Truncate(time.Second).After(start) {
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func fullWebReviewChoices(t *testing.T, group review.Group) []review.DraftChoiceInput {
+	t.Helper()
+
+	if len(group.Candidates) == 0 {
+		t.Fatal("review group has no candidates")
+	}
+	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
+	for _, field := range review.CanonicalFields {
+		choices = append(choices, review.DraftChoiceInput{
+			Field:       field,
+			CandidateID: group.Candidates[0].ID,
+		})
+	}
+	return choices
 }
 
 type readOnlyStoreStub struct{}

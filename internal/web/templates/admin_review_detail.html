@@ -22,6 +22,8 @@
 </section>
 
 <section class="section-block">
+  <p class="review-action-note">Save draft choices while the group stays open, confirm the duplicate once every canonical field is selected, or mark it not duplicate without submitting field choices.</p>
+  {{if eq .ReviewDetail.Group.Status "open"}}
   <form method="post" action="/admin/review/{{.ReviewDetail.Group.ID}}">
     <div class="review-matrix-wrap">
       <table class="review-matrix">
@@ -57,6 +59,45 @@
         </tbody>
       </table>
     </div>
-    <button class="primary-button" type="submit">Save draft</button>
+    <div class="review-actions">
+      <button class="primary-button" type="submit" name="action" value="save">Save draft choices</button>
+      <button class="secondary-button" type="submit" name="action" value="resolved">Confirm as duplicate and resolve</button>
+    </div>
   </form>
+  <form class="review-action-form" method="post" action="/admin/review/{{.ReviewDetail.Group.ID}}">
+    <button class="secondary-button danger-button" type="submit" name="action" value="rejected">Mark not duplicate</button>
+  </form>
+  {{else}}
+  <p class="empty-state">This review is closed and read-only.</p>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Field</th>
+          {{range .ReviewDetail.Group.Candidates}}
+          <th scope="col">
+            <span>Candidate {{.Position}}</span>
+            {{with .ExternalID}}<small>{{.}}</small>{{end}}
+            <small>{{.SourceName}}</small>
+            {{with .SourceURL}}<small><a href="{{.}}">{{.}}</a></small>{{end}}
+          </th>
+          {{end}}
+        </tr>
+      </thead>
+      <tbody>
+        {{range .ReviewDetail.Rows}}
+        <tr>
+          <th scope="row">{{.Label}}</th>
+          {{range .Cells}}
+          <td>
+            <span>{{blankValue .Value}}</span>
+            {{with .Provenance}}<small>{{.}}</small>{{end}}
+          </td>
+          {{end}}
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
 </section>

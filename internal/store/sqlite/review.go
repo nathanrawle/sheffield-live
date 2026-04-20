@@ -89,10 +89,10 @@ func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary
 		FROM review_groups g
 		LEFT JOIN review_candidates c ON c.group_id = g.id
 		LEFT JOIN review_draft_choices d ON d.group_id = g.id
-		WHERE g.status != ?
+		WHERE g.status = ?
 		GROUP BY g.id
 		ORDER BY g.updated_at DESC, g.id DESC
-	`, review.StatusResolved)
+	`, review.StatusOpen)
 	if err != nil {
 		return nil, err
 	}
@@ -178,10 +178,15 @@ func (s *Store) SaveReviewDraftChoices(ctx context.Context, groupID int64, choic
 		_ = tx.Rollback()
 	}()
 
-	if exists, err := reviewGroupExists(ctx, tx, groupID); err != nil {
+	group, ok, err := loadReviewGroup(ctx, tx, groupID)
+	if err != nil {
 		return err
-	} else if !exists {
+	}
+	if !ok {
 		return fmt.Errorf("review group %d not found", groupID)
+	}
+	if group.Status != review.StatusOpen {
+		return fmt.Errorf("review group %d is not open", groupID)
 	}
 
 	now := time.Now().UTC()
@@ -220,6 +225,129 @@ func (s *Store) SaveReviewDraftChoices(ctx context.Context, groupID int64, choic
 		SET updated_at = ?
 		WHERE id = ?
 	`, formatRFC3339UTC(now), groupID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	if groupID <= 0 {
+		return errors.New("review group ID is required")
+	}
+	if len(choices) != len(review.CanonicalFields) {
+		return fmt.Errorf("all review fields must be selected before resolving")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	group, ok, err := loadReviewGroup(ctx, tx, groupID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("review group %d not found", groupID)
+	}
+	if group.Status != review.StatusOpen {
+		return fmt.Errorf("review group %d is not open", groupID)
+	}
+
+	seen := make(map[review.Field]struct{}, len(choices))
+	now := time.Now().UTC()
+	for _, choice := range choices {
+		if !choice.Field.Valid() {
+			return fmt.Errorf("invalid review field %q", choice.Field)
+		}
+		if _, exists := seen[choice.Field]; exists {
+			return fmt.Errorf("duplicate review field %q", choice.Field)
+		}
+		seen[choice.Field] = struct{}{}
+		if choice.CandidateID <= 0 {
+			return fmt.Errorf("candidate ID is required for %s", choice.Field.Label())
+		}
+		candidate, ok, err := loadReviewCandidate(ctx, tx, groupID, choice.CandidateID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("review candidate %d not found in group %d", choice.CandidateID, groupID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO review_draft_choices (
+				group_id,
+				field,
+				candidate_id,
+				value,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(group_id, field) DO UPDATE SET
+				candidate_id = excluded.candidate_id,
+				value = excluded.value,
+				updated_at = excluded.updated_at
+		`, groupID, string(choice.Field), choice.CandidateID, review.CandidateValue(candidate, choice.Field), formatRFC3339UTC(now)); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE review_groups
+		SET status = ?, updated_at = ?
+		WHERE id = ?
+	`, review.StatusResolved, formatRFC3339UTC(now), groupID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) UpdateReviewGroupStatus(ctx context.Context, groupID int64, status string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	if groupID <= 0 {
+		return errors.New("review group ID is required")
+	}
+	if status != review.StatusRejected {
+		return fmt.Errorf("invalid review status %q", status)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	group, ok, err := loadReviewGroup(ctx, tx, groupID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("review group %d not found", groupID)
+	}
+	if group.Status != review.StatusOpen {
+		return fmt.Errorf("review group %d is not open", groupID)
+	}
+
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE review_groups
+		SET status = ?, updated_at = ?
+		WHERE id = ?
+	`, status, formatRFC3339UTC(now), groupID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
