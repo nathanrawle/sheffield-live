@@ -324,7 +324,7 @@ func TestAdminReviewRejectRejectsSubmittedChoices(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
 	}
-	assertContains(t, rr.Body.String(), "does not accept field choices")
+	assertContains(t, rr.Body.String(), "rejecting a review group does not accept field choices")
 }
 
 func TestAdminReviewResolveRequiresAllFields(t *testing.T) {
@@ -406,6 +406,85 @@ func TestAdminReviewResolveRedirectsAndRemovesFromQueue(t *testing.T) {
 	if updated.Status != review.StatusResolved {
 		t.Fatalf("status = %q, want %q", updated.Status, review.StatusResolved)
 	}
+}
+
+func TestAdminReviewSingletonRendersAcceptAndReject(t *testing.T) {
+	st, server, groupID := mustReviewServerWithSingletonGroup(t)
+	defer st.Close()
+
+	listBody := renderPath(t, server, "/admin/review")
+	assertContains(t, listBody, "New listing review")
+	assertContains(t, listBody, "1 candidate")
+
+	detailBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertContains(t, detailBody, "Listing candidate")
+	assertContains(t, detailBody, "<strong>Name</strong>: Solo Show")
+	assertContains(t, detailBody, "Accept new listing")
+	assertContains(t, detailBody, ">Reject</button>")
+	assertNotContains(t, detailBody, "Saved draft preview")
+	assertNotContains(t, detailBody, `name="choice_name"`)
+	assertNotContains(t, detailBody, "review-matrix")
+}
+
+func TestAdminReviewSingletonAcceptResolvesWithCanonicalChoices(t *testing.T) {
+	st, server, groupID := mustReviewServerWithSingletonGroup(t)
+	defer st.Close()
+
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	candidateID := group.Candidates[0].ID
+
+	form := url.Values{}
+	form.Set("action", "accept")
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?accepted=1" {
+		t.Fatalf("Location = %q, want accepted review queue redirect", location)
+	}
+
+	queueBody := renderPath(t, server, "/admin/review?accepted=1")
+	assertContains(t, queueBody, "Accepted new listing.")
+	assertContains(t, queueBody, "No open review groups.")
+
+	updated, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("reload review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after accept")
+	}
+	if updated.Status != review.StatusResolved {
+		t.Fatalf("status = %q, want %q", updated.Status, review.StatusResolved)
+	}
+	if got, want := len(updated.DraftChoices), len(review.CanonicalFields); got != want {
+		t.Fatalf("draft choices = %d, want %d", got, want)
+	}
+	for _, field := range review.CanonicalFields {
+		choice, ok := updated.DraftChoices[field]
+		if !ok {
+			t.Fatalf("missing draft choice for %s", field)
+		}
+		if choice.CandidateID != candidateID {
+			t.Fatalf("choice candidate for %s = %d, want %d", field, choice.CandidateID, candidateID)
+		}
+	}
+
+	closedBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertContains(t, closedBody, "This review is closed and read-only.")
+	assertContains(t, closedBody, "<strong>Name</strong>: Solo Show")
+	assertNotContains(t, closedBody, "Accept new listing")
+	assertNotContains(t, closedBody, `name="choice_name"`)
 }
 
 func TestAdminReviewClosedGroupIsReadOnlyAndRejectsPost(t *testing.T) {
@@ -549,6 +628,48 @@ func mustReviewServerWithGroup(t *testing.T) (*sqlitestore.Store, *Server, int64
 				SourceName:  "Fixture ICS",
 				SourceURL:   "file:sidney.ics",
 				Provenance:  "fixture UID london-1",
+			},
+		},
+	})
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("create review group: %v", err)
+	}
+
+	server, err := NewServer(st)
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("new server: %v", err)
+	}
+	return st, server, groupID
+}
+
+func mustReviewServerWithSingletonGroup(t *testing.T) (*sqlitestore.Store, *Server, int64) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+
+	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "New listing review",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:sidney.ics",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "solo-1",
+				Name:        "Solo Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-03T19:00:00Z",
+				EndAt:       "2026-05-03T22:00:00Z",
+				Genre:       "Folk",
+				Status:      "Listed",
+				Description: "One listing",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/solo-show",
+				Provenance:  "fixture UID solo-1",
 			},
 		},
 	})

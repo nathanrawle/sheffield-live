@@ -78,9 +78,12 @@ type EventFilters struct {
 }
 
 type ReviewDetail struct {
-	Group   review.Group
-	Rows    []ReviewFieldRow
-	Preview []ReviewPreviewRow
+	Group               review.Group
+	IsDuplicate         bool
+	IsSingleton         bool
+	Rows                []ReviewFieldRow
+	Preview             []ReviewPreviewRow
+	SingleCandidateRows []ReviewSingleCandidateRow
 }
 
 type ReviewFieldRow struct {
@@ -100,6 +103,11 @@ type ReviewPreviewRow struct {
 	Label     string
 	Value     string
 	Candidate string
+}
+
+type ReviewSingleCandidateRow struct {
+	Label string
+	Value string
 }
 
 func NewServer(st store.ReadOnlyStore) (*Server, error) {
@@ -132,6 +140,12 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 				return "(blank)"
 			}
 			return value
+		},
+		"candidateCountLabel": func(count int) string {
+			if count == 1 {
+				return "New listing review - 1 candidate"
+			}
+			return fmt.Sprintf("Duplicate review - %d candidates", count)
 		},
 		"timeShort": func(t time.Time) string { return t.In(localLocation).Format("15:04") },
 		"venueName": func(slug string) string {
@@ -233,8 +247,10 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		flash = "Draft saved."
 	case r.URL.Query().Get("resolved") == "1":
 		flash = "Marked resolved."
+	case r.URL.Query().Get("accepted") == "1":
+		flash = "Accepted new listing."
 	case r.URL.Query().Get("rejected") == "1":
-		flash = "Marked not duplicate."
+		flash = "Rejected."
 	}
 	data := PageData{
 		SiteName:        "Sheffield Live",
@@ -295,12 +311,20 @@ func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request,
 	action := strings.TrimSpace(r.FormValue("action"))
 	switch action {
 	case "", "save":
+		if !reviewGroupIsDuplicate(group) {
+			http.Error(w, "new listing reviews do not accept draft choices", http.StatusBadRequest)
+			return
+		}
 		if err := s.saveAdminReviewDraft(r.Context(), groupID, group, r.Form); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		http.Redirect(w, r, fmt.Sprintf("/admin/review/%d?saved=1", groupID), http.StatusSeeOther)
 	case review.StatusResolved:
+		if !reviewGroupIsDuplicate(group) {
+			http.Error(w, "new listing reviews must be accepted without field choices", http.StatusBadRequest)
+			return
+		}
 		choices, err := reviewChoicesFromForm(group, r.Form, true)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -311,6 +335,21 @@ func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		http.Redirect(w, r, "/admin/review?resolved=1", http.StatusSeeOther)
+	case "accept":
+		if err := acceptChoicesFromForm(r.Form); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		choices, err := singletonReviewChoices(group)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.reviewStore.ResolveReviewGroup(r.Context(), groupID, choices); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?accepted=1", http.StatusSeeOther)
 	case review.StatusRejected:
 		if err := rejectChoicesFromForm(r.Form); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -367,12 +406,43 @@ func reviewChoicesFromForm(group review.Group, form url.Values, requireAll bool)
 }
 
 func rejectChoicesFromForm(form url.Values) error {
+	return rejectReviewChoiceFields(form, "rejecting a review group")
+}
+
+func acceptChoicesFromForm(form url.Values) error {
+	return rejectReviewChoiceFields(form, "accepting a new listing")
+}
+
+func rejectReviewChoiceFields(form url.Values, action string) error {
 	for key := range form {
 		if strings.HasPrefix(key, "choice_") {
-			return fmt.Errorf("marking not duplicate does not accept field choices")
+			return fmt.Errorf("%s does not accept field choices", action)
 		}
 	}
 	return nil
+}
+
+func singletonReviewChoices(group review.Group) ([]review.DraftChoiceInput, error) {
+	if !reviewGroupIsSingleton(group) {
+		return nil, fmt.Errorf("accepting a new listing requires exactly one candidate")
+	}
+	candidateID := group.Candidates[0].ID
+	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
+	for _, field := range review.CanonicalFields {
+		choices = append(choices, review.DraftChoiceInput{
+			Field:       field,
+			CandidateID: candidateID,
+		})
+	}
+	return choices, nil
+}
+
+func reviewGroupIsDuplicate(group review.Group) bool {
+	return len(group.Candidates) >= 2
+}
+
+func reviewGroupIsSingleton(group review.Group) bool {
+	return len(group.Candidates) == 1
 }
 
 func groupCandidateExists(candidates []review.Candidate, candidateID int64) bool {
@@ -667,7 +737,11 @@ func reviewStoreFor(st store.ReadOnlyStore) ReviewStore {
 }
 
 func buildReviewDetail(group review.Group) ReviewDetail {
-	detail := ReviewDetail{Group: group}
+	detail := ReviewDetail{
+		Group:       group,
+		IsDuplicate: reviewGroupIsDuplicate(group),
+		IsSingleton: reviewGroupIsSingleton(group),
+	}
 	for _, field := range review.CanonicalFields {
 		row := ReviewFieldRow{
 			Field: field,
@@ -682,7 +756,15 @@ func buildReviewDetail(group review.Group) ReviewDetail {
 				Provenance:  candidate.Provenance,
 			})
 		}
-		detail.Rows = append(detail.Rows, row)
+		if detail.IsDuplicate {
+			detail.Rows = append(detail.Rows, row)
+		}
+		if detail.IsSingleton && len(group.Candidates) == 1 {
+			detail.SingleCandidateRows = append(detail.SingleCandidateRows, ReviewSingleCandidateRow{
+				Label: field.Label(),
+				Value: review.CandidateValue(group.Candidates[0], field),
+			})
+		}
 		if hasChoice {
 			detail.Preview = append(detail.Preview, ReviewPreviewRow{
 				Label:     field.Label(),

@@ -10,6 +10,7 @@
 </section>
 {{end}}
 
+{{if .ReviewDetail.IsDuplicate}}
 <section class="section-block">
   <h2>Saved draft preview</h2>
   <div class="preview-list">
@@ -101,3 +102,31 @@
   </div>
   {{end}}
 </section>
+{{else if .ReviewDetail.IsSingleton}}
+<section class="section-block">
+  <h2>Listing candidate</h2>
+  <div class="single-candidate-review">
+    {{range .ReviewDetail.SingleCandidateRows}}
+    <p><strong>{{.Label}}</strong>: {{blankValue .Value}}</p>
+    {{end}}
+  </div>
+</section>
+
+<section class="section-block">
+  {{if eq .ReviewDetail.Group.Status "open"}}
+  <p class="review-action-note">Accept this listing into the resolved review record, or reject it without submitting field choices.</p>
+  <form method="post" action="/admin/review/{{.ReviewDetail.Group.ID}}">
+    <div class="review-actions">
+      <button class="primary-button" type="submit" name="action" value="accept">Accept new listing</button>
+      <button class="secondary-button danger-button" type="submit" name="action" value="rejected">Reject</button>
+    </div>
+  </form>
+  {{else}}
+  <p class="empty-state">This review is closed and read-only.</p>
+  {{end}}
+</section>
+{{else}}
+<section class="section-block">
+  <p class="empty-state">This review group has no candidates.</p>
+</section>
+{{end}}

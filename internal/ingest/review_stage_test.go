@@ -43,8 +43,11 @@ func TestReviewGroupsFromReportClustersByUID(t *testing.T) {
 	)
 
 	groups := ReviewGroupsFromReport(report)
-	if got, want := len(groups), 1; got != want {
+	if got, want := len(groups), 2; got != want {
 		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got, want := groups[0].Title, "Duplicate review: First listing"; got != want {
+		t.Fatalf("first group title = %q, want %q", got, want)
 	}
 	if got, want := len(groups[0].Candidates), 2; got != want {
 		t.Fatalf("candidates = %d, want %d", got, want)
@@ -63,6 +66,12 @@ func TestReviewGroupsFromReportClustersByUID(t *testing.T) {
 	}
 	if got, want := groups[0].Candidates[1].Name, "Second listing"; got != want {
 		t.Fatalf("second candidate name = %q, want %q", got, want)
+	}
+	if got, want := groups[1].Title, "New listing review: Singleton"; got != want {
+		t.Fatalf("second group title = %q, want %q", got, want)
+	}
+	if got, want := len(groups[1].Candidates), 1; got != want {
+		t.Fatalf("second group candidates = %d, want %d", got, want)
 	}
 }
 
@@ -91,8 +100,11 @@ func TestReviewGroupsFromReportClustersByFallback(t *testing.T) {
 	)
 
 	groups := ReviewGroupsFromReport(report)
-	if got, want := len(groups), 1; got != want {
+	if got, want := len(groups), 2; got != want {
 		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got, want := groups[0].Title, "Duplicate review: Big Night"; got != want {
+		t.Fatalf("first group title = %q, want %q", got, want)
 	}
 	if got, want := len(groups[0].Candidates), 2; got != want {
 		t.Fatalf("candidates = %d, want %d", got, want)
@@ -106,9 +118,15 @@ func TestReviewGroupsFromReportClustersByFallback(t *testing.T) {
 	if got, want := groups[0].Candidates[0].VenueSlug, "sidney-matilda"; got != want {
 		t.Fatalf("first venue slug = %q, want %q", got, want)
 	}
+	if got, want := groups[1].Title, "New listing review: big night"; got != want {
+		t.Fatalf("second group title = %q, want %q", got, want)
+	}
+	if got, want := len(groups[1].Candidates), 1; got != want {
+		t.Fatalf("second group candidates = %d, want %d", got, want)
+	}
 }
 
-func TestReviewGroupsFromReportDropsSingletons(t *testing.T) {
+func TestReviewGroupsFromReportEmitsSingletons(t *testing.T) {
 	report := successfulReviewStageReport(
 		CalendarReport{
 			URL: "https://calendar.example.test/one.ics",
@@ -129,8 +147,17 @@ func TestReviewGroupsFromReportDropsSingletons(t *testing.T) {
 	)
 
 	groups := ReviewGroupsFromReport(report)
-	if got, want := len(groups), 0; got != want {
+	if got, want := len(groups), 2; got != want {
 		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got, want := groups[0].Title, "New listing review: One"; got != want {
+		t.Fatalf("first group title = %q, want %q", got, want)
+	}
+	if got, want := groups[1].Title, "New listing review: Two"; got != want {
+		t.Fatalf("second group title = %q, want %q", got, want)
+	}
+	if got, want := groups[0].Notes, "Created from manual ingest run 42 review staging."; got != want {
+		t.Fatalf("notes = %q, want %q", got, want)
 	}
 }
 

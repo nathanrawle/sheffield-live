@@ -33,13 +33,13 @@ The command fetches the Sidney & Matilda source page, stores a JSON snapshot env
 
 It does not write public venue or event records. It only writes to `sources`, `import_runs`, and `snapshots`.
 
-To also stage duplicate candidate clusters for admin review after a successful manual ingest:
+To also stage candidate review groups after a successful manual ingest:
 
 ```bash
 go run ./cmd/ingest -user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-review
 ```
 
-This creates review groups only for likely duplicate clusters. It still does not publish public event rows.
+This creates review groups for likely duplicate clusters and singleton new listings. It still does not publish public event rows.
 
 Flags:
 
@@ -48,7 +48,7 @@ Flags:
 - `-timeout` defaults to `10s`
 - `-user-agent` is required
 - `-db` overrides `DB_PATH`, which otherwise falls back to `./data/sheffield-live.db`
-- `-stage-review` stages likely duplicate clusters into `/admin/review` after a successful ingest
+- `-stage-review` stages duplicate clusters and singleton new listings into `/admin/review` after a successful ingest
 
 To create an offline review group from a local ICS fixture without network access:
 
@@ -56,7 +56,7 @@ To create an offline review group from a local ICS fixture without network acces
 go run ./cmd/ingest -review-fixture internal/ingest/testdata/sidney.ics
 ```
 
-Review groups can be inspected at `/admin/review`. The review flow stores field-level draft choices only; it does not publish public event rows yet.
+Review groups can be inspected at `/admin/review`. Duplicate reviews store field-level draft choices; new-listing reviews accept or reject the sole candidate. Neither flow publishes public event rows yet.
 
 ## Routes
 

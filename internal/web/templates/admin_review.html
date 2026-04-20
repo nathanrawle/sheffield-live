@@ -1,7 +1,7 @@
 <section class="page-head">
   <p class="eyebrow">Admin</p>
   <h1>Review queue</h1>
-  <p class="lede">Open staging groups waiting for field-level choices.</p>
+  <p class="lede">Open staging groups waiting for duplicate checks or new-listing review.</p>
 </section>
 
 {{with .Flash}}
@@ -15,7 +15,7 @@
     {{range .ReviewGroups}}
     <a class="review-group-link" href="/admin/review/{{.ID}}">
       <span class="review-group-title">{{.Title}}</span>
-      <span class="review-group-meta">{{.CandidateCount}} candidates · {{.DraftCount}} draft choices · {{.SourceName}}</span>
+      <span class="review-group-meta">{{candidateCountLabel .CandidateCount}} · {{.DraftCount}} draft choices · {{.SourceName}}</span>
       <span class="review-group-meta">Updated {{dateShort .UpdatedAt}}</span>
     </a>
     {{else}}

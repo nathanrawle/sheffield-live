@@ -10,8 +10,8 @@ import (
 	"sheffield-live/internal/review"
 )
 
-func TestCreateReviewGroupsFromReportStagesDuplicateGroups(t *testing.T) {
-	st := &fakeReviewStageStore{ids: []int64{101}}
+func TestCreateReviewGroupsFromReportStagesReviewGroups(t *testing.T) {
+	st := &fakeReviewStageStore{ids: []int64{101, 102}}
 	report := successfulManualReportForReviewStage()
 
 	stage, err := createReviewGroupsFromReport(context.Background(), st, report)
@@ -19,20 +19,35 @@ func TestCreateReviewGroupsFromReportStagesDuplicateGroups(t *testing.T) {
 		t.Fatalf("stage review groups: %v", err)
 	}
 
-	if got, want := len(st.inputs), 1; got != want {
+	if got, want := len(st.inputs), 2; got != want {
 		t.Fatalf("created groups = %d, want %d", got, want)
 	}
-	if got, want := stage.GroupsCreated, 1; got != want {
+	if got, want := stage.GroupsCreated, 2; got != want {
 		t.Fatalf("stage groups created = %d, want %d", got, want)
 	}
-	if got, want := stage.CandidateCount, 2; got != want {
+	if got, want := stage.CandidateCount, 3; got != want {
 		t.Fatalf("stage candidate count = %d, want %d", got, want)
 	}
-	if got, want := len(stage.Groups), 1; got != want {
+	if got, want := len(stage.Groups), 2; got != want {
 		t.Fatalf("stage groups = %d, want %d", got, want)
 	}
 	if got, want := stage.Groups[0].ID, int64(101); got != want {
 		t.Fatalf("stage group ID = %d, want %d", got, want)
+	}
+	if got, want := stage.Groups[0].CandidateCount, 2; got != want {
+		t.Fatalf("first stage group candidates = %d, want %d", got, want)
+	}
+	if got, want := stage.Groups[1].ID, int64(102); got != want {
+		t.Fatalf("second stage group ID = %d, want %d", got, want)
+	}
+	if got, want := stage.Groups[1].CandidateCount, 1; got != want {
+		t.Fatalf("second stage group candidates = %d, want %d", got, want)
+	}
+	if got, want := st.inputs[0].Title, "Duplicate review: Duplicate one"; got != want {
+		t.Fatalf("first staged title = %q, want %q", got, want)
+	}
+	if got, want := st.inputs[1].Title, "New listing review: Singleton"; got != want {
+		t.Fatalf("second staged title = %q, want %q", got, want)
 	}
 }
 

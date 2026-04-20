@@ -32,7 +32,6 @@ func ReviewGroupsFromReport(report Report) []review.GroupInput {
 			if !exists {
 				cluster = &reviewStageCluster{
 					group: review.GroupInput{
-						Title:      reviewStageTitle(candidate),
 						SourceName: reviewStageSourceName(report),
 						SourceURL:  reviewStageFirstNonEmpty(calendar.URL, report.SourceURL),
 						Notes:      reviewStageNotes(report),
@@ -49,9 +48,7 @@ func ReviewGroupsFromReport(report Report) []review.GroupInput {
 	groups := make([]review.GroupInput, 0, len(order))
 	for _, key := range order {
 		group := clusters[key].group
-		if len(group.Candidates) < 2 {
-			continue
-		}
+		group.Title = reviewStageTitle(group)
 		groups = append(groups, group)
 	}
 	return groups
@@ -92,12 +89,18 @@ func reviewStageCandidateInput(report Report, calendar CalendarReport, candidate
 	}
 }
 
-func reviewStageTitle(candidate EventCandidate) string {
-	name := normalizeReviewStageDisplay(candidate.Summary)
-	if name == "" {
-		return "Duplicate event candidates"
+func reviewStageTitle(group review.GroupInput) string {
+	prefix := "Duplicate review"
+	if len(group.Candidates) == 1 {
+		prefix = "New listing review"
 	}
-	return "Duplicate event candidates: " + name
+
+	for _, candidate := range group.Candidates {
+		if name := normalizeReviewStageDisplay(candidate.Name); name != "" {
+			return prefix + ": " + name
+		}
+	}
+	return prefix
 }
 
 func reviewStageSourceName(report Report) string {
@@ -112,9 +115,9 @@ func reviewStageSourceName(report Report) string {
 
 func reviewStageNotes(report Report) string {
 	if report.ImportRunID == 0 {
-		return "Created from manual ingest duplicate staging."
+		return "Created from manual ingest review staging."
 	}
-	return fmt.Sprintf("Created from manual ingest run %d duplicate staging.", report.ImportRunID)
+	return fmt.Sprintf("Created from manual ingest run %d review staging.", report.ImportRunID)
 }
 
 func reviewStageStatus(status string) string {

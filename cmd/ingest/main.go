@@ -32,7 +32,7 @@ func run() error {
 		dbPath    = flag.String("db", "", "SQLite database path")
 		fixture   = flag.String("review-fixture", "", "offline ICS fixture path used to create an admin review group")
 		title     = flag.String("review-title", "", "title for a review group created from -review-fixture")
-		stage     = flag.Bool("stage-review", false, "stage duplicate ingest candidates into admin review groups")
+		stage     = flag.Bool("stage-review", false, "stage ingest candidates into admin review groups")
 	)
 	flag.Parse()
 
