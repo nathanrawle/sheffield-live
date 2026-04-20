@@ -230,6 +230,17 @@ a:focus-visible {
   font-family: ui-sans-serif, system-ui, sans-serif;
 }
 
+.notice {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--accent);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-weight: 700;
+}
+
 .event-list,
 .venue-list {
   display: grid;
@@ -325,6 +336,124 @@ a:focus-visible {
 .detail-card p:last-child,
 .section-block p:last-child {
   margin-bottom: 0;
+}
+
+.review-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.review-group-link {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  text-decoration: none;
+}
+
+.review-group-link:hover,
+.review-group-link:focus-visible {
+  border-color: var(--accent);
+}
+
+.review-group-title {
+  font-size: 1.12rem;
+  font-weight: 700;
+}
+
+.review-group-meta,
+.preview-list span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.9rem;
+}
+
+.preview-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.review-matrix-wrap {
+  width: 100%;
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+
+.review-matrix {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  background: var(--surface);
+}
+
+.review-matrix th,
+.review-matrix td {
+  width: 12rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.review-matrix th {
+  text-align: left;
+}
+
+.review-matrix th span,
+.review-matrix small,
+.choice-cell span {
+  display: block;
+}
+
+.review-matrix small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.76rem;
+  font-weight: 400;
+}
+
+.choice-cell {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.35rem 0.5rem;
+  min-height: 4rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.choice-cell input {
+  margin-top: 0.25rem;
+}
+
+.choice-cell span,
+.choice-cell small {
+  overflow-wrap: anywhere;
+}
+
+.choice-cell small {
+  grid-column: 2;
+}
+
+.primary-button {
+  min-height: 2.35rem;
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--surface);
+  cursor: pointer;
+  font: inherit;
+}
+
+.primary-button:hover,
+.primary-button:focus-visible {
+  background: var(--surface);
+  color: var(--accent);
 }
 
 .footer {

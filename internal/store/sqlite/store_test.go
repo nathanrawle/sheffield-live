@@ -38,8 +38,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	db := mustRawDB(t, path)
 	defer db.Close()
 
-	if got := mustCount(t, db, "schema_migrations"); got != 1 {
-		t.Fatalf("schema_migrations rows = %d, want 1", got)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV2 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV2)
 	}
 	if got := mustCount(t, db, "venues"); got != 3 {
 		t.Fatalf("venues rows = %d, want 3", got)
@@ -59,14 +59,23 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 
 	var version int
 	var appliedAt string
-	if err := db.QueryRow(`SELECT version, applied_at FROM schema_migrations LIMIT 1`).Scan(&version, &appliedAt); err != nil {
+	if err := db.QueryRow(`SELECT version, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version, &appliedAt); err != nil {
 		t.Fatalf("scan migration row: %v", err)
 	}
-	if version != schemaVersionV1 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV1)
+	if version != schemaVersionV2 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV2)
 	}
 	if _, err := time.Parse(time.RFC3339, appliedAt); err != nil {
 		t.Fatalf("applied_at %q is not RFC3339: %v", appliedAt, err)
+	}
+	if got := mustCount(t, db, "review_groups"); got != 0 {
+		t.Fatalf("review_groups rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "review_candidates"); got != 0 {
+		t.Fatalf("review_candidates rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "review_draft_choices"); got != 0 {
+		t.Fatalf("review_draft_choices rows = %d, want 0", got)
 	}
 }
 
@@ -138,6 +147,50 @@ func TestOpenReopensPersistentData(t *testing.T) {
 	}
 	if got := st.EventsForVenue("persisted-venue"); len(got) != 1 || got[0].Slug != "persisted-event" {
 		t.Fatalf("events for venue = %#v, want one persisted event", got)
+	}
+}
+
+func TestOpenMigratesVersion1Database(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	db := mustRawDB(t, path)
+	initSQL, err := readMigration("migrations/0001_init.sql")
+	if err != nil {
+		t.Fatalf("read v1 migration: %v", err)
+	}
+	if _, err := db.Exec(initSQL); err != nil {
+		t.Fatalf("apply v1 migration: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO schema_migrations (version, applied_at)
+		VALUES (?, ?)
+	`, schemaVersionV1, formatRFC3339UTC(time.Date(2026, time.April, 19, 10, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("insert v1 migration row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db = mustRawDB(t, path)
+	defer db.Close()
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV2 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV2)
+	}
+	var version int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatalf("scan max schema version: %v", err)
+	}
+	if version != schemaVersionV2 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV2)
+	}
+	if got := mustCount(t, db, "review_groups"); got != 0 {
+		t.Fatalf("review_groups rows = %d, want 0", got)
 	}
 }
 

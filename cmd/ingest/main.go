@@ -7,9 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"sheffield-live/internal/ingest"
+	"sheffield-live/internal/review"
 	"sheffield-live/internal/store/sqlite"
 )
 
@@ -27,17 +30,22 @@ func run() error {
 		timeout   = flag.Duration("timeout", 10*time.Second, "HTTP timeout")
 		userAgent = flag.String("user-agent", "", "HTTP User-Agent header")
 		dbPath    = flag.String("db", "", "SQLite database path")
+		fixture   = flag.String("review-fixture", "", "offline ICS fixture path used to create an admin review group")
+		title     = flag.String("review-title", "", "title for a review group created from -review-fixture")
 	)
 	flag.Parse()
 
-	if *userAgent == "" {
-		return errors.New("-user-agent is required")
-	}
-	if *limit < 1 || *limit > ingest.MaxLimit {
-		return fmt.Errorf("-limit must be between 1 and %d", ingest.MaxLimit)
-	}
-	if *timeout <= 0 {
-		return errors.New("-timeout must be positive")
+	fixtureMode := strings.TrimSpace(*fixture) != ""
+	if !fixtureMode {
+		if *userAgent == "" {
+			return errors.New("-user-agent is required")
+		}
+		if *limit < 1 || *limit > ingest.MaxLimit {
+			return fmt.Errorf("-limit must be between 1 and %d", ingest.MaxLimit)
+		}
+		if *timeout <= 0 {
+			return errors.New("-timeout must be positive")
+		}
 	}
 
 	path := *dbPath
@@ -58,6 +66,10 @@ func run() error {
 		}
 	}()
 
+	if fixtureMode {
+		return createReviewGroupFromFixture(context.Background(), st, *fixture, *title)
+	}
+
 	fetcher, err := ingest.NewHTTPFetcher(*timeout, *userAgent)
 	if err != nil {
 		return err
@@ -77,4 +89,107 @@ func run() error {
 		return err
 	}
 	return runErr
+}
+
+type reviewFixtureReport struct {
+	Fixture    string             `json:"fixture"`
+	GroupID    int64              `json:"group_id"`
+	Candidates int                `json:"candidates"`
+	Skips      []ingest.ParseSkip `json:"skips,omitempty"`
+	Errors     []string           `json:"errors,omitempty"`
+}
+
+func createReviewGroupFromFixture(ctx context.Context, st *sqlite.Store, fixturePath, title string) error {
+	raw, err := os.ReadFile(fixturePath)
+	if err != nil {
+		return fmt.Errorf("read review fixture: %w", err)
+	}
+	parse := ingest.ParseICS(raw)
+	sourceURL := "file:" + fixturePath
+	sourceName := "Fixture ICS"
+	if strings.TrimSpace(title) == "" {
+		title = "Fixture review: " + filepath.Base(fixturePath)
+	}
+
+	candidates := make([]review.CandidateInput, 0, len(parse.Candidates))
+	for _, candidate := range parse.Candidates {
+		status := strings.TrimSpace(candidate.Status)
+		if strings.EqualFold(status, "CONFIRMED") {
+			status = "Listed"
+		}
+		candidates = append(candidates, review.CandidateInput{
+			ExternalID:  candidate.UID,
+			Name:        candidate.Summary,
+			VenueSlug:   slugFromText(candidate.Location),
+			StartAt:     candidate.StartAt,
+			EndAt:       candidate.EndAt,
+			Genre:       "",
+			Status:      status,
+			Description: candidate.Description,
+			SourceName:  sourceName,
+			SourceURL:   firstNonEmpty(candidate.URL, sourceURL),
+			Provenance:  provenanceForFixtureCandidate(candidate),
+		})
+	}
+
+	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
+		Title:      title,
+		SourceName: sourceName,
+		SourceURL:  sourceURL,
+		Notes:      "Created from offline fixture.",
+		Candidates: candidates,
+	})
+	if err != nil {
+		return fmt.Errorf("create review group: %w", err)
+	}
+
+	report := reviewFixtureReport{
+		Fixture:    fixturePath,
+		GroupID:    groupID,
+		Candidates: len(candidates),
+		Skips:      parse.Skips,
+		Errors:     parse.Errors,
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(report)
+}
+
+func provenanceForFixtureCandidate(candidate ingest.EventCandidate) string {
+	if candidate.UID != "" {
+		return "fixture UID " + candidate.UID
+	}
+	if candidate.URL != "" {
+		return "fixture URL " + candidate.URL
+	}
+	return "fixture ICS"
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func slugFromText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	var out strings.Builder
+	lastDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			out.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			out.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(out.String(), "-")
 }

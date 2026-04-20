@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"fmt"
 	"html/template"
@@ -10,10 +11,12 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"sheffield-live/internal/domain"
+	"sheffield-live/internal/review"
 	"sheffield-live/internal/store"
 )
 
@@ -25,11 +28,18 @@ var staticFS embed.FS
 
 type Server struct {
 	store         store.ReadOnlyStore
+	reviewStore   ReviewStore
 	localLocation *time.Location
 	clock         func() time.Time
 	layout        *template.Template
 	pages         map[string]*template.Template
 	fileServer    http.Handler
+}
+
+type ReviewStore interface {
+	ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary, error)
+	LoadReviewGroup(ctx context.Context, id int64) (review.Group, bool, error)
+	SaveReviewDraftChoices(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
 }
 
 type PageData struct {
@@ -49,6 +59,9 @@ type PageData struct {
 	TodayEvents     []domain.Event
 	ThisWeekEvents  []domain.Event
 	VenueEvents     []domain.Event
+	ReviewGroups    []review.GroupSummary
+	ReviewDetail    ReviewDetail
+	Flash           string
 }
 
 type EventGroup struct {
@@ -59,6 +72,31 @@ type EventGroup struct {
 type EventFilters struct {
 	Window string
 	Venue  string
+}
+
+type ReviewDetail struct {
+	Group   review.Group
+	Rows    []ReviewFieldRow
+	Preview []ReviewPreviewRow
+}
+
+type ReviewFieldRow struct {
+	Field review.Field
+	Label string
+	Cells []ReviewChoiceCell
+}
+
+type ReviewChoiceCell struct {
+	CandidateID int64
+	Value       string
+	Checked     bool
+	Provenance  string
+}
+
+type ReviewPreviewRow struct {
+	Label     string
+	Value     string
+	Candidate string
 }
 
 func NewServer(st store.ReadOnlyStore) (*Server, error) {
@@ -86,6 +124,12 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 				return ""
 			}
 		},
+		"blankValue": func(value string) string {
+			if strings.TrimSpace(value) == "" {
+				return "(blank)"
+			}
+			return value
+		},
 		"timeShort": func(t time.Time) string { return t.In(localLocation).Format("15:04") },
 		"venueName": func(slug string) string {
 			venue, ok := st.VenueBySlug(slug)
@@ -108,6 +152,8 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 		"templates/event_detail.html",
 		"templates/venues.html",
 		"templates/venue_detail.html",
+		"templates/admin_review.html",
+		"templates/admin_review_detail.html",
 	}
 	pages := make(map[string]*template.Template, len(pageFiles))
 	for _, file := range pageFiles {
@@ -125,6 +171,7 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 
 	return &Server{
 		store:         st,
+		reviewStore:   reviewStoreFor(st),
 		localLocation: localLocation,
 		clock:         func() time.Time { return time.Now().UTC() },
 		layout:        layout,
@@ -148,6 +195,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleVenues(w, r)
 	case cleaned == "/healthz":
 		s.handleHealthz(w, r)
+	case cleaned == "/admin/review":
+		s.handleAdminReview(w, r)
+	case strings.HasPrefix(cleaned, "/admin/review/"):
+		s.handleAdminReviewDetail(w, r, strings.TrimPrefix(cleaned, "/admin/review/"))
 	case strings.HasPrefix(cleaned, "/events/"):
 		s.handleEventDetail(w, r, strings.TrimPrefix(cleaned, "/events/"))
 	case strings.HasPrefix(cleaned, "/venues/"):
@@ -157,6 +208,110 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
+	if s.reviewStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	groups, err := s.reviewStore.ListOpenReviewGroups(r.Context())
+	if err != nil {
+		http.Error(w, "load review groups", http.StatusInternalServerError)
+		return
+	}
+	data := PageData{
+		SiteName:        "Sheffield Live",
+		PageTitle:       "Review",
+		MetaDescription: "Review staged event candidates.",
+		Active:          "admin-review",
+		Now:             s.now(),
+		ReviewGroups:    groups,
+	}
+	s.renderPage(w, "templates/admin_review.html", data)
+}
+
+func (s *Server) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request, rawGroupID string) {
+	if s.reviewStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	groupID, err := strconv.ParseInt(strings.TrimSpace(rawGroupID), 10, 64)
+	if err != nil || groupID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		flash := ""
+		if r.URL.Query().Get("saved") == "1" {
+			flash = "Draft saved."
+		}
+		s.renderAdminReviewDetail(w, r, groupID, flash)
+	case http.MethodPost:
+		s.saveAdminReviewDraft(w, r, groupID)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) saveAdminReviewDraft(w http.ResponseWriter, r *http.Request, groupID int64) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+
+	var choices []review.DraftChoiceInput
+	for _, field := range review.CanonicalFields {
+		rawCandidateID := strings.TrimSpace(r.FormValue("choice_" + string(field)))
+		if rawCandidateID == "" {
+			continue
+		}
+		candidateID, err := strconv.ParseInt(rawCandidateID, 10, 64)
+		if err != nil || candidateID <= 0 {
+			http.Error(w, "invalid candidate choice", http.StatusBadRequest)
+			return
+		}
+		choices = append(choices, review.DraftChoiceInput{
+			Field:       field,
+			CandidateID: candidateID,
+		})
+	}
+	if len(choices) == 0 {
+		http.Error(w, "at least one review choice is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.reviewStore.SaveReviewDraftChoices(r.Context(), groupID, choices); err != nil {
+		http.Error(w, "save review draft", http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/admin/review/%d?saved=1", groupID), http.StatusSeeOther)
+}
+
+func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request, groupID int64, flash string) {
+	group, ok, err := s.reviewStore.LoadReviewGroup(r.Context(), groupID)
+	if err != nil {
+		http.Error(w, "load review group", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	data := PageData{
+		SiteName:        "Sheffield Live",
+		PageTitle:       group.Title,
+		MetaDescription: "Review staged event candidates.",
+		Active:          "admin-review",
+		Now:             s.now(),
+		ReviewDetail:    buildReviewDetail(group),
+		Flash:           flash,
+	}
+	s.renderPage(w, "templates/admin_review_detail.html", data)
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
@@ -409,4 +564,52 @@ func sameLocalDate(a, b time.Time, loc *time.Location) bool {
 	ay, am, ad := a.In(loc).Date()
 	by, bm, bd := b.In(loc).Date()
 	return ay == by && am == bm && ad == bd
+}
+
+func reviewStoreFor(st store.ReadOnlyStore) ReviewStore {
+	reviewStore, ok := st.(ReviewStore)
+	if !ok {
+		return nil
+	}
+	return reviewStore
+}
+
+func buildReviewDetail(group review.Group) ReviewDetail {
+	detail := ReviewDetail{Group: group}
+	for _, field := range review.CanonicalFields {
+		row := ReviewFieldRow{
+			Field: field,
+			Label: field.Label(),
+		}
+		choice, hasChoice := group.DraftChoices[field]
+		for _, candidate := range group.Candidates {
+			row.Cells = append(row.Cells, ReviewChoiceCell{
+				CandidateID: candidate.ID,
+				Value:       review.CandidateValue(candidate, field),
+				Checked:     hasChoice && choice.CandidateID == candidate.ID,
+				Provenance:  candidate.Provenance,
+			})
+		}
+		detail.Rows = append(detail.Rows, row)
+		if hasChoice {
+			detail.Preview = append(detail.Preview, ReviewPreviewRow{
+				Label:     field.Label(),
+				Value:     choice.Value,
+				Candidate: reviewCandidateLabel(group.Candidates, choice.CandidateID),
+			})
+		}
+	}
+	return detail
+}
+
+func reviewCandidateLabel(candidates []review.Candidate, id int64) string {
+	for _, candidate := range candidates {
+		if candidate.ID == id {
+			if candidate.ExternalID != "" {
+				return fmt.Sprintf("Candidate %d (%s)", candidate.Position, candidate.ExternalID)
+			}
+			return fmt.Sprintf("Candidate %d", candidate.Position)
+		}
+	}
+	return "Unknown candidate"
 }

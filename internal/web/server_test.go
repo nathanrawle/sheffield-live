@@ -1,14 +1,18 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"sheffield-live/internal/domain"
+	"sheffield-live/internal/review"
 	"sheffield-live/internal/store"
 	sqlitestore "sheffield-live/internal/store/sqlite"
 )
@@ -203,6 +207,167 @@ func TestLayoutMetadataAndActiveNav(t *testing.T) {
 	assertContains(t, body, `<a class="active" aria-current="page" href="/events">Events</a>`)
 }
 
+func TestAdminReviewListDetailAndSave(t *testing.T) {
+	ctx := httptest.NewRequest(http.MethodGet, "/", nil).Context()
+	st, server, groupID := mustReviewServerWithGroup(t)
+	defer st.Close()
+
+	listBody := renderPath(t, server, "/admin/review")
+	assertContains(t, listBody, "Review queue")
+	assertContains(t, listBody, "Fixture review")
+	assertContains(t, listBody, "2 candidates")
+
+	detailBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertContains(t, detailBody, "Saved draft preview")
+	assertContains(t, detailBody, "Candidate 1")
+	assertContains(t, detailBody, "Candidate 2")
+	assertContains(t, detailBody, "fixture UID utc-1")
+	assertContains(t, detailBody, `name="choice_name"`)
+	assertContains(t, detailBody, `name="choice_start_at"`)
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	form := url.Values{}
+	form.Set("choice_name", strconvFormatInt(group.Candidates[1].ID))
+	form.Set("choice_venue_slug", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_start_at", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_end_at", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_genre", strconvFormatInt(group.Candidates[1].ID))
+	form.Set("choice_status", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_description", strconvFormatInt(group.Candidates[1].ID))
+	form.Set("choice_source_name", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_source_url", strconvFormatInt(group.Candidates[1].ID))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	location := rr.Header().Get("Location")
+	if location != "/admin/review/"+strconvFormatInt(groupID)+"?saved=1" {
+		t.Fatalf("Location = %q, want saved review detail redirect", location)
+	}
+
+	saveBody := renderPath(t, server, location)
+	assertContains(t, saveBody, "Draft saved.")
+	assertContains(t, saveBody, "<strong>Name</strong>: London Show")
+	assertContains(t, saveBody, "<strong>Venue slug</strong>: sidney-and-matilda")
+	assertContains(t, saveBody, `name="choice_name" value="`+strconvFormatInt(group.Candidates[1].ID)+`" checked`)
+}
+
+func TestAdminReviewEmptyPostDoesNotSaveOrUpdateGroup(t *testing.T) {
+	ctx := httptest.NewRequest(http.MethodGet, "/", nil).Context()
+	st, server, groupID := mustReviewServerWithGroup(t)
+	defer st.Close()
+
+	before, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	waitForNextStoredSecond(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "at least one review choice is required")
+
+	after, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after empty post")
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("updated_at = %v, want unchanged %v", after.UpdatedAt, before.UpdatedAt)
+	}
+	if len(after.DraftChoices) != 0 {
+		t.Fatalf("draft choices = %d, want 0", len(after.DraftChoices))
+	}
+}
+
+func mustReviewServerWithGroup(t *testing.T) (*sqlitestore.Store, *Server, int64) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+
+	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Fixture review",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:sidney.ics",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "utc-1",
+				Name:        "UTC Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First line",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/utc-show",
+				Provenance:  "fixture UID utc-1",
+			},
+			{
+				ExternalID:  "london-1",
+				Name:        "London Show",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-02T18:30:00Z",
+				EndAt:       "2026-05-02T21:30:00Z",
+				Genre:       "Rock",
+				Status:      "Listed",
+				Description: "London description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "file:sidney.ics",
+				Provenance:  "fixture UID london-1",
+			},
+		},
+	})
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("create review group: %v", err)
+	}
+
+	server, err := NewServer(st)
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("new server: %v", err)
+	}
+	return st, server, groupID
+}
+
+func contextForTesting() context.Context {
+	return httptest.NewRequest(http.MethodGet, "/", nil).Context()
+}
+
+func waitForNextStoredSecond(t *testing.T) {
+	t.Helper()
+
+	start := time.Now().UTC().Truncate(time.Second)
+	for !time.Now().UTC().Truncate(time.Second).After(start) {
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 type readOnlyStoreStub struct{}
 
 func (readOnlyStoreStub) Venues() []domain.Venue { return nil }
@@ -371,4 +536,8 @@ func assertInOrder(t *testing.T, body string, parts []string) {
 		}
 		offset += index + len(part)
 	}
+}
+
+func strconvFormatInt(value int64) string {
+	return strconv.FormatInt(value, 10)
 }

@@ -41,6 +41,14 @@ Flags:
 - `-user-agent` is required
 - `-db` overrides `DB_PATH`, which otherwise falls back to `./data/sheffield-live.db`
 
+To create an offline review group from a local ICS fixture without network access:
+
+```bash
+go run ./cmd/ingest -review-fixture internal/ingest/testdata/sidney.ics
+```
+
+Review groups can be inspected at `/admin/review`. The review flow stores field-level draft choices only; it does not publish public event rows yet.
+
 ## Routes
 
 - `/`
@@ -48,6 +56,8 @@ Flags:
 - `/events/{slug}`
 - `/venues`
 - `/venues/{slug}`
+- `/admin/review`
+- `/admin/review/{groupID}`
 - `/healthz`
 
 Static CSS is served from `/static/site.css`.

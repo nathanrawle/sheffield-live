@@ -20,9 +20,18 @@ import (
 const (
 	defaultPath       = "./data/sheffield-live.db"
 	schemaVersionV1   = 1
+	schemaVersionV2   = 2
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
+
+var migrations = []struct {
+	version int
+	path    string
+}{
+	{version: schemaVersionV1, path: "migrations/0001_init.sql"},
+	{version: schemaVersionV2, path: "migrations/0002_review.sql"},
+}
 
 //go:embed migrations/*.sql
 var migrationFS embed.FS
@@ -195,22 +204,27 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version >= schemaVersionV1 {
-		return nil
+	if version > schemaVersionV2 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV2)
 	}
 
-	migrationSQL, err := readMigration("migrations/0001_init.sql")
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, migrationSQL); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO schema_migrations (version, applied_at)
-		VALUES (?, ?)
-	`, schemaVersionV1, time.Now().UTC().Format(rfc3339Timestamp)); err != nil {
-		return err
+	for _, migration := range migrations {
+		if migration.version <= version {
+			continue
+		}
+		migrationSQL, err := readMigration(migration.path)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, migrationSQL); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO schema_migrations (version, applied_at)
+			VALUES (?, ?)
+		`, migration.version, time.Now().UTC().Format(rfc3339Timestamp)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

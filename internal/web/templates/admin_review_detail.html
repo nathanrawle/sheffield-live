@@ -1,0 +1,62 @@
+<section class="page-head">
+  <p class="eyebrow">Admin review</p>
+  <h1>{{.ReviewDetail.Group.Title}}</h1>
+  <p class="lede">{{.ReviewDetail.Group.SourceName}} · <a href="{{.ReviewDetail.Group.SourceURL}}">{{.ReviewDetail.Group.SourceURL}}</a></p>
+</section>
+
+{{with .Flash}}
+<section class="section-block">
+  <p class="notice">{{.}}</p>
+</section>
+{{end}}
+
+<section class="section-block">
+  <h2>Saved draft preview</h2>
+  <div class="preview-list">
+    {{range .ReviewDetail.Preview}}
+    <p><strong>{{.Label}}</strong>: {{blankValue .Value}} <span>{{.Candidate}}</span></p>
+    {{else}}
+    <p class="empty-state">No draft choices saved yet.</p>
+    {{end}}
+  </div>
+</section>
+
+<section class="section-block">
+  <form method="post" action="/admin/review/{{.ReviewDetail.Group.ID}}">
+    <div class="review-matrix-wrap">
+      <table class="review-matrix">
+        <thead>
+          <tr>
+            <th scope="col">Field</th>
+            {{range .ReviewDetail.Group.Candidates}}
+            <th scope="col">
+              <span>Candidate {{.Position}}</span>
+              {{with .ExternalID}}<small>{{.}}</small>{{end}}
+              <small>{{.SourceName}}</small>
+              {{with .SourceURL}}<small><a href="{{.}}">{{.}}</a></small>{{end}}
+            </th>
+            {{end}}
+          </tr>
+        </thead>
+        <tbody>
+          {{range .ReviewDetail.Rows}}
+          {{$field := .Field}}
+          <tr>
+            <th scope="row">{{.Label}}</th>
+            {{range .Cells}}
+            <td>
+              <label class="choice-cell">
+                <input type="radio" name="choice_{{$field}}" value="{{.CandidateID}}" {{if .Checked}}checked{{end}}>
+                <span>{{blankValue .Value}}</span>
+                {{with .Provenance}}<small>{{.}}</small>{{end}}
+              </label>
+            </td>
+            {{end}}
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    <button class="primary-button" type="submit">Save draft</button>
+  </form>
+</section>
