@@ -378,6 +378,42 @@ a:focus-visible {
   gap: 0.4rem;
 }
 
+.review-summary {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.review-summary-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1.1fr) minmax(0, 1.2fr) minmax(8rem, 0.9fr);
+  gap: 0.35rem 0.75rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.review-summary-row:last-child {
+  border-bottom: 0;
+}
+
+.review-summary-label {
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.94rem;
+  font-weight: 700;
+}
+
+.review-summary-value,
+.review-summary-candidate {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.94rem;
+}
+
+.review-summary-value {
+  color: var(--text);
+}
+
 .review-action-note {
   margin: 0 0 1rem;
   max-width: 68ch;
@@ -530,6 +566,10 @@ a:focus-visible {
   .section-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .review-summary-row {
+    grid-template-columns: 1fr;
   }
 
   .intro h1,

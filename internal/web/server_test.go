@@ -218,6 +218,10 @@ func TestAdminReviewListDetailAndSave(t *testing.T) {
 	assertContains(t, listBody, "2 candidates")
 
 	detailBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertContains(t, detailBody, "Canonical draft summary")
+	assertContains(t, detailBody, "Not selected yet")
+	assertContains(t, detailBody, "&mdash;")
+	assertInOrder(t, detailBody, []string{"Canonical draft summary", "Saved draft preview"})
 	assertContains(t, detailBody, "Saved draft preview")
 	assertContains(t, detailBody, "Candidate 1")
 	assertContains(t, detailBody, "Candidate 2")
@@ -258,9 +262,52 @@ func TestAdminReviewListDetailAndSave(t *testing.T) {
 
 	saveBody := renderPath(t, server, location)
 	assertContains(t, saveBody, "Draft saved.")
+	assertContains(t, saveBody, "Canonical draft summary")
+	assertContains(t, saveBody, "Candidate 1 (utc-1)")
+	assertContains(t, saveBody, "Candidate 2 (london-1)")
+	assertContains(t, saveBody, "London Show")
+	assertNotContains(t, saveBody, "Not selected yet")
+	assertInOrder(t, saveBody, []string{"Canonical draft summary", "Saved draft preview"})
 	assertContains(t, saveBody, "<strong>Name</strong>: London Show")
 	assertContains(t, saveBody, "<strong>Venue slug</strong>: sidney-and-matilda")
 	assertContains(t, saveBody, `name="choice_name" value="`+strconvFormatInt(group.Candidates[1].ID)+`" checked`)
+}
+
+func TestBuildReviewDetailCanonicalSummaryKeepsBlankSelectionsDistinct(t *testing.T) {
+	detail := buildReviewDetail(review.Group{
+		Candidates: []review.Candidate{
+			{ID: 1, Position: 1, Name: "First"},
+			{ID: 2, Position: 2, Name: "Second"},
+		},
+		DraftChoices: map[review.Field]review.DraftChoice{
+			review.FieldName: {
+				Field:       review.FieldName,
+				CandidateID: 2,
+				Value:       "",
+			},
+		},
+	})
+
+	if got, want := len(detail.CanonicalSummaryRows), len(review.CanonicalFields); got != want {
+		t.Fatalf("summary rows = %d, want %d", got, want)
+	}
+	first := detail.CanonicalSummaryRows[0]
+	if !first.Selected {
+		t.Fatal("name row = unselected, want selected")
+	}
+	if first.Value != "" {
+		t.Fatalf("name value = %q, want blank", first.Value)
+	}
+	if first.Candidate != "Candidate 2" {
+		t.Fatalf("name candidate = %q, want Candidate 2", first.Candidate)
+	}
+	second := detail.CanonicalSummaryRows[1]
+	if second.Selected {
+		t.Fatal("venue slug row = selected, want unselected")
+	}
+	if second.Candidate != "" {
+		t.Fatalf("venue slug candidate = %q, want empty", second.Candidate)
+	}
 }
 
 func TestAdminReviewQueueShowsOnlyOpenGroups(t *testing.T) {
@@ -417,6 +464,7 @@ func TestAdminReviewSingletonRendersAcceptAndReject(t *testing.T) {
 	assertContains(t, listBody, "1 candidate")
 
 	detailBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertNotContains(t, detailBody, "Canonical draft summary")
 	assertContains(t, detailBody, "Listing candidate")
 	assertContains(t, detailBody, "<strong>Name</strong>: Solo Show")
 	assertContains(t, detailBody, "Accept new listing")
@@ -513,7 +561,10 @@ func TestAdminReviewClosedGroupIsReadOnlyAndRejectsPost(t *testing.T) {
 	}
 
 	body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertInOrder(t, body, []string{"Canonical draft summary", "This review is closed and read-only."})
 	assertContains(t, body, "This review is closed and read-only.")
+	assertContains(t, body, "Canonical draft summary")
+	assertContains(t, body, "Candidate 2 (london-1)")
 	assertNotContains(t, body, `name="choice_name"`)
 	assertNotContains(t, body, "Mark not duplicate")
 

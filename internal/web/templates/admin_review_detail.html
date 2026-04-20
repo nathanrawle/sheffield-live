@@ -12,6 +12,19 @@
 
 {{if .ReviewDetail.IsDuplicate}}
 <section class="section-block">
+  <h2>Canonical draft summary</h2>
+  <div class="review-summary">
+    {{range .ReviewDetail.CanonicalSummaryRows}}
+    <div class="review-summary-row">
+      <div class="review-summary-label">{{.Label}}</div>
+      <div class="review-summary-value">{{if .Selected}}{{blankValue .Value}}{{else}}Not selected yet{{end}}</div>
+      <div class="review-summary-candidate">{{if .Selected}}{{.Candidate}}{{else}}&mdash;{{end}}</div>
+    </div>
+    {{end}}
+  </div>
+</section>
+
+<section class="section-block">
   <h2>Saved draft preview</h2>
   <div class="preview-list">
     {{range .ReviewDetail.Preview}}

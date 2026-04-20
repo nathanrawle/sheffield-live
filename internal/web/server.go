@@ -78,12 +78,13 @@ type EventFilters struct {
 }
 
 type ReviewDetail struct {
-	Group               review.Group
-	IsDuplicate         bool
-	IsSingleton         bool
-	Rows                []ReviewFieldRow
-	Preview             []ReviewPreviewRow
-	SingleCandidateRows []ReviewSingleCandidateRow
+	Group                review.Group
+	IsDuplicate          bool
+	IsSingleton          bool
+	CanonicalSummaryRows []ReviewCanonicalSummaryRow
+	Rows                 []ReviewFieldRow
+	Preview              []ReviewPreviewRow
+	SingleCandidateRows  []ReviewSingleCandidateRow
 }
 
 type ReviewFieldRow struct {
@@ -103,6 +104,13 @@ type ReviewPreviewRow struct {
 	Label     string
 	Value     string
 	Candidate string
+}
+
+type ReviewCanonicalSummaryRow struct {
+	Label     string
+	Value     string
+	Candidate string
+	Selected  bool
 }
 
 type ReviewSingleCandidateRow struct {
@@ -748,6 +756,18 @@ func buildReviewDetail(group review.Group) ReviewDetail {
 			Label: field.Label(),
 		}
 		choice, hasChoice := group.DraftChoices[field]
+		if detail.IsDuplicate {
+			candidate := ""
+			if hasChoice {
+				candidate = reviewCandidateLabel(group.Candidates, choice.CandidateID)
+			}
+			detail.CanonicalSummaryRows = append(detail.CanonicalSummaryRows, ReviewCanonicalSummaryRow{
+				Label:     field.Label(),
+				Value:     choice.Value,
+				Candidate: candidate,
+				Selected:  hasChoice,
+			})
+		}
 		for _, candidate := range group.Candidates {
 			row.Cells = append(row.Cells, ReviewChoiceCell{
 				CandidateID: candidate.ID,
