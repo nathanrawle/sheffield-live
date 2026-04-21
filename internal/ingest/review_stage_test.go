@@ -75,6 +75,157 @@ func TestReviewGroupsFromReportClustersByUID(t *testing.T) {
 	}
 }
 
+func TestReviewGroupsFromReportStagingKeyIsStableForSameContent(t *testing.T) {
+	report := successfulReviewStageReport(
+		CalendarReport{
+			URL: "https://calendar.example.test/one.ics",
+			Candidates: []EventCandidate{
+				{
+					UID:         "shared-uid",
+					Summary:     "First listing",
+					Location:    "Sidney & Matilda",
+					URL:         "https://example.test/first",
+					Status:      "CONFIRMED",
+					StartAt:     "2026-05-01T19:00:00Z",
+					EndAt:       "2026-05-01T22:00:00Z",
+					Description: "Description",
+				},
+			},
+		},
+	)
+
+	first := ReviewGroupsFromReport(report)
+	second := ReviewGroupsFromReport(report)
+	if got, want := len(first), 1; got != want {
+		t.Fatalf("first groups = %d, want %d", got, want)
+	}
+	if got, want := len(second), 1; got != want {
+		t.Fatalf("second groups = %d, want %d", got, want)
+	}
+	if first[0].StagingKey == "" {
+		t.Fatal("staging key is empty")
+	}
+	if got, want := first[0].StagingKey, second[0].StagingKey; got != want {
+		t.Fatalf("staging key = %q, want %q", got, want)
+	}
+}
+
+func TestReviewGroupsFromReportStagingKeyChangesWhenStableContentChanges(t *testing.T) {
+	base := ReviewGroupsFromReport(successfulReviewStageReport(
+		CalendarReport{
+			URL: "https://calendar.example.test/one.ics",
+			Candidates: []EventCandidate{
+				{
+					UID:      "shared-uid",
+					Summary:  "First listing",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-01T19:00:00Z",
+					EndAt:    "2026-05-01T22:00:00Z",
+				},
+			},
+		},
+	))
+	changed := ReviewGroupsFromReport(successfulReviewStageReport(
+		CalendarReport{
+			URL: "https://calendar.example.test/one.ics",
+			Candidates: []EventCandidate{
+				{
+					UID:      "shared-uid",
+					Summary:  "First listing",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-01T19:00:00Z",
+					EndAt:    "2026-05-01T23:00:00Z",
+				},
+			},
+		},
+	))
+
+	if got, want := len(base), 1; got != want {
+		t.Fatalf("base groups = %d, want %d", got, want)
+	}
+	if got, want := len(changed), 1; got != want {
+		t.Fatalf("changed groups = %d, want %d", got, want)
+	}
+	if got, want := base[0].StagingKey == changed[0].StagingKey, false; got != want {
+		t.Fatalf("staging key changed = %v, want %v", got, want)
+	}
+}
+
+func TestReviewGroupsFromReportStagingKeyIsOrderInsensitiveForDuplicateCandidates(t *testing.T) {
+	base := review.GroupInput{
+		Title:      "Duplicate review",
+		SourceName: "Fixture ICS",
+		SourceURL:  "https://source.example.test/base",
+		Notes:      "notes",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "duplicate",
+				Name:        "First duplicate",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T20:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "One",
+			},
+			{
+				ExternalID:  "duplicate",
+				Name:        "Second duplicate",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T21:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Two",
+			},
+		},
+	}
+	reversed := base
+	reversed.Candidates = append([]review.CandidateInput(nil), base.Candidates...)
+	reversed.Candidates[0], reversed.Candidates[1] = reversed.Candidates[1], reversed.Candidates[0]
+
+	if got, want := reviewStageStagingKey(base), reviewStageStagingKey(reversed); got != want {
+		t.Fatalf("staging key = %q, want %q", got, want)
+	}
+}
+
+func TestReviewGroupsFromReportStagingKeyIgnoresTitleNotesSourceMetadataAndProvenance(t *testing.T) {
+	base := review.GroupInput{
+		Title:      "Title A",
+		SourceName: "Fixture ICS",
+		SourceURL:  "https://source.example.test/original",
+		Notes:      "notes A",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "candidate-a",
+				Name:        "Candidate A",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Description",
+				SourceName:  "Candidate source A",
+				SourceURL:   "https://candidate.example.test/original",
+				Provenance:  "fixture UID candidate-a",
+			},
+		},
+	}
+	changed := base
+	changed.Title = "Title B"
+	changed.Notes = "notes B"
+	changed.SourceName = "Different source"
+	changed.SourceURL = "https://source.example.test/changed"
+	changed.Candidates = append([]review.CandidateInput(nil), base.Candidates...)
+	changed.Candidates[0].SourceName = "Candidate source B"
+	changed.Candidates[0].SourceURL = "https://candidate.example.test/changed"
+	changed.Candidates[0].Provenance = "fixture UID different"
+
+	if got, want := reviewStageStagingKey(base), reviewStageStagingKey(changed); got != want {
+		t.Fatalf("staging key = %q, want %q", got, want)
+	}
+}
+
 func TestReviewGroupsFromReportClustersByFallback(t *testing.T) {
 	report := successfulReviewStageReport(
 		CalendarReport{

@@ -21,6 +21,7 @@ Snapshot payloads are stored as JSON envelopes that contain the response body in
 `cmd/ingest` can stage review groups from a successful ingest report.
 
 Review staging creates duplicate clusters and singleton new listings. Duplicate review groups support field-level canonical choices plus a canonical draft summary. Singleton review groups support accept or reject.
+Review staging uses a durable key, so source metadata changes alone do not create a new group, and closed groups are not reopened.
 
 Replay reconstructs extraction from stored snapshots, validates the snapshot envelope version and SHA-256, and refuses missing or ambiguous snapshot matches.
 

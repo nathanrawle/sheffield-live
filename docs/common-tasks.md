@@ -36,7 +36,7 @@ This fetches the source page, snapshots the page and ICS payloads, and prints a 
 go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-review-groups
 ```
 
-This adds duplicate and singleton review groups after a successful ingest.
+This adds duplicate and singleton review groups after a successful ingest, and reruns reuse existing groups when the staged content matches.
 
 ## Replay a stored ingest run
 
@@ -44,7 +44,7 @@ This adds duplicate and singleton review groups after a successful ingest.
 go run ./cmd/ingest -import-run-id 42 -limit 20 -stage-review-groups
 ```
 
-This rebuilds the report from stored snapshots without using the network. Omit `-stage-review-groups` if you only want the replay report.
+This rebuilds the report from stored snapshots without using the network. Reruns are safe and reuse existing groups when the staged content matches. Omit `-stage-review-groups` if you only want the replay report.
 
 ## Create an offline review group from a local ICS file
 

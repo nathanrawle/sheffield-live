@@ -251,7 +251,7 @@ func conflictOnTrackedValues[T comparable](canonical, alias []T) bool {
 }
 
 type reviewStageStore interface {
-	CreateReviewGroup(ctx context.Context, input review.GroupInput) (int64, error)
+	StageReviewGroup(ctx context.Context, input review.GroupInput) (int64, bool, error)
 }
 
 type manualIngestReport struct {
@@ -262,6 +262,7 @@ type manualIngestReport struct {
 type reviewStageReport struct {
 	Enabled        bool                     `json:"enabled"`
 	GroupsCreated  int                      `json:"groups_created"`
+	GroupsReused   int                      `json:"groups_reused"`
 	CandidateCount int                      `json:"candidate_count"`
 	Groups         []reviewStageGroupReport `json:"groups"`
 	Errors         []string                 `json:"errors"`
@@ -272,6 +273,7 @@ type reviewStageGroupReport struct {
 	Title          string `json:"title"`
 	CandidateCount int    `json:"candidate_count"`
 	SourceURL      string `json:"source_url"`
+	Result         string `json:"result"`
 }
 
 func reviewStageForReport(ctx context.Context, st reviewStageStore, report ingest.Report, runErr error) (reviewStageReport, error) {
@@ -290,19 +292,26 @@ func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, repo
 	}
 
 	for _, group := range groups {
-		groupID, err := st.CreateReviewGroup(ctx, group)
+		groupID, created, err := st.StageReviewGroup(ctx, group)
 		if err != nil {
-			message := fmt.Sprintf("create review group %q: %v", group.Title, err)
+			message := fmt.Sprintf("stage review group %q: %v", group.Title, err)
 			stage.Errors = append(stage.Errors, message)
 			return stage, errors.New(message)
+		}
+		result := "reused"
+		if created {
+			stage.GroupsCreated++
+			result = "created"
+		} else {
+			stage.GroupsReused++
 		}
 		stage.Groups = append(stage.Groups, reviewStageGroupReport{
 			ID:             groupID,
 			Title:          group.Title,
 			CandidateCount: len(group.Candidates),
 			SourceURL:      group.SourceURL,
+			Result:         result,
 		})
-		stage.GroupsCreated = len(stage.Groups)
 	}
 	return stage, nil
 }

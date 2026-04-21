@@ -108,6 +108,8 @@ Stage review groups:
 - wraps the ingest report with `review_stage`
 - creates duplicate review groups
 - creates singleton review groups
+- reports `groups_created` and `groups_reused`
+- each staged group includes `result: created|reused`
 - only runs after a successful ingest
 
 Offline review fixture:
@@ -122,3 +124,4 @@ Offline review fixture:
 - prints a JSON report with the fixture path, group ID, candidate count, skips, and errors
 
 `-review-title` sets the review-group title used with `-review-ics-fixture`.
+`-review-ics-fixture` remains non-idempotent.

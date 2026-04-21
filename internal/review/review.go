@@ -84,6 +84,7 @@ type GroupInput struct {
 	SourceName string
 	SourceURL  string
 	Notes      string
+	StagingKey string
 	Candidates []CandidateInput
 }
 

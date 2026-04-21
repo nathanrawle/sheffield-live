@@ -1,7 +1,10 @@
 package ingest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"sheffield-live/internal/review"
@@ -49,9 +52,43 @@ func ReviewGroupsFromReport(report Report) []review.GroupInput {
 	for _, key := range order {
 		group := clusters[key].group
 		group.Title = reviewStageTitle(group)
+		group.StagingKey = reviewStageStagingKey(group)
 		groups = append(groups, group)
 	}
 	return groups
+}
+
+func reviewStageStagingKey(group review.GroupInput) string {
+	candidateFingerprints := make([]string, 0, len(group.Candidates))
+	for _, candidate := range group.Candidates {
+		candidateFingerprints = append(candidateFingerprints, reviewStageCandidateFingerprint(candidate))
+	}
+	sort.Strings(candidateFingerprints)
+
+	sum := sha256.New()
+	writeReviewStageHashPart(sum, "review-stage-group:v2")
+	for _, fingerprint := range candidateFingerprints {
+		writeReviewStageHashPart(sum, fingerprint)
+	}
+	return "v1:" + hex.EncodeToString(sum.Sum(nil))
+}
+
+func reviewStageCandidateFingerprint(candidate review.CandidateInput) string {
+	sum := sha256.New()
+	writeReviewStageHashPart(sum, "review-stage-candidate:v1")
+	writeReviewStageHashPart(sum, candidate.ExternalID)
+	writeReviewStageHashPart(sum, candidate.Name)
+	writeReviewStageHashPart(sum, candidate.VenueSlug)
+	writeReviewStageHashPart(sum, candidate.StartAt)
+	writeReviewStageHashPart(sum, candidate.EndAt)
+	writeReviewStageHashPart(sum, candidate.Genre)
+	writeReviewStageHashPart(sum, candidate.Status)
+	writeReviewStageHashPart(sum, candidate.Description)
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+func writeReviewStageHashPart(sum interface{ Write([]byte) (int, error) }, value string) {
+	_, _ = fmt.Fprintf(sum, "%d:%s\x00", len(value), value)
 }
 
 func reviewStageKey(candidate EventCandidate) (string, bool) {

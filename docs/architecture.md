@@ -62,6 +62,7 @@ Raw ingest snapshots, import runs, and review records are stored separately from
 Raw source snapshots feed review groups, and review resolution publishes canonical public events.
 
 - raw snapshots capture fetched source pages and ICS payloads
+- `review_groups.staging_key` has a unique index so staged reruns reuse the same group when the content key matches
 - review groups hold duplicate clusters or singleton new listings
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
 - rejecting a review does not publish

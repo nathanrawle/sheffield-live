@@ -19,7 +19,10 @@ import (
 )
 
 func TestCreateReviewGroupsFromReportStagesReviewGroups(t *testing.T) {
-	st := &fakeReviewStageStore{ids: []int64{101, 102}}
+	st := &fakeReviewStageStore{results: []fakeReviewStageResult{
+		{id: 101, created: true},
+		{id: 102, created: false},
+	}}
 	report := successfulManualReportForReviewStage()
 
 	stage, err := createReviewGroupsFromReport(context.Background(), st, report)
@@ -30,8 +33,11 @@ func TestCreateReviewGroupsFromReportStagesReviewGroups(t *testing.T) {
 	if got, want := len(st.inputs), 2; got != want {
 		t.Fatalf("created groups = %d, want %d", got, want)
 	}
-	if got, want := stage.GroupsCreated, 2; got != want {
+	if got, want := stage.GroupsCreated, 1; got != want {
 		t.Fatalf("stage groups created = %d, want %d", got, want)
+	}
+	if got, want := stage.GroupsReused, 1; got != want {
+		t.Fatalf("stage groups reused = %d, want %d", got, want)
 	}
 	if got, want := stage.CandidateCount, 3; got != want {
 		t.Fatalf("stage candidate count = %d, want %d", got, want)
@@ -45,17 +51,141 @@ func TestCreateReviewGroupsFromReportStagesReviewGroups(t *testing.T) {
 	if got, want := stage.Groups[0].CandidateCount, 2; got != want {
 		t.Fatalf("first stage group candidates = %d, want %d", got, want)
 	}
+	if got, want := stage.Groups[0].Result, "created"; got != want {
+		t.Fatalf("first stage group result = %q, want %q", got, want)
+	}
 	if got, want := stage.Groups[1].ID, int64(102); got != want {
 		t.Fatalf("second stage group ID = %d, want %d", got, want)
 	}
 	if got, want := stage.Groups[1].CandidateCount, 1; got != want {
 		t.Fatalf("second stage group candidates = %d, want %d", got, want)
 	}
+	if got, want := stage.Groups[1].Result, "reused"; got != want {
+		t.Fatalf("second stage group result = %q, want %q", got, want)
+	}
 	if got, want := st.inputs[0].Title, "Duplicate review: Duplicate one"; got != want {
 		t.Fatalf("first staged title = %q, want %q", got, want)
 	}
 	if got, want := st.inputs[1].Title, "New listing review: Singleton"; got != want {
 		t.Fatalf("second staged title = %q, want %q", got, want)
+	}
+}
+
+func TestCreateReviewGroupsFromReportReusesExistingGroupWhenOnlySourceMetadataDiffers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	firstReport := ingest.Report{
+		Source:      "Source A",
+		SourceURL:   "https://source-a.example.test/events.ics",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{
+			{
+				Candidates: []ingest.EventCandidate{
+					{
+						UID:      "duplicate",
+						Summary:  "Duplicate one",
+						Location: "Sidney & Matilda",
+						StartAt:  "2026-05-01T19:00:00Z",
+						EndAt:    "2026-05-01T20:00:00Z",
+					},
+					{
+						UID:      "duplicate",
+						Summary:  "Duplicate two",
+						Location: "Sidney & Matilda",
+						StartAt:  "2026-05-02T19:00:00Z",
+						EndAt:    "2026-05-02T20:00:00Z",
+					},
+				},
+			},
+		},
+	}
+	firstStage, err := createReviewGroupsFromReport(ctx, st, firstReport)
+	if err != nil {
+		t.Fatalf("stage first report: %v", err)
+	}
+	if got, want := firstStage.GroupsCreated, 1; got != want {
+		t.Fatalf("first stage groups created = %d, want %d", got, want)
+	}
+	if got, want := firstStage.GroupsReused, 0; got != want {
+		t.Fatalf("first stage groups reused = %d, want %d", got, want)
+	}
+	if got, want := len(firstStage.Groups), 1; got != want {
+		t.Fatalf("first stage groups = %d, want %d", got, want)
+	}
+
+	secondReport := ingest.Report{
+		Source:      "Source B",
+		SourceURL:   "https://source-b.example.test/events.ics",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{
+			{
+				Candidates: []ingest.EventCandidate{
+					{
+						UID:      "duplicate",
+						Summary:  "Duplicate one",
+						Location: "Sidney & Matilda",
+						StartAt:  "2026-05-01T19:00:00Z",
+						EndAt:    "2026-05-01T20:00:00Z",
+					},
+					{
+						UID:      "duplicate",
+						Summary:  "Duplicate two",
+						Location: "Sidney & Matilda",
+						StartAt:  "2026-05-02T19:00:00Z",
+						EndAt:    "2026-05-02T20:00:00Z",
+					},
+				},
+			},
+		},
+	}
+	secondStage, err := createReviewGroupsFromReport(ctx, st, secondReport)
+	if err != nil {
+		t.Fatalf("stage second report: %v", err)
+	}
+	if got, want := secondStage.GroupsCreated, 0; got != want {
+		t.Fatalf("second stage groups created = %d, want %d", got, want)
+	}
+	if got, want := secondStage.GroupsReused, 1; got != want {
+		t.Fatalf("second stage groups reused = %d, want %d", got, want)
+	}
+	if got, want := len(secondStage.Groups), 1; got != want {
+		t.Fatalf("second stage groups = %d, want %d", got, want)
+	}
+	if got, want := firstStage.Groups[0].ID, secondStage.Groups[0].ID; got != want {
+		t.Fatalf("staged group id = %d, want %d", got, want)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got, want := countRows(t, db, "review_groups"), 1; got != want {
+		t.Fatalf("review groups = %d, want %d", got, want)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, firstStage.Groups[0].ID)
+	if err != nil {
+		t.Fatalf("load staged review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("staged review group not found")
+	}
+	if got, want := group.SourceName, "Source A manual ingest"; got != want {
+		t.Fatalf("group source name = %q, want %q", got, want)
+	}
+	if got, want := group.SourceURL, "https://source-a.example.test/events.ics"; got != want {
+		t.Fatalf("group source url = %q, want %q", got, want)
 	}
 }
 
@@ -304,7 +434,7 @@ func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.
 }
 
 func TestReviewStageForReportSkipsFailedManualRun(t *testing.T) {
-	st := &fakeReviewStageStore{ids: []int64{101}}
+	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 101, created: true}}}
 
 	stage, err := reviewStageForReport(context.Background(), st, successfulManualReportForReviewStage(), errors.New("manual ingest failed"))
 	if err != nil {
@@ -340,28 +470,37 @@ func TestCreateReviewGroupsFromReportReportsCreateError(t *testing.T) {
 }
 
 type fakeReviewStageStore struct {
-	ids    []int64
-	err    error
-	inputs []review.GroupInput
+	results []fakeReviewStageResult
+	err     error
+	inputs  []review.GroupInput
 }
 
-func (s *fakeReviewStageStore) CreateReviewGroup(_ context.Context, input review.GroupInput) (int64, error) {
+type fakeReviewStageResult struct {
+	id      int64
+	created bool
+}
+
+func (s *fakeReviewStageStore) StageReviewGroup(_ context.Context, input review.GroupInput) (int64, bool, error) {
 	s.inputs = append(s.inputs, input)
 	if s.err != nil {
-		return 0, s.err
+		return 0, false, s.err
 	}
-	if len(s.ids) == 0 {
-		return int64(len(s.inputs)), nil
+	if len(s.results) == 0 {
+		return int64(len(s.inputs)), true, nil
 	}
-	id := s.ids[0]
-	s.ids = s.ids[1:]
-	return id, nil
+	result := s.results[0]
+	s.results = s.results[1:]
+	return result.id, result.created, nil
 }
 
 func successfulManualReportForReviewStage() ingest.Report {
+	return successfulManualReportForReviewStageWithSource(ingest.DefaultSource, "https://www.sidneyandmatilda.com/")
+}
+
+func successfulManualReportForReviewStageWithSource(source, sourceURL string) ingest.Report {
 	return ingest.Report{
-		Source:      ingest.DefaultSource,
-		SourceURL:   "https://www.sidneyandmatilda.com/",
+		Source:      source,
+		SourceURL:   sourceURL,
 		ImportRunID: 99,
 		Status:      "succeeded",
 		Calendars: []ingest.CalendarReport{

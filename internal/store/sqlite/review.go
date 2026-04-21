@@ -13,6 +13,104 @@ import (
 )
 
 func (s *Store) CreateReviewGroup(ctx context.Context, input review.GroupInput) (int64, error) {
+	return s.createReviewGroup(ctx, input, "")
+}
+
+func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (int64, bool, error) {
+	if s == nil || s.db == nil {
+		return 0, false, errors.New("sqlite store is not open")
+	}
+	stagingKey := strings.TrimSpace(input.StagingKey)
+	if stagingKey == "" {
+		groupID, err := s.createReviewGroup(ctx, input, "")
+		if err != nil {
+			return 0, false, err
+		}
+		return groupID, true, nil
+	}
+	input.Title = strings.TrimSpace(input.Title)
+	input.SourceName = strings.TrimSpace(input.SourceName)
+	input.SourceURL = strings.TrimSpace(input.SourceURL)
+	if input.Title == "" {
+		input.Title = "Review group"
+	}
+	if input.SourceName == "" {
+		return 0, false, errors.New("review source name is required")
+	}
+	if input.SourceURL == "" {
+		return 0, false, errors.New("review source URL is required")
+	}
+	if len(input.Candidates) == 0 {
+		return 0, false, errors.New("at least one review candidate is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	now := time.Now().UTC()
+	res, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO review_groups (
+			title,
+			source_name,
+			source_url,
+			staging_key,
+			status,
+			notes,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, input.Title, input.SourceName, input.SourceURL, stagingKeyValue(stagingKey), review.StatusOpen, input.Notes, formatRFC3339UTC(now), formatRFC3339UTC(now))
+	if err != nil {
+		return 0, false, err
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return 0, false, err
+	}
+
+	if rowsAffected == 1 {
+		groupID, err := res.LastInsertId()
+		if err != nil {
+			return 0, false, err
+		}
+		for i, candidate := range input.Candidates {
+			if err := insertReviewCandidate(ctx, tx, groupID, i+1, candidate, input.SourceName, input.SourceURL); err != nil {
+				return 0, false, err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, false, err
+		}
+		return groupID, true, nil
+	}
+
+	var groupID int64
+	row := tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM review_groups
+		WHERE staging_key = ?
+		LIMIT 1
+	`, stagingKey)
+	switch err := row.Scan(&groupID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, false, errors.New("staged review group not found after ignore")
+	case err != nil:
+		return 0, false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, false, err
+	}
+	return groupID, false, nil
+}
+
+func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, stagingKey string) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, errors.New("sqlite store is not open")
 	}
@@ -46,12 +144,13 @@ func (s *Store) CreateReviewGroup(ctx context.Context, input review.GroupInput) 
 			title,
 			source_name,
 			source_url,
+			staging_key,
 			status,
 			notes,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, input.Title, input.SourceName, input.SourceURL, review.StatusOpen, input.Notes, formatRFC3339UTC(now), formatRFC3339UTC(now))
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, input.Title, input.SourceName, input.SourceURL, stagingKeyValue(stagingKey), review.StatusOpen, input.Notes, formatRFC3339UTC(now), formatRFC3339UTC(now))
 	if err != nil {
 		return 0, err
 	}
@@ -69,6 +168,13 @@ func (s *Store) CreateReviewGroup(ctx context.Context, input review.GroupInput) 
 		return 0, err
 	}
 	return groupID, nil
+}
+
+func stagingKeyValue(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.TrimSpace(value)
 }
 
 func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary, error) {

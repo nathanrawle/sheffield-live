@@ -21,6 +21,7 @@ const (
 	defaultPath       = "./data/sheffield-live.db"
 	schemaVersionV1   = 1
 	schemaVersionV2   = 2
+	schemaVersionV3   = 3
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -31,6 +32,7 @@ var migrations = []struct {
 }{
 	{version: schemaVersionV1, path: "migrations/0001_init.sql"},
 	{version: schemaVersionV2, path: "migrations/0002_review.sql"},
+	{version: schemaVersionV3, path: "migrations/0003_review_staging_idempotency.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -204,8 +206,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV2 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV2)
+	if version > schemaVersionV3 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV3)
 	}
 
 	for _, migration := range migrations {

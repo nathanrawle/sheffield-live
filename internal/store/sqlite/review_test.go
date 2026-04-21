@@ -168,6 +168,329 @@ func TestCreateReviewGroupDefaultsBlankCandidateSourceFieldsAndPreservesProvenan
 	}
 }
 
+func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	input := review.GroupInput{
+		Title:      "Stage reuse",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:stage-reuse.ics",
+		StagingKey: "v1:stage-reuse",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "candidate-a",
+				Name:        "Candidate A",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "file:a.ics",
+				Provenance:  "fixture UID candidate-a",
+			},
+			{
+				ExternalID:  "candidate-b",
+				Name:        "Candidate B",
+				VenueSlug:   "yellow-arch",
+				StartAt:     "2026-05-02T19:30:00Z",
+				EndAt:       "2026-05-02T22:30:00Z",
+				Genre:       "Jazz",
+				Status:      "Listed",
+				Description: "Second description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "file:b.ics",
+				Provenance:  "fixture UID candidate-b",
+			},
+		},
+	}
+
+	groupID, created, err := st.StageReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !created {
+		t.Fatal("created = false, want true")
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if err := st.SaveReviewDraftChoices(ctx, groupID, []review.DraftChoiceInput{
+		{Field: review.FieldName, CandidateID: group.Candidates[1].ID},
+		{Field: review.FieldVenueSlug, CandidateID: group.Candidates[0].ID},
+	}); err != nil {
+		t.Fatalf("save review draft choices: %v", err)
+	}
+
+	changed := input
+	changed.Title = "Stage reuse changed"
+	changed.SourceName = "Changed source name"
+	changed.SourceURL = "file:stage-reuse-changed.ics"
+	changed.Candidates = append([]review.CandidateInput(nil), input.Candidates...)
+	changed.Candidates[0].SourceName = "Changed candidate source A"
+	changed.Candidates[0].SourceURL = "file:changed-a.ics"
+	changed.Candidates[1].SourceName = "Changed candidate source B"
+	changed.Candidates[1].SourceURL = "file:changed-b.ics"
+
+	reusedID, created, err := st.StageReviewGroup(ctx, changed)
+	if err != nil {
+		t.Fatalf("restage review group: %v", err)
+	}
+	if created {
+		t.Fatal("created = true, want false")
+	}
+	if reusedID != groupID {
+		t.Fatalf("reused id = %d, want %d", reusedID, groupID)
+	}
+
+	reused, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after restage")
+	}
+	if reused.SourceName != input.SourceName {
+		t.Fatalf("group source name = %q, want %q", reused.SourceName, input.SourceName)
+	}
+	if reused.SourceURL != input.SourceURL {
+		t.Fatalf("group source url = %q, want %q", reused.SourceURL, input.SourceURL)
+	}
+	if reused.Candidates[0].SourceName != input.Candidates[0].SourceName {
+		t.Fatalf("candidate 0 source name = %q, want %q", reused.Candidates[0].SourceName, input.Candidates[0].SourceName)
+	}
+	if reused.Candidates[0].SourceURL != input.Candidates[0].SourceURL {
+		t.Fatalf("candidate 0 source url = %q, want %q", reused.Candidates[0].SourceURL, input.Candidates[0].SourceURL)
+	}
+	if reused.Candidates[1].SourceName != input.Candidates[1].SourceName {
+		t.Fatalf("candidate 1 source name = %q, want %q", reused.Candidates[1].SourceName, input.Candidates[1].SourceName)
+	}
+	if reused.Candidates[1].SourceURL != input.Candidates[1].SourceURL {
+		t.Fatalf("candidate 1 source url = %q, want %q", reused.Candidates[1].SourceURL, input.Candidates[1].SourceURL)
+	}
+	assertDraftChoice(t, reused, review.FieldName, group.Candidates[1].ID, "Candidate B")
+	assertDraftChoice(t, reused, review.FieldVenueSlug, group.Candidates[0].ID, "leadmill")
+}
+
+func TestStageReviewGroupReusesClosedMatchingGroupWithoutReopening(t *testing.T) {
+	cases := []struct {
+		name       string
+		closeGroup func(context.Context, *Store, int64, review.Group) error
+		wantStatus string
+	}{
+		{
+			name: "resolved",
+			closeGroup: func(ctx context.Context, st *Store, groupID int64, group review.Group) error {
+				return st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group))
+			},
+			wantStatus: review.StatusResolved,
+		},
+		{
+			name: "rejected",
+			closeGroup: func(ctx context.Context, st *Store, groupID int64, _ review.Group) error {
+				return st.UpdateReviewGroupStatus(ctx, groupID, review.StatusRejected)
+			},
+			wantStatus: review.StatusRejected,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			defer st.Close()
+
+			input := review.GroupInput{
+				Title:      "Closed reuse",
+				SourceName: "Fixture ICS",
+				SourceURL:  "file:closed-reuse.ics",
+				StagingKey: "v1:closed-reuse-" + tc.name,
+				Candidates: []review.CandidateInput{
+					{
+						ExternalID:  "candidate-a",
+						Name:        "UTC Show",
+						VenueSlug:   "sidney-and-matilda",
+						StartAt:     "2026-05-01T19:00:00Z",
+						EndAt:       "2026-05-01T22:00:00Z",
+						Genre:       "Indie",
+						Status:      "Listed",
+						Description: "First line",
+						SourceName:  "Fixture ICS",
+						SourceURL:   "https://example.test/utc-show",
+						Provenance:  "fixture UID candidate-a",
+					},
+				},
+			}
+
+			groupID, created, err := st.StageReviewGroup(ctx, input)
+			if err != nil {
+				t.Fatalf("stage review group: %v", err)
+			}
+			if !created {
+				t.Fatal("created = false, want true")
+			}
+
+			group, ok, err := st.LoadReviewGroup(ctx, groupID)
+			if err != nil {
+				t.Fatalf("load review group: %v", err)
+			}
+			if !ok {
+				t.Fatal("review group not found")
+			}
+			if err := tc.closeGroup(ctx, st, groupID, group); err != nil {
+				t.Fatalf("close review group: %v", err)
+			}
+
+			reusedID, created, err := st.StageReviewGroup(ctx, input)
+			if err != nil {
+				t.Fatalf("restage review group: %v", err)
+			}
+			if created {
+				t.Fatal("created = true, want false")
+			}
+			if reusedID != groupID {
+				t.Fatalf("reused id = %d, want %d", reusedID, groupID)
+			}
+
+			reused, ok, err := st.LoadReviewGroup(ctx, groupID)
+			if err != nil {
+				t.Fatalf("reload review group: %v", err)
+			}
+			if !ok {
+				t.Fatal("review group not found after restage")
+			}
+			if reused.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", reused.Status, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestStageReviewGroupCreatesNewGroupWhenStagingKeyChanges(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	base := review.GroupInput{
+		Title:      "Stage change",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:stage-change.ics",
+		StagingKey: "v1:stage-change-a",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "candidate-a",
+				Name:        "Candidate A",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "file:a.ics",
+				Provenance:  "fixture UID candidate-a",
+			},
+		},
+	}
+	changed := base
+	changed.StagingKey = "v1:stage-change-b"
+	changed.Candidates = append([]review.CandidateInput(nil), base.Candidates...)
+	changed.Candidates[0].EndAt = "2026-05-01T23:00:00Z"
+
+	firstID, created, err := st.StageReviewGroup(ctx, base)
+	if err != nil {
+		t.Fatalf("stage first group: %v", err)
+	}
+	if !created {
+		t.Fatal("first group created = false, want true")
+	}
+
+	secondID, created, err := st.StageReviewGroup(ctx, changed)
+	if err != nil {
+		t.Fatalf("stage changed group: %v", err)
+	}
+	if !created {
+		t.Fatal("changed group created = false, want true")
+	}
+	if secondID == firstID {
+		t.Fatal("staging key change reused existing group, want new group")
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if got := mustCount(t, db, "review_groups"); got != 2 {
+		t.Fatalf("review groups = %d, want 2", got)
+	}
+}
+
+func TestCreateReviewGroupWithBlankStagingKeyStillCreatesNewRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	input := review.GroupInput{
+		Title:      "Blank staging key",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:blank-key.ics",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "candidate-a",
+				Name:        "Candidate A",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "file:a.ics",
+				Provenance:  "fixture UID candidate-a",
+			},
+		},
+	}
+
+	firstID, err := st.CreateReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("create first group: %v", err)
+	}
+	secondID, err := st.CreateReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("create second group: %v", err)
+	}
+	if secondID == firstID {
+		t.Fatal("blank staging key reused existing group, want new row")
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if got := mustCount(t, db, "review_groups"); got != 2 {
+		t.Fatalf("review groups = %d, want 2", got)
+	}
+}
+
 func TestListOpenReviewGroupsOnlyReturnsOpenGroups(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
