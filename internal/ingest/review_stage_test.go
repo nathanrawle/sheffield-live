@@ -58,7 +58,7 @@ func TestReviewGroupsFromReportClustersByUID(t *testing.T) {
 	if got, want := groups[0].Candidates[0].Status, "Listed"; got != want {
 		t.Fatalf("first status = %q, want %q", got, want)
 	}
-	if got, want := groups[0].Candidates[0].VenueSlug, "sidney-matilda"; got != want {
+	if got, want := groups[0].Candidates[0].VenueSlug, "sidney-and-matilda"; got != want {
 		t.Fatalf("first venue slug = %q, want %q", got, want)
 	}
 	if got, want := groups[0].Candidates[0].SourceURL, "https://example.test/first"; got != want {
@@ -115,7 +115,7 @@ func TestReviewGroupsFromReportClustersByFallback(t *testing.T) {
 	if got, want := groups[0].Candidates[1].Name, "big night"; got != want {
 		t.Fatalf("second candidate name = %q, want %q", got, want)
 	}
-	if got, want := groups[0].Candidates[0].VenueSlug, "sidney-matilda"; got != want {
+	if got, want := groups[0].Candidates[0].VenueSlug, "sidney-and-matilda"; got != want {
 		t.Fatalf("first venue slug = %q, want %q", got, want)
 	}
 	if got, want := groups[1].Title, "New listing review: big night"; got != want {

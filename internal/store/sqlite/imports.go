@@ -2,11 +2,16 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"sheffield-live/internal/ingest"
 )
+
+var _ ingest.ReplayStore = (*Store)(nil)
 
 func (s *Store) EnsureSource(ctx context.Context, name, sourceURL string) (int64, error) {
 	if s == nil || s.db == nil {
@@ -155,4 +160,90 @@ func (s *Store) FinishImportRun(ctx context.Context, id int64, status, notes str
 		return time.Time{}, fmt.Errorf("import run %d not found", id)
 	}
 	return finishedAt, nil
+}
+
+func (s *Store) LoadImportRun(ctx context.Context, id int64) (ingest.ReplayRun, error) {
+	if s == nil || s.db == nil {
+		return ingest.ReplayRun{}, errors.New("sqlite store is not open")
+	}
+	if id <= 0 {
+		return ingest.ReplayRun{}, errors.New("import run ID is required")
+	}
+
+	var run ingest.ReplayRun
+	var startedAtText string
+	var finishedAtText sql.NullString
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT id, started_at, finished_at, status, notes
+		FROM import_runs
+		WHERE id = ?
+	`, id).Scan(&run.ID, &startedAtText, &finishedAtText, &run.Status, &run.Notes); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ingest.ReplayRun{}, fmt.Errorf("import run %d not found", id)
+		}
+		return ingest.ReplayRun{}, err
+	}
+
+	startedAt, err := parseRFC3339UTC(startedAtText)
+	if err != nil {
+		return ingest.ReplayRun{}, fmt.Errorf("parse import run %d started_at: %w", id, err)
+	}
+	run.StartedAt = startedAt
+	if finishedAtText.Valid && strings.TrimSpace(finishedAtText.String) != "" {
+		finishedAt, err := parseRFC3339UTC(finishedAtText.String)
+		if err != nil {
+			return ingest.ReplayRun{}, fmt.Errorf("parse import run %d finished_at: %w", id, err)
+		}
+		run.FinishedAt = &finishedAt
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			sn.id,
+			sn.source_id,
+			sn.captured_at,
+			sn.payload,
+			COALESCE(src.name, ''),
+			COALESCE(src.url, '')
+		FROM snapshots sn
+		LEFT JOIN sources src ON src.id = sn.source_id
+		WHERE sn.import_run_id = ?
+		ORDER BY sn.captured_at, sn.id
+	`, id)
+	if err != nil {
+		return ingest.ReplayRun{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var snapshot ingest.ReplaySnapshot
+		var sourceID sql.NullInt64
+		var capturedAtText string
+		if err := rows.Scan(
+			&snapshot.ID,
+			&sourceID,
+			&capturedAtText,
+			&snapshot.Payload,
+			&snapshot.SourceName,
+			&snapshot.SourceURL,
+		); err != nil {
+			return ingest.ReplayRun{}, err
+		}
+
+		capturedAt, err := parseRFC3339UTC(capturedAtText)
+		if err != nil {
+			return ingest.ReplayRun{}, fmt.Errorf("parse snapshot %d captured_at: %w", snapshot.ID, err)
+		}
+		snapshot.CapturedAt = capturedAt
+		if sourceID.Valid {
+			value := sourceID.Int64
+			snapshot.SourceID = &value
+		}
+		run.Snapshots = append(run.Snapshots, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		return ingest.ReplayRun{}, err
+	}
+
+	return run, nil
 }

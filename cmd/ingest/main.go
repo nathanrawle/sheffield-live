@@ -6,8 +6,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,32 +26,35 @@ func main() {
 }
 
 func run() error {
-	var (
-		source    = flag.String("source", ingest.DefaultSource, "source to ingest")
-		limit     = flag.Int("limit", ingest.DefaultLimit, "maximum ICS links to fetch")
-		timeout   = flag.Duration("timeout", 10*time.Second, "HTTP timeout")
-		userAgent = flag.String("user-agent", "", "HTTP User-Agent header")
-		dbPath    = flag.String("db", "", "SQLite database path")
-		fixture   = flag.String("review-fixture", "", "offline ICS fixture path used to create an admin review group")
-		title     = flag.String("review-title", "", "title for a review group created from -review-fixture")
-		stage     = flag.Bool("stage-review", false, "stage ingest candidates into admin review groups")
-	)
-	flag.Parse()
+	return runWithArgs(os.Args[1:], os.Stdout, os.Stderr)
+}
 
-	fixtureMode := strings.TrimSpace(*fixture) != ""
-	if !fixtureMode {
-		if *userAgent == "" {
-			return errors.New("-user-agent is required")
-		}
-		if *limit < 1 || *limit > ingest.MaxLimit {
-			return fmt.Errorf("-limit must be between 1 and %d", ingest.MaxLimit)
-		}
-		if *timeout <= 0 {
-			return errors.New("-timeout must be positive")
-		}
+type ingestCommandConfig struct {
+	source            string
+	limit             int
+	timeout           time.Duration
+	httpUserAgent     string
+	dbPath            string
+	reviewICSFixture  string
+	reviewTitle       string
+	stageReviewGroups bool
+	importRunID       int64
+}
+
+func runWithArgs(args []string, stdout, stderr io.Writer) error {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
 	}
 
-	path := *dbPath
+	cfg, err := parseIngestArgs(args)
+	if err != nil {
+		return err
+	}
+
+	path := cfg.dbPath
 	if path == "" {
 		path = os.Getenv("DB_PATH")
 	}
@@ -63,30 +68,51 @@ func run() error {
 	}
 	defer func() {
 		if closeErr := st.Close(); closeErr != nil {
-			fmt.Fprintf(os.Stderr, "close sqlite store: %v\n", closeErr)
+			fmt.Fprintf(stderr, "close sqlite store: %v\n", closeErr)
 		}
 	}()
 
+	fixtureMode := strings.TrimSpace(cfg.reviewICSFixture) != ""
 	if fixtureMode {
-		return createReviewGroupFromFixture(context.Background(), st, *fixture, *title)
+		return createReviewGroupFromFixture(context.Background(), st, stdout, cfg.reviewICSFixture, cfg.reviewTitle)
 	}
 
-	fetcher, err := ingest.NewHTTPFetcher(*timeout, *userAgent)
-	if err != nil {
-		return err
+	var (
+		report ingest.Report
+		runErr error
+	)
+	if cfg.limit < 1 || cfg.limit > ingest.MaxLimit {
+		return fmt.Errorf("-limit must be between 1 and %d", ingest.MaxLimit)
 	}
+	if cfg.importRunID > 0 {
+		report, runErr = ingest.ReplayImportRun(context.Background(), st, cfg.importRunID, ingest.ReplayOptions{
+			Limit: cfg.limit,
+		})
+	} else {
+		if cfg.httpUserAgent == "" {
+			return errors.New("-http-user-agent is required")
+		}
+		if cfg.timeout <= 0 {
+			return errors.New("-timeout must be positive")
+		}
 
-	report, runErr := ingest.RunManual(context.Background(), st, fetcher, ingest.Options{
-		Source: *source,
-		Limit:  *limit,
-	})
+		fetcher, err := ingest.NewHTTPFetcher(cfg.timeout, cfg.httpUserAgent)
+		if err != nil {
+			return err
+		}
+
+		report, runErr = ingest.RunManual(context.Background(), st, fetcher, ingest.Options{
+			Source: cfg.source,
+			Limit:  cfg.limit,
+		})
+	}
 	if runErr != nil && report.ImportRunID == 0 {
 		return runErr
 	}
 
-	encoder := json.NewEncoder(os.Stdout)
+	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
-	if *stage {
+	if cfg.stageReviewGroups {
 		stageReport, stageErr := reviewStageForReport(context.Background(), st, report, runErr)
 		if err := encoder.Encode(manualIngestReport{
 			Report:      report,
@@ -104,6 +130,124 @@ func run() error {
 		return err
 	}
 	return runErr
+}
+
+func parseIngestArgs(args []string) (ingestCommandConfig, error) {
+	var cfg ingestCommandConfig
+	var (
+		canonicalHTTPUserAgent trackedStringFlag
+		aliasHTTPUserAgent     trackedStringFlag
+		canonicalFixture       trackedStringFlag
+		aliasFixture           trackedStringFlag
+		canonicalStage         trackedBoolFlag
+		aliasStage             trackedBoolFlag
+	)
+	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	fs.StringVar(&cfg.source, "source", ingest.DefaultSource, "source to ingest")
+	fs.IntVar(&cfg.limit, "limit", ingest.DefaultLimit, "maximum ICS links to fetch")
+	fs.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "HTTP timeout")
+	fs.Var(&canonicalHTTPUserAgent, "http-user-agent", "HTTP User-Agent header")
+	fs.Var(&aliasHTTPUserAgent, "user-agent", "HTTP User-Agent header")
+	fs.StringVar(&cfg.dbPath, "db", "", "SQLite database path")
+	fs.Var(&canonicalFixture, "review-ics-fixture", "offline ICS fixture path used to create an admin review group")
+	fs.Var(&aliasFixture, "review-fixture", "offline ICS fixture path used to create an admin review group")
+	fs.StringVar(&cfg.reviewTitle, "review-title", "", "title for a review group created from -review-ics-fixture")
+	fs.Var(&canonicalStage, "stage-review-groups", "stage ingest candidates into admin review groups")
+	fs.Var(&aliasStage, "stage-review", "stage ingest candidates into admin review groups")
+	fs.Int64Var(&cfg.importRunID, "import-run-id", 0, "replay an existing import run from stored snapshots")
+
+	if err := fs.Parse(args); err != nil {
+		return ingestCommandConfig{}, err
+	}
+	if conflictOnTrackedValues(canonicalHTTPUserAgent.values, aliasHTTPUserAgent.values) {
+		return ingestCommandConfig{}, errors.New("-http-user-agent and -user-agent must match")
+	}
+	if canonicalHTTPUserAgent.set {
+		cfg.httpUserAgent = canonicalHTTPUserAgent.value
+	} else {
+		cfg.httpUserAgent = aliasHTTPUserAgent.value
+	}
+	if conflictOnTrackedValues(canonicalFixture.values, aliasFixture.values) {
+		return ingestCommandConfig{}, errors.New("-review-ics-fixture and -review-fixture must match")
+	}
+	if canonicalFixture.set {
+		cfg.reviewICSFixture = canonicalFixture.value
+	} else {
+		cfg.reviewICSFixture = aliasFixture.value
+	}
+	if conflictOnTrackedValues(canonicalStage.values, aliasStage.values) {
+		return ingestCommandConfig{}, errors.New("-stage-review-groups and -stage-review must match")
+	}
+	if canonicalStage.set {
+		cfg.stageReviewGroups = canonicalStage.value
+	} else {
+		cfg.stageReviewGroups = aliasStage.value
+	}
+	if cfg.importRunID < 0 {
+		return ingestCommandConfig{}, errors.New("-import-run-id must be positive")
+	}
+	if strings.TrimSpace(cfg.reviewICSFixture) != "" && cfg.importRunID > 0 {
+		return ingestCommandConfig{}, errors.New("-review-ics-fixture and -import-run-id are mutually exclusive")
+	}
+	return cfg, nil
+}
+
+type trackedStringFlag struct {
+	value  string
+	set    bool
+	values []string
+}
+
+func (f *trackedStringFlag) String() string {
+	return f.value
+}
+
+func (f *trackedStringFlag) Set(value string) error {
+	f.value = value
+	f.set = true
+	f.values = append(f.values, value)
+	return nil
+}
+
+type trackedBoolFlag struct {
+	value  bool
+	set    bool
+	values []bool
+}
+
+func (f *trackedBoolFlag) String() string {
+	return strconv.FormatBool(f.value)
+}
+
+func (f *trackedBoolFlag) IsBoolFlag() bool {
+	return true
+}
+
+func (f *trackedBoolFlag) Set(value string) error {
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return err
+	}
+	f.value = parsed
+	f.set = true
+	f.values = append(f.values, parsed)
+	return nil
+}
+
+func conflictOnTrackedValues[T comparable](canonical, alias []T) bool {
+	if len(canonical)+len(alias) == 0 {
+		return false
+	}
+	seen := make(map[T]struct{}, len(canonical)+len(alias))
+	for _, value := range canonical {
+		seen[value] = struct{}{}
+	}
+	for _, value := range alias {
+		seen[value] = struct{}{}
+	}
+	return len(seen) > 1
 }
 
 type reviewStageStore interface {
@@ -179,7 +323,7 @@ type reviewFixtureReport struct {
 	Errors     []string           `json:"errors,omitempty"`
 }
 
-func createReviewGroupFromFixture(ctx context.Context, st *sqlite.Store, fixturePath, title string) error {
+func createReviewGroupFromFixture(ctx context.Context, st *sqlite.Store, stdout io.Writer, fixturePath, title string) error {
 	raw, err := os.ReadFile(fixturePath)
 	if err != nil {
 		return fmt.Errorf("read review fixture: %w", err)
@@ -230,7 +374,7 @@ func createReviewGroupFromFixture(ctx context.Context, st *sqlite.Store, fixture
 		Skips:      parse.Skips,
 		Errors:     parse.Errors,
 	}
-	encoder := json.NewEncoder(os.Stdout)
+	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(report)
 }

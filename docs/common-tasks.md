@@ -25,7 +25,7 @@ Use the SQLite CLI only if you already have it installed. Any read-only query to
 ## Run a manual Sidney & Matilda ingest
 
 ```bash
-go run ./cmd/ingest -user-agent "sheffield-live manual ingest (contact: you@example.com)"
+go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
 This fetches the source page, snapshots the page and ICS payloads, and prints a JSON report.
@@ -33,15 +33,23 @@ This fetches the source page, snapshots the page and ICS payloads, and prints a 
 ## Stage review groups after ingest
 
 ```bash
-go run ./cmd/ingest -user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-review
+go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-review-groups
 ```
 
 This adds duplicate and singleton review groups after a successful ingest.
 
+## Replay a stored ingest run
+
+```bash
+go run ./cmd/ingest -import-run-id 42 -limit 20 -stage-review-groups
+```
+
+This rebuilds the report from stored snapshots without using the network. Omit `-stage-review-groups` if you only want the replay report.
+
 ## Create an offline review group from a local ICS file
 
 ```bash
-go run ./cmd/ingest -review-fixture internal/ingest/testdata/sidney.ics
+go run ./cmd/ingest -review-ics-fixture internal/ingest/testdata/sidney.ics
 ```
 
 This is the no-network path for review data.

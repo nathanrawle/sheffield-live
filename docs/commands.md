@@ -65,46 +65,60 @@ Review behavior:
 Run:
 
 ```bash
-go run ./cmd/ingest -user-agent "sheffield-live manual ingest (contact: you@example.com)"
+go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
-Default behavior:
+Defaults:
 
 - `-source` defaults to `sidney-and-matilda`
 - `-limit` defaults to `20`
 - `-timeout` defaults to `10s`
 - `-db` overrides `DB_PATH`
-- `-user-agent` is required unless `-review-fixture` is set
 
 Validation:
 
-- `-limit` must be between `1` and `50`
+- `-limit` applies to live ingest and replay, and must be between `1` and `50`
 - `-timeout` must be positive
-- `-user-agent` must be non-empty in networked mode
+- live ingest requires a non-empty `-http-user-agent` or `-user-agent`
+- replay does not require a user agent
 
-Manual ingest behavior:
+Live ingest:
 
+- primary flag: `-http-user-agent`
+- alias: `-user-agent`
 - fetches the Sidney & Matilda source page
 - snapshots the source page and fetched ICS payloads
 - parses candidates, skips, and errors
 - writes `sources`, `import_runs`, and `snapshots`
 - prints a JSON report to stdout
 
-`-stage-review`:
+Replay:
 
+- `-import-run-id <id> [-limit N] [-stage-review-groups]`
+- network-free
+- only replays finished succeeded runs
+- validates the stored snapshot envelope version and body SHA-256
+- refuses missing or ambiguous snapshot matches
+- reconstructs extraction from source page body to ICS links to matching ICS snapshots by URL and final URL to candidates
+
+Stage review groups:
+
+- primary flag: `-stage-review-groups`
+- alias: `-stage-review`
 - wraps the ingest report with `review_stage`
 - creates duplicate review groups
 - creates singleton review groups
 - only runs after a successful ingest
 
-`-review-fixture`:
+Offline review fixture:
 
+- primary flag: `-review-ics-fixture`
+- alias: `-review-fixture`
+- mutually exclusive with replay
 - reads a local ICS file
 - does not use the network
 - parses candidates, skips, and errors
 - creates one offline review group
 - prints a JSON report with the fixture path, group ID, candidate count, skips, and errors
 
-`-review-title`:
-
-- sets the review-group title used with `-review-fixture`
+`-review-title` sets the review-group title used with `-review-ics-fixture`.

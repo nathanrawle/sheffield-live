@@ -4,11 +4,13 @@
 
 The current manual source pipeline starts with Sidney & Matilda.
 
-The ingest run fetches the source page, stores a raw source-page snapshot, extracts `Google Calendar ICS` links, fetches each ICS feed, stores raw ICS snapshots, and parses event candidates, skips, and parse errors.
+The ingest run fetches the source page, stores a raw source-page snapshot, extracts ICS export links, fetches each ICS feed, stores raw ICS snapshots, and parses event candidates, skips, and parse errors.
 
 Snapshots are kept as separate raw artifacts. They are not the same thing as canonical public event rows.
 
 The ingest run writes to `sources`, `import_runs`, and `snapshots`, and it records the parsed report output rather than publishing public events directly.
+
+Sidney & Matilda extraction accepts Squarespace `?format=ical` ICS links and legacy Google Calendar-style ICS labels.
 
 ## Snapshot Payloads
 
@@ -19,6 +21,8 @@ Snapshot payloads are stored as JSON envelopes that contain the response body in
 `cmd/ingest` can stage review groups from a successful ingest report.
 
 Review staging creates duplicate clusters and singleton new listings. Duplicate review groups support field-level canonical choices plus a canonical draft summary. Singleton review groups support accept or reject.
+
+Replay reconstructs extraction from stored snapshots, validates the snapshot envelope version and SHA-256, and refuses missing or ambiguous snapshot matches.
 
 ## Publish Rules
 

@@ -30,11 +30,12 @@ func ExtractSidneyAndMatildaICSLinks(baseURL string, body []byte, limit int) ([]
 		href := strings.TrimSpace(string(match[1]))
 		href = strings.Trim(href, `"'`)
 		label := anchorLabel(match[2])
-		if !strings.EqualFold(label, "Google Calendar ICS") {
+		rawHref := html.UnescapeString(href)
+		if !isSidneyAndMatildaICSLink(label, rawHref) {
 			continue
 		}
 
-		resolved, err := resolveURL(parsedBase, html.UnescapeString(href))
+		resolved, err := resolveURL(parsedBase, rawHref)
 		if err != nil || seen[resolved] {
 			continue
 		}
@@ -45,6 +46,20 @@ func ExtractSidneyAndMatildaICSLinks(baseURL string, body []byte, limit int) ([]
 		}
 	}
 	return links, nil
+}
+
+func isSidneyAndMatildaICSLink(label, href string) bool {
+	if strings.EqualFold(label, "Google Calendar ICS") {
+		return true
+	}
+	if !strings.EqualFold(label, "ICS") {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(href))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Query().Get("format"), "ical")
 }
 
 func anchorLabel(raw []byte) string {

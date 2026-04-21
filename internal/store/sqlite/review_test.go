@@ -110,6 +110,64 @@ func TestReviewGroupDraftRoundTripDoesNotPublishEvents(t *testing.T) {
 	}
 }
 
+func TestCreateReviewGroupDefaultsBlankCandidateSourceFieldsAndPreservesProvenance(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
+		Title:      "Source defaults",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:defaults.ics",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "candidate-a",
+				Name:        "Candidate A",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First description",
+				Provenance:  "fixture UID candidate-a",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if group.SourceName != "Fixture ICS" {
+		t.Fatalf("group source name = %q, want %q", group.SourceName, "Fixture ICS")
+	}
+	if group.SourceURL != "file:defaults.ics" {
+		t.Fatalf("group source url = %q, want %q", group.SourceURL, "file:defaults.ics")
+	}
+	if len(group.Candidates) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(group.Candidates))
+	}
+	candidate := group.Candidates[0]
+	if candidate.SourceName != group.SourceName {
+		t.Fatalf("candidate source name = %q, want %q", candidate.SourceName, group.SourceName)
+	}
+	if candidate.SourceURL != group.SourceURL {
+		t.Fatalf("candidate source url = %q, want %q", candidate.SourceURL, group.SourceURL)
+	}
+	if candidate.Provenance != "fixture UID candidate-a" {
+		t.Fatalf("candidate provenance = %q, want %q", candidate.Provenance, "fixture UID candidate-a")
+	}
+}
+
 func TestListOpenReviewGroupsOnlyReturnsOpenGroups(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -250,6 +308,102 @@ func TestResolveReviewGroupPublishesCanonicalEvent(t *testing.T) {
 	}
 	if got := mustCount(t, db, "events"); got != beforeCount+1 {
 		t.Fatalf("events rows = %d, want %d", got, beforeCount+1)
+	}
+}
+
+func TestSaveReviewDraftChoicesUpsertsPerField(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreatePublishableReviewGroup(t, st, "Draft upsert")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	if err := st.SaveReviewDraftChoices(ctx, groupID, []review.DraftChoiceInput{
+		{Field: review.FieldName, CandidateID: group.Candidates[0].ID},
+	}); err != nil {
+		t.Fatalf("save first draft choice: %v", err)
+	}
+	before, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group after first save: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after first save")
+	}
+	if _, ok := before.DraftChoices[review.FieldName]; !ok {
+		t.Fatal("missing first draft choice")
+	}
+
+	if err := st.SaveReviewDraftChoices(ctx, groupID, []review.DraftChoiceInput{
+		{Field: review.FieldName, CandidateID: group.Candidates[1].ID},
+	}); err != nil {
+		t.Fatalf("save replacement draft choice: %v", err)
+	}
+
+	after, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group after second save: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after second save")
+	}
+	if got := len(after.DraftChoices); got != 1 {
+		t.Fatalf("draft choices = %d, want 1", got)
+	}
+	choice, ok := after.DraftChoices[review.FieldName]
+	if !ok {
+		t.Fatal("missing replacement draft choice")
+	}
+	if choice.CandidateID != group.Candidates[1].ID {
+		t.Fatalf("draft choice candidate = %d, want %d", choice.CandidateID, group.Candidates[1].ID)
+	}
+	wantValue := review.CandidateValue(group.Candidates[1], review.FieldName)
+	if choice.Value != wantValue {
+		t.Fatalf("draft choice value = %q, want %q", choice.Value, wantValue)
+	}
+
+	groups, err := st.ListOpenReviewGroups(ctx)
+	if err != nil {
+		t.Fatalf("list open review groups: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("open review groups = %d, want 1", len(groups))
+	}
+	if groups[0].CandidateCount != 2 {
+		t.Fatalf("candidate count = %d, want 2", groups[0].CandidateCount)
+	}
+	if groups[0].DraftCount != 1 {
+		t.Fatalf("draft count = %d, want 1", groups[0].DraftCount)
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	var rowCount int
+	var storedCandidateID int64
+	if err := db.QueryRow(`
+		SELECT COUNT(*), MAX(candidate_id)
+		FROM review_draft_choices
+		WHERE group_id = ? AND field = ?
+	`, groupID, string(review.FieldName)).Scan(&rowCount, &storedCandidateID); err != nil {
+		t.Fatalf("count stored draft choices: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("stored draft choice rows = %d, want 1", rowCount)
+	}
+	if storedCandidateID != group.Candidates[1].ID {
+		t.Fatalf("stored draft candidate = %d, want %d", storedCandidateID, group.Candidates[1].ID)
 	}
 }
 

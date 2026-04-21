@@ -169,6 +169,9 @@ func reviewStageVenueSlug(value string) string {
 	if value == "" {
 		return ""
 	}
+	if strings.Contains(value, "sidney") && strings.Contains(value, "matilda") {
+		return "sidney-and-matilda"
+	}
 
 	var out strings.Builder
 	lastDash := false

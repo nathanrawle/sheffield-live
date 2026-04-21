@@ -142,7 +142,7 @@ func RunManual(ctx context.Context, st Store, fetcher Fetcher, opts Options) (Re
 	report.Links = links
 	report.Totals.Links = len(links)
 	if len(links) == 0 {
-		report.Errors = append(report.Errors, "no Google Calendar ICS links found")
+		report.Errors = append(report.Errors, "no ICS links found")
 		return finishReport(ctx, st, report, importStatusFailed)
 	}
 

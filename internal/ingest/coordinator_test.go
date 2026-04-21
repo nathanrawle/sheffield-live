@@ -65,6 +65,34 @@ func TestRunManualSnapshotsAndReportsWithoutEventWrites(t *testing.T) {
 	}
 }
 
+func TestRunManualSourceFetchFailureReturnsErrRunFailed(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		err: errors.New("source fetch failed"),
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: DefaultSource, Limit: 20})
+	if !errors.Is(err, ErrRunFailed) {
+		t.Fatalf("error = %v, want ErrRunFailed", err)
+	}
+	if report.Status != importStatusFailed {
+		t.Fatalf("status = %q, want %q", report.Status, importStatusFailed)
+	}
+	if len(report.Errors) != 1 || !strings.Contains(report.Errors[0], "source fetch failed") {
+		t.Fatalf("report errors = %#v, want source fetch failure", report.Errors)
+	}
+	if store.finishedStatus != importStatusFailed {
+		t.Fatalf("finished status = %q, want failed", store.finishedStatus)
+	}
+	if !strings.Contains(store.finishedNotes, "source fetch failed") {
+		t.Fatalf("finished notes = %q, want recorded fetch error", store.finishedNotes)
+	}
+	if got := len(store.snapshots); got != 0 {
+		t.Fatalf("snapshots = %d, want 0", got)
+	}
+}
+
 func TestRunManualFailsClosedWhenNoLinks(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
@@ -202,9 +230,13 @@ func TestRunManualCalendarErrorsFailStatusAndNotes(t *testing.T) {
 
 type fakeFetcher struct {
 	results map[string]FetchResult
+	err     error
 }
 
 func (f fakeFetcher) Fetch(_ context.Context, url string) (FetchResult, error) {
+	if f.err != nil {
+		return FetchResult{}, f.err
+	}
 	result, ok := f.results[url]
 	if !ok {
 		return FetchResult{}, errors.New("unexpected fetch " + url)

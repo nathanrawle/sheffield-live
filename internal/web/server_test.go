@@ -114,6 +114,26 @@ func TestSQLiteStoreSmoke(t *testing.T) {
 	}
 }
 
+func TestSQLiteEventDetailRendersResolvedReviewSource(t *testing.T) {
+	st, server, groupID := mustReviewServerWithGroup(t)
+	defer st.Close()
+
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if err := st.ResolveReviewGroup(contextForTesting(), groupID, fullWebReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	body := renderPath(t, server, "/events/live-utc-show-sidney-and-matilda-20260501190000")
+	assertContains(t, body, "Fixture ICS")
+	assertContains(t, body, `href="https://example.test/utc-show"`)
+}
+
 func TestHomeShowsTodayAndThisWeekWithFixedClock(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/")
@@ -272,6 +292,83 @@ func TestAdminReviewListDetailAndSave(t *testing.T) {
 	assertContains(t, saveBody, "<strong>Name</strong>: London Show")
 	assertContains(t, saveBody, "<strong>Venue slug</strong>: sidney-and-matilda")
 	assertContains(t, saveBody, `name="choice_name" value="`+strconvFormatInt(group.Candidates[1].ID)+`" checked`)
+}
+
+func TestAdminReviewDetailFallsBackToCandidateNumberWhenExternalIDIsMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Sparse metadata review",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:sidney.ics",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "utc-1",
+				Name:        "UTC Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First line",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/utc-show",
+				Provenance:  "fixture UID utc-1",
+			},
+			{
+				ExternalID:  "london-1",
+				Name:        "London Show",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-02T18:30:00Z",
+				EndAt:       "2026-05-02T21:30:00Z",
+				Genre:       "Rock",
+				Status:      "Listed",
+				Description: "London description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "file:sidney.ics",
+				Provenance:  "fixture UID london-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	candidateID := group.Candidates[0].ID
+	rawDB := mustRawDB(t, path)
+	if _, err := rawDB.Exec(`
+		UPDATE review_candidates
+		SET external_id = ''
+		WHERE id = ?
+	`, candidateID); err != nil {
+		t.Fatalf("blank candidate external id: %v", err)
+	}
+	if err := rawDB.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	server, err := NewServer(st)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertContains(t, body, "<span>Candidate 1</span>")
+	assertNotContains(t, body, "Candidate 1 (utc-1)")
+	assertContains(t, body, "fixture UID utc-1")
+	assertContains(t, body, "https://example.test/utc-show")
 }
 
 func TestBuildReviewDetailCanonicalSummaryKeepsBlankSelectionsDistinct(t *testing.T) {
@@ -685,7 +782,6 @@ func TestAdminReviewEmptyPostDoesNotSaveOrUpdateGroup(t *testing.T) {
 	if !ok {
 		t.Fatal("review group not found")
 	}
-	waitForNextStoredSecond(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(""))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -823,15 +919,6 @@ func mustRawDB(t *testing.T, path string) *sql.DB {
 
 func contextForTesting() context.Context {
 	return httptest.NewRequest(http.MethodGet, "/", nil).Context()
-}
-
-func waitForNextStoredSecond(t *testing.T) {
-	t.Helper()
-
-	start := time.Now().UTC().Truncate(time.Second)
-	for !time.Now().UTC().Truncate(time.Second).After(start) {
-		time.Sleep(10 * time.Millisecond)
-	}
 }
 
 func fullWebReviewChoices(t *testing.T, group review.Group) []review.DraftChoiceInput {
