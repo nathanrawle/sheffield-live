@@ -58,31 +58,32 @@ type ImportRunReviewGroupStore interface {
 }
 
 type PageData struct {
-	SiteName           string
-	PageTitle          string
-	MetaDescription    string
-	Active             string
-	Content            template.HTML
-	Now                time.Time
-	Events             []domain.Event
-	EventGroups        []EventGroup
-	EventFilters       EventFilters
-	Event              domain.Event
-	Venues             []domain.Venue
-	Venue              domain.Venue
-	FeaturedEvent      domain.Event
-	TodayEvents        []domain.Event
-	ThisWeekEvents     []domain.Event
-	VenueEvents        []domain.Event
-	ReviewGroups       []review.GroupSummary
-	ReviewDetail       ReviewDetail
-	ImportRuns         []ingest.ImportRunSummary
-	ImportRunDetail    ImportRunDetail
-	LatestImport       *ingest.ImportRunSummary
-	HasImportHistory   bool
-	HasImportRunDetail bool
-	HasReviewStorage   bool
-	Flash              string
+	SiteName                 string
+	PageTitle                string
+	MetaDescription          string
+	Active                   string
+	Content                  template.HTML
+	Now                      time.Time
+	Events                   []domain.Event
+	EventGroups              []EventGroup
+	EventFilters             EventFilters
+	Event                    domain.Event
+	Venues                   []domain.Venue
+	Venue                    domain.Venue
+	FeaturedEvent            domain.Event
+	TodayEvents              []domain.Event
+	ThisWeekEvents           []domain.Event
+	VenueEvents              []domain.Event
+	ReviewGroups             []review.GroupSummary
+	ReviewDetail             ReviewDetail
+	ImportRunRows            []ImportRunRow
+	ImportRunDetail          ImportRunDetail
+	LatestImport             *ingest.ImportRunSummary
+	HasImportHistory         bool
+	HasImportRunDetail       bool
+	HasImportRunReviewGroups bool
+	HasReviewStorage         bool
+	Flash                    string
 }
 
 type EventGroup struct {
@@ -135,6 +136,11 @@ type ReviewCanonicalSummaryRow struct {
 type ReviewSingleCandidateRow struct {
 	Label string
 	Value string
+}
+
+type ImportRunRow struct {
+	ingest.ImportRunSummary
+	ReviewGroupStatusSummary string
 }
 
 type ImportRunDetail struct {
@@ -412,14 +418,20 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load import runs", http.StatusInternalServerError)
 		return
 	}
+	importRunRows, err := buildImportRunRows(r.Context(), importRuns, s.importRunReviewGroupStore)
+	if err != nil {
+		http.Error(w, "load import run review groups", http.StatusInternalServerError)
+		return
+	}
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          "Import history",
-		MetaDescription:    "Read-only history of import runs and snapshot counts.",
-		Now:                s.now(),
-		ImportRuns:         importRuns,
-		HasImportRunDetail: s.replayStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
+		SiteName:                 "Sheffield Live",
+		PageTitle:                "Import history",
+		MetaDescription:          "Read-only history of import runs and snapshot counts.",
+		Now:                      s.now(),
+		ImportRunRows:            importRunRows,
+		HasImportRunDetail:       s.replayStore != nil,
+		HasImportRunReviewGroups: s.importRunReviewGroupStore != nil,
+		HasReviewStorage:         s.reviewStore != nil,
 	}
 	s.renderPage(w, "templates/admin_import_runs.html", data)
 }
@@ -992,6 +1004,69 @@ func parseStrictPositiveIDPath(rawPath, prefix string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+func buildImportRunRows(ctx context.Context, runs []ingest.ImportRunSummary, groupStore ImportRunReviewGroupStore) ([]ImportRunRow, error) {
+	rows := make([]ImportRunRow, 0, len(runs))
+	for _, run := range runs {
+		row := ImportRunRow{ImportRunSummary: run}
+		if groupStore != nil {
+			groups, err := groupStore.ListReviewGroupsForImportRun(ctx, run.ID)
+			if err != nil {
+				return nil, fmt.Errorf("list review groups for import run %d: %w", run.ID, err)
+			}
+			row.ReviewGroupStatusSummary = reviewGroupStatusSummary(groups)
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func reviewGroupStatusSummary(groups []review.GroupSummary) string {
+	if len(groups) == 0 {
+		return "none"
+	}
+
+	counts := make(map[string]int)
+	for _, group := range groups {
+		status := strings.TrimSpace(group.Status)
+		if status == "" {
+			status = "unknown"
+		}
+		counts[status]++
+	}
+
+	statuses := make([]string, 0, len(counts))
+	for status := range counts {
+		statuses = append(statuses, status)
+	}
+	sort.Slice(statuses, func(i, j int) bool {
+		left := reviewStatusSortRank(statuses[i])
+		right := reviewStatusSortRank(statuses[j])
+		if left == right {
+			return statuses[i] < statuses[j]
+		}
+		return left < right
+	})
+
+	parts := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		parts = append(parts, fmt.Sprintf("%d %s", counts[status], status))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func reviewStatusSortRank(status string) int {
+	switch status {
+	case review.StatusOpen:
+		return 0
+	case review.StatusResolved:
+		return 1
+	case review.StatusRejected:
+		return 2
+	default:
+		return 3
+	}
 }
 
 func buildImportRunDetail(run ingest.ReplayRun) ImportRunDetail {

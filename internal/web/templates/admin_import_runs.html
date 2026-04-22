@@ -8,7 +8,7 @@
 </section>
 
 <section class="section-block">
-  {{if .ImportRuns}}
+  {{if .ImportRunRows}}
   <table class="import-run-table">
     <thead>
       <tr>
@@ -17,17 +17,23 @@
         <th scope="col">Started</th>
         <th scope="col">Finished</th>
         <th scope="col">Snapshots</th>
+        {{if .HasImportRunReviewGroups}}
+        <th scope="col">Review groups</th>
+        {{end}}
         <th scope="col">Notes</th>
       </tr>
     </thead>
     <tbody>
-      {{range .ImportRuns}}
+      {{range .ImportRunRows}}
       <tr>
         <td>{{if $.HasImportRunDetail}}<a href="/admin/import-runs/{{.ID}}">Run #{{.ID}}</a>{{else}}Run #{{.ID}}{{end}}</td>
         <td>{{.Status}}</td>
         <td>{{dateShort .StartedAt}} {{timeShort .StartedAt}}</td>
         <td>{{if .FinishedAt}}{{dateShortPtr .FinishedAt}} {{timeShortPtr .FinishedAt}}{{else}}&mdash;{{end}}</td>
         <td>{{snapshotCountLabel .SnapshotCount}}</td>
+        {{if $.HasImportRunReviewGroups}}
+        <td>{{if $.HasImportRunDetail}}<a href="/admin/import-runs/{{.ID}}">{{.ReviewGroupStatusSummary}}</a>{{else}}{{.ReviewGroupStatusSummary}}{{end}}</td>
+        {{end}}
         <td>{{blankValue .Notes}}</td>
       </tr>
       {{end}}

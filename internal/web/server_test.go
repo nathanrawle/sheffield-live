@@ -177,6 +177,44 @@ func TestSQLiteAdminImportRunsEmptyAndPopulated(t *testing.T) {
 	assertContains(t, populatedBody, `href="/admin/import-runs/1"`)
 }
 
+func TestSQLiteAdminImportRunsRenderReviewGroupStatusSummary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(st)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := seedImportRunHistory(t, path); err != nil {
+		t.Fatalf("seed import history: %v", err)
+	}
+
+	_ = mustCreateWebReviewGroupForImportRun(t, st, "Open import group", "Created from manual ingest run 1 review staging.", 1)
+	rejectedID := mustCreateWebReviewGroupForImportRun(t, st, "Rejected import group", "Created from manual ingest run 1 review staging.", 1)
+	secondRejectedID := mustCreateWebReviewGroupForImportRun(t, st, "Second rejected import group", "Created from import run 1 review staging.", 1)
+	if err := st.UpdateReviewGroupStatus(contextForTesting(), rejectedID, review.StatusRejected); err != nil {
+		t.Fatalf("reject review group: %v", err)
+	}
+	if err := st.UpdateReviewGroupStatus(contextForTesting(), secondRejectedID, review.StatusRejected); err != nil {
+		t.Fatalf("reject second review group: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/import-runs")
+	assertContains(t, body, "<th scope=\"col\">Review groups</th>")
+	assertContains(t, body, `href="/admin/import-runs/1">1 open, 2 rejected</a>`)
+	assertContains(t, body, `href="/admin/import-runs/4">none</a>`)
+	assertInOrder(t, body, []string{"Run #3", "none", "Run #2", "none", "Run #1", "1 open, 2 rejected", "Run #4", "none"})
+}
+
 func TestSQLiteAdminImportRunDetailRendersMetadataOnly(t *testing.T) {
 	st, server, runID, bodyText := mustImportRunDetailServer(t, false)
 	defer st.Close()
@@ -326,6 +364,19 @@ func TestAdminImportRunsOmitsDetailLinksWithoutReplayStore(t *testing.T) {
 
 	body := renderPath(t, server, "/admin/import-runs")
 	assertContains(t, body, "Run #1")
+	assertNotContains(t, body, `href="/admin/import-runs/1"`)
+	assertNotContains(t, body, "<th scope=\"col\">Review groups</th>")
+}
+
+func TestAdminImportRunsReviewGroupSummaryIsPlainTextWithoutDetailStore(t *testing.T) {
+	server, err := NewServer(importHistoryWithReviewGroupsNoDetailStoreStub{})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/import-runs")
+	assertContains(t, body, "<th scope=\"col\">Review groups</th>")
+	assertContains(t, body, ">1 open, 2 resolved</td>")
 	assertNotContains(t, body, `href="/admin/import-runs/1"`)
 }
 
@@ -1707,6 +1758,18 @@ func (reviewImportHistoryOnlyStoreStub) ListImportRuns(ctx context.Context, limi
 
 func (reviewImportHistoryOnlyStoreStub) LatestSuccessfulImport(ctx context.Context) (*ingest.ImportRunSummary, error) {
 	return importHistoryOnlyStoreStub{}.LatestSuccessfulImport(ctx)
+}
+
+type importHistoryWithReviewGroupsNoDetailStoreStub struct {
+	importHistoryOnlyStoreStub
+}
+
+func (importHistoryWithReviewGroupsNoDetailStoreStub) ListReviewGroupsForImportRun(context.Context, int64) ([]review.GroupSummary, error) {
+	return []review.GroupSummary{
+		{ID: 1, Status: review.StatusOpen},
+		{ID: 2, Status: review.StatusResolved},
+		{ID: 3, Status: review.StatusResolved},
+	}, nil
 }
 
 type importHistoryWithDetailNoReviewStoreStub struct {
