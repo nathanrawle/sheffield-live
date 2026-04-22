@@ -98,6 +98,7 @@ func TestAdminReviewOmitsLatestImportWithoutImportHistoryStore(t *testing.T) {
 	body := renderPath(t, server, "/admin/review")
 	assertContains(t, body, "Review queue")
 	assertNotContains(t, body, "Latest successful import")
+	assertNotContains(t, body, `href="/admin/import-runs"`)
 }
 
 func TestSQLiteStoreSmoke(t *testing.T) {
@@ -150,6 +151,7 @@ func TestSQLiteAdminImportRunsEmptyAndPopulated(t *testing.T) {
 
 	emptyBody := renderPath(t, server, "/admin/import-runs")
 	assertContains(t, emptyBody, "Import history")
+	assertContains(t, emptyBody, `href="/admin/review"`)
 	assertContains(t, emptyBody, "No import runs recorded yet.")
 
 	if err := seedImportRunHistory(t, path); err != nil {
@@ -180,6 +182,7 @@ func TestSQLiteAdminImportRunDetailRendersMetadataOnly(t *testing.T) {
 
 	body := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
 	assertContains(t, body, "Import run #"+strconvFormatInt(runID))
+	assertContains(t, body, `href="/admin/review"`)
 	assertContains(t, body, "succeeded")
 	assertContains(t, body, "links=1 candidates=2")
 	assertContains(t, body, "Snapshot metadata")
@@ -296,6 +299,33 @@ func TestAdminImportRunDetailMissingStoreSupport404(t *testing.T) {
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusNotFound, rr.Body.String())
 	}
+}
+
+func TestAdminImportRunPagesOmitReviewQueueWithoutReviewStorage(t *testing.T) {
+	server, err := NewServer(importHistoryWithDetailNoReviewStoreStub{})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	listBody := renderPath(t, server, "/admin/import-runs")
+	assertContains(t, listBody, "Import history")
+	assertNotContains(t, listBody, `href="/admin/review"`)
+
+	detailBody := renderPath(t, server, "/admin/import-runs/1")
+	assertContains(t, detailBody, "Import run #1")
+	assertContains(t, detailBody, "Fixture review group")
+	assertNotContains(t, detailBody, `href="/admin/review"`)
+}
+
+func TestAdminImportRunsOmitsDetailLinksWithoutReplayStore(t *testing.T) {
+	server, err := NewServer(importHistoryOnlyStoreStub{})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/import-runs")
+	assertContains(t, body, "Run #1")
+	assertNotContains(t, body, `href="/admin/import-runs/1"`)
 }
 
 func TestSQLiteAdminImportRunDetailMalformedPayloadDoesNotCrash(t *testing.T) {
@@ -526,9 +556,22 @@ func TestAdminReviewShowsLatestSuccessfulImportLink(t *testing.T) {
 	body := renderPath(t, server, "/admin/review")
 	assertContains(t, body, "Latest successful import")
 	assertContains(t, body, "run #1")
+	assertContains(t, body, `href="/admin/import-runs"`)
 	assertContains(t, body, `href="/admin/import-runs/1"`)
-	assertNotContains(t, body, `href="/admin/import-runs"`)
 	assertContains(t, body, "1 snapshot")
+}
+
+func TestAdminReviewShowsLatestSuccessfulImportWithoutDetailLink(t *testing.T) {
+	server, err := NewServer(reviewImportHistoryOnlyStoreStub{})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review")
+	assertContains(t, body, "Latest successful import")
+	assertContains(t, body, "run #1")
+	assertContains(t, body, `href="/admin/import-runs"`)
+	assertNotContains(t, body, `href="/admin/import-runs/1"`)
 }
 
 func TestAdminReviewDetailShowsOriginImportRunLinkFromNotes(t *testing.T) {
@@ -548,6 +591,7 @@ func TestAdminReviewDetailShowsOriginImportRunLinkFromNotes(t *testing.T) {
 			body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
 			assertContains(t, body, "Review notes")
 			assertContains(t, body, tc.notes)
+			assertContains(t, body, `href="/admin/import-runs"`)
 			assertContains(t, body, `href="/admin/import-runs/`+tc.id+`"`)
 			assertContains(t, body, "Import run #"+tc.id)
 		})
@@ -1525,6 +1569,67 @@ func (reviewOnlyStoreStub) ResolveReviewGroup(context.Context, int64, []review.D
 
 func (reviewOnlyStoreStub) UpdateReviewGroupStatus(context.Context, int64, string) error {
 	return nil
+}
+
+type importHistoryOnlyStoreStub struct {
+	readOnlyStoreStub
+}
+
+func (importHistoryOnlyStoreStub) ListImportRuns(context.Context, int) ([]ingest.ImportRunSummary, error) {
+	return []ingest.ImportRunSummary{
+		{
+			ID:            1,
+			StartedAt:     time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
+			Status:        "succeeded",
+			SnapshotCount: 1,
+		},
+	}, nil
+}
+
+func (importHistoryOnlyStoreStub) LatestSuccessfulImport(context.Context) (*ingest.ImportRunSummary, error) {
+	return &ingest.ImportRunSummary{
+		ID:            1,
+		StartedAt:     time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
+		Status:        "succeeded",
+		SnapshotCount: 1,
+	}, nil
+}
+
+type reviewImportHistoryOnlyStoreStub struct {
+	reviewOnlyStoreStub
+}
+
+func (reviewImportHistoryOnlyStoreStub) ListImportRuns(ctx context.Context, limit int) ([]ingest.ImportRunSummary, error) {
+	return importHistoryOnlyStoreStub{}.ListImportRuns(ctx, limit)
+}
+
+func (reviewImportHistoryOnlyStoreStub) LatestSuccessfulImport(ctx context.Context) (*ingest.ImportRunSummary, error) {
+	return importHistoryOnlyStoreStub{}.LatestSuccessfulImport(ctx)
+}
+
+type importHistoryWithDetailNoReviewStoreStub struct {
+	importHistoryOnlyStoreStub
+}
+
+func (importHistoryWithDetailNoReviewStoreStub) LoadImportRun(context.Context, int64) (ingest.ReplayRun, error) {
+	return ingest.ReplayRun{
+		ID:        1,
+		StartedAt: time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
+		Status:    "succeeded",
+		Notes:     "fixture",
+	}, nil
+}
+
+func (importHistoryWithDetailNoReviewStoreStub) ListReviewGroupsForImportRun(context.Context, int64) ([]review.GroupSummary, error) {
+	return []review.GroupSummary{
+		{
+			ID:             1,
+			Title:          "Fixture review group",
+			Status:         review.StatusOpen,
+			CandidateCount: 1,
+			UpdatedAt:      time.Date(2026, time.April, 20, 10, 1, 0, 0, time.UTC),
+		},
+	}, nil
 }
 
 func mustFixtureServer(t *testing.T) *Server {

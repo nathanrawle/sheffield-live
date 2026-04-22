@@ -55,28 +55,31 @@ type ImportRunReviewGroupStore interface {
 }
 
 type PageData struct {
-	SiteName        string
-	PageTitle       string
-	MetaDescription string
-	Active          string
-	Content         template.HTML
-	Now             time.Time
-	Events          []domain.Event
-	EventGroups     []EventGroup
-	EventFilters    EventFilters
-	Event           domain.Event
-	Venues          []domain.Venue
-	Venue           domain.Venue
-	FeaturedEvent   domain.Event
-	TodayEvents     []domain.Event
-	ThisWeekEvents  []domain.Event
-	VenueEvents     []domain.Event
-	ReviewGroups    []review.GroupSummary
-	ReviewDetail    ReviewDetail
-	ImportRuns      []ingest.ImportRunSummary
-	ImportRunDetail ImportRunDetail
-	LatestImport    *ingest.ImportRunSummary
-	Flash           string
+	SiteName           string
+	PageTitle          string
+	MetaDescription    string
+	Active             string
+	Content            template.HTML
+	Now                time.Time
+	Events             []domain.Event
+	EventGroups        []EventGroup
+	EventFilters       EventFilters
+	Event              domain.Event
+	Venues             []domain.Venue
+	Venue              domain.Venue
+	FeaturedEvent      domain.Event
+	TodayEvents        []domain.Event
+	ThisWeekEvents     []domain.Event
+	VenueEvents        []domain.Event
+	ReviewGroups       []review.GroupSummary
+	ReviewDetail       ReviewDetail
+	ImportRuns         []ingest.ImportRunSummary
+	ImportRunDetail    ImportRunDetail
+	LatestImport       *ingest.ImportRunSummary
+	HasImportHistory   bool
+	HasImportRunDetail bool
+	HasReviewStorage   bool
+	Flash              string
 }
 
 type EventGroup struct {
@@ -339,13 +342,15 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		flash = "Rejected."
 	}
 	data := PageData{
-		SiteName:        "Sheffield Live",
-		PageTitle:       "Review",
-		MetaDescription: "Review open staged event candidates.",
-		Active:          "admin-review",
-		Now:             s.now(),
-		ReviewGroups:    groups,
-		Flash:           flash,
+		SiteName:           "Sheffield Live",
+		PageTitle:          "Review",
+		MetaDescription:    "Review open staged event candidates.",
+		Active:             "admin-review",
+		Now:                s.now(),
+		ReviewGroups:       groups,
+		HasImportHistory:   s.importRunStore != nil,
+		HasImportRunDetail: s.replayStore != nil,
+		Flash:              flash,
 	}
 	if s.importRunStore != nil {
 		latest, err := s.importRunStore.LatestSuccessfulImport(r.Context())
@@ -373,11 +378,13 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := PageData{
-		SiteName:        "Sheffield Live",
-		PageTitle:       "Import history",
-		MetaDescription: "Read-only history of import runs and snapshot counts.",
-		Now:             s.now(),
-		ImportRuns:      importRuns,
+		SiteName:           "Sheffield Live",
+		PageTitle:          "Import history",
+		MetaDescription:    "Read-only history of import runs and snapshot counts.",
+		Now:                s.now(),
+		ImportRuns:         importRuns,
+		HasImportRunDetail: s.replayStore != nil,
+		HasReviewStorage:   s.reviewStore != nil,
 	}
 	s.renderPage(w, "templates/admin_import_runs.html", data)
 }
@@ -417,11 +424,14 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 	}
 
 	data := PageData{
-		SiteName:        "Sheffield Live",
-		PageTitle:       fmt.Sprintf("Import run #%d", run.ID),
-		MetaDescription: "Read-only import run snapshot metadata.",
-		Now:             s.now(),
-		ImportRunDetail: detail,
+		SiteName:           "Sheffield Live",
+		PageTitle:          fmt.Sprintf("Import run #%d", run.ID),
+		MetaDescription:    "Read-only import run snapshot metadata.",
+		Now:                s.now(),
+		ImportRunDetail:    detail,
+		HasImportHistory:   s.importRunStore != nil,
+		HasImportRunDetail: s.replayStore != nil,
+		HasReviewStorage:   s.reviewStore != nil,
 	}
 	s.renderPage(w, "templates/admin_import_run_detail.html", data)
 }
@@ -627,12 +637,14 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	data := PageData{
-		SiteName:        "Sheffield Live",
-		PageTitle:       group.Title,
-		MetaDescription: "Review staged event candidates.",
-		Active:          "admin-review",
-		Now:             s.now(),
-		Flash:           flash,
+		SiteName:           "Sheffield Live",
+		PageTitle:          group.Title,
+		MetaDescription:    "Review staged event candidates.",
+		Active:             "admin-review",
+		Now:                s.now(),
+		HasImportHistory:   s.importRunStore != nil,
+		HasImportRunDetail: s.replayStore != nil,
+		Flash:              flash,
 	}
 	detail := buildReviewDetail(group)
 	if s.replayStore != nil {

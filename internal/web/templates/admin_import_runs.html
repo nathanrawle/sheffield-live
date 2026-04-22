@@ -2,6 +2,9 @@
   <p class="eyebrow">Admin</p>
   <h1>Import history</h1>
   <p class="lede">Read-only history of ingest runs and stored snapshot counts.</p>
+  {{if .HasReviewStorage}}
+  <p class="review-group-meta"><a href="/admin/review">Review queue</a></p>
+  {{end}}
 </section>
 
 <section class="section-block">
@@ -20,7 +23,7 @@
     <tbody>
       {{range .ImportRuns}}
       <tr>
-        <td><a href="/admin/import-runs/{{.ID}}">Run #{{.ID}}</a></td>
+        <td>{{if $.HasImportRunDetail}}<a href="/admin/import-runs/{{.ID}}">Run #{{.ID}}</a>{{else}}Run #{{.ID}}{{end}}</td>
         <td>{{.Status}}</td>
         <td>{{dateShort .StartedAt}} {{timeShort .StartedAt}}</td>
         <td>{{if .FinishedAt}}{{dateShortPtr .FinishedAt}} {{timeShortPtr .FinishedAt}}{{else}}&mdash;{{end}}</td>

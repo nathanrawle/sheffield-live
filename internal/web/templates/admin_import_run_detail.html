@@ -1,7 +1,9 @@
 <section class="page-head">
   <p class="eyebrow">Admin</p>
   <h1>Import run #{{.ImportRunDetail.ID}}</h1>
-  <p class="lede"><a href="/admin/import-runs">Back to import history</a></p>
+  {{if or .HasImportHistory .HasReviewStorage}}
+  <p class="lede">{{if .HasImportHistory}}<a href="/admin/import-runs">Back to import history</a>{{end}}{{if and .HasImportHistory .HasReviewStorage}} · {{end}}{{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}</p>
+  {{end}}
 </section>
 
 <section class="section-block">
@@ -47,7 +49,7 @@
       <tbody>
         {{range .ImportRunDetail.ReviewGroups}}
         <tr>
-          <td><a href="/admin/review/{{.ID}}">{{.Title}}</a></td>
+          <td>{{if $.HasReviewStorage}}<a href="/admin/review/{{.ID}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
           <td>{{.Status}}</td>
           <td>{{.CandidateCount}}</td>
           <td>{{.DraftCount}}</td>
