@@ -31,6 +31,38 @@
 </section>
 
 <section class="section-block">
+  <h2>Review groups from this import run</h2>
+  {{if .ImportRunDetail.ReviewGroups}}
+  <div class="import-run-table-wrap">
+    <table class="import-run-table import-run-review-groups-table">
+      <thead>
+        <tr>
+          <th scope="col">Review group</th>
+          <th scope="col">Status</th>
+          <th scope="col">Candidates</th>
+          <th scope="col">Draft choices</th>
+          <th scope="col">Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .ImportRunDetail.ReviewGroups}}
+        <tr>
+          <td><a href="/admin/review/{{.ID}}">{{.Title}}</a></td>
+          <td>{{.Status}}</td>
+          <td>{{.CandidateCount}}</td>
+          <td>{{.DraftCount}}</td>
+          <td>{{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <p class="empty-state">No review groups staged from this import run.</p>
+  {{end}}
+</section>
+
+<section class="section-block">
   <h2>Snapshot metadata</h2>
   {{if .ImportRunDetail.Snapshots}}
   <div class="import-run-table-wrap">

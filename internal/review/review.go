@@ -1,6 +1,7 @@
 package review
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -135,6 +136,41 @@ func StatusValid(value string) bool {
 	default:
 		return false
 	}
+}
+
+func ParseOriginImportRunID(notes string) (int64, bool) {
+	for _, phrase := range []string{"manual ingest run ", "import run "} {
+		if id, ok := parsePositiveIDAfterPhrase(notes, phrase); ok {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+func parsePositiveIDAfterPhrase(text, phrase string) (int64, bool) {
+	searchFrom := 0
+	for {
+		idx := strings.Index(text[searchFrom:], phrase)
+		if idx < 0 {
+			return 0, false
+		}
+		start := searchFrom + idx + len(phrase)
+		end := start
+		for end < len(text) && text[end] >= '0' && text[end] <= '9' {
+			end++
+		}
+		if end > start && (end == len(text) || !asciiLetterOrDigit(text[end])) {
+			id, err := strconv.ParseInt(text[start:end], 10, 64)
+			if err == nil && id > 0 {
+				return id, true
+			}
+		}
+		searchFrom = start
+	}
+}
+
+func asciiLetterOrDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func (f Field) Label() string {

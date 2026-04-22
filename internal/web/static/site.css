@@ -415,6 +415,10 @@ a:focus-visible {
   min-width: 1180px;
 }
 
+.import-run-review-groups-table {
+  min-width: 720px;
+}
+
 .import-run-table th,
 .import-run-table td {
   padding: 0.75rem;

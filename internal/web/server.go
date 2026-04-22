@@ -30,15 +30,16 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type Server struct {
-	store          store.ReadOnlyStore
-	reviewStore    ReviewStore
-	importRunStore ingest.ImportRunStore
-	replayStore    ingest.ReplayStore
-	localLocation  *time.Location
-	clock          func() time.Time
-	layout         *template.Template
-	pages          map[string]*template.Template
-	fileServer     http.Handler
+	store                     store.ReadOnlyStore
+	reviewStore               ReviewStore
+	importRunStore            ingest.ImportRunStore
+	replayStore               ingest.ReplayStore
+	importRunReviewGroupStore ImportRunReviewGroupStore
+	localLocation             *time.Location
+	clock                     func() time.Time
+	layout                    *template.Template
+	pages                     map[string]*template.Template
+	fileServer                http.Handler
 }
 
 type ReviewStore interface {
@@ -47,6 +48,10 @@ type ReviewStore interface {
 	SaveReviewDraftChoices(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
 	ResolveReviewGroup(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
 	UpdateReviewGroupStatus(ctx context.Context, groupID int64, status string) error
+}
+
+type ImportRunReviewGroupStore interface {
+	ListReviewGroupsForImportRun(ctx context.Context, importRunID int64) ([]review.GroupSummary, error)
 }
 
 type PageData struct {
@@ -133,6 +138,7 @@ type ImportRunDetail struct {
 	FinishedAt    *time.Time
 	Notes         string
 	SnapshotCount int
+	ReviewGroups  []review.GroupSummary
 	Snapshots     []ImportRunSnapshotRow
 }
 
@@ -260,15 +266,16 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 	}
 
 	return &Server{
-		store:          st,
-		reviewStore:    reviewStoreFor(st),
-		importRunStore: importRunStoreFor(st),
-		replayStore:    replayStoreFor(st),
-		localLocation:  localLocation,
-		clock:          func() time.Time { return time.Now().UTC() },
-		layout:         layout,
-		pages:          pages,
-		fileServer:     http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
+		store:                     st,
+		reviewStore:               reviewStoreFor(st),
+		importRunStore:            importRunStoreFor(st),
+		replayStore:               replayStoreFor(st),
+		importRunReviewGroupStore: importRunReviewGroupStoreFor(st),
+		localLocation:             localLocation,
+		clock:                     func() time.Time { return time.Now().UTC() },
+		layout:                    layout,
+		pages:                     pages,
+		fileServer:                http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
 	}, nil
 }
 
@@ -399,12 +406,22 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "load import run", http.StatusInternalServerError)
 		return
 	}
+	detail := buildImportRunDetail(run)
+	if s.importRunReviewGroupStore != nil {
+		groups, err := s.importRunReviewGroupStore.ListReviewGroupsForImportRun(r.Context(), run.ID)
+		if err != nil {
+			http.Error(w, "load import run review groups", http.StatusInternalServerError)
+			return
+		}
+		detail.ReviewGroups = groups
+	}
+
 	data := PageData{
 		SiteName:        "Sheffield Live",
 		PageTitle:       fmt.Sprintf("Import run #%d", run.ID),
 		MetaDescription: "Read-only import run snapshot metadata.",
 		Now:             s.now(),
-		ImportRunDetail: buildImportRunDetail(run),
+		ImportRunDetail: detail,
 	}
 	s.renderPage(w, "templates/admin_import_run_detail.html", data)
 }
@@ -619,7 +636,7 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 	}
 	detail := buildReviewDetail(group)
 	if s.replayStore != nil {
-		detail.OriginImportRunID, _ = parseReviewOriginImportRunID(group.Notes)
+		detail.OriginImportRunID, _ = review.ParseOriginImportRunID(group.Notes)
 	}
 	data.ReviewDetail = detail
 	s.renderPage(w, "templates/admin_review_detail.html", data)
@@ -901,6 +918,14 @@ func replayStoreFor(st store.ReadOnlyStore) ingest.ReplayStore {
 	return replayStore
 }
 
+func importRunReviewGroupStoreFor(st store.ReadOnlyStore) ImportRunReviewGroupStore {
+	reviewGroupStore, ok := st.(ImportRunReviewGroupStore)
+	if !ok {
+		return nil
+	}
+	return reviewGroupStore
+}
+
 func parseStrictPositiveIDPath(rawPath, prefix string) (int64, bool) {
 	if !strings.HasPrefix(rawPath, prefix) {
 		return 0, false
@@ -919,41 +944,6 @@ func parseStrictPositiveIDPath(rawPath, prefix string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
-}
-
-func parseReviewOriginImportRunID(notes string) (int64, bool) {
-	for _, phrase := range []string{"manual ingest run ", "import run "} {
-		if id, ok := parsePositiveIDAfterPhrase(notes, phrase); ok {
-			return id, true
-		}
-	}
-	return 0, false
-}
-
-func parsePositiveIDAfterPhrase(text, phrase string) (int64, bool) {
-	searchFrom := 0
-	for {
-		idx := strings.Index(text[searchFrom:], phrase)
-		if idx < 0 {
-			return 0, false
-		}
-		start := searchFrom + idx + len(phrase)
-		end := start
-		for end < len(text) && text[end] >= '0' && text[end] <= '9' {
-			end++
-		}
-		if end > start && (end == len(text) || !asciiLetterOrDigit(text[end])) {
-			id, err := strconv.ParseInt(text[start:end], 10, 64)
-			if err == nil && id > 0 {
-				return id, true
-			}
-		}
-		searchFrom = start
-	}
-}
-
-func asciiLetterOrDigit(b byte) bool {
-	return (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func buildImportRunDetail(run ingest.ReplayRun) ImportRunDetail {

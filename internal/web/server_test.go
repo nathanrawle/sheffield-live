@@ -197,6 +197,60 @@ func TestSQLiteAdminImportRunDetailRendersMetadataOnly(t *testing.T) {
 	assertNotContains(t, body, `body_base64`)
 }
 
+func TestSQLiteAdminImportRunDetailRendersReviewGroupsForRun(t *testing.T) {
+	st, server, runID, bodyText := mustImportRunDetailServer(t, false)
+	defer st.Close()
+
+	openID := mustCreateWebReviewGroupForImportRun(t, st, "Open import group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 2)
+	resolvedID := mustCreateWebPublishableReviewGroupForImportRun(t, st, "Resolved import group", "Created from import run "+strconvFormatInt(runID)+" review staging.")
+	rejectedID := mustCreateWebReviewGroupForImportRun(t, st, "Rejected import group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 1)
+	_ = mustCreateWebReviewGroupForImportRun(t, st, "Wrong import group", "Created from manual ingest run 123 review staging.", 1)
+	_ = mustCreateWebReviewGroupForImportRun(t, st, "Malformed import group", "Created from manual ingest run "+strconvFormatInt(runID)+"abc review staging.", 1)
+
+	open, ok, err := st.LoadReviewGroup(contextForTesting(), openID)
+	if err != nil {
+		t.Fatalf("load open review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("open review group not found")
+	}
+	if err := st.SaveReviewDraftChoices(contextForTesting(), openID, []review.DraftChoiceInput{
+		{Field: review.FieldName, CandidateID: open.Candidates[0].ID},
+	}); err != nil {
+		t.Fatalf("save open draft: %v", err)
+	}
+	resolved, ok, err := st.LoadReviewGroup(contextForTesting(), resolvedID)
+	if err != nil {
+		t.Fatalf("load resolved review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("resolved review group not found")
+	}
+	if err := st.ResolveReviewGroup(contextForTesting(), resolvedID, fullWebReviewChoices(t, resolved)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+	if err := st.UpdateReviewGroupStatus(contextForTesting(), rejectedID, review.StatusRejected); err != nil {
+		t.Fatalf("reject review group: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
+	assertContains(t, body, "Review groups from this import run")
+	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(openID)+`"`)
+	assertContains(t, body, "Open import group")
+	assertContains(t, body, "open")
+	assertContains(t, body, ">2</td>")
+	assertContains(t, body, ">1</td>")
+	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(resolvedID)+`"`)
+	assertContains(t, body, "Resolved import group")
+	assertContains(t, body, "resolved")
+	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(rejectedID)+`"`)
+	assertContains(t, body, "Rejected import group")
+	assertContains(t, body, "rejected")
+	assertNotContains(t, body, "Wrong import group")
+	assertNotContains(t, body, "Malformed import group")
+	assertNotContains(t, body, bodyText)
+}
+
 func TestSQLiteAdminImportRunDetailInvalidAndMissingIDs(t *testing.T) {
 	st, server, _, _ := mustImportRunDetailServer(t, false)
 	defer st.Close()
@@ -1246,7 +1300,7 @@ func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store
 
 	db := mustRawDB(t, path)
 	defer db.Close()
-	runID := int64(1)
+	runID := int64(12)
 	sourceID := int64(10)
 	if _, err := db.Exec(`
 		INSERT INTO sources (id, name, url)
@@ -1370,6 +1424,61 @@ func fullWebReviewChoices(t *testing.T, group review.Group) []review.DraftChoice
 		})
 	}
 	return choices
+}
+
+func mustCreateWebReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, title, notes string, candidateCount int) int64 {
+	t.Helper()
+
+	candidates := make([]review.CandidateInput, 0, candidateCount)
+	for i := 0; i < candidateCount; i++ {
+		candidates = append(candidates, review.CandidateInput{
+			Name:       fmt.Sprintf("%s candidate %d", title, i+1),
+			StartAt:    "2026-05-01T19:00:00Z",
+			SourceName: "Fixture ICS",
+			SourceURL:  "file:test.ics",
+		})
+	}
+	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      title,
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:test.ics",
+		Notes:      notes,
+		Candidates: candidates,
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+	return groupID
+}
+
+func mustCreateWebPublishableReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, title, notes string) int64 {
+	t.Helper()
+
+	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      title,
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:published.ics",
+		Notes:      notes,
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "utc-1",
+				Name:        "UTC Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First line",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/utc-show",
+				Provenance:  "fixture UID utc-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create publishable review group: %v", err)
+	}
+	return groupID
 }
 
 type readOnlyStoreStub struct{}

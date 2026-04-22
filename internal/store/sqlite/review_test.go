@@ -541,6 +541,78 @@ func TestListOpenReviewGroupsOnlyReturnsOpenGroups(t *testing.T) {
 	}
 }
 
+func TestListReviewGroupsForImportRunReturnsAllStatusesWithStrictNoteMatch(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	openID := mustCreateReviewGroupForImportRun(t, st, "Open import 12", "Created from manual ingest run 12 review staging.")
+	resolvedID := mustCreatePublishableReviewGroupForImportRun(t, st, "Resolved import 12", "Created from import run 12 review staging.")
+	rejectedID := mustCreateReviewGroupForImportRun(t, st, "Rejected import 12", "Created from manual ingest run 12 review staging.")
+	_ = mustCreateReviewGroupForImportRun(t, st, "Wrong import 123", "Created from manual ingest run 123 review staging.")
+	_ = mustCreateReviewGroupForImportRun(t, st, "Malformed import 12abc", "Created from manual ingest run 12abc review staging.")
+	_ = mustCreateReviewGroupForImportRun(t, st, "No import", "Created from offline fixture.")
+
+	resolved, ok, err := st.LoadReviewGroup(ctx, resolvedID)
+	if err != nil {
+		t.Fatalf("load resolved group: %v", err)
+	}
+	if !ok {
+		t.Fatal("resolved group not found")
+	}
+	open, ok, err := st.LoadReviewGroup(ctx, openID)
+	if err != nil {
+		t.Fatalf("load open group: %v", err)
+	}
+	if !ok {
+		t.Fatal("open group not found")
+	}
+	if err := st.SaveReviewDraftChoices(ctx, openID, []review.DraftChoiceInput{{Field: review.FieldName, CandidateID: open.Candidates[0].ID}}); err != nil {
+		t.Fatalf("save open draft: %v", err)
+	}
+	if err := st.ResolveReviewGroup(ctx, resolvedID, fullReviewChoices(t, resolved)); err != nil {
+		t.Fatalf("resolve group: %v", err)
+	}
+	if err := st.UpdateReviewGroupStatus(ctx, rejectedID, review.StatusRejected); err != nil {
+		t.Fatalf("reject group: %v", err)
+	}
+
+	groups, err := st.ListReviewGroupsForImportRun(ctx, 12)
+	if err != nil {
+		t.Fatalf("list review groups for import run: %v", err)
+	}
+	if len(groups) != 3 {
+		t.Fatalf("review groups = %d, want 3: %#v", len(groups), groups)
+	}
+
+	gotByID := make(map[int64]review.GroupSummary, len(groups))
+	for _, group := range groups {
+		gotByID[group.ID] = group
+	}
+	if gotByID[openID].Status != review.StatusOpen {
+		t.Fatalf("open group status = %q, want %q", gotByID[openID].Status, review.StatusOpen)
+	}
+	if gotByID[resolvedID].Status != review.StatusResolved {
+		t.Fatalf("resolved group status = %q, want %q", gotByID[resolvedID].Status, review.StatusResolved)
+	}
+	if gotByID[rejectedID].Status != review.StatusRejected {
+		t.Fatalf("rejected group status = %q, want %q", gotByID[rejectedID].Status, review.StatusRejected)
+	}
+	if gotByID[openID].CandidateCount != 1 || gotByID[openID].DraftCount != 1 {
+		t.Fatalf("open group counts = candidates %d drafts %d, want 1 and 1", gotByID[openID].CandidateCount, gotByID[openID].DraftCount)
+	}
+	for _, group := range groups {
+		if group.Title == "Wrong import 123" || group.Title == "Malformed import 12abc" || group.Title == "No import" {
+			t.Fatalf("strict import-run match included %q", group.Title)
+		}
+	}
+}
+
 func TestResolveReviewGroupPublishesCanonicalEvent(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -1207,6 +1279,29 @@ func mustCreateReviewGroup(t *testing.T, st *Store, title, candidateName string)
 	return id
 }
 
+func mustCreateReviewGroupForImportRun(t *testing.T, st *Store, title, notes string) int64 {
+	t.Helper()
+
+	id, err := st.CreateReviewGroup(context.Background(), review.GroupInput{
+		Title:      title,
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:test.ics",
+		Notes:      notes,
+		Candidates: []review.CandidateInput{
+			{
+				Name:       title + " candidate",
+				StartAt:    "2026-05-01T19:00:00Z",
+				SourceName: "Fixture ICS",
+				SourceURL:  "file:test.ics",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+	return id
+}
+
 func mustCreatePublishableReviewGroup(t *testing.T, st *Store, title string) int64 {
 	t.Helper()
 
@@ -1245,6 +1340,36 @@ func mustCreatePublishableReviewGroup(t *testing.T, st *Store, title string) int
 	})
 	if err != nil {
 		t.Fatalf("create review group: %v", err)
+	}
+	return id
+}
+
+func mustCreatePublishableReviewGroupForImportRun(t *testing.T, st *Store, title, notes string) int64 {
+	t.Helper()
+
+	id, err := st.CreateReviewGroup(context.Background(), review.GroupInput{
+		Title:      title,
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:published.ics",
+		Notes:      notes,
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "utc-1",
+				Name:        "UTC Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First line",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/utc-show",
+				Provenance:  "fixture UID utc-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create publishable review group: %v", err)
 	}
 	return id
 }

@@ -241,6 +241,82 @@ func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary
 	return groups, nil
 }
 
+func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID int64) ([]review.GroupSummary, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite store is not open")
+	}
+	if importRunID <= 0 {
+		return nil, errors.New("import run ID is required")
+	}
+
+	idText := fmt.Sprintf("%d", importRunID)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			g.id,
+			g.title,
+			g.source_name,
+			g.source_url,
+			g.status,
+			g.notes,
+			g.created_at,
+			g.updated_at,
+			COUNT(DISTINCT c.id),
+			COUNT(DISTINCT d.field)
+		FROM review_groups g
+		LEFT JOIN review_candidates c ON c.group_id = g.id
+		LEFT JOIN review_draft_choices d ON d.group_id = g.id
+		WHERE g.status IN (?, ?, ?)
+			AND (g.notes LIKE ? OR g.notes LIKE ?)
+		GROUP BY g.id
+		ORDER BY g.updated_at DESC, g.id DESC
+	`, review.StatusOpen, review.StatusResolved, review.StatusRejected, "%manual ingest run "+idText+"%", "%import run "+idText+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groups []review.GroupSummary
+	for rows.Next() {
+		var group review.GroupSummary
+		var notes string
+		var createdAt string
+		var updatedAt string
+		if err := rows.Scan(
+			&group.ID,
+			&group.Title,
+			&group.SourceName,
+			&group.SourceURL,
+			&group.Status,
+			&notes,
+			&createdAt,
+			&updatedAt,
+			&group.CandidateCount,
+			&group.DraftCount,
+		); err != nil {
+			return nil, err
+		}
+		originID, ok := review.ParseOriginImportRunID(notes)
+		if !ok || originID != importRunID {
+			continue
+		}
+		parsedCreatedAt, err := parseRFC3339UTC(createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse review group %d created_at: %w", group.ID, err)
+		}
+		parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse review group %d updated_at: %w", group.ID, err)
+		}
+		group.CreatedAt = parsedCreatedAt
+		group.UpdatedAt = parsedUpdatedAt
+		groups = append(groups, group)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
 func (s *Store) LoadReviewGroup(ctx context.Context, id int64) (review.Group, bool, error) {
 	if s == nil || s.db == nil {
 		return review.Group{}, false, errors.New("sqlite store is not open")
