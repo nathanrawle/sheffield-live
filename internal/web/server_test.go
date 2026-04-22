@@ -694,6 +694,63 @@ func TestSQLiteAdminReviewHistoryListsClosedGroupsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestSQLiteAdminReviewHistoryRendersOriginImportRunColumn(t *testing.T) {
+	st, server, _, path := mustReviewServerWithGroupPath(t)
+	defer st.Close()
+
+	linkedID := mustCreateWebReviewGroupForImportRun(t, st, "Linked history group", "Created from manual ingest run 12 review staging.", 1)
+	noLinkID := mustCreateWebReviewGroupForImportRun(t, st, "Offline history group", "Created from offline fixture.", 1)
+	if err := st.UpdateReviewGroupStatus(contextForTesting(), linkedID, review.StatusRejected); err != nil {
+		t.Fatalf("reject linked review group: %v", err)
+	}
+	if err := st.UpdateReviewGroupStatus(contextForTesting(), noLinkID, review.StatusRejected); err != nil {
+		t.Fatalf("reject offline review group: %v", err)
+	}
+
+	db := mustRawDB(t, path)
+	if err := setWebReviewGroupUpdatedAt(db, linkedID, "2026-04-20T11:00:00Z"); err != nil {
+		t.Fatalf("set linked updated_at: %v", err)
+	}
+	if err := setWebReviewGroupUpdatedAt(db, noLinkID, "2026-04-20T12:00:00Z"); err != nil {
+		t.Fatalf("set offline updated_at: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review/history")
+	assertContains(t, body, `<th scope="col">Import run</th>`)
+	assertContains(t, body, `href="/admin/import-runs/12">Import run #12</a>`)
+	assertInOrder(t, body, []string{"Offline history group", "<td>&mdash;</td>"})
+	assertInOrder(t, body, []string{"Offline history group", "Linked history group"})
+}
+
+func TestAdminReviewHistoryHidesOriginImportRunColumnWithoutDetailSupport(t *testing.T) {
+	server, err := NewServer(reviewOnlyStoreStub{
+		closedGroups: []review.GroupSummary{
+			{
+				ID:             1,
+				Title:          "Linked history group",
+				SourceName:     "Fixture ICS",
+				SourceURL:      "file:test.ics",
+				Status:         review.StatusRejected,
+				Notes:          "Created from manual ingest run 12 review staging.",
+				CreatedAt:      time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
+				UpdatedAt:      time.Date(2026, time.April, 20, 12, 0, 0, 0, time.UTC),
+				CandidateCount: 1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review/history")
+	assertContains(t, body, "Linked history group")
+	assertNotContains(t, body, `<th scope="col">Import run</th>`)
+	assertNotContains(t, body, `href="/admin/import-runs/12"`)
+}
+
 func TestAdminReviewShowsLatestSuccessfulImportLink(t *testing.T) {
 	st, server, _, path := mustReviewServerWithGroupPath(t)
 	defer st.Close()
@@ -1476,6 +1533,15 @@ func mustRawDB(t *testing.T, path string) *sql.DB {
 	return db
 }
 
+func setWebReviewGroupUpdatedAt(db *sql.DB, groupID int64, updatedAt string) error {
+	_, err := db.Exec(`
+		UPDATE review_groups
+		SET updated_at = ?
+		WHERE id = ?
+	`, updatedAt, groupID)
+	return err
+}
+
 func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store, *Server, int64, string) {
 	t.Helper()
 
@@ -1694,15 +1760,16 @@ func (readOnlyStoreStub) Validate() error { return nil }
 
 type reviewOnlyStoreStub struct {
 	readOnlyStoreStub
-	group review.Group
+	group        review.Group
+	closedGroups []review.GroupSummary
 }
 
 func (reviewOnlyStoreStub) ListOpenReviewGroups(context.Context) ([]review.GroupSummary, error) {
 	return nil, nil
 }
 
-func (reviewOnlyStoreStub) ListClosedReviewGroups(context.Context, int) ([]review.GroupSummary, error) {
-	return nil, nil
+func (s reviewOnlyStoreStub) ListClosedReviewGroups(context.Context, int) ([]review.GroupSummary, error) {
+	return s.closedGroups, nil
 }
 
 func (s reviewOnlyStoreStub) LoadReviewGroup(_ context.Context, id int64) (review.Group, bool, error) {

@@ -256,6 +256,7 @@ func (s *Store) ListClosedReviewGroups(ctx context.Context, limit int) ([]review
 			g.source_name,
 			g.source_url,
 			g.status,
+			g.notes,
 			g.created_at,
 			g.updated_at,
 			COUNT(DISTINCT c.id),
@@ -284,6 +285,7 @@ func (s *Store) ListClosedReviewGroups(ctx context.Context, limit int) ([]review
 			&group.SourceName,
 			&group.SourceURL,
 			&group.Status,
+			&group.Notes,
 			&createdAt,
 			&updatedAt,
 			&group.CandidateCount,
@@ -346,7 +348,6 @@ func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID in
 	var groups []review.GroupSummary
 	for rows.Next() {
 		var group review.GroupSummary
-		var notes string
 		var createdAt string
 		var updatedAt string
 		if err := rows.Scan(
@@ -355,7 +356,7 @@ func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID in
 			&group.SourceName,
 			&group.SourceURL,
 			&group.Status,
-			&notes,
+			&group.Notes,
 			&createdAt,
 			&updatedAt,
 			&group.CandidateCount,
@@ -363,7 +364,7 @@ func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID in
 		); err != nil {
 			return nil, err
 		}
-		originID, ok := review.ParseOriginImportRunID(notes)
+		originID, ok := review.ParseOriginImportRunID(group.Notes)
 		if !ok || originID != importRunID {
 			continue
 		}

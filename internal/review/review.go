@@ -44,6 +44,7 @@ type GroupSummary struct {
 	SourceName     string
 	SourceURL      string
 	Status         string
+	Notes          string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	CandidateCount int

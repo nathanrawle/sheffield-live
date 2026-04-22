@@ -75,6 +75,7 @@ type PageData struct {
 	ThisWeekEvents           []domain.Event
 	VenueEvents              []domain.Event
 	ReviewGroups             []review.GroupSummary
+	ReviewHistoryRows        []ReviewHistoryRow
 	ReviewDetail             ReviewDetail
 	ImportRunRows            []ImportRunRow
 	ImportRunDetail          ImportRunDetail
@@ -105,6 +106,11 @@ type ReviewDetail struct {
 	Rows                 []ReviewFieldRow
 	Preview              []ReviewPreviewRow
 	SingleCandidateRows  []ReviewSingleCandidateRow
+}
+
+type ReviewHistoryRow struct {
+	review.GroupSummary
+	OriginImportRunID int64
 }
 
 type ReviewFieldRow struct {
@@ -396,7 +402,7 @@ func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request
 		MetaDescription:    "Read-only history of resolved and rejected review groups.",
 		Active:             "admin-review",
 		Now:                s.now(),
-		ReviewGroups:       groups,
+		ReviewHistoryRows:  buildReviewHistoryRows(groups),
 		HasImportHistory:   s.importRunStore != nil,
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
@@ -1067,6 +1073,16 @@ func reviewStatusSortRank(status string) int {
 	default:
 		return 3
 	}
+}
+
+func buildReviewHistoryRows(groups []review.GroupSummary) []ReviewHistoryRow {
+	rows := make([]ReviewHistoryRow, 0, len(groups))
+	for _, group := range groups {
+		row := ReviewHistoryRow{GroupSummary: group}
+		row.OriginImportRunID, _ = review.ParseOriginImportRunID(group.Notes)
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func buildImportRunDetail(run ingest.ReplayRun) ImportRunDetail {

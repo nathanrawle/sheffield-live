@@ -11,7 +11,7 @@
 </section>
 
 <section class="section-block">
-  {{if .ReviewGroups}}
+  {{if .ReviewHistoryRows}}
   <table class="import-run-table">
     <thead>
       <tr>
@@ -19,17 +19,23 @@
         <th scope="col">Status</th>
         <th scope="col">Candidates</th>
         <th scope="col">Draft choices</th>
+        {{if .HasImportRunDetail}}
+        <th scope="col">Import run</th>
+        {{end}}
         <th scope="col">Updated</th>
         <th scope="col">Source</th>
       </tr>
     </thead>
     <tbody>
-      {{range .ReviewGroups}}
+      {{range .ReviewHistoryRows}}
       <tr>
         <td><a href="/admin/review/{{.ID}}">{{.Title}}</a></td>
         <td>{{.Status}}</td>
         <td>{{.CandidateCount}}</td>
         <td>{{.DraftCount}}</td>
+        {{if $.HasImportRunDetail}}
+        <td>{{if .OriginImportRunID}}<a href="/admin/import-runs/{{.OriginImportRunID}}">Import run #{{.OriginImportRunID}}</a>{{else}}&mdash;{{end}}</td>
+        {{end}}
         <td>{{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</td>
         <td>{{.SourceName}}</td>
       </tr>
