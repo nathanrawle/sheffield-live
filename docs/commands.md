@@ -34,6 +34,7 @@ Routes:
 - `GET /venues/{slug}` venue detail
 - `GET /admin/review` open review queue
 - `GET /admin/review/{groupID}` review detail
+- `GET /admin/import-runs` read-only import history
 - `POST /admin/review/{groupID}` review actions
 - `GET /healthz` plain-text health check
 - `GET /static/site.css` embedded stylesheet
@@ -53,12 +54,14 @@ Routes:
 Review behavior:
 
 - duplicate groups use field-by-field draft choices and a canonical draft summary
+- the review queue shows a read-only link to the latest successful import when the store provides import history
 - `action=save` stores draft choices for duplicate groups
 - `action=resolved` confirms a duplicate and resolves it, publishing one canonical public event
 - singleton groups use accept/reject actions
 - `action=accept` resolves a singleton group and publishes one canonical public event
 - `action=rejected` rejects a duplicate or singleton group without publishing
 - closed groups are read-only and disappear from the open queue
+- import history is read-only and available only when the store implements it
 
 ## `./cmd/ingest`
 

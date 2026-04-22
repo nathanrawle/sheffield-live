@@ -1,0 +1,36 @@
+<section class="page-head">
+  <p class="eyebrow">Admin</p>
+  <h1>Import history</h1>
+  <p class="lede">Read-only history of ingest runs and stored snapshot counts.</p>
+</section>
+
+<section class="section-block">
+  {{if .ImportRuns}}
+  <table class="import-run-table">
+    <thead>
+      <tr>
+        <th scope="col">Run</th>
+        <th scope="col">Status</th>
+        <th scope="col">Started</th>
+        <th scope="col">Finished</th>
+        <th scope="col">Snapshots</th>
+        <th scope="col">Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .ImportRuns}}
+      <tr>
+        <td>Run #{{.ID}}</td>
+        <td>{{.Status}}</td>
+        <td>{{dateShort .StartedAt}} {{timeShort .StartedAt}}</td>
+        <td>{{if .FinishedAt}}{{dateShortPtr .FinishedAt}} {{timeShortPtr .FinishedAt}}{{else}}&mdash;{{end}}</td>
+        <td>{{snapshotCountLabel .SnapshotCount}}</td>
+        <td>{{blankValue .Notes}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty-state">No import runs recorded yet.</p>
+  {{end}}
+</section>

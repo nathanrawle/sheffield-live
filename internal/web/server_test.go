@@ -36,6 +36,7 @@ func TestRoutes(t *testing.T) {
 		{name: "venues", path: "/venues", code: http.StatusOK, body: "Sheffield rooms"},
 		{name: "venue detail", path: "/venues/leadmill", code: http.StatusOK, body: "Leadmill"},
 		{name: "static css", path: "/static/site.css", code: http.StatusOK, body: "color-scheme"},
+		{name: "admin import history missing", path: "/admin/import-runs", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "healthz", path: "/healthz", code: http.StatusOK, body: "ok"},
 		{name: "missing", path: "/events/missing", code: http.StatusNotFound, body: "404 page not found"},
 	}
@@ -84,6 +85,17 @@ func TestNewServerAcceptsReadOnlyStore(t *testing.T) {
 	}
 }
 
+func TestAdminReviewOmitsLatestImportWithoutImportHistoryStore(t *testing.T) {
+	server, err := NewServer(reviewOnlyStoreStub{})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review")
+	assertContains(t, body, "Review queue")
+	assertNotContains(t, body, "Latest successful import")
+}
+
 func TestSQLiteStoreSmoke(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -112,6 +124,48 @@ func TestSQLiteStoreSmoke(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "ok") {
 		t.Fatalf("body = %q, want ok", rr.Body.String())
 	}
+}
+
+func TestSQLiteAdminImportRunsEmptyAndPopulated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(st)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	emptyBody := renderPath(t, server, "/admin/import-runs")
+	assertContains(t, emptyBody, "Import history")
+	assertContains(t, emptyBody, "No import runs recorded yet.")
+
+	if err := seedImportRunHistory(t, path); err != nil {
+		t.Fatalf("seed import history: %v", err)
+	}
+
+	populatedBody := renderPath(t, server, "/admin/import-runs")
+	assertInOrder(t, populatedBody, []string{"Run #3", "Run #2", "Run #1", "Run #4"})
+	assertContains(t, populatedBody, "running")
+	assertContains(t, populatedBody, "failed")
+	assertContains(t, populatedBody, "succeeded")
+	assertContains(t, populatedBody, "2 snapshots")
+	assertContains(t, populatedBody, "3 snapshots")
+	assertContains(t, populatedBody, "1 snapshot")
+	assertContains(t, populatedBody, "0 snapshots")
+	assertContains(t, populatedBody, "Newest run")
+	assertContains(t, populatedBody, "Older failure")
+	assertContains(t, populatedBody, "Old success")
+	assertContains(t, populatedBody, "Very old success")
+	assertContains(t, populatedBody, "&mdash;")
 }
 
 func TestSQLiteEventDetailRendersResolvedReviewSource(t *testing.T) {
@@ -292,6 +346,21 @@ func TestAdminReviewListDetailAndSave(t *testing.T) {
 	assertContains(t, saveBody, "<strong>Name</strong>: London Show")
 	assertContains(t, saveBody, "<strong>Venue slug</strong>: sidney-and-matilda")
 	assertContains(t, saveBody, `name="choice_name" value="`+strconvFormatInt(group.Candidates[1].ID)+`" checked`)
+}
+
+func TestAdminReviewShowsLatestSuccessfulImportLink(t *testing.T) {
+	st, server, _, path := mustReviewServerWithGroupPath(t)
+	defer st.Close()
+
+	if err := seedImportRunHistory(t, path); err != nil {
+		t.Fatalf("seed import history: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review")
+	assertContains(t, body, "Latest successful import")
+	assertContains(t, body, "run #1")
+	assertContains(t, body, "/admin/import-runs")
+	assertContains(t, body, "1 snapshot")
 }
 
 func TestAdminReviewDetailFallsBackToCandidateNumberWhenExternalIDIsMissing(t *testing.T) {
@@ -862,6 +931,61 @@ func mustReviewServerWithGroup(t *testing.T) (*sqlitestore.Store, *Server, int64
 	return st, server, groupID
 }
 
+func mustReviewServerWithGroupPath(t *testing.T) (*sqlitestore.Store, *Server, int64, string) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+
+	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Fixture review",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:sidney.ics",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "utc-1",
+				Name:        "UTC Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First line",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/utc-show",
+				Provenance:  "fixture UID utc-1",
+			},
+			{
+				ExternalID:  "london-1",
+				Name:        "London Show",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-02T18:30:00Z",
+				EndAt:       "2026-05-02T21:30:00Z",
+				Genre:       "Rock",
+				Status:      "Listed",
+				Description: "London description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "file:sidney.ics",
+				Provenance:  "fixture UID london-1",
+			},
+		},
+	})
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("create review group: %v", err)
+	}
+
+	server, err := NewServer(st)
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("new server: %v", err)
+	}
+	return st, server, groupID, path
+}
+
 func mustReviewServerWithSingletonGroup(t *testing.T) (*sqlitestore.Store, *Server, int64, string) {
 	t.Helper()
 
@@ -917,6 +1041,59 @@ func mustRawDB(t *testing.T, path string) *sql.DB {
 	return db
 }
 
+func seedImportRunHistory(t *testing.T, path string) error {
+	t.Helper()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	return seedImportRunHistoryWithDB(db)
+}
+
+func seedImportRunHistoryWithDB(db *sql.DB) error {
+	sizes := map[int64]int{
+		1: 1,
+		2: 3,
+		3: 2,
+		4: 0,
+	}
+	rows := []struct {
+		id         int64
+		startedAt  string
+		finishedAt sql.NullString
+		status     string
+		notes      string
+	}{
+		{id: 1, startedAt: "2026-04-20T10:00:00Z", finishedAt: sql.NullString{String: "2026-04-20T10:05:00Z", Valid: true}, status: "succeeded", notes: "Old success"},
+		{id: 2, startedAt: "2026-04-20T11:00:00Z", finishedAt: sql.NullString{String: "2026-04-20T11:05:00Z", Valid: true}, status: "failed", notes: "Older failure"},
+		{id: 3, startedAt: "2026-04-20T12:00:00Z", finishedAt: sql.NullString{}, status: "running", notes: "Newest run"},
+		{id: 4, startedAt: "2026-04-20T09:00:00Z", finishedAt: sql.NullString{String: "2026-04-20T09:10:00Z", Valid: true}, status: "succeeded", notes: "Very old success"},
+	}
+	for _, row := range rows {
+		if _, err := db.Exec(`
+			INSERT INTO import_runs (id, started_at, finished_at, status, notes)
+			VALUES (?, ?, ?, ?, ?)
+		`, row.id, row.startedAt, nullableString(row.finishedAt), row.status, row.notes); err != nil {
+			return err
+		}
+		for i := 0; i < sizes[row.id]; i++ {
+			if _, err := db.Exec(`
+				INSERT INTO snapshots (import_run_id, captured_at, payload)
+				VALUES (?, ?, ?)
+			`, row.id, row.startedAt, `{"version":1}`); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func nullableString(value sql.NullString) any {
+	if value.Valid {
+		return value.String
+	}
+	return nil
+}
+
 func contextForTesting() context.Context {
 	return httptest.NewRequest(http.MethodGet, "/", nil).Context()
 }
@@ -954,6 +1131,30 @@ func (readOnlyStoreStub) EventBySlug(string) (domain.Event, bool) {
 func (readOnlyStoreStub) EventsForVenue(string) []domain.Event { return nil }
 
 func (readOnlyStoreStub) Validate() error { return nil }
+
+type reviewOnlyStoreStub struct {
+	readOnlyStoreStub
+}
+
+func (reviewOnlyStoreStub) ListOpenReviewGroups(context.Context) ([]review.GroupSummary, error) {
+	return nil, nil
+}
+
+func (reviewOnlyStoreStub) LoadReviewGroup(context.Context, int64) (review.Group, bool, error) {
+	return review.Group{}, false, nil
+}
+
+func (reviewOnlyStoreStub) SaveReviewDraftChoices(context.Context, int64, []review.DraftChoiceInput) error {
+	return nil
+}
+
+func (reviewOnlyStoreStub) ResolveReviewGroup(context.Context, int64, []review.DraftChoiceInput) error {
+	return nil
+}
+
+func (reviewOnlyStoreStub) UpdateReviewGroupStatus(context.Context, int64, string) error {
+	return nil
+}
 
 func mustFixtureServer(t *testing.T) *Server {
 	t.Helper()

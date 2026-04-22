@@ -162,6 +162,114 @@ func (s *Store) FinishImportRun(ctx context.Context, id int64, status, notes str
 	return finishedAt, nil
 }
 
+func (s *Store) ListImportRuns(ctx context.Context, limit int) ([]ingest.ImportRunSummary, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite store is not open")
+	}
+	if limit <= 0 {
+		return nil, errors.New("limit must be positive")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			ir.id,
+			ir.started_at,
+			ir.finished_at,
+			ir.status,
+			ir.notes,
+			COUNT(sn.id) AS snapshot_count
+		FROM import_runs ir
+		LEFT JOIN snapshots sn ON sn.import_run_id = ir.id
+		GROUP BY ir.id, ir.started_at, ir.finished_at, ir.status, ir.notes
+		ORDER BY ir.started_at DESC, ir.id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	runs := make([]ingest.ImportRunSummary, 0, limit)
+	for rows.Next() {
+		summary, err := scanImportRunSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+func (s *Store) LatestSuccessfulImport(ctx context.Context) (*ingest.ImportRunSummary, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite store is not open")
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			ir.id,
+			ir.started_at,
+			ir.finished_at,
+			ir.status,
+			ir.notes,
+			COUNT(sn.id) AS snapshot_count
+		FROM import_runs ir
+		LEFT JOIN snapshots sn ON sn.import_run_id = ir.id
+		WHERE LOWER(TRIM(ir.status)) = ? AND ir.finished_at IS NOT NULL AND TRIM(ir.finished_at) <> ''
+		GROUP BY ir.id, ir.started_at, ir.finished_at, ir.status, ir.notes
+		ORDER BY ir.finished_at DESC, ir.id DESC
+		LIMIT 1
+	`, ingestStatusSucceeded())
+
+	summary, err := scanImportRunSummary(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &summary, nil
+}
+
+func scanImportRunSummary(row interface {
+	Scan(dest ...any) error
+}) (ingest.ImportRunSummary, error) {
+	var summary ingest.ImportRunSummary
+	var startedAtText string
+	var finishedAtText sql.NullString
+	if err := row.Scan(
+		&summary.ID,
+		&startedAtText,
+		&finishedAtText,
+		&summary.Status,
+		&summary.Notes,
+		&summary.SnapshotCount,
+	); err != nil {
+		return ingest.ImportRunSummary{}, err
+	}
+
+	startedAt, err := parseRFC3339UTC(startedAtText)
+	if err != nil {
+		return ingest.ImportRunSummary{}, fmt.Errorf("parse import run %d started_at: %w", summary.ID, err)
+	}
+	summary.StartedAt = startedAt
+	if finishedAtText.Valid && strings.TrimSpace(finishedAtText.String) != "" {
+		finishedAt, err := parseRFC3339UTC(finishedAtText.String)
+		if err != nil {
+			return ingest.ImportRunSummary{}, fmt.Errorf("parse import run %d finished_at: %w", summary.ID, err)
+		}
+		summary.FinishedAt = &finishedAt
+	}
+	return summary, nil
+}
+
+func ingestStatusSucceeded() string {
+	return "succeeded"
+}
+
 func (s *Store) LoadImportRun(ctx context.Context, id int64) (ingest.ReplayRun, error) {
 	if s == nil || s.db == nil {
 		return ingest.ReplayRun{}, errors.New("sqlite store is not open")

@@ -14,6 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"sheffield-live/internal/domain"
+	"sheffield-live/internal/ingest"
 	seedstore "sheffield-live/internal/store"
 )
 
@@ -43,6 +44,7 @@ type Store struct {
 }
 
 var _ seedstore.ReadOnlyStore = (*Store)(nil)
+var _ ingest.ImportRunStore = (*Store)(nil)
 
 type queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)

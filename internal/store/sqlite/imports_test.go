@@ -135,6 +135,137 @@ func TestFinishImportRunRejectsMissingRun(t *testing.T) {
 	}
 }
 
+func TestListImportRunsOrdersByStartedAtAndCountsSnapshots(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	olderStarted := time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC)
+	tiedStarted := time.Date(2026, time.April, 20, 11, 0, 0, 0, time.UTC)
+	newestStarted := time.Date(2026, time.April, 20, 12, 0, 0, 0, time.UTC)
+
+	insertImportRunSummaryFixture(t, db, 10, olderStarted, olderStarted.Add(time.Minute), "failed", "older")
+	insertSnapshotsFixture(t, db, 10, olderStarted, 1)
+	insertImportRunSummaryFixture(t, db, 20, tiedStarted, tiedStarted.Add(time.Minute), "succeeded", "tied lower id")
+	insertSnapshotsFixture(t, db, 20, tiedStarted, 2)
+	insertImportRunSummaryFixture(t, db, 30, tiedStarted, tiedStarted.Add(time.Minute), "failed", "tied higher id")
+	insertImportRunSummaryFixture(t, db, 40, newestStarted, newestStarted.Add(time.Minute), "running", "newest")
+	insertSnapshotsFixture(t, db, 40, newestStarted, 3)
+
+	runs, err := st.ListImportRuns(ctx, 3)
+	if err != nil {
+		t.Fatalf("list import runs: %v", err)
+	}
+	if got, want := len(runs), 3; got != want {
+		t.Fatalf("runs = %d, want %d", got, want)
+	}
+
+	wantIDs := []int64{40, 30, 20}
+	wantSnapshotCounts := []int{3, 0, 2}
+	for i := range wantIDs {
+		if runs[i].ID != wantIDs[i] {
+			t.Fatalf("run[%d].ID = %d, want %d", i, runs[i].ID, wantIDs[i])
+		}
+		if runs[i].SnapshotCount != wantSnapshotCounts[i] {
+			t.Fatalf("run[%d].SnapshotCount = %d, want %d", i, runs[i].SnapshotCount, wantSnapshotCounts[i])
+		}
+	}
+}
+
+func TestListImportRunsRejectsInvalidLimit(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	for _, limit := range []int{0, -1} {
+		if _, err := st.ListImportRuns(context.Background(), limit); err == nil {
+			t.Fatalf("ListImportRuns(%d) error = nil, want error", limit)
+		}
+	}
+}
+
+func TestLatestSuccessfulImportReturnsLatestFinishedSucceededRun(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	baseStarted := time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC)
+	insertImportRunSummaryFixture(t, db, 10, baseStarted, baseStarted.Add(time.Minute), "succeeded", "older success")
+	insertSnapshotsFixture(t, db, 10, baseStarted, 1)
+
+	latestFinishedAt := baseStarted.Add(2 * time.Hour)
+	insertImportRunSummaryFixture(t, db, 20, baseStarted.Add(time.Hour), latestFinishedAt, " SUCCEEDED ", "latest success")
+	insertSnapshotsFixture(t, db, 20, baseStarted.Add(time.Hour), 2)
+
+	insertImportRunSummaryFixture(t, db, 30, baseStarted.Add(2*time.Hour), latestFinishedAt.Add(time.Hour), "failed", "newer failure")
+	insertImportRunSummaryFixture(t, db, 40, baseStarted.Add(3*time.Hour), time.Time{}, "succeeded", "unfinished success")
+
+	run, err := st.LatestSuccessfulImport(ctx)
+	if err != nil {
+		t.Fatalf("latest successful import: %v", err)
+	}
+	if run == nil {
+		t.Fatal("latest successful import = nil, want run")
+	}
+	if run.ID != 20 {
+		t.Fatalf("run ID = %d, want 20", run.ID)
+	}
+	if run.Status != " SUCCEEDED " {
+		t.Fatalf("status = %q, want %q", run.Status, " SUCCEEDED ")
+	}
+	wantFinishedAt := latestFinishedAt.UTC().Truncate(time.Second)
+	if run.FinishedAt == nil || !run.FinishedAt.Equal(wantFinishedAt) {
+		t.Fatalf("finished_at = %v, want %v", run.FinishedAt, wantFinishedAt)
+	}
+	if got, want := run.SnapshotCount, 2; got != want {
+		t.Fatalf("snapshot count = %d, want %d", got, want)
+	}
+}
+
+func TestLatestSuccessfulImportReturnsNilWithoutSuccessfulRun(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	startedAt := time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC)
+	insertImportRunSummaryFixture(t, db, 10, startedAt, startedAt.Add(time.Minute), "failed", "failed")
+	insertImportRunSummaryFixture(t, db, 20, startedAt.Add(time.Hour), time.Time{}, "running", "running")
+
+	run, err := st.LatestSuccessfulImport(ctx)
+	if err != nil {
+		t.Fatalf("latest successful import: %v", err)
+	}
+	if run != nil {
+		t.Fatalf("latest successful import = %#v, want nil", run)
+	}
+}
+
 func TestLoadImportRunReturnsOrderedSnapshots(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -261,6 +392,34 @@ func TestLoadImportRunReturnsOrderedSnapshots(t *testing.T) {
 	}
 	if got, want := run.Snapshots[2].SourceURL, "https://www.sidneyandmatilda.com/"; got != want {
 		t.Fatalf("third snapshot source URL = %q, want %q", got, want)
+	}
+}
+
+func insertImportRunSummaryFixture(t *testing.T, db *sql.DB, id int64, startedAt, finishedAt time.Time, status, notes string) {
+	t.Helper()
+
+	var finishedAtValue any
+	if !finishedAt.IsZero() {
+		finishedAtValue = formatRFC3339UTC(finishedAt)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO import_runs (id, started_at, finished_at, status, notes)
+		VALUES (?, ?, ?, ?, ?)
+	`, id, formatRFC3339UTC(startedAt), finishedAtValue, status, notes); err != nil {
+		t.Fatalf("insert import run %d: %v", id, err)
+	}
+}
+
+func insertSnapshotsFixture(t *testing.T, db *sql.DB, importRunID int64, capturedAt time.Time, count int) {
+	t.Helper()
+
+	for i := 0; i < count; i++ {
+		if _, err := db.Exec(`
+			INSERT INTO snapshots (import_run_id, captured_at, payload)
+			VALUES (?, ?, ?)
+		`, importRunID, formatRFC3339UTC(capturedAt.Add(time.Duration(i)*time.Second)), "{}"); err != nil {
+			t.Fatalf("insert snapshot %d for import run %d: %v", i+1, importRunID, err)
+		}
 	}
 }
 

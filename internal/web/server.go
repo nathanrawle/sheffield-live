@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"sheffield-live/internal/domain"
+	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/review"
 	"sheffield-live/internal/store"
 )
@@ -28,13 +29,14 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type Server struct {
-	store         store.ReadOnlyStore
-	reviewStore   ReviewStore
-	localLocation *time.Location
-	clock         func() time.Time
-	layout        *template.Template
-	pages         map[string]*template.Template
-	fileServer    http.Handler
+	store          store.ReadOnlyStore
+	reviewStore    ReviewStore
+	importRunStore ingest.ImportRunStore
+	localLocation  *time.Location
+	clock          func() time.Time
+	layout         *template.Template
+	pages          map[string]*template.Template
+	fileServer     http.Handler
 }
 
 type ReviewStore interface {
@@ -64,6 +66,8 @@ type PageData struct {
 	VenueEvents     []domain.Event
 	ReviewGroups    []review.GroupSummary
 	ReviewDetail    ReviewDetail
+	ImportRuns      []ingest.ImportRunSummary
+	LatestImport    *ingest.ImportRunSummary
 	Flash           string
 }
 
@@ -131,6 +135,12 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 	funcs := template.FuncMap{
 		"dateLong":  func(t time.Time) string { return t.In(localLocation).Format("Monday, 2 January 2006") },
 		"dateShort": func(t time.Time) string { return t.In(localLocation).Format("2 Jan 2006") },
+		"dateShortPtr": func(t *time.Time) string {
+			if t == nil {
+				return ""
+			}
+			return t.In(localLocation).Format("2 Jan 2006")
+		},
 		"originLabel": func(origin domain.Origin) string {
 			switch origin {
 			case domain.OriginSeed:
@@ -149,6 +159,12 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 			}
 			return value
 		},
+		"snapshotCountLabel": func(count int) string {
+			if count == 1 {
+				return "1 snapshot"
+			}
+			return fmt.Sprintf("%d snapshots", count)
+		},
 		"candidateCountLabel": func(count int) string {
 			if count == 1 {
 				return "New listing review - 1 candidate"
@@ -156,6 +172,12 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 			return fmt.Sprintf("Duplicate review - %d candidates", count)
 		},
 		"timeShort": func(t time.Time) string { return t.In(localLocation).Format("15:04") },
+		"timeShortPtr": func(t *time.Time) string {
+			if t == nil {
+				return ""
+			}
+			return t.In(localLocation).Format("15:04")
+		},
 		"venueName": func(slug string) string {
 			venue, ok := st.VenueBySlug(slug)
 			if !ok {
@@ -178,6 +200,7 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 		"templates/venues.html",
 		"templates/venue_detail.html",
 		"templates/admin_review.html",
+		"templates/admin_import_runs.html",
 		"templates/admin_review_detail.html",
 	}
 	pages := make(map[string]*template.Template, len(pageFiles))
@@ -195,13 +218,14 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 	}
 
 	return &Server{
-		store:         st,
-		reviewStore:   reviewStoreFor(st),
-		localLocation: localLocation,
-		clock:         func() time.Time { return time.Now().UTC() },
-		layout:        layout,
-		pages:         pages,
-		fileServer:    http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
+		store:          st,
+		reviewStore:    reviewStoreFor(st),
+		importRunStore: importRunStoreFor(st),
+		localLocation:  localLocation,
+		clock:          func() time.Time { return time.Now().UTC() },
+		layout:         layout,
+		pages:          pages,
+		fileServer:     http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
 	}, nil
 }
 
@@ -222,6 +246,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleHealthz(w, r)
 	case cleaned == "/admin/review":
 		s.handleAdminReview(w, r)
+	case cleaned == "/admin/import-runs":
+		s.handleAdminImportRuns(w, r)
 	case strings.HasPrefix(cleaned, "/admin/review/"):
 		s.handleAdminReviewDetail(w, r, strings.TrimPrefix(cleaned, "/admin/review/"))
 	case strings.HasPrefix(cleaned, "/events/"):
@@ -269,7 +295,39 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		ReviewGroups:    groups,
 		Flash:           flash,
 	}
+	if s.importRunStore != nil {
+		latest, err := s.importRunStore.LatestSuccessfulImport(r.Context())
+		if err != nil {
+			http.Error(w, "load latest import run", http.StatusInternalServerError)
+			return
+		}
+		data.LatestImport = latest
+	}
 	s.renderPage(w, "templates/admin_review.html", data)
+}
+
+func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
+	if s.importRunStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	importRuns, err := s.importRunStore.ListImportRuns(r.Context(), 20)
+	if err != nil {
+		http.Error(w, "load import runs", http.StatusInternalServerError)
+		return
+	}
+	data := PageData{
+		SiteName:        "Sheffield Live",
+		PageTitle:       "Import history",
+		MetaDescription: "Read-only history of import runs and snapshot counts.",
+		Now:             s.now(),
+		ImportRuns:      importRuns,
+	}
+	s.renderPage(w, "templates/admin_import_runs.html", data)
 }
 
 func (s *Server) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request, rawGroupID string) {
@@ -742,6 +800,14 @@ func reviewStoreFor(st store.ReadOnlyStore) ReviewStore {
 		return nil
 	}
 	return reviewStore
+}
+
+func importRunStoreFor(st store.ReadOnlyStore) ingest.ImportRunStore {
+	importRunStore, ok := st.(ingest.ImportRunStore)
+	if !ok {
+		return nil
+	}
+	return importRunStore
 }
 
 func buildReviewDetail(group review.Group) ReviewDetail {

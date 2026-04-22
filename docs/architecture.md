@@ -37,6 +37,7 @@ The database path must point to writable storage because the application creates
 - `/venues/{slug}`
 - `/admin/review`
 - `/admin/review/{groupID}`
+- `/admin/import-runs`
 - `/healthz`
 - `/static/site.css`
 
@@ -56,6 +57,8 @@ Public records live in SQLite and are served from canonical `venues` and `events
 - `Event` stores slug, name, venue slug, UTC start and end times, genre, status, description, source name, source URL, last checked time, and origin
 
 Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
+
+The admin UI exposes read-only import history when the backing store implements it.
 
 ## Data Lifecycle
 
