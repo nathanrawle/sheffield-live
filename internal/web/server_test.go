@@ -472,7 +472,8 @@ func TestAdminReviewShowsLatestSuccessfulImportLink(t *testing.T) {
 	body := renderPath(t, server, "/admin/review")
 	assertContains(t, body, "Latest successful import")
 	assertContains(t, body, "run #1")
-	assertContains(t, body, "/admin/import-runs")
+	assertContains(t, body, `href="/admin/import-runs/1"`)
+	assertNotContains(t, body, `href="/admin/import-runs"`)
 	assertContains(t, body, "1 snapshot")
 }
 

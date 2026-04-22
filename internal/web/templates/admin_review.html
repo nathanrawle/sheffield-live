@@ -3,7 +3,7 @@
   <h1>Review queue</h1>
   <p class="lede">Open staging groups waiting for duplicate checks or new-listing review.</p>
   {{with .LatestImport}}
-  <p class="review-group-meta">Latest successful import: <a href="/admin/import-runs">run #{{.ID}}</a> · {{.Status}} · {{snapshotCountLabel .SnapshotCount}}{{with .FinishedAt}} · finished {{dateShortPtr .}} {{timeShortPtr .}}{{end}}</p>
+  <p class="review-group-meta">Latest successful import: <a href="/admin/import-runs/{{.ID}}">run #{{.ID}}</a> · {{.Status}} · {{snapshotCountLabel .SnapshotCount}}{{with .FinishedAt}} · finished {{dateShortPtr .}} {{timeShortPtr .}}{{end}}</p>
   {{end}}
 </section>
 
