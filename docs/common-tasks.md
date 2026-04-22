@@ -73,3 +73,4 @@ Open `/admin/review` in the browser.
 - singleton groups use accept/reject
 - resolving or accepting publishes one canonical public event
 - rejecting does not publish
+- open `/admin/review/history` for the 50 newest resolved and rejected groups

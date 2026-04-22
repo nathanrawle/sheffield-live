@@ -13,7 +13,7 @@ Defaults: `ADDR=:8080` and `DB_PATH=./data/sheffield-live.db`.
 Current surface:
 
 - home, event list/detail, and venue list/detail pages
-- admin review queue and review detail pages for staged ingest work
+- admin review queue, review history, and review detail pages for staged ingest work
 - `GET /healthz`
 - embedded stylesheet at `/static/site.css`
 - seed, test, and development records are labelled; live records are untagged

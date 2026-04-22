@@ -241,6 +241,74 @@ func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary
 	return groups, nil
 }
 
+func (s *Store) ListClosedReviewGroups(ctx context.Context, limit int) ([]review.GroupSummary, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite store is not open")
+	}
+	if limit <= 0 {
+		return nil, errors.New("review group limit must be positive")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			g.id,
+			g.title,
+			g.source_name,
+			g.source_url,
+			g.status,
+			g.created_at,
+			g.updated_at,
+			COUNT(DISTINCT c.id),
+			COUNT(DISTINCT d.field)
+		FROM review_groups g
+		LEFT JOIN review_candidates c ON c.group_id = g.id
+		LEFT JOIN review_draft_choices d ON d.group_id = g.id
+		WHERE g.status IN (?, ?)
+		GROUP BY g.id
+		ORDER BY g.updated_at DESC, g.id DESC
+		LIMIT ?
+	`, review.StatusResolved, review.StatusRejected, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groups []review.GroupSummary
+	for rows.Next() {
+		var group review.GroupSummary
+		var createdAt string
+		var updatedAt string
+		if err := rows.Scan(
+			&group.ID,
+			&group.Title,
+			&group.SourceName,
+			&group.SourceURL,
+			&group.Status,
+			&createdAt,
+			&updatedAt,
+			&group.CandidateCount,
+			&group.DraftCount,
+		); err != nil {
+			return nil, err
+		}
+		parsedCreatedAt, err := parseRFC3339UTC(createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse review group %d created_at: %w", group.ID, err)
+		}
+		parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse review group %d updated_at: %w", group.ID, err)
+		}
+		group.CreatedAt = parsedCreatedAt
+		group.UpdatedAt = parsedUpdatedAt
+		groups = append(groups, group)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
 func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID int64) ([]review.GroupSummary, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("sqlite store is not open")

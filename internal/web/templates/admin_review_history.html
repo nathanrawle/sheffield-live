@@ -1,0 +1,42 @@
+<section class="page-head">
+  <p class="eyebrow">Admin</p>
+  <h1>Review history</h1>
+  <p class="lede">Resolved and rejected review groups, newest updates first.</p>
+  {{if .HasReviewStorage}}
+  <p class="review-group-meta"><a href="/admin/review">Review queue</a></p>
+  {{end}}
+  {{if .HasImportHistory}}
+  <p class="review-group-meta"><a href="/admin/import-runs">Import history</a></p>
+  {{end}}
+</section>
+
+<section class="section-block">
+  {{if .ReviewGroups}}
+  <table class="import-run-table">
+    <thead>
+      <tr>
+        <th scope="col">Review group</th>
+        <th scope="col">Status</th>
+        <th scope="col">Candidates</th>
+        <th scope="col">Draft choices</th>
+        <th scope="col">Updated</th>
+        <th scope="col">Source</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .ReviewGroups}}
+      <tr>
+        <td><a href="/admin/review/{{.ID}}">{{.Title}}</a></td>
+        <td>{{.Status}}</td>
+        <td>{{.CandidateCount}}</td>
+        <td>{{.DraftCount}}</td>
+        <td>{{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</td>
+        <td>{{.SourceName}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty-state">No resolved or rejected review groups yet.</p>
+  {{end}}
+</section>

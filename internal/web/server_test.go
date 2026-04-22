@@ -41,6 +41,7 @@ func TestRoutes(t *testing.T) {
 		{name: "venue detail", path: "/venues/leadmill", code: http.StatusOK, body: "Leadmill"},
 		{name: "static css", path: "/static/site.css", code: http.StatusOK, body: "color-scheme"},
 		{name: "admin import history missing", path: "/admin/import-runs", code: http.StatusNotFound, body: "404 page not found"},
+		{name: "admin review history missing", path: "/admin/review/history", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "healthz", path: "/healthz", code: http.StatusOK, body: "ok"},
 		{name: "missing", path: "/events/missing", code: http.StatusNotFound, body: "404 page not found"},
 	}
@@ -488,6 +489,7 @@ func TestAdminReviewListDetailAndSave(t *testing.T) {
 	assertContains(t, listBody, "Review queue")
 	assertContains(t, listBody, "Fixture review")
 	assertContains(t, listBody, "2 candidates")
+	assertContains(t, listBody, `href="/admin/review/history"`)
 
 	detailBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
 	assertContains(t, detailBody, "Canonical draft summary")
@@ -500,6 +502,7 @@ func TestAdminReviewListDetailAndSave(t *testing.T) {
 	assertContains(t, detailBody, "fixture UID utc-1")
 	assertContains(t, detailBody, `name="choice_name"`)
 	assertContains(t, detailBody, `name="choice_start_at"`)
+	assertContains(t, detailBody, `href="/admin/review/history"`)
 
 	group, ok, err := st.LoadReviewGroup(ctx, groupID)
 	if err != nil {
@@ -543,6 +546,101 @@ func TestAdminReviewListDetailAndSave(t *testing.T) {
 	assertContains(t, saveBody, "<strong>Name</strong>: London Show")
 	assertContains(t, saveBody, "<strong>Venue slug</strong>: sidney-and-matilda")
 	assertContains(t, saveBody, `name="choice_name" value="`+strconvFormatInt(group.Candidates[1].ID)+`" checked`)
+}
+
+func TestSQLiteAdminReviewHistoryListsClosedGroupsNewestFirst(t *testing.T) {
+	st, server, openID, path := mustReviewServerWithGroupPath(t)
+	defer st.Close()
+
+	resolvedID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Resolved review",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:resolved.ics",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "utc-1",
+				Name:        "UTC Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First line",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/utc-show",
+				Provenance:  "fixture UID utc-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create resolved review group: %v", err)
+	}
+	resolved, ok, err := st.LoadReviewGroup(contextForTesting(), resolvedID)
+	if err != nil {
+		t.Fatalf("load resolved review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("resolved review group not found")
+	}
+	if err := st.ResolveReviewGroup(contextForTesting(), resolvedID, fullWebReviewChoices(t, resolved)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	rejectedID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Rejected review",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:rejected.ics",
+		Candidates: []review.CandidateInput{
+			{
+				Name:       "Rejected candidate",
+				StartAt:    "2026-05-01T19:00:00Z",
+				SourceName: "Fixture ICS",
+				SourceURL:  "file:rejected.ics",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create rejected review group: %v", err)
+	}
+	if err := st.UpdateReviewGroupStatus(contextForTesting(), rejectedID, review.StatusRejected); err != nil {
+		t.Fatalf("reject review group: %v", err)
+	}
+
+	db := mustRawDB(t, path)
+	if _, err := db.Exec(`
+		UPDATE review_groups
+		SET updated_at = ?
+		WHERE id = ?
+	`, "2026-04-20T12:00:00Z", rejectedID); err != nil {
+		t.Fatalf("set rejected updated_at: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE review_groups
+		SET updated_at = ?
+		WHERE id = ?
+	`, "2026-04-20T11:00:00Z", resolvedID); err != nil {
+		t.Fatalf("set resolved updated_at: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review/history")
+	assertContains(t, body, "Review history")
+	assertContains(t, body, `href="/admin/review"`)
+	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(rejectedID)+`"`)
+	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(resolvedID)+`"`)
+	assertContains(t, body, "rejected")
+	assertContains(t, body, "resolved")
+	assertInOrder(t, body, []string{"Rejected review", "Resolved review"})
+	assertNotContains(t, body, `href="/admin/review/`+strconvFormatInt(openID)+`"`)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/history", strings.NewReader(""))
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
+	}
 }
 
 func TestAdminReviewShowsLatestSuccessfulImportLink(t *testing.T) {
@@ -1549,6 +1647,10 @@ type reviewOnlyStoreStub struct {
 }
 
 func (reviewOnlyStoreStub) ListOpenReviewGroups(context.Context) ([]review.GroupSummary, error) {
+	return nil, nil
+}
+
+func (reviewOnlyStoreStub) ListClosedReviewGroups(context.Context, int) ([]review.GroupSummary, error) {
 	return nil, nil
 }
 

@@ -44,11 +44,14 @@ type Server struct {
 
 type ReviewStore interface {
 	ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary, error)
+	ListClosedReviewGroups(ctx context.Context, limit int) ([]review.GroupSummary, error)
 	LoadReviewGroup(ctx context.Context, id int64) (review.Group, bool, error)
 	SaveReviewDraftChoices(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
 	ResolveReviewGroup(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
 	UpdateReviewGroupStatus(ctx context.Context, groupID int64, status string) error
 }
+
+const adminReviewHistoryLimit = 50
 
 type ImportRunReviewGroupStore interface {
 	ListReviewGroupsForImportRun(ctx context.Context, importRunID int64) ([]review.GroupSummary, error)
@@ -250,6 +253,7 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 		"templates/venues.html",
 		"templates/venue_detail.html",
 		"templates/admin_review.html",
+		"templates/admin_review_history.html",
 		"templates/admin_import_runs.html",
 		"templates/admin_import_run_detail.html",
 		"templates/admin_review_detail.html",
@@ -299,6 +303,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleHealthz(w, r)
 	case cleaned == "/admin/review":
 		s.handleAdminReview(w, r)
+	case cleaned == "/admin/review/history":
+		s.handleAdminReviewHistory(w, r)
 	case r.URL.Path == "/admin/import-runs":
 		s.handleAdminImportRuns(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/import-runs/"):
@@ -350,6 +356,7 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		ReviewGroups:       groups,
 		HasImportHistory:   s.importRunStore != nil,
 		HasImportRunDetail: s.replayStore != nil,
+		HasReviewStorage:   s.reviewStore != nil,
 		Flash:              flash,
 	}
 	if s.importRunStore != nil {
@@ -361,6 +368,34 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		data.LatestImport = latest
 	}
 	s.renderPage(w, "templates/admin_review.html", data)
+}
+
+func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request) {
+	if s.reviewStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	groups, err := s.reviewStore.ListClosedReviewGroups(r.Context(), adminReviewHistoryLimit)
+	if err != nil {
+		http.Error(w, "load review history", http.StatusInternalServerError)
+		return
+	}
+	data := PageData{
+		SiteName:           "Sheffield Live",
+		PageTitle:          "Review history",
+		MetaDescription:    "Read-only history of resolved and rejected review groups.",
+		Active:             "admin-review",
+		Now:                s.now(),
+		ReviewGroups:       groups,
+		HasImportHistory:   s.importRunStore != nil,
+		HasImportRunDetail: s.replayStore != nil,
+		HasReviewStorage:   s.reviewStore != nil,
+	}
+	s.renderPage(w, "templates/admin_review_history.html", data)
 }
 
 func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
@@ -644,6 +679,7 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		Now:                s.now(),
 		HasImportHistory:   s.importRunStore != nil,
 		HasImportRunDetail: s.replayStore != nil,
+		HasReviewStorage:   s.reviewStore != nil,
 		Flash:              flash,
 	}
 	detail := buildReviewDetail(group)

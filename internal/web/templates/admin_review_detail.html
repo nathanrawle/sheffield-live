@@ -2,6 +2,9 @@
   <p class="eyebrow">Admin review</p>
   <h1>{{.ReviewDetail.Group.Title}}</h1>
   <p class="lede">{{.ReviewDetail.Group.SourceName}} · <a href="{{.ReviewDetail.Group.SourceURL}}">{{.ReviewDetail.Group.SourceURL}}</a></p>
+  {{if .HasReviewStorage}}
+  <p class="review-group-meta"><a href="/admin/review/history">Review history</a></p>
+  {{end}}
   {{if .HasImportHistory}}
   <p class="review-group-meta"><a href="/admin/import-runs">Import history</a></p>
   {{end}}

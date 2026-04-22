@@ -33,6 +33,7 @@ Routes:
 - `GET /venues` venue list
 - `GET /venues/{slug}` venue detail
 - `GET /admin/review` open review queue
+- `GET /admin/review/history` read-only resolved and rejected review history
 - `GET /admin/review/{groupID}` review detail
 - `GET /admin/import-runs` read-only import history
 - `GET /admin/import-runs/{id}` read-only import run snapshot metadata
@@ -62,6 +63,7 @@ Review behavior:
 - `action=accept` resolves a singleton group and publishes one canonical public event
 - `action=rejected` rejects a duplicate or singleton group without publishing
 - closed groups are read-only and disappear from the open queue
+- review history lists the 50 newest resolved and rejected groups
 - import history and import run detail pages are read-only and available only when the store implements them
 - import run detail pages show summary fields and snapshot metadata only; stored snapshot payload bodies are not rendered
 

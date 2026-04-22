@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -538,6 +540,80 @@ func TestListOpenReviewGroupsOnlyReturnsOpenGroups(t *testing.T) {
 	}
 	if got := mustCount(t, db, "events"); got != eventCount+1 {
 		t.Fatalf("events rows = %d, want %d", got, eventCount+1)
+	}
+}
+
+func TestListClosedReviewGroupsReturnsResolvedAndRejectedNewestFirstWithLimit(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	openID := mustCreateReviewGroup(t, st, "Open group", "Open candidate")
+	resolvedID := mustCreatePublishableReviewGroup(t, st, "Resolved group")
+	resolved, ok, err := st.LoadReviewGroup(ctx, resolvedID)
+	if err != nil {
+		t.Fatalf("load resolved review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("resolved review group not found")
+	}
+	if err := st.ResolveReviewGroup(ctx, resolvedID, fullReviewChoices(t, resolved)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+	if err := setReviewGroupUpdatedAt(db, resolvedID, time.Date(2026, time.April, 20, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("set resolved updated_at: %v", err)
+	}
+	if err := setReviewGroupUpdatedAt(db, openID, time.Date(2026, time.April, 20, 13, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("set open updated_at: %v", err)
+	}
+
+	var rejectedIDs []int64
+	for i := 0; i < 51; i++ {
+		groupID := mustCreateReviewGroup(t, st, fmt.Sprintf("Rejected group %02d", i), "Rejected candidate")
+		if err := st.UpdateReviewGroupStatus(ctx, groupID, review.StatusRejected); err != nil {
+			t.Fatalf("reject review group %d: %v", i, err)
+		}
+		updatedAt := time.Date(2026, time.April, 20, 11, 0, 0, 0, time.UTC).Add(-time.Duration(i) * time.Minute)
+		if err := setReviewGroupUpdatedAt(db, groupID, updatedAt); err != nil {
+			t.Fatalf("set rejected updated_at %d: %v", i, err)
+		}
+		rejectedIDs = append(rejectedIDs, groupID)
+	}
+
+	groups, err := st.ListClosedReviewGroups(ctx, 50)
+	if err != nil {
+		t.Fatalf("list closed review groups: %v", err)
+	}
+	if len(groups) != 50 {
+		t.Fatalf("closed review groups = %d, want 50", len(groups))
+	}
+	if groups[0].ID != resolvedID {
+		t.Fatalf("first group ID = %d, want resolved group %d", groups[0].ID, resolvedID)
+	}
+	if groups[0].Status != review.StatusResolved {
+		t.Fatalf("first group status = %q, want %q", groups[0].Status, review.StatusResolved)
+	}
+	if groups[1].ID != rejectedIDs[0] {
+		t.Fatalf("second group ID = %d, want newest rejected group %d", groups[1].ID, rejectedIDs[0])
+	}
+	for _, group := range groups {
+		if group.ID == openID {
+			t.Fatal("closed history included open group")
+		}
+		if group.Status != review.StatusResolved && group.Status != review.StatusRejected {
+			t.Fatalf("closed history included status %q", group.Status)
+		}
+	}
+	if groups[len(groups)-1].ID == rejectedIDs[len(rejectedIDs)-1] {
+		t.Fatal("closed history included oldest rejected group beyond limit")
 	}
 }
 
@@ -1255,6 +1331,15 @@ func assertDraftChoice(t *testing.T, group review.Group, field review.Field, can
 	if choice.UpdatedAt.IsZero() {
 		t.Fatalf("%s updated_at is zero", field)
 	}
+}
+
+func setReviewGroupUpdatedAt(db *sql.DB, groupID int64, updatedAt time.Time) error {
+	_, err := db.Exec(`
+		UPDATE review_groups
+		SET updated_at = ?
+		WHERE id = ?
+	`, formatRFC3339UTC(updatedAt), groupID)
+	return err
 }
 
 func mustCreateReviewGroup(t *testing.T, st *Store, title, candidateName string) int64 {
