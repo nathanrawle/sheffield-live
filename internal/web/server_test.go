@@ -477,6 +477,73 @@ func TestAdminReviewShowsLatestSuccessfulImportLink(t *testing.T) {
 	assertContains(t, body, "1 snapshot")
 }
 
+func TestAdminReviewDetailShowsOriginImportRunLinkFromNotes(t *testing.T) {
+	tests := []struct {
+		name  string
+		notes string
+		id    string
+	}{
+		{name: "manual ingest wording", notes: "Created from manual ingest run 123 review staging.", id: "123"},
+		{name: "import run wording", notes: "Created from import run 456 review staging.", id: "456"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st, server, groupID, _ := mustReviewServerWithGroupPathAndNotes(t, tc.notes)
+			defer st.Close()
+
+			body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+			assertContains(t, body, "Review notes")
+			assertContains(t, body, tc.notes)
+			assertContains(t, body, `href="/admin/import-runs/`+tc.id+`"`)
+			assertContains(t, body, "Import run #"+tc.id)
+		})
+	}
+}
+
+func TestAdminReviewDetailOmitsOriginImportRunLinkWhenUnavailable(t *testing.T) {
+	tests := []struct {
+		name  string
+		notes string
+	}{
+		{name: "unparseable", notes: "Created from offline fixture."},
+		{name: "zero", notes: "Created from manual ingest run 0 review staging."},
+		{name: "negative", notes: "Created from manual ingest run -12 review staging."},
+		{name: "not a strict id", notes: "Created from manual ingest run 12abc review staging."},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st, server, groupID, _ := mustReviewServerWithGroupPathAndNotes(t, tc.notes)
+			defer st.Close()
+
+			body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+			assertContains(t, body, "Review notes")
+			assertContains(t, body, tc.notes)
+			assertNotContains(t, body, `href="/admin/import-runs/`)
+		})
+	}
+
+	server, err := NewServer(reviewOnlyStoreStub{
+		group: review.Group{
+			ID:           1,
+			Title:        "Fixture review",
+			SourceName:   "Fixture ICS",
+			SourceURL:    "file:sidney.ics",
+			Status:       review.StatusOpen,
+			Notes:        "Created from manual ingest run 123 review staging.",
+			DraftChoices: map[review.Field]review.DraftChoice{},
+			Candidates: []review.Candidate{
+				{ID: 1, Position: 1, Name: "Solo Show"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	body := renderPath(t, server, "/admin/review/1")
+	assertContains(t, body, "Created from manual ingest run 123 review staging.")
+	assertNotContains(t, body, `href="/admin/import-runs/123"`)
+}
+
 func TestAdminReviewDetailFallsBackToCandidateNumberWhenExternalIDIsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	st, err := sqlitestore.Open(path)
@@ -1048,6 +1115,12 @@ func mustReviewServerWithGroup(t *testing.T) (*sqlitestore.Store, *Server, int64
 func mustReviewServerWithGroupPath(t *testing.T) (*sqlitestore.Store, *Server, int64, string) {
 	t.Helper()
 
+	return mustReviewServerWithGroupPathAndNotes(t, "")
+}
+
+func mustReviewServerWithGroupPathAndNotes(t *testing.T, notes string) (*sqlitestore.Store, *Server, int64, string) {
+	t.Helper()
+
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	st, err := sqlitestore.Open(path)
 	if err != nil {
@@ -1058,6 +1131,7 @@ func mustReviewServerWithGroupPath(t *testing.T) (*sqlitestore.Store, *Server, i
 		Title:      "Fixture review",
 		SourceName: "Fixture ICS",
 		SourceURL:  "file:sidney.ics",
+		Notes:      notes,
 		Candidates: []review.CandidateInput{
 			{
 				ExternalID:  "utc-1",
@@ -1318,13 +1392,17 @@ func (readOnlyStoreStub) Validate() error { return nil }
 
 type reviewOnlyStoreStub struct {
 	readOnlyStoreStub
+	group review.Group
 }
 
 func (reviewOnlyStoreStub) ListOpenReviewGroups(context.Context) ([]review.GroupSummary, error) {
 	return nil, nil
 }
 
-func (reviewOnlyStoreStub) LoadReviewGroup(context.Context, int64) (review.Group, bool, error) {
+func (s reviewOnlyStoreStub) LoadReviewGroup(_ context.Context, id int64) (review.Group, bool, error) {
+	if s.group.ID == id {
+		return s.group, true, nil
+	}
 	return review.Group{}, false, nil
 }
 

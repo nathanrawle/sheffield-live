@@ -10,6 +10,16 @@
 </section>
 {{end}}
 
+{{with .ReviewDetail.Group.Notes}}
+<section class="section-block">
+  <h2>Review notes</h2>
+  <p>{{.}}</p>
+  {{with $.ReviewDetail.OriginImportRunID}}
+  <p><a href="/admin/import-runs/{{.}}">Import run #{{.}}</a></p>
+  {{end}}
+</section>
+{{end}}
+
 {{if .ReviewDetail.IsDuplicate}}
 <section class="section-block">
   <h2>Canonical draft summary</h2>

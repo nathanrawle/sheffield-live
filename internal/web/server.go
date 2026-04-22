@@ -88,6 +88,7 @@ type ReviewDetail struct {
 	Group                review.Group
 	IsDuplicate          bool
 	IsSingleton          bool
+	OriginImportRunID    int64
 	CanonicalSummaryRows []ReviewCanonicalSummaryRow
 	Rows                 []ReviewFieldRow
 	Preview              []ReviewPreviewRow
@@ -614,9 +615,13 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		MetaDescription: "Review staged event candidates.",
 		Active:          "admin-review",
 		Now:             s.now(),
-		ReviewDetail:    buildReviewDetail(group),
 		Flash:           flash,
 	}
+	detail := buildReviewDetail(group)
+	if s.replayStore != nil {
+		detail.OriginImportRunID, _ = parseReviewOriginImportRunID(group.Notes)
+	}
+	data.ReviewDetail = detail
 	s.renderPage(w, "templates/admin_review_detail.html", data)
 }
 
@@ -914,6 +919,41 @@ func parseStrictPositiveIDPath(rawPath, prefix string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+func parseReviewOriginImportRunID(notes string) (int64, bool) {
+	for _, phrase := range []string{"manual ingest run ", "import run "} {
+		if id, ok := parsePositiveIDAfterPhrase(notes, phrase); ok {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+func parsePositiveIDAfterPhrase(text, phrase string) (int64, bool) {
+	searchFrom := 0
+	for {
+		idx := strings.Index(text[searchFrom:], phrase)
+		if idx < 0 {
+			return 0, false
+		}
+		start := searchFrom + idx + len(phrase)
+		end := start
+		for end < len(text) && text[end] >= '0' && text[end] <= '9' {
+			end++
+		}
+		if end > start && (end == len(text) || !asciiLetterOrDigit(text[end])) {
+			id, err := strconv.ParseInt(text[start:end], 10, 64)
+			if err == nil && id > 0 {
+				return id, true
+			}
+		}
+		searchFrom = start
+	}
+}
+
+func asciiLetterOrDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func buildImportRunDetail(run ingest.ReplayRun) ImportRunDetail {
