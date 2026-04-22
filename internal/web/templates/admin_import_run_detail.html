@@ -1,0 +1,90 @@
+<section class="page-head">
+  <p class="eyebrow">Admin</p>
+  <h1>Import run #{{.ImportRunDetail.ID}}</h1>
+  <p class="lede"><a href="/admin/import-runs">Back to import history</a></p>
+</section>
+
+<section class="section-block">
+  <h2>Summary</h2>
+  <dl class="import-run-summary">
+    <div>
+      <dt>Status</dt>
+      <dd>{{.ImportRunDetail.Status}}</dd>
+    </div>
+    <div>
+      <dt>Started</dt>
+      <dd>{{dateShort .ImportRunDetail.StartedAt}} {{timeShort .ImportRunDetail.StartedAt}}</dd>
+    </div>
+    <div>
+      <dt>Finished</dt>
+      <dd>{{if .ImportRunDetail.FinishedAt}}{{dateShortPtr .ImportRunDetail.FinishedAt}} {{timeShortPtr .ImportRunDetail.FinishedAt}}{{else}}&mdash;{{end}}</dd>
+    </div>
+    <div>
+      <dt>Snapshots</dt>
+      <dd>{{snapshotCountLabel .ImportRunDetail.SnapshotCount}}</dd>
+    </div>
+    <div>
+      <dt>Notes</dt>
+      <dd>{{blankValue .ImportRunDetail.Notes}}</dd>
+    </div>
+  </dl>
+</section>
+
+<section class="section-block">
+  <h2>Snapshot metadata</h2>
+  {{if .ImportRunDetail.Snapshots}}
+  <div class="import-run-table-wrap">
+    <table class="import-run-table snapshot-metadata-table">
+      <thead>
+        <tr>
+          <th scope="col">Snapshot</th>
+          <th scope="col">Captured</th>
+          <th scope="col">Source</th>
+          <th scope="col">Source URL</th>
+          <th scope="col">Decode</th>
+          <th scope="col">URL</th>
+          <th scope="col">Final URL</th>
+          <th scope="col">HTTP</th>
+          <th scope="col">Content type</th>
+          <th scope="col">Length</th>
+          <th scope="col">Body bytes</th>
+          <th scope="col">SHA-256</th>
+          <th scope="col">Truncated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .ImportRunDetail.Snapshots}}
+        <tr>
+          <td>#{{.ID}}</td>
+          <td>{{dateShort .CapturedAt}} {{timeShort .CapturedAt}}</td>
+          <td>{{blankValue .SourceName}}</td>
+          <td>{{blankValue .SourceURL}}</td>
+          <td>{{.DecodeState}}</td>
+          {{if .MetadataAvailable}}
+          <td>{{blankValue .URL}}</td>
+          <td>{{blankValue .FinalURL}}</td>
+          <td>{{if .StatusDisplay}}{{.StatusDisplay}}{{else}}&mdash;{{end}}</td>
+          <td>{{blankValue .ContentType}}</td>
+          <td>{{.ContentLength}}</td>
+          <td>{{.BodyBytes}}</td>
+          <td>{{blankValue .SHA256}}</td>
+          <td>{{if .Truncated}}yes{{else}}no{{end}}</td>
+          {{else}}
+          <td>&mdash;</td>
+          <td>&mdash;</td>
+          <td>&mdash;</td>
+          <td>&mdash;</td>
+          <td>&mdash;</td>
+          <td>&mdash;</td>
+          <td>&mdash;</td>
+          <td>&mdash;</td>
+          {{end}}
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <p class="empty-state">No snapshots recorded for this import run.</p>
+  {{end}}
+</section>

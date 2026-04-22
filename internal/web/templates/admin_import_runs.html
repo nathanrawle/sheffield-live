@@ -20,7 +20,7 @@
     <tbody>
       {{range .ImportRuns}}
       <tr>
-        <td>Run #{{.ID}}</td>
+        <td><a href="/admin/import-runs/{{.ID}}">Run #{{.ID}}</a></td>
         <td>{{.Status}}</td>
         <td>{{dateShort .StartedAt}} {{timeShort .StartedAt}}</td>
         <td>{{if .FinishedAt}}{{dateShortPtr .FinishedAt}} {{timeShortPtr .FinishedAt}}{{else}}&mdash;{{end}}</td>

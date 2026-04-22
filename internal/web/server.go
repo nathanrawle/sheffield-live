@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -32,6 +33,7 @@ type Server struct {
 	store          store.ReadOnlyStore
 	reviewStore    ReviewStore
 	importRunStore ingest.ImportRunStore
+	replayStore    ingest.ReplayStore
 	localLocation  *time.Location
 	clock          func() time.Time
 	layout         *template.Template
@@ -67,6 +69,7 @@ type PageData struct {
 	ReviewGroups    []review.GroupSummary
 	ReviewDetail    ReviewDetail
 	ImportRuns      []ingest.ImportRunSummary
+	ImportRunDetail ImportRunDetail
 	LatestImport    *ingest.ImportRunSummary
 	Flash           string
 }
@@ -120,6 +123,43 @@ type ReviewCanonicalSummaryRow struct {
 type ReviewSingleCandidateRow struct {
 	Label string
 	Value string
+}
+
+type ImportRunDetail struct {
+	ID            int64
+	Status        string
+	StartedAt     time.Time
+	FinishedAt    *time.Time
+	Notes         string
+	SnapshotCount int
+	Snapshots     []ImportRunSnapshotRow
+}
+
+type ImportRunSnapshotRow struct {
+	ID                int64
+	SourceName        string
+	SourceURL         string
+	CapturedAt        time.Time
+	MetadataAvailable bool
+	DecodeState       string
+	URL               string
+	FinalURL          string
+	Status            string
+	StatusCode        int
+	StatusDisplay     string
+	ContentType       string
+	ContentLength     int64
+	BodyBytes         int
+	CapturedAtText    string
+	SHA256            string
+	Truncated         bool
+}
+
+type adminSnapshotEnvelope struct {
+	Version   int                            `json:"version"`
+	Metadata  ingest.SnapshotContentMetadata `json:"metadata"`
+	SHA256    string                         `json:"sha256"`
+	Truncated bool                           `json:"truncated"`
 }
 
 func NewServer(st store.ReadOnlyStore) (*Server, error) {
@@ -201,6 +241,7 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 		"templates/venue_detail.html",
 		"templates/admin_review.html",
 		"templates/admin_import_runs.html",
+		"templates/admin_import_run_detail.html",
 		"templates/admin_review_detail.html",
 	}
 	pages := make(map[string]*template.Template, len(pageFiles))
@@ -221,6 +262,7 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 		store:          st,
 		reviewStore:    reviewStoreFor(st),
 		importRunStore: importRunStoreFor(st),
+		replayStore:    replayStoreFor(st),
 		localLocation:  localLocation,
 		clock:          func() time.Time { return time.Now().UTC() },
 		layout:         layout,
@@ -246,8 +288,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleHealthz(w, r)
 	case cleaned == "/admin/review":
 		s.handleAdminReview(w, r)
-	case cleaned == "/admin/import-runs":
+	case r.URL.Path == "/admin/import-runs":
 		s.handleAdminImportRuns(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/import-runs/"):
+		s.handleAdminImportRunDetail(w, r)
 	case strings.HasPrefix(cleaned, "/admin/review/"):
 		s.handleAdminReviewDetail(w, r, strings.TrimPrefix(cleaned, "/admin/review/"))
 	case strings.HasPrefix(cleaned, "/events/"):
@@ -328,6 +372,40 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		ImportRuns:      importRuns,
 	}
 	s.renderPage(w, "templates/admin_import_runs.html", data)
+}
+
+func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Request) {
+	if s.replayStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	runID, ok := parseStrictPositiveIDPath(r.URL.Path, "/admin/import-runs/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	run, err := s.replayStore.LoadImportRun(r.Context(), runID)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "load import run", http.StatusInternalServerError)
+		return
+	}
+	data := PageData{
+		SiteName:        "Sheffield Live",
+		PageTitle:       fmt.Sprintf("Import run #%d", run.ID),
+		MetaDescription: "Read-only import run snapshot metadata.",
+		Now:             s.now(),
+		ImportRunDetail: buildImportRunDetail(run),
+	}
+	s.renderPage(w, "templates/admin_import_run_detail.html", data)
 }
 
 func (s *Server) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request, rawGroupID string) {
@@ -808,6 +886,88 @@ func importRunStoreFor(st store.ReadOnlyStore) ingest.ImportRunStore {
 		return nil
 	}
 	return importRunStore
+}
+
+func replayStoreFor(st store.ReadOnlyStore) ingest.ReplayStore {
+	replayStore, ok := st.(ingest.ReplayStore)
+	if !ok {
+		return nil
+	}
+	return replayStore
+}
+
+func parseStrictPositiveIDPath(rawPath, prefix string) (int64, bool) {
+	if !strings.HasPrefix(rawPath, prefix) {
+		return 0, false
+	}
+	rawID := strings.TrimPrefix(rawPath, prefix)
+	if rawID == "" || strings.Contains(rawID, "/") {
+		return 0, false
+	}
+	for _, r := range rawID {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+func buildImportRunDetail(run ingest.ReplayRun) ImportRunDetail {
+	var finishedAt *time.Time
+	if run.FinishedAt != nil {
+		finished := *run.FinishedAt
+		finishedAt = &finished
+	}
+	detail := ImportRunDetail{
+		ID:            run.ID,
+		Status:        run.Status,
+		StartedAt:     run.StartedAt,
+		FinishedAt:    finishedAt,
+		Notes:         run.Notes,
+		SnapshotCount: len(run.Snapshots),
+		Snapshots:     make([]ImportRunSnapshotRow, 0, len(run.Snapshots)),
+	}
+	for _, snapshot := range run.Snapshots {
+		row := ImportRunSnapshotRow{
+			ID:          snapshot.ID,
+			SourceName:  snapshot.SourceName,
+			SourceURL:   snapshot.SourceURL,
+			CapturedAt:  snapshot.CapturedAt,
+			DecodeState: "Metadata unavailable",
+		}
+		var envelope adminSnapshotEnvelope
+		if err := json.Unmarshal([]byte(snapshot.Payload), &envelope); err == nil && envelope.Version == 1 {
+			row.MetadataAvailable = true
+			row.DecodeState = "Metadata available"
+			row.URL = envelope.Metadata.URL
+			row.FinalURL = envelope.Metadata.FinalURL
+			row.Status = envelope.Metadata.Status
+			row.StatusCode = envelope.Metadata.StatusCode
+			row.StatusDisplay = httpStatusDisplay(envelope.Metadata.Status, envelope.Metadata.StatusCode)
+			row.ContentType = envelope.Metadata.ContentType
+			row.ContentLength = envelope.Metadata.ContentLength
+			row.BodyBytes = envelope.Metadata.BodyBytes
+			row.CapturedAtText = envelope.Metadata.CapturedAt
+			row.SHA256 = envelope.SHA256
+			row.Truncated = envelope.Truncated
+		}
+		detail.Snapshots = append(detail.Snapshots, row)
+	}
+	return detail
+}
+
+func httpStatusDisplay(status string, statusCode int) string {
+	if trimmed := strings.TrimSpace(status); trimmed != "" {
+		return trimmed
+	}
+	if statusCode != 0 {
+		return strconv.Itoa(statusCode)
+	}
+	return ""
 }
 
 func buildReviewDetail(group review.Group) ReviewDetail {

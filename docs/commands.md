@@ -35,6 +35,7 @@ Routes:
 - `GET /admin/review` open review queue
 - `GET /admin/review/{groupID}` review detail
 - `GET /admin/import-runs` read-only import history
+- `GET /admin/import-runs/{id}` read-only import run snapshot metadata
 - `POST /admin/review/{groupID}` review actions
 - `GET /healthz` plain-text health check
 - `GET /static/site.css` embedded stylesheet
@@ -61,7 +62,8 @@ Review behavior:
 - `action=accept` resolves a singleton group and publishes one canonical public event
 - `action=rejected` rejects a duplicate or singleton group without publishing
 - closed groups are read-only and disappear from the open queue
-- import history is read-only and available only when the store implements it
+- import history and import run detail pages are read-only and available only when the store implements them
+- import run detail pages show summary fields and snapshot metadata only; stored snapshot payload bodies are not rendered
 
 ## `./cmd/ingest`
 

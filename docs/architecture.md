@@ -38,6 +38,7 @@ The database path must point to writable storage because the application creates
 - `/admin/review`
 - `/admin/review/{groupID}`
 - `/admin/import-runs`
+- `/admin/import-runs/{id}`
 - `/healthz`
 - `/static/site.css`
 
@@ -58,7 +59,7 @@ Public records live in SQLite and are served from canonical `venues` and `events
 
 Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
 
-The admin UI exposes read-only import history when the backing store implements it.
+The admin UI exposes read-only import history and per-run snapshot metadata when the backing store implements those read paths. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
 
 ## Data Lifecycle
 

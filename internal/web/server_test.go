@@ -3,16 +3,20 @@ package web
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"sheffield-live/internal/domain"
+	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/review"
 	"sheffield-live/internal/store"
 	sqlitestore "sheffield-live/internal/store/sqlite"
@@ -166,6 +170,115 @@ func TestSQLiteAdminImportRunsEmptyAndPopulated(t *testing.T) {
 	assertContains(t, populatedBody, "Old success")
 	assertContains(t, populatedBody, "Very old success")
 	assertContains(t, populatedBody, "&mdash;")
+	assertContains(t, populatedBody, `href="/admin/import-runs/3"`)
+	assertContains(t, populatedBody, `href="/admin/import-runs/1"`)
+}
+
+func TestSQLiteAdminImportRunDetailRendersMetadataOnly(t *testing.T) {
+	st, server, runID, bodyText := mustImportRunDetailServer(t, false)
+	defer st.Close()
+
+	body := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
+	assertContains(t, body, "Import run #"+strconvFormatInt(runID))
+	assertContains(t, body, "succeeded")
+	assertContains(t, body, "links=1 candidates=2")
+	assertContains(t, body, "Snapshot metadata")
+	assertContains(t, body, "Metadata available")
+	assertContains(t, body, "Fixture Source")
+	assertContains(t, body, "https://snapshot.example.test/source")
+	assertContains(t, body, "https://snapshot.example.test/final")
+	assertContains(t, body, "200 OK")
+	assertNotContains(t, body, "200 200 OK")
+	assertContains(t, body, "text/calendar")
+	assertContains(t, body, "no")
+	assertNotContains(t, body, bodyText)
+	assertNotContains(t, body, base64.StdEncoding.EncodeToString([]byte(bodyText)))
+	assertNotContains(t, body, `href="https://snapshot.example.test/source"`)
+	assertNotContains(t, body, `body_base64`)
+}
+
+func TestSQLiteAdminImportRunDetailInvalidAndMissingIDs(t *testing.T) {
+	st, server, _, _ := mustImportRunDetailServer(t, false)
+	defer st.Close()
+
+	tests := []struct {
+		method string
+		path   string
+		code   int
+	}{
+		{method: http.MethodGet, path: "/admin/import-runs/not-an-id", code: http.StatusNotFound},
+		{method: http.MethodGet, path: "/admin/import-runs/", code: http.StatusNotFound},
+		{method: http.MethodGet, path: "/admin/import-runs/0", code: http.StatusNotFound},
+		{method: http.MethodGet, path: "/admin/import-runs/-1", code: http.StatusNotFound},
+		{method: http.MethodGet, path: "/admin/import-runs/1/extra", code: http.StatusNotFound},
+		{method: http.MethodGet, path: "/admin/import-runs/1/", code: http.StatusNotFound},
+		{method: http.MethodGet, path: "/admin/import-runs/1/..", code: http.StatusNotFound},
+		{method: http.MethodGet, path: "/admin/import-runs/999", code: http.StatusNotFound},
+		{method: http.MethodPost, path: "/admin/import-runs/1", code: http.StatusMethodNotAllowed},
+	}
+	for _, tc := range tests {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			rr := httptest.NewRecorder()
+
+			server.ServeHTTP(rr, req)
+
+			if rr.Code != tc.code {
+				t.Fatalf("status = %d, want %d; body %q", rr.Code, tc.code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestAdminImportRunDetailMissingStoreSupport404(t *testing.T) {
+	server, err := NewServer(store.NewSeedStore())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/import-runs/1", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+}
+
+func TestSQLiteAdminImportRunDetailMalformedPayloadDoesNotCrash(t *testing.T) {
+	st, server, runID, rawPayloadText := mustImportRunDetailServer(t, true)
+	defer st.Close()
+
+	body := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
+	assertContains(t, body, "Import run #"+strconvFormatInt(runID))
+	assertContains(t, body, "Metadata unavailable")
+	assertContains(t, body, "Fixture Source")
+	assertNotContains(t, body, rawPayloadText)
+}
+
+func TestBuildImportRunDetailDoesNotExposeRawReplayPayload(t *testing.T) {
+	finishedAt := time.Date(2026, time.April, 20, 10, 5, 0, 0, time.UTC)
+	payloadText := "SECRET SNAPSHOT PAYLOAD"
+	detail := buildImportRunDetail(ingest.ReplayRun{
+		ID:         12,
+		StartedAt:  time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
+		FinishedAt: &finishedAt,
+		Status:     "succeeded",
+		Notes:      "links=1 candidates=2",
+		Snapshots: []ingest.ReplaySnapshot{
+			{
+				ID:         34,
+				SourceName: "Fixture Source",
+				SourceURL:  "https://snapshot.example.test/source",
+				CapturedAt: time.Date(2026, time.April, 20, 10, 1, 0, 0, time.UTC),
+				Payload:    payloadText,
+			},
+		},
+	})
+
+	if detail.ID != 12 || detail.Status != "succeeded" || detail.SnapshotCount != 1 {
+		t.Fatalf("summary fields were not preserved: %+v", detail)
+	}
+	assertTemplateFacingValueSafe(t, reflect.ValueOf(PageData{ImportRunDetail: detail}), payloadText)
 }
 
 func TestSQLiteEventDetailRendersResolvedReviewSource(t *testing.T) {
@@ -1041,6 +1154,76 @@ func mustRawDB(t *testing.T, path string) *sql.DB {
 	return db
 }
 
+func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store, *Server, int64, string) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+
+	server, err := NewServer(st)
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("new server: %v", err)
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	runID := int64(1)
+	sourceID := int64(10)
+	if _, err := db.Exec(`
+		INSERT INTO sources (id, name, url)
+		VALUES (?, ?, ?)
+	`, sourceID, "Fixture Source", "https://snapshot.example.test/source"); err != nil {
+		_ = st.Close()
+		t.Fatalf("insert source: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO import_runs (id, started_at, finished_at, status, notes)
+		VALUES (?, ?, ?, ?, ?)
+	`, runID, "2026-04-20T10:00:00Z", "2026-04-20T10:05:00Z", "succeeded", "links=1 candidates=2"); err != nil {
+		_ = st.Close()
+		t.Fatalf("insert import run: %v", err)
+	}
+
+	bodyText := "SECRET SNAPSHOT BODY STRING"
+	payload := mustWebSnapshotPayload(t, ingest.FetchResult{
+		URL:           "https://snapshot.example.test/source",
+		FinalURL:      "https://snapshot.example.test/final",
+		Status:        "200 OK",
+		StatusCode:    200,
+		ContentType:   "text/calendar",
+		ContentLength: int64(len(bodyText)),
+		Body:          []byte(bodyText),
+		CapturedAt:    time.Date(2026, time.April, 20, 10, 1, 0, 0, time.UTC),
+	})
+	if malformed {
+		payload = "malformed snapshot payload " + bodyText
+	}
+
+	if _, err := db.Exec(`
+		INSERT INTO snapshots (id, import_run_id, source_id, captured_at, payload)
+		VALUES (?, ?, ?, ?, ?)
+	`, 50, runID, sourceID, "2026-04-20T10:01:00Z", payload); err != nil {
+		_ = st.Close()
+		t.Fatalf("insert snapshot: %v", err)
+	}
+
+	return st, server, runID, bodyText
+}
+
+func mustWebSnapshotPayload(t *testing.T, result ingest.FetchResult) string {
+	t.Helper()
+
+	payload, err := ingest.NewSnapshotEnvelope(result).JSON()
+	if err != nil {
+		t.Fatalf("snapshot payload: %v", err)
+	}
+	return payload
+}
+
 func seedImportRunHistory(t *testing.T, path string) error {
 	t.Helper()
 
@@ -1292,6 +1475,61 @@ func assertNotContains(t *testing.T, body, unwanted string) {
 
 	if strings.Contains(body, unwanted) {
 		t.Fatalf("body contains %q in %q", unwanted, body)
+	}
+}
+
+func assertTemplateFacingValueSafe(t *testing.T, value reflect.Value, payloadText string) {
+	t.Helper()
+
+	rawRunType := reflect.TypeOf(ingest.ReplayRun{})
+	rawSnapshotType := reflect.TypeOf(ingest.ReplaySnapshot{})
+	assertTemplateFacingValueSafeAt(t, value, "detail", payloadText, rawRunType, rawSnapshotType)
+}
+
+func assertTemplateFacingValueSafeAt(t *testing.T, value reflect.Value, path, payloadText string, rawTypes ...reflect.Type) {
+	t.Helper()
+
+	if !value.IsValid() {
+		return
+	}
+	for value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface {
+		if value.IsNil() {
+			return
+		}
+		value = value.Elem()
+	}
+	valueType := value.Type()
+	for _, rawType := range rawTypes {
+		if valueType == rawType {
+			t.Fatalf("%s exposes raw payload-bearing type %s", path, valueType)
+		}
+	}
+
+	switch value.Kind() {
+	case reflect.String:
+		if strings.Contains(value.String(), payloadText) {
+			t.Fatalf("%s exposes raw payload text", path)
+		}
+	case reflect.Struct:
+		for i := 0; i < value.NumField(); i++ {
+			field := valueType.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
+			if strings.Contains(strings.ToLower(field.Name), "payload") {
+				t.Fatalf("%s.%s exposes a payload field", path, field.Name)
+			}
+			assertTemplateFacingValueSafeAt(t, value.Field(i), path+"."+field.Name, payloadText, rawTypes...)
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < value.Len(); i++ {
+			assertTemplateFacingValueSafeAt(t, value.Index(i), fmt.Sprintf("%s[%d]", path, i), payloadText, rawTypes...)
+		}
+	case reflect.Map:
+		iter := value.MapRange()
+		for iter.Next() {
+			assertTemplateFacingValueSafeAt(t, iter.Value(), path+"[map value]", payloadText, rawTypes...)
+		}
 	}
 }
 
