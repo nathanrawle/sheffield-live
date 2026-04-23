@@ -145,7 +145,7 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	fs.StringVar(&cfg.source, "source", ingest.DefaultSource, "source to ingest")
+	fs.StringVar(&cfg.source, "source", ingest.DefaultSource, "source to ingest (sidney-and-matilda or yellow-arch)")
 	fs.IntVar(&cfg.limit, "limit", ingest.DefaultLimit, "maximum ICS links to fetch")
 	fs.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "HTTP timeout")
 	fs.Var(&canonicalHTTPUserAgent, "http-user-agent", "HTTP User-Agent header")

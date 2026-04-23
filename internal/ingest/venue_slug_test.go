@@ -19,9 +19,19 @@ func TestVenueSlugFromText(t *testing.T) {
 			want:  "sidney-and-matilda",
 		},
 		{
+			name:  "yellow arch studios canonicalized",
+			value: "Yellow Arch Studios",
+			want:  "yellow-arch",
+		},
+		{
 			name:  "rivelin works keeps its own slug",
 			value: "Rivelin Works",
 			want:  "rivelin-works",
+		},
+		{
+			name:  "yellow arch canonicalized",
+			value: "Yellow Arch Studios",
+			want:  "yellow-arch",
 		},
 		{
 			name:  "generic slug",

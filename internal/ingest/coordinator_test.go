@@ -65,6 +65,54 @@ func TestRunManualSnapshotsAndReportsWithoutEventWrites(t *testing.T) {
 	}
 }
 
+func TestRunManualYellowArchParsesListingsFromSourcePage(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.yellowarch.com/events/": {
+				URL:         "https://www.yellowarch.com/events/",
+				FinalURL:    "https://www.yellowarch.com/events/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "yellow_arch.html"),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: yellowArchSource, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := len(store.snapshots), 1; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Links, 0; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 1; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Yellow Arch Studios"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+	if got, want := store.finishedNotes, "links=0 candidates=2 skips=1 errors=0"; got != want {
+		t.Fatalf("finished notes = %q, want %q", got, want)
+	}
+}
+
 func TestRunManualSourceFetchFailureReturnsErrRunFailed(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}

@@ -32,13 +32,6 @@ type Options struct {
 	Limit  int
 }
 
-type sourceConfig struct {
-	Key                string
-	Name               string
-	URL                string
-	CalendarSourceName string
-}
-
 type Report struct {
 	Source      string           `json:"source"`
 	SourceURL   string           `json:"source_url"`
@@ -96,7 +89,7 @@ func RunManual(ctx context.Context, st Store, fetcher Fetcher, opts Options) (Re
 	if err != nil {
 		return Report{}, fmt.Errorf("ensure source: %w", err)
 	}
-	runID, startedAt, err := st.CreateImportRun(ctx, importStatusRunning, "manual Sidney & Matilda snapshot + ICS parse report")
+	runID, startedAt, err := st.CreateImportRun(ctx, importStatusRunning, cfg.ImportRunNotes)
 	if err != nil {
 		return Report{}, fmt.Errorf("create import run: %w", err)
 	}
@@ -134,60 +127,76 @@ func RunManual(ctx context.Context, st Store, fetcher Fetcher, opts Options) (Re
 		return finishReport(ctx, st, report, importStatusFailed)
 	}
 
-	links, err := ExtractSidneyAndMatildaICSLinks(pageResult.FinalURL, pageResult.Body, opts.Limit)
+	pageURL := firstNonEmpty(pageResult.FinalURL, pageResult.URL)
+	pageParse, err := parseSourcePage(cfg, pageURL, pageResult.Body, opts.Limit)
 	if err != nil {
-		report.Errors = append(report.Errors, "extract ICS links: "+err.Error())
-		return finishReport(ctx, st, report, importStatusFailed)
-	}
-	report.Links = links
-	report.Totals.Links = len(links)
-	if len(links) == 0 {
-		report.Errors = append(report.Errors, "no ICS links found")
+		report.Errors = append(report.Errors, err.Error())
 		return finishReport(ctx, st, report, importStatusFailed)
 	}
 
-	for _, link := range links {
-		calendar := CalendarReport{URL: link}
-		icsSourceID, err := st.EnsureSource(ctx, cfg.CalendarSourceName, link)
-		if err != nil {
-			calendar.Errors = append(calendar.Errors, "ensure source: "+err.Error())
-			report.Calendars = append(report.Calendars, calendar)
-			continue
+	switch cfg.PageMode {
+	case pageProcessLinkedICS:
+		report.Links = pageParse.Links
+		report.Totals.Links = len(report.Links)
+		if len(report.Links) == 0 {
+			report.Errors = append(report.Errors, "no ICS links found")
+			return finishReport(ctx, st, report, importStatusFailed)
 		}
 
-		icsResult, err := fetcher.Fetch(ctx, link)
-		if err != nil {
-			calendar.Errors = append(calendar.Errors, err.Error())
-			report.Calendars = append(report.Calendars, calendar)
-			continue
-		}
+		for _, link := range report.Links {
+			calendar := CalendarReport{URL: link}
+			icsSourceID, err := st.EnsureSource(ctx, cfg.CalendarSourceName, link)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, "ensure source: "+err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
 
-		snapshot, err := createSnapshot(ctx, st, runID, icsSourceID, icsResult)
-		if err != nil {
-			calendar.Errors = append(calendar.Errors, "snapshot ICS: "+err.Error())
-			report.Calendars = append(report.Calendars, calendar)
-			continue
-		}
-		calendar.Snapshot = &snapshot
-		report.Totals.Snapshots++
+			icsResult, err := fetcher.Fetch(ctx, link)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
 
-		if icsResult.Truncated {
-			calendar.Errors = append(calendar.Errors, "ICS response was truncated")
-			report.Calendars = append(report.Calendars, calendar)
-			continue
-		}
+			snapshot, err := createSnapshot(ctx, st, runID, icsSourceID, icsResult)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, "snapshot ICS: "+err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+			calendar.Snapshot = &snapshot
+			report.Totals.Snapshots++
 
-		if !statusIsOK(icsResult.StatusCode) {
-			calendar.Errors = append(calendar.Errors, fmt.Sprintf("ICS returned HTTP %d", icsResult.StatusCode))
-			report.Calendars = append(report.Calendars, calendar)
-			continue
-		}
+			if icsResult.Truncated {
+				calendar.Errors = append(calendar.Errors, "ICS response was truncated")
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
 
-		parse := ParseICS(icsResult.Body)
-		calendar.Candidates = parse.Candidates
-		calendar.Skips = parse.Skips
-		calendar.Errors = append(calendar.Errors, parse.Errors...)
-		report.Calendars = append(report.Calendars, calendar)
+			if !statusIsOK(icsResult.StatusCode) {
+				calendar.Errors = append(calendar.Errors, fmt.Sprintf("ICS returned HTTP %d", icsResult.StatusCode))
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+
+			parse := ParseICS(icsResult.Body)
+			calendar.Candidates = parse.Candidates
+			calendar.Skips = parse.Skips
+			calendar.Errors = append(calendar.Errors, parse.Errors...)
+			report.Calendars = append(report.Calendars, calendar)
+		}
+	case pageProcessSourcePage:
+		parse := pageParse.Parse
+		report.Calendars = append(report.Calendars, CalendarReport{
+			URL:        pageURL,
+			Snapshot:   report.Page,
+			Candidates: parse.Candidates,
+			Skips:      parse.Skips,
+			Errors:     append([]string{}, parse.Errors...),
+		})
+	default:
+		return Report{}, fmt.Errorf("unsupported source mode %q", cfg.PageMode)
 	}
 
 	for _, calendar := range report.Calendars {
@@ -200,27 +209,12 @@ func RunManual(ctx context.Context, st Store, fetcher Fetcher, opts Options) (Re
 	status := importStatusSucceeded
 	if report.Totals.Errors > 0 || noUsableCalendar(report.Calendars) {
 		if noUsableCalendar(report.Calendars) {
-			report.Errors = append(report.Errors, "no ICS calendars parsed successfully")
+			report.Errors = append(report.Errors, noUsableListingsMessage(cfg))
 			report.Totals.Errors++
 		}
 		status = importStatusFailed
 	}
 	return finishReport(ctx, st, report, status)
-}
-
-func configForSource(source string) (sourceConfig, error) {
-	if source == "" {
-		source = DefaultSource
-	}
-	if source != DefaultSource {
-		return sourceConfig{}, fmt.Errorf("unsupported source %q", source)
-	}
-	return sourceConfig{
-		Key:                DefaultSource,
-		Name:               "Sidney & Matilda listings",
-		URL:                "https://www.sidneyandmatilda.com/",
-		CalendarSourceName: "Sidney & Matilda Google Calendar ICS",
-	}, nil
 }
 
 func createSnapshot(ctx context.Context, st Store, runID int64, sourceID int64, result FetchResult) (SnapshotReport, error) {
@@ -324,9 +318,20 @@ func noUsableCalendar(calendars []CalendarReport) bool {
 		return true
 	}
 	for _, calendar := range calendars {
-		if calendar.Snapshot != nil && len(calendar.Errors) == 0 {
+		if calendar.Snapshot != nil && len(calendar.Errors) == 0 && len(calendar.Candidates) > 0 {
 			return false
 		}
 	}
 	return true
+}
+
+func noUsableListingsMessage(cfg sourceConfig) string {
+	switch cfg.PageMode {
+	case pageProcessLinkedICS:
+		return "no ICS calendars parsed successfully"
+	case pageProcessSourcePage:
+		return "no listings parsed successfully"
+	default:
+		return "no listings parsed successfully"
+	}
 }

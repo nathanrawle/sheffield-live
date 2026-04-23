@@ -26,7 +26,7 @@ func ReviewGroupsFromReport(report Report) []review.GroupInput {
 
 	for _, calendar := range report.Calendars {
 		for _, candidate := range calendar.Candidates {
-			key, ok := reviewStageKey(candidate)
+			key, ok := reviewStageKey(report.Source, candidate)
 			if !ok {
 				continue
 			}
@@ -91,7 +91,7 @@ func writeReviewStageHashPart(sum interface{ Write([]byte) (int, error) }, value
 	_, _ = fmt.Fprintf(sum, "%d:%s\x00", len(value), value)
 }
 
-func reviewStageKey(candidate EventCandidate) (string, bool) {
+func reviewStageKey(source string, candidate EventCandidate) (string, bool) {
 	if uid := strings.TrimSpace(candidate.UID); uid != "" {
 		return "uid\x00" + uid, true
 	}
@@ -106,7 +106,7 @@ func reviewStageKey(candidate EventCandidate) (string, bool) {
 		"fallback",
 		summary,
 		startAt,
-		reviewStageVenueSlug(candidate.Location),
+		reviewStageVenueSlug(source, candidate.Location),
 	}, "\x00"), true
 }
 
@@ -114,7 +114,7 @@ func reviewStageCandidateInput(report Report, calendar CalendarReport, candidate
 	return review.CandidateInput{
 		ExternalID:  strings.TrimSpace(candidate.UID),
 		Name:        strings.TrimSpace(candidate.Summary),
-		VenueSlug:   reviewStageVenueSlug(candidate.Location),
+		VenueSlug:   reviewStageVenueSlug(report.Source, candidate.Location),
 		StartAt:     strings.TrimSpace(candidate.StartAt),
 		EndAt:       strings.TrimSpace(candidate.EndAt),
 		Genre:       "",
@@ -146,6 +146,9 @@ func reviewStageSourceName(report Report) string {
 	case "", DefaultSource:
 		return reviewStageDefaultSourceName
 	default:
+		if cfg, err := configForSource(source); err == nil && cfg.ReviewStageSourceName != "" {
+			return cfg.ReviewStageSourceName
+		}
 		return source + " manual ingest"
 	}
 }
@@ -201,6 +204,12 @@ func reviewStageFirstNonEmpty(values ...string) string {
 	return ""
 }
 
-func reviewStageVenueSlug(value string) string {
+func reviewStageVenueSlug(source, value string) string {
+	if strings.TrimSpace(source) == YellowArchSource {
+		lower := strings.ToLower(strings.TrimSpace(value))
+		if strings.Contains(lower, "yellow") && strings.Contains(lower, "arch") {
+			return "yellow-arch"
+		}
+	}
 	return VenueSlugFromText(value)
 }

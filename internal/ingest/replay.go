@@ -74,11 +74,7 @@ func ReplayImportRun(ctx context.Context, st ReplayStore, importRunID int64, opt
 		}
 	}
 
-	sourceCfg, err := configForSource(DefaultSource)
-	if err != nil {
-		return Report{}, err
-	}
-	page, err := replaySourcePageSnapshot(decoded, sourceCfg)
+	sourceCfg, page, err := detectReplaySourcePageSnapshot(decoded)
 	if err != nil {
 		return Report{}, fmt.Errorf("import run %d: %w", importRunID, err)
 	}
@@ -111,61 +107,76 @@ func ReplayImportRun(ctx context.Context, st ReplayStore, importRunID int64, opt
 
 	if page.envelope.Truncated {
 		report.Errors = append(report.Errors, "source page response was truncated")
-		return replayFinalizeReport(report)
+		return replayFinalizeReport(report, sourceCfg)
 	}
 	if !statusIsOK(page.envelope.Metadata.StatusCode) {
 		report.Errors = append(report.Errors, fmt.Sprintf("source page returned HTTP %d", page.envelope.Metadata.StatusCode))
-		return replayFinalizeReport(report)
+		return replayFinalizeReport(report, sourceCfg)
 	}
 
-	links, err := ExtractSidneyAndMatildaICSLinks(pageBaseURL, page.body, opts.Limit)
+	pageParse, err := parseSourcePage(sourceCfg, pageBaseURL, page.body, opts.Limit)
 	if err != nil {
-		report.Errors = append(report.Errors, "extract ICS links: "+err.Error())
-		return replayFinalizeReport(report)
-	}
-	report.Links = append(report.Links, links...)
-	report.Totals.Links = len(report.Links)
-	if len(report.Links) == 0 {
-		report.Errors = append(report.Errors, "no ICS links found")
-		return replayFinalizeReport(report)
+		report.Errors = append(report.Errors, err.Error())
+		return replayFinalizeReport(report, sourceCfg)
 	}
 
-	snapshotsByURL, err := replayICSSnapshotsByLookupKey(decoded, page.snapshot.ID)
-	if err != nil {
-		return Report{}, fmt.Errorf("import run %d: %w", importRunID, err)
-	}
-
-	for _, link := range report.Links {
-		snapshot, ok := snapshotsByURL[replaySnapshotKey(link)]
-		if !ok {
-			return Report{}, fmt.Errorf("missing ICS snapshot for %q in import run %d", link, importRunID)
+	switch sourceCfg.PageMode {
+	case pageProcessLinkedICS:
+		report.Links = append(report.Links, pageParse.Links...)
+		report.Totals.Links = len(report.Links)
+		if len(report.Links) == 0 {
+			report.Errors = append(report.Errors, "no ICS links found")
+			return replayFinalizeReport(report, sourceCfg)
 		}
 
-		calendar := CalendarReport{
-			URL:      link,
-			Snapshot: snapshotReportFromEnvelope(snapshot.snapshot, snapshot.envelope, snapshot.body),
+		snapshotsByURL, err := replayICSSnapshotsByLookupKey(decoded, page.snapshot.ID)
+		if err != nil {
+			return Report{}, fmt.Errorf("import run %d: %w", importRunID, err)
 		}
-		if snapshot.envelope.Truncated {
-			calendar.Errors = append(calendar.Errors, "ICS response was truncated")
+
+		for _, link := range report.Links {
+			snapshot, ok := snapshotsByURL[replaySnapshotKey(link)]
+			if !ok {
+				return Report{}, fmt.Errorf("missing ICS snapshot for %q in import run %d", link, importRunID)
+			}
+
+			calendar := CalendarReport{
+				URL:      link,
+				Snapshot: snapshotReportFromEnvelope(snapshot.snapshot, snapshot.envelope, snapshot.body),
+			}
+			if snapshot.envelope.Truncated {
+				calendar.Errors = append(calendar.Errors, "ICS response was truncated")
+				report.Calendars = append(report.Calendars, calendar)
+				report.Totals.Snapshots++
+				continue
+			}
+			if !statusIsOK(snapshot.envelope.Metadata.StatusCode) {
+				calendar.Errors = append(calendar.Errors, fmt.Sprintf("ICS returned HTTP %d", snapshot.envelope.Metadata.StatusCode))
+				report.Calendars = append(report.Calendars, calendar)
+				report.Totals.Snapshots++
+				continue
+			}
+			parse := ParseICS(snapshot.body)
+			calendar.Candidates = parse.Candidates
+			calendar.Skips = parse.Skips
+			calendar.Errors = append(calendar.Errors, parse.Errors...)
 			report.Calendars = append(report.Calendars, calendar)
 			report.Totals.Snapshots++
-			continue
 		}
-		if !statusIsOK(snapshot.envelope.Metadata.StatusCode) {
-			calendar.Errors = append(calendar.Errors, fmt.Sprintf("ICS returned HTTP %d", snapshot.envelope.Metadata.StatusCode))
-			report.Calendars = append(report.Calendars, calendar)
-			report.Totals.Snapshots++
-			continue
-		}
-		parse := ParseICS(snapshot.body)
-		calendar.Candidates = parse.Candidates
-		calendar.Skips = parse.Skips
-		calendar.Errors = append(calendar.Errors, parse.Errors...)
-		report.Calendars = append(report.Calendars, calendar)
-		report.Totals.Snapshots++
+	case pageProcessSourcePage:
+		parse := pageParse.Parse
+		report.Calendars = append(report.Calendars, CalendarReport{
+			URL:        pageBaseURL,
+			Snapshot:   snapshotReportFromEnvelope(page.snapshot, page.envelope, page.body),
+			Candidates: parse.Candidates,
+			Skips:      parse.Skips,
+			Errors:     append([]string{}, parse.Errors...),
+		})
+	default:
+		return Report{}, fmt.Errorf("import run %d unsupported source mode %q", importRunID, sourceCfg.PageMode)
 	}
 
-	return replayFinalizeReport(report)
+	return replayFinalizeReport(report, sourceCfg)
 }
 
 type decodedReplaySnapshot struct {
@@ -200,30 +211,6 @@ func decodeReplaySnapshot(snapshot ReplaySnapshot) (decodedReplaySnapshot, error
 	}, nil
 }
 
-func replaySourcePageSnapshot(decoded []decodedReplaySnapshot, cfg sourceConfig) (decodedReplaySnapshot, error) {
-	var matches []decodedReplaySnapshot
-	for _, snapshot := range decoded {
-		if strings.TrimSpace(snapshot.snapshot.SourceName) != cfg.Name {
-			continue
-		}
-		if strings.TrimSpace(snapshot.snapshot.SourceURL) != cfg.URL {
-			continue
-		}
-		if strings.TrimSpace(snapshot.envelope.Metadata.URL) != cfg.URL {
-			continue
-		}
-		matches = append(matches, snapshot)
-	}
-	switch len(matches) {
-	case 0:
-		return decodedReplaySnapshot{}, fmt.Errorf("no source page snapshot for %q at %q", cfg.Name, cfg.URL)
-	case 1:
-		return matches[0], nil
-	default:
-		return decodedReplaySnapshot{}, fmt.Errorf("multiple source page snapshots for %q at %q", cfg.Name, cfg.URL)
-	}
-}
-
 func snapshotReportFromEnvelope(snapshot ReplaySnapshot, envelope SnapshotEnvelope, body []byte) *SnapshotReport {
 	return &SnapshotReport{
 		ID:         snapshot.ID,
@@ -236,10 +223,10 @@ func snapshotReportFromEnvelope(snapshot ReplaySnapshot, envelope SnapshotEnvelo
 	}
 }
 
-func replayFinalizeReport(report Report) (Report, error) {
+func replayFinalizeReport(report Report, cfg sourceConfig) (Report, error) {
 	report = recalculateReportTotals(report)
 	if noUsableCalendar(report.Calendars) {
-		report.Errors = append(report.Errors, "no ICS calendars parsed successfully")
+		report.Errors = append(report.Errors, noUsableListingsMessage(cfg))
 		report.Totals.Errors++
 	}
 	if report.Totals.Errors > 0 {

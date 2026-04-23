@@ -11,7 +11,7 @@ Sheffield Live is a single Go monolith. It serves server-rendered HTML from one 
 - `cmd/web` starts the HTTP server
 - `cmd/ingest` runs manual ingestion and optional review staging
 - `internal/domain` defines shared venue, event, and origin types
-- `internal/ingest` fetches Sidney & Matilda pages, extracts ICS links, parses ICS data, and stages review groups from ingest reports
+- `internal/ingest` fetches source pages, runs source-specific extraction and parsing, and stages review groups from ingest reports
 - `internal/review` defines review group and draft-choice types
 - `internal/store` provides the seed-store implementation and read-only store interface
 - `internal/store/sqlite` opens SQLite, runs migrations, bootstraps seed data, and implements persistence
@@ -66,7 +66,7 @@ The admin UI exposes read-only review history, import history, and per-run snaps
 
 Raw source snapshots feed review groups, and review resolution publishes canonical public events.
 
-- raw snapshots capture fetched source pages and ICS payloads
+- raw snapshots capture fetched source pages and any source-specific secondary payloads such as ICS feeds
 - `review_groups.staging_key` has a unique index so staged reruns reuse the same group when the content key matches
 - review groups hold duplicate clusters or singleton new listings
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction

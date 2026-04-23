@@ -19,6 +19,8 @@ Current surface:
 - seed, test, and development records are labelled; live records are untagged
 
 Manual ingest supports live ingest, snapshot replay, and fixture-based offline review data. See [Command reference](docs/commands.md) or [Common tasks](docs/common-tasks.md) for the short versions.
+Live ingest currently supports `sidney-and-matilda` and `yellow-arch`.
+Replay auto-detects the stored source from page snapshot metadata and reuses that source's ingest path.
 Review staging is idempotent by durable staging key, so reruns reuse existing review groups instead of duplicating them.
 
 Docs:

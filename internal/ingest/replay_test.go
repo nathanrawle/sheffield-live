@@ -122,6 +122,63 @@ func TestReplayImportRunRebuildsReportFromSnapshotEnvelopes(t *testing.T) {
 	}
 }
 
+func TestReplayImportRunRebuildsYellowArchReportFromSourcePageSnapshot(t *testing.T) {
+	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         177,
+			StartedAt:  time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=0 candidates=2 skips=0 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         301,
+					SourceName: "Yellow Arch listings",
+					SourceURL:  "https://www.yellowarch.com/events/",
+					CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.yellowarch.com/events/",
+						FinalURL:    "https://www.yellowarch.com/events/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "yellow_arch.html"),
+						CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 177, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, yellowArchSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, "https://www.yellowarch.com/events/"; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := report.Totals.Links, 0; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Yellow Arch Studios"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+}
+
 func TestReplayImportRunWrapsLoadError(t *testing.T) {
 	_, err := ReplayImportRun(context.Background(), fakeReplayStore{err: errors.New("load failed")}, 91, ReplayOptions{Limit: 1})
 	if err == nil {

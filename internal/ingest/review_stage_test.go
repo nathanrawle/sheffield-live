@@ -336,6 +336,40 @@ func TestReviewGroupsFromReportKeepsDistinctVenueSlug(t *testing.T) {
 	}
 }
 
+func TestReviewGroupsFromYellowArchReportUsesCanonicalVenueSlugAndSourceName(t *testing.T) {
+	report := Report{
+		Source:      YellowArchSource,
+		SourceURL:   "https://www.yellowarch.com/events/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://www.yellowarch.com/events/",
+				Candidates: []EventCandidate{
+					{
+						Summary:  "One",
+						Location: "Yellow Arch Studios",
+						URL:      "https://www.yellowarch.com/event/one/",
+						StartAt:  "2026-05-01T19:00:00Z",
+						EndAt:    "2026-05-01T22:00:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	groups := ReviewGroupsFromReport(report)
+	if got, want := len(groups), 1; got != want {
+		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got, want := groups[0].SourceName, "Yellow Arch manual ingest"; got != want {
+		t.Fatalf("source name = %q, want %q", got, want)
+	}
+	if got, want := groups[0].Candidates[0].VenueSlug, "yellow-arch"; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+}
+
 func TestReviewGroupsFromReportPreservesStableOrder(t *testing.T) {
 	report := successfulReviewStageReport(
 		CalendarReport{

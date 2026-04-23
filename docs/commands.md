@@ -3,7 +3,7 @@
 This repository has one Go monolith and two entrypoints:
 
 - `./cmd/web` serves the site
-- `./cmd/ingest` performs manual Sidney & Matilda ingestion and review staging
+- `./cmd/ingest` performs manual venue-source ingestion and review staging
 
 ## `./cmd/web`
 
@@ -93,8 +93,10 @@ Live ingest:
 
 - primary flag: `-http-user-agent`
 - alias: `-user-agent`
-- fetches the Sidney & Matilda source page
-- snapshots the source page and fetched ICS payloads
+- supports `sidney-and-matilda` and `yellow-arch`
+- fetches the selected source page
+- Sidney & Matilda snapshots the source page and fetched ICS payloads
+- Yellow Arch snapshots only the source page and parses embedded JSON-LD event data from that page
 - parses candidates, skips, and errors
 - writes `sources`, `import_runs`, and `snapshots`
 - prints a JSON report to stdout
@@ -106,7 +108,10 @@ Replay:
 - only replays finished succeeded runs
 - validates the stored snapshot envelope version and body SHA-256
 - refuses missing or ambiguous snapshot matches
-- reconstructs extraction from source page body to ICS links to matching ICS snapshots by URL and final URL to candidates
+- auto-detects the source from stored page snapshot metadata
+- reconstructs source-specific extraction from stored source page snapshots
+- Sidney & Matilda replays source-page extraction to ICS links and matching ICS snapshots by URL and final URL
+- Yellow Arch replays candidate parsing directly from the stored source page snapshot
 
 Stage review groups:
 

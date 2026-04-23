@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -394,6 +395,42 @@ func TestRunWithArgsReplayDoesNotRequireUserAgent(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsReplayYellowArchUsesStoredSourcePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	runID := seedReplayRunForCLIYellowArch(t, path)
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-review-groups"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("replay run: %v", err)
+	}
+
+	var got manualIngestReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode replay output: %v", err)
+	}
+	if got.Report.Source != ingest.YellowArchSource {
+		t.Fatalf("report source = %q, want %q", got.Report.Source, ingest.YellowArchSource)
+	}
+	if got.Report.SourceURL != "https://www.yellowarch.com/events/" {
+		t.Fatalf("report source url = %q, want Yellow Arch events page", got.Report.SourceURL)
+	}
+	if got.Report.Limit != 1 {
+		t.Fatalf("report limit = %d, want 1", got.Report.Limit)
+	}
+	if got := len(got.Report.Calendars); got != 1 {
+		t.Fatalf("calendars = %d, want 1", got)
+	}
+	if got := len(got.Report.Calendars[0].Candidates); got != 1 {
+		t.Fatalf("candidates = %d, want 1", got)
+	}
+	if got := got.ReviewStage.GroupsCreated; got != 1 {
+		t.Fatalf("review groups created = %d, want 1", got)
+	}
+	if got := got.ReviewStage.Groups[0].SourceURL; got != "https://www.yellowarch.com/events/" {
+		t.Fatalf("review stage source url = %q, want Yellow Arch events page", got)
+	}
+}
+
 func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	runID := seedReplayRunForCLIWithNoLinks(t, path)
@@ -683,6 +720,60 @@ func seedReplayRunForCLIWithNoLinks(t *testing.T, path string) int64 {
 	}
 
 	return runID
+}
+
+func seedReplayRunForCLIYellowArch(t *testing.T, path string) int64 {
+	t.Helper()
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+	pageSourceID, err := st.EnsureSource(ctx, "Yellow Arch listings", "https://www.yellowarch.com/events/")
+	if err != nil {
+		t.Fatalf("ensure page source: %v", err)
+	}
+
+	runID, startedAt, err := st.CreateImportRun(ctx, "succeeded", "links=0 candidates=2 skips=0 errors=0")
+	if err != nil {
+		t.Fatalf("create import run: %v", err)
+	}
+
+	pagePayload := mustReplaySnapshotPayload(t, ingest.FetchResult{
+		URL:         "https://www.yellowarch.com/events/",
+		FinalURL:    "https://www.yellowarch.com/events/",
+		Status:      "200 OK",
+		StatusCode:  200,
+		ContentType: "text/html",
+		Body:        readFixture(t, filepath.Join("..", "..", "internal", "ingest", "testdata", "yellow_arch.html")),
+		CapturedAt:  startedAt.Add(time.Minute),
+	}, nil)
+	if _, _, err := st.CreateSnapshot(ctx, runID, &pageSourceID, startedAt.Add(time.Minute), pagePayload); err != nil {
+		t.Fatalf("create page snapshot: %v", err)
+	}
+
+	if _, err := st.FinishImportRun(ctx, runID, "succeeded", "links=0 candidates=2 skips=0 errors=0"); err != nil {
+		t.Fatalf("finish import run: %v", err)
+	}
+
+	return runID
+}
+
+func readFixture(t *testing.T, path string) []byte {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", path, err)
+	}
+	return raw
 }
 
 func openRawDB(t *testing.T, path string) *sql.DB {

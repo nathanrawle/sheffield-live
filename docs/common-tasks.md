@@ -22,13 +22,21 @@ sqlite3 ./data/sheffield-live.db
 
 Use the SQLite CLI only if you already have it installed. Any read-only query tool you prefer is fine.
 
-## Run a manual Sidney & Matilda ingest
+## Run a manual ingest
+
+Sidney & Matilda is the default source:
 
 ```bash
 go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
-This fetches the source page, snapshots the page and ICS payloads, and prints a JSON report.
+Yellow Arch uses the same command with an explicit source:
+
+```bash
+go run ./cmd/ingest -source yellow-arch -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
+```
+
+Sidney & Matilda snapshots the source page plus linked ICS payloads. Yellow Arch snapshots only the source page and parses embedded JSON-LD event data from that page. `-limit` caps linked ICS fetches for Sidney & Matilda and parsed source-page candidates for Yellow Arch. Both commands print a JSON report.
 
 ## Stage review groups after ingest
 
@@ -45,6 +53,7 @@ go run ./cmd/ingest -import-run-id 42 -limit 20 -stage-review-groups
 ```
 
 This rebuilds the report from stored snapshots without using the network. Reruns are safe and reuse existing groups when the staged content matches. Omit `-stage-review-groups` if you only want the replay report.
+Replay auto-detects whether the stored run used linked ICS extraction or direct source-page parsing.
 
 ## Create an offline review group from a local ICS file
 
