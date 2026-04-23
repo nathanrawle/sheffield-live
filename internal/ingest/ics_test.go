@@ -19,6 +19,9 @@ func TestParseICS(t *testing.T) {
 	if utc.UID != "utc-1" || utc.Summary != "UTC Show" {
 		t.Fatalf("first candidate = %#v", utc)
 	}
+	if utc.Location != "Sidney & Matilda" {
+		t.Fatalf("location = %q, want %q", utc.Location, "Sidney & Matilda")
+	}
 	if utc.Description != "First linecontinued line" {
 		t.Fatalf("description = %q", utc.Description)
 	}

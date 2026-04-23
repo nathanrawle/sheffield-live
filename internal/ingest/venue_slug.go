@@ -10,9 +10,6 @@ func VenueSlugFromText(value string) string {
 	if strings.Contains(value, "sidney") && strings.Contains(value, "matilda") {
 		return "sidney-and-matilda"
 	}
-	if strings.Contains(value, "rivelin") && strings.Contains(value, "works") {
-		return "sidney-and-matilda"
-	}
 
 	var out strings.Builder
 	lastDash := false

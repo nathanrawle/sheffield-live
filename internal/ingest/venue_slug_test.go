@@ -19,9 +19,9 @@ func TestVenueSlugFromText(t *testing.T) {
 			want:  "sidney-and-matilda",
 		},
 		{
-			name:  "rivelin works canonicalized",
+			name:  "rivelin works keeps its own slug",
 			value: "Rivelin Works",
-			want:  "sidney-and-matilda",
+			want:  "rivelin-works",
 		},
 		{
 			name:  "generic slug",

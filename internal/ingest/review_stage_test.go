@@ -312,7 +312,7 @@ func TestReviewGroupsFromReportEmitsSingletons(t *testing.T) {
 	}
 }
 
-func TestReviewGroupsFromReportCanonicalizesRivelinWorksVenueSlug(t *testing.T) {
+func TestReviewGroupsFromReportKeepsDistinctVenueSlug(t *testing.T) {
 	report := successfulReviewStageReport(
 		CalendarReport{
 			URL: "https://calendar.example.test/one.ics",
@@ -331,7 +331,7 @@ func TestReviewGroupsFromReportCanonicalizesRivelinWorksVenueSlug(t *testing.T) 
 	if got, want := len(groups), 1; got != want {
 		t.Fatalf("groups = %d, want %d", got, want)
 	}
-	if got, want := groups[0].Candidates[0].VenueSlug, "sidney-and-matilda"; got != want {
+	if got, want := groups[0].Candidates[0].VenueSlug, "rivelin-works"; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
 	}
 }
