@@ -320,6 +320,9 @@ func TestRunWithArgsReviewICSFixtureCreatesReviewGroupWithoutUserAgent(t *testin
 	if got := len(group.Candidates); got != 3 {
 		t.Fatalf("group candidates = %d, want 3", got)
 	}
+	if got, want := group.Candidates[0].VenueSlug, "sidney-and-matilda"; got != want {
+		t.Fatalf("first candidate venue slug = %q, want %q", got, want)
+	}
 }
 
 func TestRunWithArgsReviewICSFixtureUsesDefaultTitle(t *testing.T) {

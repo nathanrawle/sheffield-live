@@ -353,7 +353,7 @@ func createReviewGroupFromFixture(ctx context.Context, st *sqlite.Store, stdout 
 		candidates = append(candidates, review.CandidateInput{
 			ExternalID:  candidate.UID,
 			Name:        candidate.Summary,
-			VenueSlug:   slugFromText(candidate.Location),
+			VenueSlug:   ingest.VenueSlugFromText(candidate.Location),
 			StartAt:     candidate.StartAt,
 			EndAt:       candidate.EndAt,
 			Genre:       "",
@@ -405,24 +405,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func slugFromText(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
-		return ""
-	}
-	var out strings.Builder
-	lastDash := false
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			out.WriteRune(r)
-			lastDash = false
-		case !lastDash:
-			out.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return strings.Trim(out.String(), "-")
 }
