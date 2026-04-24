@@ -50,6 +50,7 @@ When a review group resolves:
 - the venue must already exist
 - the source row is ensured transactionally
 - authoritative groups resolve through `event_source_links` identity before any slug-based publish path
+- authoritative groups can also store secondary-source `genre` and `description` rows for explicit non-authoritative candidate sources in the same transaction
 - the published event origin is `live`
 - the slug is `live-<slug(name)>-<slug(venue)>-<YYYYMMDDHHMMSS UTC>`
 - slug conflicts are handled with upsert semantics

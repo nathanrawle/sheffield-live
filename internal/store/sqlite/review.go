@@ -153,7 +153,7 @@ func (s *Store) PromoteSingletonReviewGroupIfMissing(ctx context.Context, input 
 	if !applied {
 		return "", false, nil
 	}
-	return appliedEvent.Slug, true, nil
+	return appliedEvent.Event.Slug, true, nil
 }
 
 func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, stagingKey string) (int64, error) {
@@ -277,53 +277,53 @@ type eventRecord struct {
 func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, event domain.Event, sourceEventKey string, now time.Time) (domain.Event, bool, error) {
+}, event domain.Event, sourceEventKey string, now time.Time) (eventRecord, bool, error) {
 	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
 	if err != nil {
-		return domain.Event{}, false, err
+		return eventRecord{}, false, err
 	}
 	if !ok {
-		return domain.Event{}, false, nil
+		return eventRecord{}, false, nil
 	}
 	sourceID, err := ensureSourceTx(ctx, tx, event.SourceName, event.SourceURL)
 	if err != nil {
-		return domain.Event{}, false, err
+		return eventRecord{}, false, err
 	}
 
 	if linked, ok, err := loadEventRecordBySourceLinkTx(ctx, tx, sourceID, sourceEventKey); err != nil {
-		return domain.Event{}, false, err
+		return eventRecord{}, false, err
 	} else if ok {
 		updated, err := updateEventAuthoritativelyTx(ctx, tx, linked, event, venueID, sourceID)
 		if err != nil {
-			return domain.Event{}, false, err
+			return eventRecord{}, false, err
 		}
 		if err := ensureEventSourceLinkTx(ctx, tx, linked.ID, sourceID, sourceEventKey, now); err != nil {
-			return domain.Event{}, false, err
+			return eventRecord{}, false, err
 		}
-		return updated, true, nil
+		return eventRecord{ID: linked.ID, Event: updated}, true, nil
 	}
 
 	if legacy, ok, err := loadEventRecordBySlugTx(ctx, tx, event.Slug); err != nil {
-		return domain.Event{}, false, err
+		return eventRecord{}, false, err
 	} else if ok {
 		updated, err := updateEventAuthoritativelyTx(ctx, tx, legacy, event, venueID, sourceID)
 		if err != nil {
-			return domain.Event{}, false, err
+			return eventRecord{}, false, err
 		}
 		if err := ensureEventSourceLinkTx(ctx, tx, legacy.ID, sourceID, sourceEventKey, now); err != nil {
-			return domain.Event{}, false, err
+			return eventRecord{}, false, err
 		}
-		return updated, true, nil
+		return eventRecord{ID: legacy.ID, Event: updated}, true, nil
 	}
 
 	eventID, err := insertEventTx(ctx, tx, event, venueID, sourceID)
 	if err != nil {
-		return domain.Event{}, false, err
+		return eventRecord{}, false, err
 	}
 	if err := ensureEventSourceLinkTx(ctx, tx, eventID, sourceID, sourceEventKey, now); err != nil {
-		return domain.Event{}, false, err
+		return eventRecord{}, false, err
 	}
-	return event, true, nil
+	return eventRecord{ID: eventID, Event: event}, true, nil
 }
 
 func insertEventTx(ctx context.Context, tx execer, event domain.Event, venueID, sourceID int64) (int64, error) {
@@ -875,6 +875,10 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	if group.Status != review.StatusOpen {
 		return fmt.Errorf("review group %d is not open", groupID)
 	}
+	candidates, err := loadReviewCandidates(ctx, tx, groupID)
+	if err != nil {
+		return err
+	}
 
 	seen := make(map[review.Field]struct{}, len(choices))
 	selectedCandidates := make(map[review.Field]review.Candidate, len(choices))
@@ -921,10 +925,15 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
 		event.SourceName = authoritative.SourceName
 		event.SourceURL = authoritative.SourceURL
-		if _, applied, err := applyAuthoritativeEventTx(ctx, tx, event, authoritative.SourceEventKey, now); err != nil {
+		canonicalRecord, applied, err := applyAuthoritativeEventTx(ctx, tx, event, authoritative.SourceEventKey, now)
+		if err != nil {
 			return err
-		} else if !applied {
+		}
+		if !applied {
 			return fmt.Errorf("venue %q not found", event.VenueSlug)
+		}
+		if err := upsertEventSecondarySourceInfoTx(ctx, tx, canonicalRecord.ID, authoritative, candidates, now); err != nil {
+			return err
 		}
 	} else {
 		if err := upsertEventTx(ctx, tx, event); err != nil {
@@ -1312,6 +1321,114 @@ func authoritativeOwnedVenueSlugForSourceName(sourceName string) string {
 	default:
 		return ""
 	}
+}
+
+func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, eventID int64, authoritative reviewGroupAuthoritativeLink, candidates []review.Candidate, now time.Time) error {
+	if eventID <= 0 {
+		return errors.New("secondary source info event ID is required")
+	}
+	rows := make([]eventSecondarySourceInfoRow, 0, len(candidates)*2)
+	for _, candidate := range candidates {
+		sourceName := strings.TrimSpace(candidate.SourceName)
+		sourceURL := strings.TrimSpace(candidate.SourceURL)
+		if sourceName == "" || sourceURL == "" {
+			continue
+		}
+		if sourceName == authoritative.SourceName && sourceURL == authoritative.SourceURL {
+			continue
+		}
+
+		sourceID, err := ensureSourceTx(ctx, tx, sourceName, sourceURL)
+		if err != nil {
+			return err
+		}
+		for _, item := range []struct {
+			infoType string
+			value    string
+		}{
+			{infoType: "genre", value: strings.TrimSpace(candidate.Genre)},
+			{infoType: "description", value: strings.TrimSpace(candidate.Description)},
+		} {
+			if item.value == "" {
+				continue
+			}
+			rows = append(rows, eventSecondarySourceInfoRow{
+				EventID:    eventID,
+				SourceID:   sourceID,
+				VenueSlug:  strings.TrimSpace(candidate.VenueSlug),
+				EventName:  strings.TrimSpace(candidate.Name),
+				StartAt:    strings.TrimSpace(candidate.StartAt),
+				InfoType:   item.infoType,
+				Value:      item.value,
+				RecordedAt: now,
+			})
+		}
+	}
+	if err := deleteEventSecondarySourceInfoForEventTx(ctx, tx, eventID); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if err := upsertEventSecondarySourceInfoRowTx(ctx, tx, row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type eventSecondarySourceInfoRow struct {
+	EventID    int64
+	SourceID   int64
+	VenueSlug  string
+	EventName  string
+	StartAt    string
+	InfoType   string
+	Value      string
+	RecordedAt time.Time
+}
+
+func upsertEventSecondarySourceInfoRowTx(ctx context.Context, tx execer, row eventSecondarySourceInfoRow) error {
+	if row.EventID <= 0 {
+		return errors.New("secondary source info event ID is required")
+	}
+	if row.SourceID <= 0 {
+		return errors.New("secondary source info source ID is required")
+	}
+	if row.VenueSlug == "" || row.EventName == "" || row.StartAt == "" || row.InfoType == "" || row.Value == "" {
+		return errors.New("secondary source info row is incomplete")
+	}
+	recordedAt := formatRFC3339UTC(row.RecordedAt)
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO event_secondary_source_info (
+			event_id,
+			source_id,
+			venue_slug,
+			event_name,
+			start_at,
+			info_type,
+			value,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(source_id, venue_slug, event_name, start_at, info_type) DO UPDATE SET
+			event_id = excluded.event_id,
+			value = excluded.value,
+			updated_at = excluded.updated_at
+	`, row.EventID, row.SourceID, row.VenueSlug, row.EventName, row.StartAt, row.InfoType, row.Value, recordedAt, recordedAt)
+	return err
+}
+
+func deleteEventSecondarySourceInfoForEventTx(ctx context.Context, tx execer, eventID int64) error {
+	if eventID <= 0 {
+		return errors.New("secondary source info event ID is required")
+	}
+	_, err := tx.ExecContext(ctx, `
+		DELETE FROM event_secondary_source_info
+		WHERE event_id = ?
+	`, eventID)
+	return err
 }
 
 func buildResolvedEvent(group review.Group, selected map[review.Field]review.Candidate, publishedAt time.Time) (domain.Event, error) {

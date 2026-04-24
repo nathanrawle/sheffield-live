@@ -59,6 +59,7 @@ Public records live in SQLite and are served from canonical `venues` and `events
 - `Event` stores slug, name, venue slug, UTC start and end times, genre, status, description, source name, source URL, last checked time, and origin
 
 Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
+Authoritative review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema.
 
 The admin UI exposes read-only review history, import history, and per-run snapshot metadata when the backing store implements those read paths. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
 
@@ -72,6 +73,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - review groups hold duplicate clusters or singleton new listings
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
 - authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
+- authoritative review groups may also persist secondary-source `genre` and `description` rows keyed by secondary source plus candidate venue, name, and start time
 - rejecting a review does not publish
 - the venue must already exist
 - the source row is ensured

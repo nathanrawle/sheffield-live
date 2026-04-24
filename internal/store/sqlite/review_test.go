@@ -1182,6 +1182,146 @@ func TestResolveReviewGroupUsesAuthoritativeSourceLinkIdentity(t *testing.T) {
 	}
 }
 
+func TestResolveReviewGroupAuthoritativePathCreatesSecondarySourceInfoRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative secondary info")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	rows := loadSecondarySourceInfoRows(t, db)
+	if got, want := len(rows), 2; got != want {
+		t.Fatalf("secondary source info rows = %d, want %d", got, want)
+	}
+	if rows[0].InfoType != "description" || rows[0].Value != "First line" {
+		t.Fatalf("first secondary row = %#v, want description First line", rows[0])
+	}
+	if rows[1].InfoType != "genre" || rows[1].Value != "Indie" {
+		t.Fatalf("second secondary row = %#v, want genre Indie", rows[1])
+	}
+}
+
+func TestResolveReviewGroupAuthoritativePathUpsertsSecondarySourceInfoRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	firstGroupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative secondary first")
+	firstGroup, ok, err := st.LoadReviewGroup(ctx, firstGroupID)
+	if err != nil {
+		t.Fatalf("load first review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("first review group not found")
+	}
+	if err := st.ResolveReviewGroup(ctx, firstGroupID, fullReviewChoices(t, firstGroup)); err != nil {
+		t.Fatalf("resolve first review group: %v", err)
+	}
+
+	secondGroupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative secondary second")
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET genre = ?, description = ?
+		WHERE group_id = ? AND position = 1
+	`, "Ambient", "Updated secondary description", secondGroupID); err != nil {
+		t.Fatalf("update second review candidate: %v", err)
+	}
+	secondGroup, ok, err := st.LoadReviewGroup(ctx, secondGroupID)
+	if err != nil {
+		t.Fatalf("load second review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("second review group not found")
+	}
+	if err := st.ResolveReviewGroup(ctx, secondGroupID, fullReviewChoices(t, secondGroup)); err != nil {
+		t.Fatalf("resolve second review group: %v", err)
+	}
+
+	rows := loadSecondarySourceInfoRows(t, db)
+	if got, want := len(rows), 2; got != want {
+		t.Fatalf("secondary source info rows = %d, want %d", got, want)
+	}
+	if rows[0].InfoType != "description" || rows[0].Value != "Updated secondary description" {
+		t.Fatalf("first secondary row = %#v, want updated description", rows[0])
+	}
+	if rows[1].InfoType != "genre" || rows[1].Value != "Ambient" {
+		t.Fatalf("second secondary row = %#v, want updated genre", rows[1])
+	}
+}
+
+func TestResolveReviewGroupAuthoritativePathReconcilesStaleSecondarySourceInfoRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	firstGroupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative stale secondary first")
+	firstGroup, ok, err := st.LoadReviewGroup(ctx, firstGroupID)
+	if err != nil {
+		t.Fatalf("load first review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("first review group not found")
+	}
+	if err := st.ResolveReviewGroup(ctx, firstGroupID, fullReviewChoices(t, firstGroup)); err != nil {
+		t.Fatalf("resolve first review group: %v", err)
+	}
+
+	secondGroupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative stale secondary second")
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET genre = '', description = ''
+		WHERE group_id = ? AND position = 1
+	`, secondGroupID); err != nil {
+		t.Fatalf("blank second review candidate secondary info: %v", err)
+	}
+	secondGroup, ok, err := st.LoadReviewGroup(ctx, secondGroupID)
+	if err != nil {
+		t.Fatalf("load second review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("second review group not found")
+	}
+	if err := st.ResolveReviewGroup(ctx, secondGroupID, fullReviewChoices(t, secondGroup)); err != nil {
+		t.Fatalf("resolve second review group: %v", err)
+	}
+
+	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
+		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
+	}
+}
+
 func TestSaveReviewDraftRejectsCandidateFromAnotherGroup(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
@@ -1495,6 +1635,9 @@ func TestResolveReviewGroupAuthoritativePathRollsBackWhenVenueIsMissing(t *testi
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
 	}
+	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
+		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
+	}
 }
 
 func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenVenueIsUnknown(t *testing.T) {
@@ -1735,6 +1878,9 @@ func TestPromoteSingletonReviewGroupIfMissingUpdatesLinkedEventInPlace(t *testin
 	if event.Description != "First description" {
 		t.Fatalf("description = %q, want preserved %q", event.Description, "First description")
 	}
+	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
+		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
+	}
 }
 
 func TestPromoteSingletonReviewGroupIfMissingAttachesLegacySlugMatch(t *testing.T) {
@@ -1973,6 +2119,50 @@ func assertDraftChoice(t *testing.T, group review.Group, field review.Field, can
 	if choice.UpdatedAt.IsZero() {
 		t.Fatalf("%s updated_at is zero", field)
 	}
+}
+
+type secondarySourceInfoRow struct {
+	EventID   int64
+	SourceID  int64
+	VenueSlug string
+	EventName string
+	StartAt   string
+	InfoType  string
+	Value     string
+}
+
+func loadSecondarySourceInfoRows(t *testing.T, db *sql.DB) []secondarySourceInfoRow {
+	t.Helper()
+
+	rows, err := db.Query(`
+		SELECT
+			event_id,
+			source_id,
+			venue_slug,
+			event_name,
+			start_at,
+			info_type,
+			value
+		FROM event_secondary_source_info
+		ORDER BY info_type, id
+	`)
+	if err != nil {
+		t.Fatalf("query secondary source info rows: %v", err)
+	}
+	defer rows.Close()
+
+	var result []secondarySourceInfoRow
+	for rows.Next() {
+		var row secondarySourceInfoRow
+		if err := rows.Scan(&row.EventID, &row.SourceID, &row.VenueSlug, &row.EventName, &row.StartAt, &row.InfoType, &row.Value); err != nil {
+			t.Fatalf("scan secondary source info row: %v", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate secondary source info rows: %v", err)
+	}
+	return result
 }
 
 func setReviewGroupUpdatedAt(db *sql.DB, groupID int64, updatedAt time.Time) error {

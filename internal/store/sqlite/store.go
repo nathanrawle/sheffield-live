@@ -25,6 +25,7 @@ const (
 	schemaVersionV3   = 3
 	schemaVersionV4   = 4
 	schemaVersionV5   = 5
+	schemaVersionV6   = 6
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -38,6 +39,7 @@ var migrations = []struct {
 	{version: schemaVersionV3, path: "migrations/0003_review_staging_idempotency.sql"},
 	{version: schemaVersionV4, path: "migrations/0004_event_source_links.sql"},
 	{version: schemaVersionV5, path: "migrations/0005_review_group_authoritative_link.sql"},
+	{version: schemaVersionV6, path: "migrations/0006_event_secondary_source_info.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -215,8 +217,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV5 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV5)
+	if version > schemaVersionV6 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV6)
 	}
 
 	for _, migration := range migrations {
@@ -359,6 +361,9 @@ func validate(ctx context.Context, q queryer) error {
 	if err := validateDanglingEventSourceLinkRefs(ctx, q); err != nil {
 		return err
 	}
+	if err := validateDanglingEventSecondarySourceInfoRefs(ctx, q); err != nil {
+		return err
+	}
 	if _, err := loadEvents(ctx, q, `
 		SELECT
 			e.slug,
@@ -443,6 +448,26 @@ func validateDanglingEventSourceLinkRefs(ctx context.Context, q queryer) error {
 		return err
 	}
 	return fmt.Errorf("event source link %d references missing source or event", linkID)
+}
+
+func validateDanglingEventSecondarySourceInfoRefs(ctx context.Context, q queryer) error {
+	row := q.QueryRowContext(ctx, `
+		SELECT i.id
+		FROM event_secondary_source_info i
+		LEFT JOIN sources s ON s.id = i.source_id
+		LEFT JOIN events e ON e.id = i.event_id
+		WHERE s.id IS NULL OR e.id IS NULL
+		ORDER BY i.id
+		LIMIT 1
+	`)
+	var infoID int64
+	switch err := row.Scan(&infoID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	return fmt.Errorf("event secondary source info %d references missing source or event", infoID)
 }
 
 func countRows(ctx context.Context, q queryer, table string) (int, error) {
