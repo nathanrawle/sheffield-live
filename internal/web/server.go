@@ -57,6 +57,10 @@ type ImportRunReviewGroupStore interface {
 	ListReviewGroupsForImportRun(ctx context.Context, importRunID int64) ([]review.GroupSummary, error)
 }
 
+type EventSecondarySourceInfoStore interface {
+	EventSecondarySourceInfoByEventSlug(ctx context.Context, slug string) ([]store.EventSecondarySourceInfo, error)
+}
+
 type PageData struct {
 	SiteName                 string
 	PageTitle                string
@@ -68,6 +72,7 @@ type PageData struct {
 	EventGroups              []EventGroup
 	EventFilters             EventFilters
 	Event                    domain.Event
+	EventSecondarySources    []store.EventSecondarySourceInfo
 	Venues                   []domain.Venue
 	Venue                    domain.Venue
 	FeaturedEvent            domain.Event
@@ -250,7 +255,8 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 			}
 			return venue.Name
 		},
-		"year": func(t time.Time) string { return t.In(localLocation).Format("2006") },
+		"year":        func(t time.Time) string { return t.In(localLocation).Format("2006") },
+		"joinStrings": func(values []string, sep string) string { return strings.Join(values, sep) },
 	}
 
 	layout, err := template.New("layout.html").Funcs(funcs).ParseFS(templateFS, "templates/layout.html")
@@ -763,14 +769,24 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 		http.Error(w, "event venue not found", http.StatusInternalServerError)
 		return
 	}
+	var secondarySources []store.EventSecondarySourceInfo
+	if secondaryStore, ok := s.store.(EventSecondarySourceInfoStore); ok {
+		loaded, err := secondaryStore.EventSecondarySourceInfoByEventSlug(r.Context(), slug)
+		if err != nil {
+			http.Error(w, "event secondary source info not available", http.StatusInternalServerError)
+			return
+		}
+		secondarySources = loaded
+	}
 	data := PageData{
-		SiteName:        "Sheffield Live",
-		PageTitle:       event.Name,
-		MetaDescription: event.Description,
-		Active:          "events",
-		Now:             s.now(),
-		Event:           event,
-		Venue:           venue,
+		SiteName:              "Sheffield Live",
+		PageTitle:             event.Name,
+		MetaDescription:       event.Description,
+		Active:                "events",
+		Now:                   s.now(),
+		Event:                 event,
+		EventSecondarySources: secondarySources,
+		Venue:                 venue,
 	}
 	s.renderPage(w, "templates/event_detail.html", data)
 }

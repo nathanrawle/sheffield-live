@@ -435,6 +435,94 @@ func TestSQLiteEventDetailRendersResolvedReviewSource(t *testing.T) {
 	body := renderPath(t, server, "/events/live-utc-show-sidney-and-matilda-20260501190000")
 	assertContains(t, body, "Fixture ICS")
 	assertContains(t, body, `href="https://example.test/utc-show"`)
+	assertNotContains(t, body, "Also seen from other sources")
+}
+
+func TestSQLiteEventDetailRendersSecondarySourceInfo(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, "matinee-noise-at-the-leadmill").Scan(&eventID); err != nil {
+		t.Fatalf("lookup event id: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Songkick mirror", "https://example.test/songkick/matinee-noise"); err != nil {
+		t.Fatalf("insert secondary source: %v", err)
+	}
+	var sourceID int64
+	if err := db.QueryRow(`SELECT id FROM sources WHERE name = ? AND url = ?`, "Songkick mirror", "https://example.test/songkick/matinee-noise").Scan(&sourceID); err != nil {
+		t.Fatalf("lookup source id: %v", err)
+	}
+	for _, row := range []struct {
+		infoType string
+		value    string
+	}{
+		{infoType: "genre", value: "Post-punk"},
+		{infoType: "description", value: "Late update from a secondary listing."},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO event_secondary_source_info (
+				event_id,
+				source_id,
+				venue_slug,
+				event_name,
+				start_at,
+				info_type,
+				value,
+				created_at,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, eventID, sourceID, "leadmill", "Matinee Noise", "2026-05-08T18:30:00Z", row.infoType, row.value, "2026-04-21T10:00:00Z", "2026-04-21T10:00:00Z"); err != nil {
+			t.Fatalf("insert secondary source info row: %v", err)
+		}
+	}
+
+	server, err := NewServer(st)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/events/matinee-noise-at-the-leadmill")
+	assertContains(t, body, "Also seen from other sources")
+	assertContains(t, body, `href="https://example.test/songkick/matinee-noise"`)
+	assertContains(t, body, "Songkick mirror")
+	assertContains(t, body, "<strong>Genre</strong>: Post-punk")
+	assertContains(t, body, "Late update from a secondary listing.")
+	assertContains(t, body, "The Leadmill live music listings")
+}
+
+func TestSQLiteEventDetailOmitsSecondarySourceInfoWhenNoneExists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(st)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/events/matinee-noise-at-the-leadmill")
+	assertNotContains(t, body, "Also seen from other sources")
+	assertContains(t, body, "The Leadmill live music listings")
 }
 
 func TestHomeShowsTodayAndThisWeekWithFixedClock(t *testing.T) {

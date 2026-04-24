@@ -29,4 +29,17 @@
       on {{dateShort .Event.LastChecked}}.
     </p>
   </section>
+
+  {{if .EventSecondarySources}}
+  <section class="section-block">
+    <h2>Also seen from other sources</h2>
+    {{range .EventSecondarySources}}
+    <div class="detail-card">
+      <h3><a href="{{.SourceURL}}">{{.SourceName}}</a></h3>
+      {{if .Genres}}<p><strong>Genre</strong>: {{joinStrings .Genres ", "}}</p>{{end}}
+      {{range .Descriptions}}<p><strong>Description</strong>: {{.}}</p>{{end}}
+    </div>
+    {{end}}
+  </section>
+  {{end}}
 </article>

@@ -181,6 +181,13 @@ func (s *Store) EventBySlug(slug string) (domain.Event, bool) {
 	return event, true
 }
 
+func (s *Store) EventSecondarySourceInfoByEventSlug(ctx context.Context, slug string) ([]seedstore.EventSecondarySourceInfo, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite store is not open")
+	}
+	return loadEventSecondarySourceInfoBySlug(ctx, s.db, slug)
+}
+
 func (s *Store) EventsForVenue(venueSlug string) []domain.Event {
 	events, err := loadEvents(context.Background(), s.db, `
 		SELECT
@@ -608,6 +615,66 @@ func loadEventBySlug(ctx context.Context, q queryer, slug string) (domain.Event,
 		return domain.Event{}, false, nil
 	}
 	return events[0], true, nil
+}
+
+func loadEventSecondarySourceInfoBySlug(ctx context.Context, q queryer, slug string) ([]seedstore.EventSecondarySourceInfo, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT
+			s.name,
+			s.url,
+			i.info_type,
+			i.value
+		FROM event_secondary_source_info i
+		JOIN events e ON e.id = i.event_id
+		JOIN sources s ON s.id = i.source_id
+		WHERE e.slug = ?
+		ORDER BY s.name, s.url, i.info_type, i.value
+	`, slug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groups []seedstore.EventSecondarySourceInfo
+	groupIndex := make(map[string]int)
+	for rows.Next() {
+		var sourceName string
+		var sourceURL string
+		var infoType string
+		var value string
+		if err := rows.Scan(&sourceName, &sourceURL, &infoType, &value); err != nil {
+			return nil, err
+		}
+		key := sourceName + "\x00" + sourceURL
+		idx, ok := groupIndex[key]
+		if !ok {
+			idx = len(groups)
+			groupIndex[key] = idx
+			groups = append(groups, seedstore.EventSecondarySourceInfo{
+				SourceName: sourceName,
+				SourceURL:  sourceURL,
+			})
+		}
+		switch infoType {
+		case "genre":
+			groups[idx].Genres = appendUniqueString(groups[idx].Genres, value)
+		case "description":
+			groups[idx].Descriptions = appendUniqueString(groups[idx].Descriptions, value)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
+func appendUniqueString(values []string, candidate string) []string {
+	for _, value := range values {
+		if value == candidate {
+			return values
+		}
+	}
+	return append(values, candidate)
 }
 
 func scanEvent(rows *sql.Rows) (domain.Event, error) {

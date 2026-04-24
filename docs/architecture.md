@@ -62,6 +62,7 @@ Raw ingest snapshots, import runs, and review records are stored separately from
 Authoritative review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema.
 
 The admin UI exposes read-only review history, import history, and per-run snapshot metadata when the backing store implements those read paths. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
+When the backing store also exposes secondary-source event info, the public event detail page can render alternate `genre` and `description` values grouped by secondary source without altering the canonical event record.
 
 ## Data Lifecycle
 
