@@ -244,14 +244,83 @@ func RunManual(ctx context.Context, st Store, fetcher Fetcher, opts Options) (Re
 			report.Calendars = append(report.Calendars, calendar)
 		}
 	case pageProcessSourcePage:
-		parse := pageParse.Parse
+		report.Links = appendUniqueStringsWithLimit(report.Links, opts.Limit, pageParse.Links...)
 		report.Calendars = append(report.Calendars, CalendarReport{
 			URL:        pageURL,
 			Snapshot:   report.Page,
-			Candidates: parse.Candidates,
-			Skips:      parse.Skips,
-			Errors:     append([]string{}, parse.Errors...),
+			Candidates: pageParse.Parse.Candidates,
+			Skips:      pageParse.Parse.Skips,
+			Errors:     append([]string{}, pageParse.Parse.Errors...),
 		})
+
+		seenLinks := make(map[string]struct{}, len(report.Links)+1)
+		seenLinks[pageURL] = struct{}{}
+		for _, link := range report.Links {
+			seenLinks[link] = struct{}{}
+		}
+
+		for i := 0; i < len(report.Links); i++ {
+			link := report.Links[i]
+			calendar := CalendarReport{URL: link}
+			pageSourceID, err := st.EnsureSource(ctx, cfg.Name, link)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, "ensure source: "+err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+
+			pageResult, err := fetcher.Fetch(ctx, link)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+
+			snapshot, err := createSnapshot(ctx, st, runID, pageSourceID, pageResult)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, "snapshot source page: "+err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+			calendar.Snapshot = &snapshot
+			report.Totals.Snapshots++
+
+			if pageResult.Truncated {
+				calendar.Errors = append(calendar.Errors, "source page response was truncated")
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+			if !statusIsOK(pageResult.StatusCode) {
+				calendar.Errors = append(calendar.Errors, fmt.Sprintf("source page returned HTTP %d", pageResult.StatusCode))
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+
+			linkedParse, err := parseSourcePage(cfg, firstNonEmpty(pageResult.FinalURL, pageResult.URL), pageResult.Body, opts.Limit)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+			calendar.Candidates = linkedParse.Parse.Candidates
+			calendar.Skips = linkedParse.Parse.Skips
+			calendar.Errors = append(calendar.Errors, linkedParse.Parse.Errors...)
+			report.Calendars = append(report.Calendars, calendar)
+
+			for _, next := range linkedParse.Links {
+				if opts.Limit > 0 && len(report.Links) >= opts.Limit {
+					break
+				}
+				if next == "" {
+					continue
+				}
+				if _, ok := seenLinks[next]; ok {
+					continue
+				}
+				seenLinks[next] = struct{}{}
+				report.Links = append(report.Links, next)
+			}
+		}
 	default:
 		return Report{}, fmt.Errorf("unsupported source mode %q", cfg.PageMode)
 	}
@@ -368,6 +437,32 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func appendUniqueStrings(dst []string, values ...string) []string {
+	return appendUniqueStringsWithLimit(dst, 0, values...)
+}
+
+func appendUniqueStringsWithLimit(dst []string, limit int, values ...string) []string {
+	seen := make(map[string]struct{}, len(dst))
+	for _, item := range dst {
+		seen[item] = struct{}{}
+	}
+	for _, value := range values {
+		if limit > 0 && len(dst) >= limit {
+			break
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		dst = append(dst, value)
+	}
+	return dst
 }
 
 func noUsableCalendar(calendars []CalendarReport) bool {

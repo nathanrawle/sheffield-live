@@ -1779,6 +1779,12 @@ func TestPromoteSingletonReviewGroupIfMissingFallsBackWithoutStableSourceKey(t *
 	}
 }
 
+func TestAuthoritativeOwnedVenueSlugForSourceNameIncludesCafeNo9(t *testing.T) {
+	if got, want := authoritativeOwnedVenueSlugForSourceName("Cafe No. 9 manual ingest"), "cafe-no-9"; got != want {
+		t.Fatalf("owned venue slug = %q, want %q", got, want)
+	}
+}
+
 func TestPromoteSingletonReviewGroupIfMissingUpdatesLinkedEventInPlace(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")

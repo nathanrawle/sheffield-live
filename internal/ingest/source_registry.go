@@ -7,6 +7,7 @@ import (
 
 const YellowArchSource = "yellow-arch"
 const yellowArchSource = YellowArchSource
+const CafeNo9Source = "cafe-no-9"
 const LeadmillSource = "leadmill"
 const CorporationSource = "corporation"
 
@@ -49,6 +50,15 @@ var sourceRegistry = []sourceConfig{
 		PageMode:              pageProcessSourcePage,
 		ReviewStageSourceName: "Yellow Arch manual ingest",
 		ImportRunNotes:        "manual Yellow Arch source-page parse report",
+	},
+	{
+		Key:                   CafeNo9Source,
+		Name:                  "Cafe No. 9 listings",
+		URL:                   "https://www.wegottickets.com/Cafe9",
+		OwnedVenueSlug:        "cafe-no-9",
+		PageMode:              pageProcessSourcePage,
+		ReviewStageSourceName: "Cafe No. 9 manual ingest",
+		ImportRunNotes:        "manual Cafe No. 9 source-page parse report",
 	},
 	{
 		Key:                   LeadmillSource,
@@ -149,7 +159,15 @@ func parseSourcePage(cfg sourceConfig, pageURL string, body []byte, limit int) (
 		}
 		return sourcePageParseResult{Links: links}, nil
 	case pageProcessSourcePage:
-		return sourcePageParseResult{Parse: ParseYellowArchSourcePage(pageURL, body, limit)}, nil
+		parse, err := parseSourcePageForSource(cfg, pageURL, body, limit)
+		if err != nil {
+			return sourcePageParseResult{}, err
+		}
+		links, err := extractSourcePageLinksForSource(cfg, pageURL, body, limit)
+		if err != nil {
+			return sourcePageParseResult{}, err
+		}
+		return sourcePageParseResult{Links: links, Parse: parse}, nil
 	case pageProcessLinkedDetailPages:
 		links, err := extractLinkedDetailPageLinks(cfg, pageURL, body, limit)
 		if err != nil {
@@ -158,6 +176,26 @@ func parseSourcePage(cfg sourceConfig, pageURL string, body []byte, limit int) (
 		return sourcePageParseResult{Links: links}, nil
 	default:
 		return sourcePageParseResult{}, fmt.Errorf("unsupported source mode %q", cfg.PageMode)
+	}
+}
+
+func parseSourcePageForSource(cfg sourceConfig, pageURL string, body []byte, limit int) (ParseResult, error) {
+	switch cfg.Key {
+	case YellowArchSource:
+		return ParseYellowArchSourcePage(pageURL, body, limit), nil
+	case CafeNo9Source:
+		return ParseCafeNo9SourcePage(pageURL, body, limit), nil
+	default:
+		return ParseResult{}, fmt.Errorf("unsupported source page parser %q", cfg.Key)
+	}
+}
+
+func extractSourcePageLinksForSource(cfg sourceConfig, pageURL string, body []byte, limit int) ([]string, error) {
+	switch cfg.Key {
+	case CafeNo9Source:
+		return ExtractCafeNo9SourcePageLinks(pageURL, body, limit)
+	default:
+		return nil, nil
 	}
 }
 

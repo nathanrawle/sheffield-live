@@ -1316,6 +1316,8 @@ func authoritativeOwnedVenueSlugForSourceName(sourceName string) string {
 		return "sidney-and-matilda"
 	case "Yellow Arch manual ingest":
 		return "yellow-arch"
+	case "Cafe No. 9 manual ingest":
+		return "cafe-no-9"
 	case "The Leadmill manual ingest":
 		return "leadmill"
 	default:

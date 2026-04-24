@@ -113,6 +113,165 @@ func TestRunManualYellowArchParsesListingsFromSourcePage(t *testing.T) {
 	}
 }
 
+func TestRunManualCafeNo9ParsesListingsFromSourcePage(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.wegottickets.com/Cafe9": {
+				URL:         "https://www.wegottickets.com/Cafe9",
+				FinalURL:    "https://www.wegottickets.com/Cafe9",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "cafe9_page.html"),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: CafeNo9Source, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := len(store.snapshots), 1; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Links, 0; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 2; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Cafe No9"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].UID, "https://www.wegottickets.com/event/700001"; got != want {
+		t.Fatalf("uid = %q, want %q", got, want)
+	}
+	if got, want := store.finishedNotes, "links=0 candidates=2 skips=2 errors=0"; got != want {
+		t.Fatalf("finished notes = %q, want %q", got, want)
+	}
+}
+
+func TestRunManualCafeNo9ParsesPaginatedSourcePages(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.wegottickets.com/Cafe9": {
+				URL:         "https://www.wegottickets.com/Cafe9",
+				FinalURL:    "https://www.wegottickets.com/Cafe9",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "cafe9_paged_1.html"),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+			},
+			"https://www.wegottickets.com/Cafe9/page/2": {
+				URL:         "https://www.wegottickets.com/Cafe9/page/2",
+				FinalURL:    "https://www.wegottickets.com/Cafe9/page/2",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "cafe9_paged_2.html"),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+			},
+			"https://www.wegottickets.com/Cafe9/page/3": {
+				URL:         "https://www.wegottickets.com/Cafe9/page/3",
+				FinalURL:    "https://www.wegottickets.com/Cafe9/page/3",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        []byte(`<html><body><h2><a href="/event/700201">An evening with Page Three at Cafe No9</a></h2><p>0 SHEFFIELD: Cafe No9</p><p>P Friday 15th May, 2026</p><p>N Door time: 7:00pm, Start time: 7:30pm</p><p><a href="/event/700201">Event info</a></p></body></html>`),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 3, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: CafeNo9Source, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := len(store.snapshots), 3; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := len(report.Links), 2; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 3; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 3; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 2; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[1].Candidates[0].UID, "https://www.wegottickets.com/event/700101"; got != want {
+		t.Fatalf("page 2 uid = %q, want %q", got, want)
+	}
+	if got, want := report.Calendars[2].Candidates[0].UID, "https://www.wegottickets.com/event/700201"; got != want {
+		t.Fatalf("page 3 uid = %q, want %q", got, want)
+	}
+}
+
+func TestRunManualCafeNo9PaginationRespectsGlobalLinkedPageLimit(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.wegottickets.com/Cafe9": {
+				URL:         "https://www.wegottickets.com/Cafe9",
+				FinalURL:    "https://www.wegottickets.com/Cafe9",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "cafe9_paged_1.html"),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+			},
+			"https://www.wegottickets.com/Cafe9/page/2": {
+				URL:         "https://www.wegottickets.com/Cafe9/page/2",
+				FinalURL:    "https://www.wegottickets.com/Cafe9/page/2",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "cafe9_paged_2.html"),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: CafeNo9Source, Limit: 1})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(store.snapshots), 2; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+}
+
 func TestRunManualLeadmillParsesFilteredListingsFromLinkedICS(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)}

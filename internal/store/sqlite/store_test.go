@@ -43,8 +43,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV6 {
 		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV6)
 	}
-	if got := mustCount(t, db, "venues"); got != 4 {
-		t.Fatalf("venues rows = %d, want 4", got)
+	if got := mustCount(t, db, "venues"); got != 5 {
+		t.Fatalf("venues rows = %d, want 5", got)
 	}
 	if got := mustCount(t, db, "events"); got != 4 {
 		t.Fatalf("events rows = %d, want 4", got)

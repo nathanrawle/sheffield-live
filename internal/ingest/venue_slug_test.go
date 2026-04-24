@@ -38,6 +38,21 @@ func TestVenueSlugFromText(t *testing.T) {
 			value: "The Leadmill",
 			want:  "leadmill",
 		},
+		{
+			name:  "cafe hash nine canonicalized",
+			value: "Cafe#9",
+			want:  "cafe-no-9",
+		},
+		{
+			name:  "cafe no9 canonicalized",
+			value: "Cafe No9",
+			want:  "cafe-no-9",
+		},
+		{
+			name:  "cafe no point nine canonicalized",
+			value: "Cafe No. 9",
+			want:  "cafe-no-9",
+		},
 	}
 
 	for _, tc := range tests {

@@ -179,6 +179,207 @@ func TestReplayImportRunRebuildsYellowArchReportFromSourcePageSnapshot(t *testin
 	}
 }
 
+func TestReplayImportRunRebuildsCafeNo9ReportFromSourcePageSnapshot(t *testing.T) {
+	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         277,
+			StartedAt:  time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=0 candidates=2 skips=2 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         351,
+					SourceName: "Cafe No. 9 listings",
+					SourceURL:  "https://www.wegottickets.com/Cafe9",
+					CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.wegottickets.com/Cafe9",
+						FinalURL:    "https://www.wegottickets.com/Cafe9",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "cafe9_page.html"),
+						CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 277, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, CafeNo9Source; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, "https://www.wegottickets.com/Cafe9"; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := report.Totals.Links, 0; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Cafe No9"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+}
+
+func TestReplayImportRunRebuildsCafeNo9PaginatedReportFromSourcePageSnapshots(t *testing.T) {
+	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         278,
+			StartedAt:  time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=2 candidates=2 skips=1 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         361,
+					SourceName: "Cafe No. 9 listings",
+					SourceURL:  "https://www.wegottickets.com/Cafe9",
+					CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.wegottickets.com/Cafe9",
+						FinalURL:    "https://www.wegottickets.com/Cafe9",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "cafe9_paged_1.html"),
+						CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         362,
+					SourceName: "Cafe No. 9 listings",
+					SourceURL:  "https://www.wegottickets.com/Cafe9/page/2",
+					CapturedAt: time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.wegottickets.com/Cafe9/page/2",
+						FinalURL:    "https://www.wegottickets.com/Cafe9/page/2",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "cafe9_paged_2.html"),
+						CapturedAt:  time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         363,
+					SourceName: "Cafe No. 9 listings",
+					SourceURL:  "https://www.wegottickets.com/Cafe9/page/3",
+					CapturedAt: time.Date(2026, 4, 23, 19, 3, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.wegottickets.com/Cafe9/page/3",
+						FinalURL:    "https://www.wegottickets.com/Cafe9/page/3",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        []byte(`<html><body><h2><a href="/event/700201">An evening with Page Three at Cafe No9</a></h2><p>0 SHEFFIELD: Cafe No9</p><p>P Friday 15th May, 2026</p><p>N Door time: 7:00pm, Start time: 7:30pm</p><p><a href="/event/700201">Event info</a></p></body></html>`),
+						CapturedAt:  time.Date(2026, 4, 23, 19, 3, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 278, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := len(report.Links), 2; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 3; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 3; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 2; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[1].Candidates[0].UID, "https://www.wegottickets.com/event/700101"; got != want {
+		t.Fatalf("page 2 uid = %q, want %q", got, want)
+	}
+	if got, want := report.Calendars[2].Candidates[0].UID, "https://www.wegottickets.com/event/700201"; got != want {
+		t.Fatalf("page 3 uid = %q, want %q", got, want)
+	}
+}
+
+func TestReplayImportRunCafeNo9PaginationRespectsGlobalLinkedPageLimit(t *testing.T) {
+	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         279,
+			StartedAt:  time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=1 candidates=2 skips=2 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         371,
+					SourceName: "Cafe No. 9 listings",
+					SourceURL:  "https://www.wegottickets.com/Cafe9",
+					CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.wegottickets.com/Cafe9",
+						FinalURL:    "https://www.wegottickets.com/Cafe9",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "cafe9_paged_1.html"),
+						CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         372,
+					SourceName: "Cafe No. 9 listings",
+					SourceURL:  "https://www.wegottickets.com/Cafe9/page/2",
+					CapturedAt: time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.wegottickets.com/Cafe9/page/2",
+						FinalURL:    "https://www.wegottickets.com/Cafe9/page/2",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "cafe9_paged_2.html"),
+						CapturedAt:  time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 279, ReplayOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+}
+
 func TestReplayImportRunRebuildsLeadmillReportFromStoredLinkedICS(t *testing.T) {
 	finishedAt := time.Date(2026, 4, 24, 12, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{

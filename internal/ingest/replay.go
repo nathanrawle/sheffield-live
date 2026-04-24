@@ -209,14 +209,72 @@ func ReplayImportRun(ctx context.Context, st ReplayStore, importRunID int64, opt
 			report.Totals.Snapshots++
 		}
 	case pageProcessSourcePage:
-		parse := pageParse.Parse
+		report.Links = appendUniqueStringsWithLimit(report.Links, opts.Limit, pageParse.Links...)
 		report.Calendars = append(report.Calendars, CalendarReport{
 			URL:        pageBaseURL,
 			Snapshot:   snapshotReportFromEnvelope(page.snapshot, page.envelope, page.body),
-			Candidates: parse.Candidates,
-			Skips:      parse.Skips,
-			Errors:     append([]string{}, parse.Errors...),
+			Candidates: pageParse.Parse.Candidates,
+			Skips:      pageParse.Parse.Skips,
+			Errors:     append([]string{}, pageParse.Parse.Errors...),
 		})
+
+		snapshotsByURL, err := replaySourcePageSnapshotsByLookupKey(decoded, page.snapshot.ID, sourceCfg.Name)
+		if err != nil {
+			return Report{}, fmt.Errorf("import run %d: %w", importRunID, err)
+		}
+		seenLinks := make(map[string]struct{}, len(report.Links)+1)
+		seenLinks[pageBaseURL] = struct{}{}
+		for _, link := range report.Links {
+			seenLinks[link] = struct{}{}
+		}
+
+		for i := 0; i < len(report.Links); i++ {
+			link := report.Links[i]
+			snapshot, ok := snapshotsByURL[replaySnapshotKey(link)]
+			if !ok {
+				return Report{}, fmt.Errorf("missing source page snapshot for %q in import run %d", link, importRunID)
+			}
+
+			calendar := CalendarReport{
+				URL:      link,
+				Snapshot: snapshotReportFromEnvelope(snapshot.snapshot, snapshot.envelope, snapshot.body),
+			}
+			if snapshot.envelope.Truncated {
+				calendar.Errors = append(calendar.Errors, "source page response was truncated")
+				report.Calendars = append(report.Calendars, calendar)
+				report.Totals.Snapshots++
+				continue
+			}
+			if !statusIsOK(snapshot.envelope.Metadata.StatusCode) {
+				calendar.Errors = append(calendar.Errors, fmt.Sprintf("source page returned HTTP %d", snapshot.envelope.Metadata.StatusCode))
+				report.Calendars = append(report.Calendars, calendar)
+				report.Totals.Snapshots++
+				continue
+			}
+			linkedParse, err := parseSourcePage(sourceCfg, firstNonEmpty(snapshot.envelope.Metadata.FinalURL, snapshot.envelope.Metadata.URL), snapshot.body, opts.Limit)
+			if err != nil {
+				return Report{}, fmt.Errorf("import run %d parse source page %q: %w", importRunID, link, err)
+			}
+			calendar.Candidates = linkedParse.Parse.Candidates
+			calendar.Skips = linkedParse.Parse.Skips
+			calendar.Errors = append(calendar.Errors, linkedParse.Parse.Errors...)
+			report.Calendars = append(report.Calendars, calendar)
+			report.Totals.Snapshots++
+
+			for _, next := range linkedParse.Links {
+				if opts.Limit > 0 && len(report.Links) >= opts.Limit {
+					break
+				}
+				if next == "" {
+					continue
+				}
+				if _, ok := seenLinks[next]; ok {
+					continue
+				}
+				seenLinks[next] = struct{}{}
+				report.Links = append(report.Links, next)
+			}
+		}
 	default:
 		return Report{}, fmt.Errorf("import run %d unsupported source mode %q", importRunID, sourceCfg.PageMode)
 	}
@@ -284,6 +342,25 @@ func replayFinalizeReport(report Report, cfg sourceConfig) (Report, error) {
 
 func replayICSSnapshotsByLookupKey(decoded []decodedReplaySnapshot, pageSnapshotID int64) (map[string]decodedReplaySnapshot, error) {
 	return replaySnapshotsByLookupKey(decoded, pageSnapshotID, "ICS")
+}
+
+func replaySourcePageSnapshotsByLookupKey(decoded []decodedReplaySnapshot, pageSnapshotID int64, sourceName string) (map[string]decodedReplaySnapshot, error) {
+	snapshotsByURL := make(map[string]decodedReplaySnapshot, len(decoded)-1)
+	for _, snapshot := range decoded {
+		if snapshot.snapshot.ID == pageSnapshotID || strings.TrimSpace(snapshot.snapshot.SourceName) != strings.TrimSpace(sourceName) {
+			continue
+		}
+		for _, key := range replaySnapshotLookupKeys(snapshot.envelope.Metadata) {
+			if key == "" {
+				continue
+			}
+			if existing, exists := snapshotsByURL[key]; exists {
+				return nil, fmt.Errorf("duplicate source page snapshot lookup key %q for snapshots %d and %d", key, existing.snapshot.ID, snapshot.snapshot.ID)
+			}
+			snapshotsByURL[key] = snapshot
+		}
+	}
+	return snapshotsByURL, nil
 }
 
 func replaySnapshotsByLookupKey(decoded []decodedReplaySnapshot, pageSnapshotID int64, label string) (map[string]decodedReplaySnapshot, error) {
