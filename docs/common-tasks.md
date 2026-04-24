@@ -36,7 +36,13 @@ Yellow Arch uses the same command with an explicit source:
 go run ./cmd/ingest -source yellow-arch -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
-Sidney & Matilda snapshots the source page plus linked ICS payloads. Yellow Arch snapshots only the source page and parses embedded JSON-LD event data from that page. `-limit` caps linked ICS fetches for Sidney & Matilda and parsed source-page candidates for Yellow Arch. Both commands print a JSON report.
+Leadmill uses the same pattern:
+
+```bash
+go run ./cmd/ingest -source leadmill -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
+```
+
+Sidney & Matilda and Leadmill snapshot the source page plus linked ICS payloads. Yellow Arch snapshots only the source page and parses embedded JSON-LD event data from that page. `-limit` caps linked ICS fetches for Sidney & Matilda and Leadmill and parsed source-page candidates for Yellow Arch. All commands print a JSON report.
 
 ## Stage review groups after ingest
 

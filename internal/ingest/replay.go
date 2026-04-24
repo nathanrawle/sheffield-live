@@ -156,7 +156,7 @@ func ReplayImportRun(ctx context.Context, st ReplayStore, importRunID int64, opt
 				report.Totals.Snapshots++
 				continue
 			}
-			parse := ParseICS(snapshot.body)
+			parse := parseICSForSource(sourceCfg, snapshot.body)
 			calendar.Candidates = parse.Candidates
 			calendar.Skips = parse.Skips
 			calendar.Errors = append(calendar.Errors, parse.Errors...)

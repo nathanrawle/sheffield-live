@@ -179,6 +179,93 @@ func TestReplayImportRunRebuildsYellowArchReportFromSourcePageSnapshot(t *testin
 	}
 }
 
+func TestReplayImportRunRebuildsLeadmillReportFromStoredLinkedICS(t *testing.T) {
+	finishedAt := time.Date(2026, 4, 24, 12, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         278,
+			StartedAt:  time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=1 candidates=1 skips=1 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         401,
+					SourceName: "The Leadmill listings",
+					SourceURL:  "https://leadmill.co.uk/live/",
+					CapturedAt: time.Date(2026, 4, 24, 12, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://leadmill.co.uk/live/",
+						FinalURL:    "https://leadmill.co.uk/live/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        []byte(`<link rel="alternate" type="text/calendar" href="https://leadmill.co.uk/listings/?ical=1">`),
+						CapturedAt:  time.Date(2026, 4, 24, 12, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         402,
+					SourceName: "The Leadmill iCal feed",
+					SourceURL:  "https://leadmill.co.uk/listings/?ical=1",
+					CapturedAt: time.Date(2026, 4, 24, 12, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://leadmill.co.uk/listings/?ical=1",
+						FinalURL:    "https://leadmill.co.uk/listings/?ical=1",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/calendar",
+						Body: []byte("BEGIN:VCALENDAR\n" +
+							"BEGIN:VEVENT\n" +
+							"UID:live-sheffield\n" +
+							"SUMMARY:Maybe Gold - Yellow Arch\n" +
+							"LOCATION:Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX\n" +
+							"CATEGORIES:Live\n" +
+							"DTSTART:20260501T190000Z\n" +
+							"END:VEVENT\n" +
+							"BEGIN:VEVENT\n" +
+							"UID:not-live\n" +
+							"SUMMARY:Club Night\n" +
+							"LOCATION:The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE\n" +
+							"CATEGORIES:Club\n" +
+							"DTSTART:20260502T190000Z\n" +
+							"END:VEVENT\n" +
+							"END:VCALENDAR\n"),
+						CapturedAt: time.Date(2026, 4, 24, 12, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 278, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, LeadmillSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, "https://leadmill.co.uk/live/"; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Skips), 1; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Yellow Arch"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+}
+
 func TestReplayImportRunWrapsLoadError(t *testing.T) {
 	_, err := ReplayImportRun(context.Background(), fakeReplayStore{err: errors.New("load failed")}, 91, ReplayOptions{Limit: 1})
 	if err == nil {

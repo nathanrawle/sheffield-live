@@ -34,9 +34,9 @@ func TestVenueSlugFromText(t *testing.T) {
 			want:  "yellow-arch",
 		},
 		{
-			name:  "generic slug",
+			name:  "leadmill canonicalized",
 			value: "The Leadmill",
-			want:  "the-leadmill",
+			want:  "leadmill",
 		},
 	}
 

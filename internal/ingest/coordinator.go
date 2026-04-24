@@ -180,7 +180,7 @@ func RunManual(ctx context.Context, st Store, fetcher Fetcher, opts Options) (Re
 				continue
 			}
 
-			parse := ParseICS(icsResult.Body)
+			parse := parseICSForSource(cfg, icsResult.Body)
 			calendar.Candidates = parse.Candidates
 			calendar.Skips = parse.Skips
 			calendar.Errors = append(calendar.Errors, parse.Errors...)

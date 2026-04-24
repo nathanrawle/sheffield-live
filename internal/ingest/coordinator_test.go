@@ -113,6 +113,72 @@ func TestRunManualYellowArchParsesListingsFromSourcePage(t *testing.T) {
 	}
 }
 
+func TestRunManualLeadmillParsesFilteredListingsFromLinkedICS(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://leadmill.co.uk/live/": {
+				URL:         "https://leadmill.co.uk/live/",
+				FinalURL:    "https://leadmill.co.uk/live/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        []byte(`<link rel="alternate" type="text/calendar" href="https://leadmill.co.uk/listings/?ical=1">`),
+				CapturedAt:  time.Date(2026, 4, 24, 12, 1, 0, 0, time.UTC),
+			},
+			"https://leadmill.co.uk/listings/?ical=1": {
+				URL:         "https://leadmill.co.uk/listings/?ical=1",
+				FinalURL:    "https://leadmill.co.uk/listings/?ical=1",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/calendar",
+				Body: []byte("BEGIN:VCALENDAR\n" +
+					"BEGIN:VEVENT\n" +
+					"UID:live-sheffield\n" +
+					"SUMMARY:Maybe Gold - Yellow Arch\n" +
+					"LOCATION:Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX\n" +
+					"CATEGORIES:Live\n" +
+					"DTSTART:20260501T190000Z\n" +
+					"END:VEVENT\n" +
+					"BEGIN:VEVENT\n" +
+					"UID:club-night\n" +
+					"SUMMARY:Club Night\n" +
+					"LOCATION:The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE\n" +
+					"CATEGORIES:Club\n" +
+					"DTSTART:20260502T190000Z\n" +
+					"END:VEVENT\n" +
+					"END:VCALENDAR\n"),
+				CapturedAt: time.Date(2026, 4, 24, 12, 2, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: LeadmillSource, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Skips), 1; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Yellow Arch"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+}
+
 func TestRunManualSourceFetchFailureReturnsErrRunFailed(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}

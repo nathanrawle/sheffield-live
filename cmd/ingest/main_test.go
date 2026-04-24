@@ -431,6 +431,60 @@ func TestRunWithArgsReplayYellowArchUsesStoredSourcePath(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsReplayLeadmillUsesStoredSourcePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	runID := seedReplayRunForCLILeadmill(t, path)
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "20", "-stage-review-groups"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("replay run: %v", err)
+	}
+
+	var got manualIngestReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode replay output: %v", err)
+	}
+	if got.Report.Source != ingest.LeadmillSource {
+		t.Fatalf("report source = %q, want %q", got.Report.Source, ingest.LeadmillSource)
+	}
+	if got.Report.SourceURL != "https://leadmill.co.uk/live/" {
+		t.Fatalf("report source url = %q, want Leadmill live page", got.Report.SourceURL)
+	}
+	if got := len(got.Report.Links); got != 1 {
+		t.Fatalf("links = %d, want 1", got)
+	}
+	if got := len(got.Report.Calendars); got != 1 {
+		t.Fatalf("calendars = %d, want 1", got)
+	}
+	if got := len(got.Report.Calendars[0].Candidates); got != 1 {
+		t.Fatalf("candidates = %d, want 1", got)
+	}
+	if got := got.ReviewStage.GroupsCreated; got != 1 {
+		t.Fatalf("review groups created = %d, want 1", got)
+	}
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	group, ok, err := st.LoadReviewGroup(context.Background(), got.ReviewStage.Groups[0].ID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if got := group.Candidates[0].VenueSlug; got != "leadmill" {
+		t.Fatalf("venue slug = %q, want leadmill", got)
+	}
+}
+
 func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	runID := seedReplayRunForCLIWithNoLinks(t, path)
@@ -760,6 +814,85 @@ func seedReplayRunForCLIYellowArch(t *testing.T, path string) int64 {
 	}
 
 	if _, err := st.FinishImportRun(ctx, runID, "succeeded", "links=0 candidates=2 skips=0 errors=0"); err != nil {
+		t.Fatalf("finish import run: %v", err)
+	}
+
+	return runID
+}
+
+func seedReplayRunForCLILeadmill(t *testing.T, path string) int64 {
+	t.Helper()
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+	pageSourceID, err := st.EnsureSource(ctx, "The Leadmill listings", "https://leadmill.co.uk/live/")
+	if err != nil {
+		t.Fatalf("ensure page source: %v", err)
+	}
+	icsSourceID, err := st.EnsureSource(ctx, "The Leadmill iCal feed", "https://leadmill.co.uk/listings/?ical=1")
+	if err != nil {
+		t.Fatalf("ensure ICS source: %v", err)
+	}
+
+	runID, startedAt, err := st.CreateImportRun(ctx, "succeeded", "links=1 candidates=1 skips=1 errors=0")
+	if err != nil {
+		t.Fatalf("create import run: %v", err)
+	}
+
+	pagePayload := mustReplaySnapshotPayload(t, ingest.FetchResult{
+		URL:         "https://leadmill.co.uk/live/",
+		FinalURL:    "https://leadmill.co.uk/live/",
+		Status:      "200 OK",
+		StatusCode:  200,
+		ContentType: "text/html",
+		Body:        []byte(`<link rel="alternate" type="text/calendar" href="https://leadmill.co.uk/listings/?ical=1">`),
+		CapturedAt:  startedAt.Add(time.Minute),
+	}, nil)
+	if _, _, err := st.CreateSnapshot(ctx, runID, &pageSourceID, startedAt.Add(time.Minute), pagePayload); err != nil {
+		t.Fatalf("create page snapshot: %v", err)
+	}
+
+	icsPayload := mustReplaySnapshotPayload(t, ingest.FetchResult{
+		URL:         "https://leadmill.co.uk/listings/?ical=1",
+		FinalURL:    "https://leadmill.co.uk/listings/?ical=1",
+		Status:      "200 OK",
+		StatusCode:  200,
+		ContentType: "text/calendar",
+		Body: []byte(strings.Join([]string{
+			"BEGIN:VCALENDAR",
+			"BEGIN:VEVENT",
+			"UID: leadmill-live",
+			"SUMMARY: Leadmill Show",
+			"LOCATION: The Leadmill, Sheffield",
+			"CATEGORIES: Live",
+			"DTSTART:20260501T190000Z",
+			"END:VEVENT",
+			"BEGIN:VEVENT",
+			"UID: leadmill-club",
+			"SUMMARY: Club Night",
+			"LOCATION: The Leadmill, Sheffield",
+			"CATEGORIES: Club",
+			"DTSTART:20260502T190000Z",
+			"END:VEVENT",
+			"END:VCALENDAR",
+			"",
+		}, "\n")),
+		CapturedAt: startedAt.Add(2 * time.Minute),
+	}, nil)
+	if _, _, err := st.CreateSnapshot(ctx, runID, &icsSourceID, startedAt.Add(2*time.Minute), icsPayload); err != nil {
+		t.Fatalf("create ICS snapshot: %v", err)
+	}
+
+	if _, err := st.FinishImportRun(ctx, runID, "succeeded", "links=1 candidates=1 skips=1 errors=0"); err != nil {
 		t.Fatalf("finish import run: %v", err)
 	}
 

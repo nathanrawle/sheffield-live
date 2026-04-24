@@ -211,5 +211,8 @@ func reviewStageVenueSlug(source, value string) string {
 			return "yellow-arch"
 		}
 	}
+	if strings.TrimSpace(source) == LeadmillSource {
+		return VenueSlugFromText(leadmillVenueText(value))
+	}
 	return VenueSlugFromText(value)
 }

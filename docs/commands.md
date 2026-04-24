@@ -93,9 +93,10 @@ Live ingest:
 
 - primary flag: `-http-user-agent`
 - alias: `-user-agent`
-- supports `sidney-and-matilda` and `yellow-arch`
+- supports `sidney-and-matilda`, `yellow-arch`, and `leadmill`
 - fetches the selected source page
 - Sidney & Matilda snapshots the source page and fetched ICS payloads
+- Leadmill snapshots the source page and fetched ICS payloads, then keeps only `Live` listings with Sheffield locations
 - Yellow Arch snapshots only the source page and parses embedded JSON-LD event data from that page
 - parses candidates, skips, and errors
 - writes `sources`, `import_runs`, and `snapshots`
@@ -111,6 +112,7 @@ Replay:
 - auto-detects the source from stored page snapshot metadata
 - reconstructs source-specific extraction from stored source page snapshots
 - Sidney & Matilda replays source-page extraction to ICS links and matching ICS snapshots by URL and final URL
+- Leadmill replays source-page extraction to the linked official iCal feed and reapplies the same `Live` plus Sheffield filter from stored ICS snapshots
 - Yellow Arch replays candidate parsing directly from the stored source page snapshot
 
 Stage review groups:

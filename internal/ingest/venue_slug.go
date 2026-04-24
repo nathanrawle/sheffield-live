@@ -13,6 +13,9 @@ func VenueSlugFromText(value string) string {
 	if strings.Contains(value, "yellow") && strings.Contains(value, "arch") {
 		return "yellow-arch"
 	}
+	if strings.Contains(value, "leadmill") {
+		return "leadmill"
+	}
 
 	var out strings.Builder
 	lastDash := false

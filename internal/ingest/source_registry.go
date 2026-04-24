@@ -7,6 +7,7 @@ import (
 
 const YellowArchSource = "yellow-arch"
 const yellowArchSource = YellowArchSource
+const LeadmillSource = "leadmill"
 
 type pageProcessMode string
 
@@ -42,6 +43,15 @@ var sourceRegistry = []sourceConfig{
 		PageMode:              pageProcessSourcePage,
 		ReviewStageSourceName: "Yellow Arch manual ingest",
 		ImportRunNotes:        "manual Yellow Arch source-page parse report",
+	},
+	{
+		Key:                   LeadmillSource,
+		Name:                  "The Leadmill listings",
+		URL:                   "https://leadmill.co.uk/live/",
+		CalendarSourceName:    "The Leadmill iCal feed",
+		PageMode:              pageProcessLinkedICS,
+		ReviewStageSourceName: "The Leadmill manual ingest",
+		ImportRunNotes:        "manual The Leadmill snapshot + ICS parse report",
 	},
 }
 
@@ -100,7 +110,7 @@ type sourcePageParseResult struct {
 func parseSourcePage(cfg sourceConfig, pageURL string, body []byte, limit int) (sourcePageParseResult, error) {
 	switch cfg.PageMode {
 	case pageProcessLinkedICS:
-		links, err := ExtractSidneyAndMatildaICSLinks(pageURL, body, limit)
+		links, err := extractLinkedICSLinks(cfg, pageURL, body, limit)
 		if err != nil {
 			return sourcePageParseResult{}, fmt.Errorf("extract ICS links: %w", err)
 		}
@@ -109,6 +119,26 @@ func parseSourcePage(cfg sourceConfig, pageURL string, body []byte, limit int) (
 		return sourcePageParseResult{Parse: ParseYellowArchSourcePage(pageURL, body, limit)}, nil
 	default:
 		return sourcePageParseResult{}, fmt.Errorf("unsupported source mode %q", cfg.PageMode)
+	}
+}
+
+func extractLinkedICSLinks(cfg sourceConfig, pageURL string, body []byte, limit int) ([]string, error) {
+	switch cfg.Key {
+	case DefaultSource:
+		return ExtractSidneyAndMatildaICSLinks(pageURL, body, limit)
+	case LeadmillSource:
+		return ExtractLeadmillICSLinks(pageURL, body, limit)
+	default:
+		return nil, fmt.Errorf("unsupported linked ICS source %q", cfg.Key)
+	}
+}
+
+func parseICSForSource(cfg sourceConfig, body []byte) ParseResult {
+	switch cfg.Key {
+	case LeadmillSource:
+		return ParseLeadmillICS(body)
+	default:
+		return ParseICS(body)
 	}
 }
 
