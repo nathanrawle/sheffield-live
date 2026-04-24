@@ -41,6 +41,15 @@ func NewStore(venues []domain.Venue, events []domain.Event) *Store {
 func NewSeedStore() *Store {
 	venues := []domain.Venue{
 		{
+			Slug:          "corporation",
+			Name:          "Corporation",
+			Address:       "2 Milton Street, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "A Sheffield live venue and club space hosting touring acts, tribute nights, and alternative club events.",
+			Website:       "https://www.corporation.org.uk/live/",
+			Origin:        domain.OriginSeed,
+		},
+		{
 			Slug:          "leadmill",
 			Name:          "The Leadmill",
 			Address:       "6 Leadmill Road, Sheffield",

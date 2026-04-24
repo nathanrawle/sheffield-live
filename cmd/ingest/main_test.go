@@ -954,8 +954,8 @@ func TestRunWithArgsAllSourcesContinuesAfterFailure(t *testing.T) {
 	if got.Results[1].Error == "" {
 		t.Fatal("failed result error = empty, want error")
 	}
-	if got.Results[len(got.Results)-1].Source != ingest.LeadmillSource {
-		t.Fatalf("last result source = %q, want %q", got.Results[len(got.Results)-1].Source, ingest.LeadmillSource)
+	if got.Results[len(got.Results)-1].Source != ingest.RegisteredSourceKeys()[len(ingest.RegisteredSourceKeys())-1] {
+		t.Fatalf("last result source = %q, want %q", got.Results[len(got.Results)-1].Source, ingest.RegisteredSourceKeys()[len(ingest.RegisteredSourceKeys())-1])
 	}
 }
 

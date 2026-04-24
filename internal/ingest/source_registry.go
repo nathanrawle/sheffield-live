@@ -8,12 +8,14 @@ import (
 const YellowArchSource = "yellow-arch"
 const yellowArchSource = YellowArchSource
 const LeadmillSource = "leadmill"
+const CorporationSource = "corporation"
 
 type pageProcessMode string
 
 const (
-	pageProcessLinkedICS  pageProcessMode = "linked_ics"
-	pageProcessSourcePage pageProcessMode = "source_page"
+	pageProcessLinkedICS         pageProcessMode = "linked_ics"
+	pageProcessSourcePage        pageProcessMode = "source_page"
+	pageProcessLinkedDetailPages pageProcessMode = "linked_detail_pages"
 )
 
 type sourceConfig struct {
@@ -22,6 +24,7 @@ type sourceConfig struct {
 	URL                   string
 	OwnedVenueSlug        string
 	CalendarSourceName    string
+	LinkedPageSourceName  string
 	PageMode              pageProcessMode
 	ReviewStageSourceName string
 	ImportRunNotes        string
@@ -56,6 +59,16 @@ var sourceRegistry = []sourceConfig{
 		PageMode:              pageProcessLinkedICS,
 		ReviewStageSourceName: "The Leadmill manual ingest",
 		ImportRunNotes:        "manual The Leadmill snapshot + ICS parse report",
+	},
+	{
+		Key:                   CorporationSource,
+		Name:                  "Corporation Sheffield live listings",
+		URL:                   "https://www.corporation.org.uk/live/",
+		OwnedVenueSlug:        "corporation",
+		LinkedPageSourceName:  "Corporation Sheffield event detail page",
+		PageMode:              pageProcessLinkedDetailPages,
+		ReviewStageSourceName: "Corporation Sheffield manual ingest",
+		ImportRunNotes:        "manual Corporation Sheffield snapshot + detail-page parse report",
 	},
 }
 
@@ -137,6 +150,12 @@ func parseSourcePage(cfg sourceConfig, pageURL string, body []byte, limit int) (
 		return sourcePageParseResult{Links: links}, nil
 	case pageProcessSourcePage:
 		return sourcePageParseResult{Parse: ParseYellowArchSourcePage(pageURL, body, limit)}, nil
+	case pageProcessLinkedDetailPages:
+		links, err := extractLinkedDetailPageLinks(cfg, pageURL, body, limit)
+		if err != nil {
+			return sourcePageParseResult{}, fmt.Errorf("extract detail page links: %w", err)
+		}
+		return sourcePageParseResult{Links: links}, nil
 	default:
 		return sourcePageParseResult{}, fmt.Errorf("unsupported source mode %q", cfg.PageMode)
 	}
@@ -159,6 +178,24 @@ func parseICSForSource(cfg sourceConfig, body []byte) ParseResult {
 		return ParseLeadmillICS(body)
 	default:
 		return ParseICS(body)
+	}
+}
+
+func extractLinkedDetailPageLinks(cfg sourceConfig, pageURL string, body []byte, limit int) ([]string, error) {
+	switch cfg.Key {
+	case CorporationSource:
+		return ExtractCorporationDetailLinks(pageURL, body, limit)
+	default:
+		return nil, fmt.Errorf("unsupported linked detail page source %q", cfg.Key)
+	}
+}
+
+func parseLinkedPageForSource(cfg sourceConfig, pageURL string, body []byte) (ParseResult, error) {
+	switch cfg.Key {
+	case CorporationSource:
+		return ParseCorporationDetailPage(pageURL, body), nil
+	default:
+		return ParseResult{}, fmt.Errorf("unsupported linked page source %q", cfg.Key)
 	}
 }
 

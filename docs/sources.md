@@ -2,7 +2,7 @@
 
 ## Current Flow
 
-The current manual source pipeline supports Sidney & Matilda, Yellow Arch, and Leadmill.
+The current manual source pipeline supports Sidney & Matilda, Yellow Arch, Leadmill, and Corporation.
 
 Sources are registered in code with source metadata plus a page-processing mode. That mode decides whether ingest expands the page into linked ICS fetches or parses candidates directly from the stored page snapshot.
 
@@ -13,6 +13,7 @@ After that, parsing depends on the source:
 - Sidney & Matilda extracts ICS export links from the source page, fetches each ICS feed, stores raw ICS snapshots, and parses candidates, skips, and parse errors from ICS.
 - Leadmill extracts the official iCal feed from the source page, fetches that ICS payload, stores the raw ICS snapshot, and keeps only `Live` listings with Sheffield locations.
 - Yellow Arch parses candidates, skips, and parse errors directly from schema.org `Event` JSON-LD embedded in the source page. No secondary snapshots are fetched for that source.
+- Corporation extracts linked official event detail pages from the source page, fetches and stores those detail-page snapshots, and parses candidates from the detail-page HTML.
 
 Snapshots are kept as separate raw artifacts. They are not the same thing as canonical public event rows.
 

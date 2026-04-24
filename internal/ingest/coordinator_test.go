@@ -179,6 +179,69 @@ func TestRunManualLeadmillParsesFilteredListingsFromLinkedICS(t *testing.T) {
 	}
 }
 
+func TestRunManualCorporationParsesLinkedDetailPages(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.corporation.org.uk/live/": {
+				URL:         "https://www.corporation.org.uk/live/",
+				FinalURL:    "https://www.corporation.org.uk/live/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "corporation_live.html"),
+				CapturedAt:  time.Date(2026, 4, 24, 12, 1, 0, 0, time.UTC),
+			},
+			"https://www.corporation.org.uk/event/tyketto/": {
+				URL:         "https://www.corporation.org.uk/event/tyketto/",
+				FinalURL:    "https://www.corporation.org.uk/event/tyketto/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "corporation_tyketto.html"),
+				CapturedAt:  time.Date(2026, 4, 24, 12, 2, 0, 0, time.UTC),
+			},
+			"https://www.corporation.org.uk/event/frog-lord/": {
+				URL:         "https://www.corporation.org.uk/event/frog-lord/",
+				FinalURL:    "https://www.corporation.org.uk/event/frog-lord/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "corporation_frog_lord.html"),
+				CapturedAt:  time.Date(2026, 4, 24, 12, 3, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: CorporationSource, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 2; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(store.snapshots), 3; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].UID, "https://www.corporation.org.uk/event/tyketto/"; got != want {
+		t.Fatalf("uid = %q, want %q", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Corporation"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+}
+
 func TestRunManualSourceFetchFailureReturnsErrRunFailed(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}

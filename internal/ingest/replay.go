@@ -163,6 +163,51 @@ func ReplayImportRun(ctx context.Context, st ReplayStore, importRunID int64, opt
 			report.Calendars = append(report.Calendars, calendar)
 			report.Totals.Snapshots++
 		}
+	case pageProcessLinkedDetailPages:
+		report.Links = append(report.Links, pageParse.Links...)
+		report.Totals.Links = len(report.Links)
+		if len(report.Links) == 0 {
+			report.Errors = append(report.Errors, "no detail page links found")
+			return replayFinalizeReport(report, sourceCfg)
+		}
+
+		snapshotsByURL, err := replaySnapshotsByLookupKey(decoded, page.snapshot.ID, "detail page")
+		if err != nil {
+			return Report{}, fmt.Errorf("import run %d: %w", importRunID, err)
+		}
+
+		for _, link := range report.Links {
+			snapshot, ok := snapshotsByURL[replaySnapshotKey(link)]
+			if !ok {
+				return Report{}, fmt.Errorf("missing detail page snapshot for %q in import run %d", link, importRunID)
+			}
+
+			calendar := CalendarReport{
+				URL:      link,
+				Snapshot: snapshotReportFromEnvelope(snapshot.snapshot, snapshot.envelope, snapshot.body),
+			}
+			if snapshot.envelope.Truncated {
+				calendar.Errors = append(calendar.Errors, "detail page response was truncated")
+				report.Calendars = append(report.Calendars, calendar)
+				report.Totals.Snapshots++
+				continue
+			}
+			if !statusIsOK(snapshot.envelope.Metadata.StatusCode) {
+				calendar.Errors = append(calendar.Errors, fmt.Sprintf("detail page returned HTTP %d", snapshot.envelope.Metadata.StatusCode))
+				report.Calendars = append(report.Calendars, calendar)
+				report.Totals.Snapshots++
+				continue
+			}
+			parse, err := parseLinkedPageForSource(sourceCfg, firstNonEmpty(snapshot.envelope.Metadata.FinalURL, snapshot.envelope.Metadata.URL), snapshot.body)
+			if err != nil {
+				return Report{}, fmt.Errorf("import run %d parse linked page %q: %w", importRunID, link, err)
+			}
+			calendar.Candidates = parse.Candidates
+			calendar.Skips = parse.Skips
+			calendar.Errors = append(calendar.Errors, parse.Errors...)
+			report.Calendars = append(report.Calendars, calendar)
+			report.Totals.Snapshots++
+		}
 	case pageProcessSourcePage:
 		parse := pageParse.Parse
 		report.Calendars = append(report.Calendars, CalendarReport{
@@ -238,6 +283,10 @@ func replayFinalizeReport(report Report, cfg sourceConfig) (Report, error) {
 }
 
 func replayICSSnapshotsByLookupKey(decoded []decodedReplaySnapshot, pageSnapshotID int64) (map[string]decodedReplaySnapshot, error) {
+	return replaySnapshotsByLookupKey(decoded, pageSnapshotID, "ICS")
+}
+
+func replaySnapshotsByLookupKey(decoded []decodedReplaySnapshot, pageSnapshotID int64, label string) (map[string]decodedReplaySnapshot, error) {
 	snapshotsByURL := make(map[string]decodedReplaySnapshot, len(decoded)-1)
 	for _, snapshot := range decoded {
 		if snapshot.snapshot.ID == pageSnapshotID {
@@ -248,7 +297,7 @@ func replayICSSnapshotsByLookupKey(decoded []decodedReplaySnapshot, pageSnapshot
 				continue
 			}
 			if existing, exists := snapshotsByURL[key]; exists {
-				return nil, fmt.Errorf("duplicate ICS snapshot lookup key %q for snapshots %d and %d", key, existing.snapshot.ID, snapshot.snapshot.ID)
+				return nil, fmt.Errorf("duplicate %s snapshot lookup key %q for snapshots %d and %d", label, key, existing.snapshot.ID, snapshot.snapshot.ID)
 			}
 			snapshotsByURL[key] = snapshot
 		}

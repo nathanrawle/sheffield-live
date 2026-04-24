@@ -266,6 +266,87 @@ func TestReplayImportRunRebuildsLeadmillReportFromStoredLinkedICS(t *testing.T) 
 	}
 }
 
+func TestReplayImportRunRebuildsCorporationReportFromStoredDetailPages(t *testing.T) {
+	finishedAt := time.Date(2026, 4, 24, 12, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         379,
+			StartedAt:  time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=2 candidates=2 skips=0 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         501,
+					SourceName: "Corporation Sheffield live listings",
+					SourceURL:  "https://www.corporation.org.uk/live/",
+					CapturedAt: time.Date(2026, 4, 24, 12, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.corporation.org.uk/live/",
+						FinalURL:    "https://www.corporation.org.uk/live/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "corporation_live.html"),
+						CapturedAt:  time.Date(2026, 4, 24, 12, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         502,
+					SourceName: "Corporation Sheffield event detail page",
+					SourceURL:  "https://www.corporation.org.uk/event/tyketto/",
+					CapturedAt: time.Date(2026, 4, 24, 12, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.corporation.org.uk/event/tyketto/",
+						FinalURL:    "https://www.corporation.org.uk/event/tyketto/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "corporation_tyketto.html"),
+						CapturedAt:  time.Date(2026, 4, 24, 12, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         503,
+					SourceName: "Corporation Sheffield event detail page",
+					SourceURL:  "https://www.corporation.org.uk/event/frog-lord/",
+					CapturedAt: time.Date(2026, 4, 24, 12, 3, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.corporation.org.uk/event/frog-lord/",
+						FinalURL:    "https://www.corporation.org.uk/event/frog-lord/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "corporation_frog_lord.html"),
+						CapturedAt:  time.Date(2026, 4, 24, 12, 3, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 379, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, CorporationSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 2; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Corporation"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+}
+
 func TestReplayImportRunWrapsLoadError(t *testing.T) {
 	_, err := ReplayImportRun(context.Background(), fakeReplayStore{err: errors.New("load failed")}, 91, ReplayOptions{Limit: 1})
 	if err == nil {

@@ -93,12 +93,13 @@ Live ingest:
 
 - primary flag: `-http-user-agent`
 - alias: `-user-agent`
-- supports `sidney-and-matilda`, `yellow-arch`, and `leadmill`
+- supports `sidney-and-matilda`, `yellow-arch`, `leadmill`, and `corporation`
 - `-all-sources` runs every registered source sequentially in registry order and emits one aggregated JSON report
 - fetches the selected source page
 - Sidney & Matilda snapshots the source page and fetched ICS payloads
 - Leadmill snapshots the source page and fetched ICS payloads, then keeps only `Live` listings with Sheffield locations
 - Yellow Arch snapshots only the source page and parses embedded JSON-LD event data from that page
+- Corporation snapshots the source page, discovers linked event detail pages, snapshots those pages, and parses candidates from the detail-page HTML
 - parses candidates, skips, and errors
 - writes `sources`, `import_runs`, and `snapshots`
 - prints a JSON report to stdout

@@ -186,6 +186,63 @@ func RunManual(ctx context.Context, st Store, fetcher Fetcher, opts Options) (Re
 			calendar.Errors = append(calendar.Errors, parse.Errors...)
 			report.Calendars = append(report.Calendars, calendar)
 		}
+	case pageProcessLinkedDetailPages:
+		report.Links = pageParse.Links
+		report.Totals.Links = len(report.Links)
+		if len(report.Links) == 0 {
+			report.Errors = append(report.Errors, "no detail page links found")
+			return finishReport(ctx, st, report, importStatusFailed)
+		}
+
+		for _, link := range report.Links {
+			calendar := CalendarReport{URL: link}
+			detailSourceName := firstNonEmpty(cfg.LinkedPageSourceName, cfg.Name)
+			detailSourceID, err := st.EnsureSource(ctx, detailSourceName, link)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, "ensure source: "+err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+
+			detailResult, err := fetcher.Fetch(ctx, link)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+
+			snapshot, err := createSnapshot(ctx, st, runID, detailSourceID, detailResult)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, "snapshot detail page: "+err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+			calendar.Snapshot = &snapshot
+			report.Totals.Snapshots++
+
+			if detailResult.Truncated {
+				calendar.Errors = append(calendar.Errors, "detail page response was truncated")
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+
+			if !statusIsOK(detailResult.StatusCode) {
+				calendar.Errors = append(calendar.Errors, fmt.Sprintf("detail page returned HTTP %d", detailResult.StatusCode))
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+
+			parse, err := parseLinkedPageForSource(cfg, firstNonEmpty(detailResult.FinalURL, detailResult.URL), detailResult.Body)
+			if err != nil {
+				calendar.Errors = append(calendar.Errors, err.Error())
+				report.Calendars = append(report.Calendars, calendar)
+				continue
+			}
+			calendar.Candidates = parse.Candidates
+			calendar.Skips = parse.Skips
+			calendar.Errors = append(calendar.Errors, parse.Errors...)
+			report.Calendars = append(report.Calendars, calendar)
+		}
 	case pageProcessSourcePage:
 		parse := pageParse.Parse
 		report.Calendars = append(report.Calendars, CalendarReport{
