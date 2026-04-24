@@ -285,6 +285,124 @@ func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.
 	assertDraftChoice(t, reused, review.FieldVenueSlug, group.Candidates[0].ID, "leadmill")
 }
 
+func TestStageReviewGroupRestagingOpenGroupPopulatesAndRefreshesAuthoritativeTuple(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	input := review.GroupInput{
+		Title:      "Authoritative restage",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:authoritative-restage.ics",
+		StagingKey: "v1:authoritative-restage",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "shared-uid",
+				Name:        "UTC Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/utc-show",
+				Provenance:  "fixture UID shared-uid",
+			},
+		},
+	}
+
+	groupID, created, err := st.StageReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !created {
+		t.Fatal("created = false, want true")
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if got := group.AuthoritativeSourceEventKey; got != "" {
+		t.Fatalf("initial authoritative source event key = %q, want empty", got)
+	}
+
+	populated := input
+	populated.AuthoritativeSourceName = "Sidney & Matilda manual ingest"
+	populated.AuthoritativeSourceURL = "https://calendar.example.test/live.ics"
+	populated.AuthoritativeSourceEventKey = "shared-uid"
+
+	reusedID, created, err := st.StageReviewGroup(ctx, populated)
+	if err != nil {
+		t.Fatalf("restage review group with authoritative tuple: %v", err)
+	}
+	if created {
+		t.Fatal("created = true, want false")
+	}
+	if reusedID != groupID {
+		t.Fatalf("reused id = %d, want %d", reusedID, groupID)
+	}
+
+	group, ok, err = st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group after populate: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after populate")
+	}
+	if got, want := group.AuthoritativeSourceName, populated.AuthoritativeSourceName; got != want {
+		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := group.AuthoritativeSourceURL, populated.AuthoritativeSourceURL; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := group.AuthoritativeSourceEventKey, populated.AuthoritativeSourceEventKey; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+	if got, want := group.SourceName, input.SourceName; got != want {
+		t.Fatalf("group source name = %q, want preserved %q", got, want)
+	}
+	if got, want := group.SourceURL, input.SourceURL; got != want {
+		t.Fatalf("group source url = %q, want preserved %q", got, want)
+	}
+
+	refreshed := populated
+	refreshed.AuthoritativeSourceURL = "https://calendar.example.test/live-updated.ics"
+	refreshed.AuthoritativeSourceEventKey = "shared-uid-updated"
+
+	reusedID, created, err = st.StageReviewGroup(ctx, refreshed)
+	if err != nil {
+		t.Fatalf("restage review group with refreshed authoritative tuple: %v", err)
+	}
+	if created {
+		t.Fatal("created = true, want false")
+	}
+	if reusedID != groupID {
+		t.Fatalf("reused id = %d, want %d", reusedID, groupID)
+	}
+
+	group, ok, err = st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group after refresh: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after refresh")
+	}
+	if got, want := group.AuthoritativeSourceURL, refreshed.AuthoritativeSourceURL; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := group.AuthoritativeSourceEventKey, refreshed.AuthoritativeSourceEventKey; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+}
+
 func TestStageReviewGroupReusesClosedMatchingGroupWithoutReopening(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -936,6 +1054,134 @@ func TestResolveReviewGroupPublishesSingletonEventWithSourceFallback(t *testing.
 	}
 }
 
+func TestCreateReviewGroupPersistsAuthoritativeSourceMetadata(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative persisted")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if got, want := group.AuthoritativeSourceName, "Sidney & Matilda manual ingest"; got != want {
+		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := group.AuthoritativeSourceURL, "https://calendar.example.test/live.ics"; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := group.AuthoritativeSourceEventKey, "shared-uid"; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+}
+
+func TestResolveReviewGroupUsesAuthoritativeSourceLinkIdentity(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative resolve")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	var venueID int64
+	if err := db.QueryRow(`SELECT id FROM venues WHERE slug = ?`, "sidney-and-matilda").Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue id: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Sidney & Matilda manual ingest", "https://calendar.example.test/live.ics"); err != nil {
+		t.Fatalf("insert authoritative source: %v", err)
+	}
+	var sourceID int64
+	if err := db.QueryRow(`SELECT id FROM sources WHERE name = ? AND url = ?`, "Sidney & Matilda manual ingest", "https://calendar.example.test/live.ics").Scan(&sourceID); err != nil {
+		t.Fatalf("lookup source id: %v", err)
+	}
+	const linkedSlug = "existing-linked-event"
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			last_checked_at,
+			origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, linkedSlug, venueID, sourceID, "Old linked event", "2026-04-30T18:00:00Z", "2026-04-30T21:00:00Z", "Old genre", "Listed", "Old description", "2026-04-29T10:00:00Z", string(domain.OriginTest)); err != nil {
+		t.Fatalf("insert linked event: %v", err)
+	}
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, linkedSlug).Scan(&eventID); err != nil {
+		t.Fatalf("lookup event id: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, eventID, sourceID, "shared-uid", "2026-04-29T10:00:00Z", "2026-04-29T10:00:00Z"); err != nil {
+		t.Fatalf("insert source link: %v", err)
+	}
+	beforeEventCount := mustCount(t, db, "events")
+
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	if got := mustCount(t, db, "events"); got != beforeEventCount {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	}
+	if _, ok := st.EventBySlug("live-utc-show-sidney-and-matilda-20260501190000"); ok {
+		t.Fatal("unexpected slug-upsert event created")
+	}
+
+	event, ok := st.EventBySlug(linkedSlug)
+	if !ok {
+		t.Fatalf("missing linked event %q", linkedSlug)
+	}
+	if event.Name != "UTC Show" {
+		t.Fatalf("name = %q, want %q", event.Name, "UTC Show")
+	}
+	if event.SourceName != "Sidney & Matilda manual ingest" {
+		t.Fatalf("source name = %q, want %q", event.SourceName, "Sidney & Matilda manual ingest")
+	}
+	if event.SourceURL != "https://calendar.example.test/live.ics" {
+		t.Fatalf("source url = %q, want %q", event.SourceURL, "https://calendar.example.test/live.ics")
+	}
+	if event.Genre != "Old genre" {
+		t.Fatalf("genre = %q, want preserved %q", event.Genre, "Old genre")
+	}
+	if event.Description != "Old description" {
+		t.Fatalf("description = %q, want preserved %q", event.Description, "Old description")
+	}
+}
+
 func TestSaveReviewDraftRejectsCandidateFromAnotherGroup(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
@@ -1196,6 +1442,58 @@ func TestResolveReviewGroupRollsBackWhenVenueIsMissing(t *testing.T) {
 	assertDraftChoice(t, after, review.FieldName, group.Candidates[1].ID, "London Show")
 	if got := mustCount(t, db, "events"); got != beforeEventCount {
 		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	}
+}
+
+func TestResolveReviewGroupAuthoritativePathRollsBackWhenVenueIsMissing(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative missing venue")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET venue_slug = ?
+		WHERE group_id = ?
+	`, "missing-venue", groupID); err != nil {
+		t.Fatalf("set missing venue: %v", err)
+	}
+	beforeEventCount := mustCount(t, db, "events")
+
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err == nil {
+		t.Fatal("expected missing venue to reject authoritative resolve")
+	}
+
+	after, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after failed resolve")
+	}
+	if after.Status != review.StatusOpen {
+		t.Fatalf("status = %q, want %q", after.Status, review.StatusOpen)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 0 {
+		t.Fatalf("event_source_links rows = %d, want 0", got)
 	}
 }
 
@@ -1828,6 +2126,38 @@ func mustCreatePublishableSingletonReviewGroup(t *testing.T, st *Store, title st
 	})
 	if err != nil {
 		t.Fatalf("create review group: %v", err)
+	}
+	return id
+}
+
+func mustCreateAuthoritativeReviewGroup(t *testing.T, st *Store, title string) int64 {
+	t.Helper()
+
+	id, err := st.CreateReviewGroup(context.Background(), review.GroupInput{
+		Title:                       title,
+		SourceName:                  "Fixture ICS",
+		SourceURL:                   "file:published.ics",
+		AuthoritativeSourceName:     "Sidney & Matilda manual ingest",
+		AuthoritativeSourceURL:      "https://calendar.example.test/live.ics",
+		AuthoritativeSourceEventKey: "shared-uid",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "shared-uid",
+				Name:        "UTC Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First line",
+				SourceName:  "Candidate source name",
+				SourceURL:   "https://example.test/utc-show",
+				Provenance:  "fixture UID shared-uid",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create authoritative review group: %v", err)
 	}
 	return id
 }

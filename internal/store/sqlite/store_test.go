@@ -40,8 +40,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	db := mustRawDB(t, path)
 	defer db.Close()
 
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV4 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV4)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV5 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV5)
 	}
 	if got := mustCount(t, db, "venues"); got != 3 {
 		t.Fatalf("venues rows = %d, want 3", got)
@@ -64,8 +64,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT version, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version, &appliedAt); err != nil {
 		t.Fatalf("scan migration row: %v", err)
 	}
-	if version != schemaVersionV4 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV4)
+	if version != schemaVersionV5 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV5)
 	}
 	if _, err := time.Parse(time.RFC3339, appliedAt); err != nil {
 		t.Fatalf("applied_at %q is not RFC3339: %v", appliedAt, err)
@@ -184,15 +184,15 @@ func TestOpenMigratesVersion1Database(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV4 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV4)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV5 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV5)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV4 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV4)
+	if version != schemaVersionV5 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV5)
 	}
 	if got := mustCount(t, db, "review_groups"); got != 0 {
 		t.Fatalf("review_groups rows = %d, want 0", got)
@@ -294,15 +294,15 @@ func TestOpenMigratesVersion2DatabasePreservesReviewDataAndAddsStagingKey(t *tes
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV4 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV4)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV5 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV5)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV4 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV4)
+	if version != schemaVersionV5 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV5)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
@@ -441,8 +441,8 @@ func TestOpenMigratesVersion3DatabaseAddsEventSourceLinks(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV4 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV4)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV5 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV5)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
@@ -469,6 +469,178 @@ func TestOpenMigratesVersion3DatabaseAddsEventSourceLinks(t *testing.T) {
 	}
 	if !foundUnique {
 		t.Fatal("missing unique event source link index")
+	}
+}
+
+func TestOpenMigratesVersion4DatabaseAddsReviewGroupAuthoritativeLinkColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	db := mustRawDB(t, path)
+	initSQL, err := readMigration("migrations/0001_init.sql")
+	if err != nil {
+		t.Fatalf("read v1 migration: %v", err)
+	}
+	if _, err := db.Exec(initSQL); err != nil {
+		t.Fatalf("apply v1 migration: %v", err)
+	}
+	for _, path := range []string{
+		"migrations/0002_review.sql",
+		"migrations/0003_review_staging_idempotency.sql",
+		"migrations/0004_event_source_links.sql",
+	} {
+		migrationSQL, err := readMigration(path)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", path, err)
+		}
+		if _, err := db.Exec(migrationSQL); err != nil {
+			t.Fatalf("apply migration %s: %v", path, err)
+		}
+	}
+	for version := schemaVersionV1; version <= schemaVersionV4; version++ {
+		if _, err := db.Exec(`
+			INSERT INTO schema_migrations (version, applied_at)
+			VALUES (?, ?)
+		`, version, formatRFC3339UTC(time.Date(2026, time.April, 20, 8+version, 0, 0, 0, time.UTC))); err != nil {
+			t.Fatalf("insert v%d migration row: %v", version, err)
+		}
+	}
+	openGroupID := mustInsertReviewGroupRow(t, db, `
+		INSERT INTO review_groups (
+			title,
+			source_name,
+			source_url,
+			staging_key,
+			status,
+			notes,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "Migrated authoritative review", "Sidney & Matilda manual ingest", "https://calendar.example.test/live.ics", "group-staging-key", review.StatusOpen, "Preserved notes", formatRFC3339UTC(time.Date(2026, time.April, 20, 13, 0, 0, 0, time.UTC)), formatRFC3339UTC(time.Date(2026, time.April, 20, 14, 0, 0, 0, time.UTC)))
+	if _, err := db.Exec(`
+		INSERT INTO review_candidates (
+			group_id,
+			position,
+			external_id,
+			name,
+			venue_slug,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			source_name,
+			source_url,
+			provenance
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, openGroupID, 1, "shared-uid", "Migrated authoritative review", "sidney-and-matilda", "2026-05-01T19:00:00Z", "2026-05-01T22:00:00Z", "Indie", "Listed", "Description", "", "", "fixture UID shared-uid"); err != nil {
+		t.Fatalf("insert open review candidate: %v", err)
+	}
+	closedGroupID := mustInsertReviewGroupRow(t, db, `
+		INSERT INTO review_groups (
+			title,
+			source_name,
+			source_url,
+			staging_key,
+			status,
+			notes,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "Migrated resolved review", "Sidney & Matilda manual ingest", "https://calendar.example.test/live.ics", "resolved-group-staging-key", review.StatusResolved, "Resolved notes", formatRFC3339UTC(time.Date(2026, time.April, 20, 15, 0, 0, 0, time.UTC)), formatRFC3339UTC(time.Date(2026, time.April, 20, 16, 0, 0, 0, time.UTC)))
+	if _, err := db.Exec(`
+		INSERT INTO review_candidates (
+			group_id,
+			position,
+			external_id,
+			name,
+			venue_slug,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			source_name,
+			source_url,
+			provenance
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, closedGroupID, 1, "resolved-shared-uid", "Migrated resolved review", "sidney-and-matilda", "2026-05-02T19:00:00Z", "2026-05-02T22:00:00Z", "Indie", "Listed", "Description", "", "", "fixture UID resolved-shared-uid"); err != nil {
+		t.Fatalf("insert closed review candidate: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db = mustRawDB(t, path)
+	defer db.Close()
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV5 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV5)
+	}
+
+	group, ok, err := st.LoadReviewGroup(context.Background(), openGroupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if got, want := group.AuthoritativeSourceName, "Sidney & Matilda manual ingest"; got != want {
+		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := group.AuthoritativeSourceURL, "https://calendar.example.test/live.ics"; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := group.AuthoritativeSourceEventKey, "shared-uid"; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+
+	closed, ok, err := st.LoadReviewGroup(context.Background(), closedGroupID)
+	if err != nil {
+		t.Fatalf("load closed review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("closed review group not found")
+	}
+	if closed.AuthoritativeSourceName != "" || closed.AuthoritativeSourceURL != "" || closed.AuthoritativeSourceEventKey != "" {
+		t.Fatalf("closed authoritative fields = %#v, want empty", closed)
+	}
+
+	rows, err := db.Query(`PRAGMA table_info(review_groups)`)
+	if err != nil {
+		t.Fatalf("table info: %v", err)
+	}
+	defer rows.Close()
+	foundColumns := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan table info row: %v", err)
+		}
+		switch name {
+		case "authoritative_source_name", "authoritative_source_url", "authoritative_source_event_key":
+			foundColumns[name] = true
+			if notnull != 0 {
+				t.Fatalf("%s notnull = %d, want 0", name, notnull)
+			}
+			if dflt.Valid {
+				t.Fatalf("%s default = %q, want NULL", name, dflt.String)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate table info: %v", err)
+	}
+	for _, name := range []string{"authoritative_source_name", "authoritative_source_url", "authoritative_source_event_key"} {
+		if !foundColumns[name] {
+			t.Fatalf("missing %s column", name)
+		}
 	}
 }
 
@@ -551,6 +723,20 @@ func TestOpenRejectsDanglingVenueReference(t *testing.T) {
 	if _, err := Open(path); err == nil {
 		t.Fatal("expected open error")
 	}
+}
+
+func mustInsertReviewGroupRow(t *testing.T, db *sql.DB, query string, args ...any) int64 {
+	t.Helper()
+
+	res, err := db.Exec(query, args...)
+	if err != nil {
+		t.Fatalf("insert review group row: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("review group row id: %v", err)
+	}
+	return id
 }
 
 func mustRawDB(t *testing.T, path string) *sql.DB {

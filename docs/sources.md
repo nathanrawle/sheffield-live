@@ -32,6 +32,7 @@ Snapshot payloads are stored as JSON envelopes that contain the response body in
 
 Review staging creates duplicate clusters and singleton new listings. Duplicate review groups support field-level canonical choices plus a canonical draft summary. Singleton review groups support accept or reject.
 Review staging uses a durable key, so source metadata changes alone do not create a new group, and closed groups are not reopened.
+When every candidate in a staged group agrees on one owned-venue source identity, the group persists that authoritative source name, URL, and event key for later resolution.
 
 Replay auto-detects the source from stored page snapshot metadata, reconstructs the same source-specific extraction path from stored snapshots, validates the snapshot envelope version and SHA-256, and refuses missing or ambiguous snapshot matches.
 
@@ -44,9 +45,11 @@ Rejecting either a duplicate or singleton review does not publish an event.
 When a review group resolves:
 
 - selected review fields map to `internal/domain.Event`
-- source name and source URL fall back to the review-group source only when the selected field is blank
+- authoritative groups pin source name and source URL from the persisted authoritative tuple
+- non-authoritative groups let source name and source URL fall back to the review-group source only when the selected field is blank
 - the venue must already exist
 - the source row is ensured transactionally
+- authoritative groups resolve through `event_source_links` identity before any slug-based publish path
 - the published event origin is `live`
 - the slug is `live-<slug(name)>-<slug(venue)>-<YYYYMMDDHHMMSS UTC>`
 - slug conflicts are handled with upsert semantics

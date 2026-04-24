@@ -368,6 +368,15 @@ func TestReviewGroupsFromYellowArchReportUsesCanonicalVenueSlugAndSourceName(t *
 	if got, want := groups[0].Candidates[0].VenueSlug, "yellow-arch"; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
 	}
+	if got, want := groups[0].AuthoritativeSourceName, "Yellow Arch manual ingest"; got != want {
+		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := groups[0].AuthoritativeSourceURL, "https://www.yellowarch.com/event/one/"; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := groups[0].AuthoritativeSourceEventKey, "https://www.yellowarch.com/event/one/"; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
 }
 
 func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *testing.T) {
@@ -401,6 +410,54 @@ func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *te
 	}
 	if got, want := groups[0].Candidates[0].VenueSlug, "yellow-arch"; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+	if got := groups[0].AuthoritativeSourceEventKey; got != "" {
+		t.Fatalf("authoritative source event key = %q, want empty", got)
+	}
+}
+
+func TestReviewGroupsFromReportSkipsAuthoritativeGroupMetadataWhenCandidatesDisagree(t *testing.T) {
+	report := Report{
+		Source:      DefaultSource,
+		SourceURL:   "https://www.sidneyandmatilda.com/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				Candidates: []EventCandidate{
+					{
+						UID:      "shared-uid",
+						Summary:  "One",
+						Location: "Sidney & Matilda",
+						URL:      "https://example.test/one",
+						StartAt:  "2026-05-01T19:00:00Z",
+						EndAt:    "2026-05-01T22:00:00Z",
+					},
+					{
+						UID:      "shared-uid",
+						Summary:  "Two",
+						Location: "Sidney & Matilda",
+						URL:      "https://example.test/two",
+						StartAt:  "2026-05-01T19:05:00Z",
+						EndAt:    "2026-05-01T22:05:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	groups := ReviewGroupsFromReport(report)
+	if got, want := len(groups), 1; got != want {
+		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got := groups[0].AuthoritativeSourceName; got != "" {
+		t.Fatalf("authoritative source name = %q, want empty", got)
+	}
+	if got := groups[0].AuthoritativeSourceURL; got != "" {
+		t.Fatalf("authoritative source url = %q, want empty", got)
+	}
+	if got := groups[0].AuthoritativeSourceEventKey; got != "" {
+		t.Fatalf("authoritative source event key = %q, want empty", got)
 	}
 }
 

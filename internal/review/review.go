@@ -52,16 +52,19 @@ type GroupSummary struct {
 }
 
 type Group struct {
-	ID           int64
-	Title        string
-	SourceName   string
-	SourceURL    string
-	Status       string
-	Notes        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	Candidates   []Candidate
-	DraftChoices map[Field]DraftChoice
+	ID                          int64
+	Title                       string
+	SourceName                  string
+	SourceURL                   string
+	AuthoritativeSourceName     string
+	AuthoritativeSourceURL      string
+	AuthoritativeSourceEventKey string
+	Status                      string
+	Notes                       string
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
+	Candidates                  []Candidate
+	DraftChoices                map[Field]DraftChoice
 }
 
 type Candidate struct {
@@ -82,12 +85,15 @@ type Candidate struct {
 }
 
 type GroupInput struct {
-	Title      string
-	SourceName string
-	SourceURL  string
-	Notes      string
-	StagingKey string
-	Candidates []CandidateInput
+	Title                       string
+	SourceName                  string
+	SourceURL                   string
+	AuthoritativeSourceName     string
+	AuthoritativeSourceURL      string
+	AuthoritativeSourceEventKey string
+	Notes                       string
+	StagingKey                  string
+	Candidates                  []CandidateInput
 }
 
 type CandidateInput struct {

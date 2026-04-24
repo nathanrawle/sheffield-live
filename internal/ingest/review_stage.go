@@ -53,9 +53,49 @@ func ReviewGroupsFromReport(report Report) []review.GroupInput {
 		group := clusters[key].group
 		group.Title = reviewStageTitle(group)
 		group.StagingKey = reviewStageStagingKey(group)
+		group.AuthoritativeSourceName, group.AuthoritativeSourceURL, group.AuthoritativeSourceEventKey = reviewStageAuthoritativeSource(report.Source, group)
 		groups = append(groups, group)
 	}
 	return groups
+}
+
+func reviewStageAuthoritativeSource(source string, group review.GroupInput) (string, string, string) {
+	ownedVenueSlug := strings.TrimSpace(OwnedVenueSlugForSource(source))
+	if ownedVenueSlug == "" || len(group.Candidates) == 0 {
+		return "", "", ""
+	}
+
+	var sourceName string
+	var sourceURL string
+	var sourceEventKey string
+	for _, candidate := range group.Candidates {
+		if strings.TrimSpace(candidate.VenueSlug) != ownedVenueSlug {
+			return "", "", ""
+		}
+		candidateEventKey := reviewStageAuthoritativeSourceEventKey(candidate)
+		if candidateEventKey == "" {
+			return "", "", ""
+		}
+		candidateSourceName := reviewStageFirstNonEmpty(candidate.SourceName, group.SourceName)
+		candidateSourceURL := reviewStageFirstNonEmpty(candidate.SourceURL, group.SourceURL)
+		if candidateSourceName == "" || candidateSourceURL == "" {
+			return "", "", ""
+		}
+		if sourceEventKey == "" {
+			sourceName = candidateSourceName
+			sourceURL = candidateSourceURL
+			sourceEventKey = candidateEventKey
+			continue
+		}
+		if candidateSourceName != sourceName || candidateSourceURL != sourceURL || candidateEventKey != sourceEventKey {
+			return "", "", ""
+		}
+	}
+	return sourceName, sourceURL, sourceEventKey
+}
+
+func reviewStageAuthoritativeSourceEventKey(candidate review.CandidateInput) string {
+	return reviewStageFirstNonEmpty(candidate.ExternalID, candidate.SourceURL)
 }
 
 func reviewStageStagingKey(group review.GroupInput) string {

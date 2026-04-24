@@ -58,13 +58,20 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 			title,
 			source_name,
 			source_url,
+			authoritative_source_name,
+			authoritative_source_url,
+			authoritative_source_event_key,
 			staging_key,
 			status,
 			notes,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, input.Title, input.SourceName, input.SourceURL, stagingKeyValue(stagingKey), review.StatusOpen, input.Notes, formatRFC3339UTC(now), formatRFC3339UTC(now))
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, input.Title, input.SourceName, input.SourceURL,
+		nullableReviewText(input.AuthoritativeSourceName),
+		nullableReviewText(input.AuthoritativeSourceURL),
+		nullableReviewText(input.AuthoritativeSourceEventKey),
+		stagingKeyValue(stagingKey), review.StatusOpen, input.Notes, formatRFC3339UTC(now), formatRFC3339UTC(now))
 	if err != nil {
 		return 0, false, err
 	}
@@ -90,24 +97,27 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 		return groupID, true, nil
 	}
 
-	var groupID int64
-	row := tx.QueryRowContext(ctx, `
-		SELECT id
-		FROM review_groups
-		WHERE staging_key = ?
-		LIMIT 1
-	`, stagingKey)
-	switch err := row.Scan(&groupID); {
-	case errors.Is(err, sql.ErrNoRows):
-		return 0, false, errors.New("staged review group not found after ignore")
-	case err != nil:
+	group, ok, err := loadReviewGroupByStagingKey(ctx, tx, stagingKey)
+	if err != nil {
 		return 0, false, err
+	}
+	if !ok {
+		return 0, false, errors.New("staged review group not found after ignore")
+	}
+	if group.Status == review.StatusOpen {
+		if err := refreshReviewGroupAuthoritativeLinkTx(ctx, tx, group.ID, reviewGroupAuthoritativeLinkInput{
+			SourceName:     input.AuthoritativeSourceName,
+			SourceURL:      input.AuthoritativeSourceURL,
+			SourceEventKey: input.AuthoritativeSourceEventKey,
+		}, now); err != nil {
+			return 0, false, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return 0, false, err
 	}
-	return groupID, false, nil
+	return group.ID, false, nil
 }
 
 func (s *Store) PromoteSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput) (string, bool, error) {
@@ -180,13 +190,20 @@ func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, 
 			title,
 			source_name,
 			source_url,
+			authoritative_source_name,
+			authoritative_source_url,
+			authoritative_source_event_key,
 			staging_key,
 			status,
 			notes,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, input.Title, input.SourceName, input.SourceURL, stagingKeyValue(stagingKey), review.StatusOpen, input.Notes, formatRFC3339UTC(now), formatRFC3339UTC(now))
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, input.Title, input.SourceName, input.SourceURL,
+		nullableReviewText(input.AuthoritativeSourceName),
+		nullableReviewText(input.AuthoritativeSourceURL),
+		nullableReviewText(input.AuthoritativeSourceEventKey),
+		stagingKeyValue(stagingKey), review.StatusOpen, input.Notes, formatRFC3339UTC(now), formatRFC3339UTC(now))
 	if err != nil {
 		return 0, err
 	}
@@ -511,6 +528,10 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 }
 
 func stagingKeyValue(value string) any {
+	return nullableReviewText(value)
+}
+
+func nullableReviewText(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
 	}
@@ -897,8 +918,18 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	if err != nil {
 		return err
 	}
-	if err := upsertEventTx(ctx, tx, event); err != nil {
-		return err
+	if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
+		event.SourceName = authoritative.SourceName
+		event.SourceURL = authoritative.SourceURL
+		if _, applied, err := applyAuthoritativeEventTx(ctx, tx, event, authoritative.SourceEventKey, now); err != nil {
+			return err
+		} else if !applied {
+			return fmt.Errorf("venue %q not found", event.VenueSlug)
+		}
+	} else {
+		if err := upsertEventTx(ctx, tx, event); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE review_groups
@@ -1002,31 +1033,285 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 
 func loadReviewGroup(ctx context.Context, q queryer, id int64) (review.Group, bool, error) {
 	row := q.QueryRowContext(ctx, `
-		SELECT id, title, source_name, source_url, status, notes, created_at, updated_at
+		SELECT
+			id,
+			title,
+			source_name,
+			source_url,
+			authoritative_source_name,
+			authoritative_source_url,
+			authoritative_source_event_key,
+			status,
+			notes,
+			created_at,
+			updated_at
 		FROM review_groups
 		WHERE id = ?
 		LIMIT 1
 	`, id)
+	return scanReviewGroupRow(row, id)
+}
+
+func loadReviewGroupByStagingKey(ctx context.Context, q queryer, stagingKey string) (review.Group, bool, error) {
+	row := q.QueryRowContext(ctx, `
+		SELECT
+			id,
+			title,
+			source_name,
+			source_url,
+			authoritative_source_name,
+			authoritative_source_url,
+			authoritative_source_event_key,
+			status,
+			notes,
+			created_at,
+			updated_at
+		FROM review_groups
+		WHERE staging_key = ?
+		LIMIT 1
+	`, stagingKey)
+	return scanReviewGroupRow(row, 0)
+}
+
+func scanReviewGroupRow(scanner interface {
+	Scan(...any) error
+}, fallbackID int64) (review.Group, bool, error) {
 	var group review.Group
+	var authoritativeSourceName sql.NullString
+	var authoritativeSourceURL sql.NullString
+	var authoritativeSourceEventKey sql.NullString
 	var createdAt string
 	var updatedAt string
-	switch err := row.Scan(&group.ID, &group.Title, &group.SourceName, &group.SourceURL, &group.Status, &group.Notes, &createdAt, &updatedAt); {
+	switch err := scanner.Scan(
+		&group.ID,
+		&group.Title,
+		&group.SourceName,
+		&group.SourceURL,
+		&authoritativeSourceName,
+		&authoritativeSourceURL,
+		&authoritativeSourceEventKey,
+		&group.Status,
+		&group.Notes,
+		&createdAt,
+		&updatedAt,
+	); {
 	case errors.Is(err, sql.ErrNoRows):
 		return review.Group{}, false, nil
 	case err != nil:
 		return review.Group{}, false, err
 	}
+	group.AuthoritativeSourceName = strings.TrimSpace(authoritativeSourceName.String)
+	group.AuthoritativeSourceURL = strings.TrimSpace(authoritativeSourceURL.String)
+	group.AuthoritativeSourceEventKey = strings.TrimSpace(authoritativeSourceEventKey.String)
 	parsedCreatedAt, err := parseRFC3339UTC(createdAt)
 	if err != nil {
-		return review.Group{}, false, fmt.Errorf("parse review group %d created_at: %w", id, err)
+		if fallbackID == 0 {
+			fallbackID = group.ID
+		}
+		return review.Group{}, false, fmt.Errorf("parse review group %d created_at: %w", fallbackID, err)
 	}
 	parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
 	if err != nil {
-		return review.Group{}, false, fmt.Errorf("parse review group %d updated_at: %w", id, err)
+		if fallbackID == 0 {
+			fallbackID = group.ID
+		}
+		return review.Group{}, false, fmt.Errorf("parse review group %d updated_at: %w", fallbackID, err)
 	}
 	group.CreatedAt = parsedCreatedAt
 	group.UpdatedAt = parsedUpdatedAt
 	return group, true, nil
+}
+
+type reviewGroupAuthoritativeLink struct {
+	SourceName     string
+	SourceURL      string
+	SourceEventKey string
+}
+
+type reviewGroupAuthoritativeLinkInput struct {
+	SourceName     string
+	SourceURL      string
+	SourceEventKey string
+}
+
+func reviewGroupAuthoritativeSource(group review.Group) (reviewGroupAuthoritativeLink, bool) {
+	sourceName := strings.TrimSpace(group.AuthoritativeSourceName)
+	sourceURL := strings.TrimSpace(group.AuthoritativeSourceURL)
+	sourceEventKey := strings.TrimSpace(group.AuthoritativeSourceEventKey)
+	if sourceName == "" || sourceURL == "" || sourceEventKey == "" {
+		return reviewGroupAuthoritativeLink{}, false
+	}
+	return reviewGroupAuthoritativeLink{
+		SourceName:     sourceName,
+		SourceURL:      sourceURL,
+		SourceEventKey: sourceEventKey,
+	}, true
+}
+
+func backfillOpenReviewGroupsAuthoritativeLinks(ctx context.Context, tx interface {
+	execer
+	queryer
+}) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id
+		FROM review_groups
+		WHERE status = ?
+			AND (
+				authoritative_source_name IS NULL
+				OR authoritative_source_name = ''
+				OR authoritative_source_url IS NULL
+				OR authoritative_source_url = ''
+				OR authoritative_source_event_key IS NULL
+				OR authoritative_source_event_key = ''
+			)
+	`, review.StatusOpen)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var groupIDs []int64
+	for rows.Next() {
+		var groupID int64
+		if err := rows.Scan(&groupID); err != nil {
+			return err
+		}
+		groupIDs = append(groupIDs, groupID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	for _, groupID := range groupIDs {
+		group, ok, err := loadReviewGroup(ctx, tx, groupID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		candidates, err := loadReviewCandidates(ctx, tx, groupID)
+		if err != nil {
+			return err
+		}
+		link, ok := deriveReviewGroupAuthoritativeLink(group, candidates)
+		if !ok {
+			continue
+		}
+		if err := refreshReviewGroupAuthoritativeLinkTx(ctx, tx, groupID, reviewGroupAuthoritativeLinkInput(link), now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func refreshReviewGroupAuthoritativeLinkTx(ctx context.Context, tx execer, groupID int64, input reviewGroupAuthoritativeLinkInput, now time.Time) error {
+	link, ok := normalizeReviewGroupAuthoritativeLinkInput(input)
+	if !ok {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+		UPDATE review_groups
+		SET authoritative_source_name = ?,
+			authoritative_source_url = ?,
+			authoritative_source_event_key = ?,
+			updated_at = CASE
+				WHEN COALESCE(authoritative_source_name, '') <> ?
+					OR COALESCE(authoritative_source_url, '') <> ?
+					OR COALESCE(authoritative_source_event_key, '') <> ?
+				THEN ?
+				ELSE updated_at
+			END
+		WHERE id = ?
+	`, link.SourceName, link.SourceURL, link.SourceEventKey,
+		link.SourceName, link.SourceURL, link.SourceEventKey,
+		formatRFC3339UTC(now), groupID)
+	return err
+}
+
+func normalizeReviewGroupAuthoritativeLinkInput(input reviewGroupAuthoritativeLinkInput) (reviewGroupAuthoritativeLink, bool) {
+	link := reviewGroupAuthoritativeLink{
+		SourceName:     strings.TrimSpace(input.SourceName),
+		SourceURL:      strings.TrimSpace(input.SourceURL),
+		SourceEventKey: strings.TrimSpace(input.SourceEventKey),
+	}
+	if link.SourceName == "" || link.SourceURL == "" || link.SourceEventKey == "" {
+		return reviewGroupAuthoritativeLink{}, false
+	}
+	return link, true
+}
+
+func deriveReviewGroupAuthoritativeLink(group review.Group, candidates []review.Candidate) (reviewGroupAuthoritativeLink, bool) {
+	if len(candidates) == 0 {
+		return reviewGroupAuthoritativeLink{}, false
+	}
+
+	var venueSlug string
+	var link reviewGroupAuthoritativeLink
+	for _, candidate := range candidates {
+		candidateVenueSlug := strings.TrimSpace(candidate.VenueSlug)
+		if candidateVenueSlug == "" {
+			return reviewGroupAuthoritativeLink{}, false
+		}
+		if venueSlug == "" {
+			venueSlug = candidateVenueSlug
+		} else if candidateVenueSlug != venueSlug {
+			return reviewGroupAuthoritativeLink{}, false
+		}
+
+		candidateLink, ok := authoritativeLinkFromStoredReviewCandidate(group, candidate)
+		if !ok {
+			return reviewGroupAuthoritativeLink{}, false
+		}
+		if link.SourceEventKey == "" {
+			link = candidateLink
+			continue
+		}
+		if candidateLink != link {
+			return reviewGroupAuthoritativeLink{}, false
+		}
+	}
+	if authoritativeOwnedVenueSlugForSourceName(link.SourceName) != venueSlug {
+		return reviewGroupAuthoritativeLink{}, false
+	}
+	return link, true
+}
+
+func authoritativeLinkFromStoredReviewCandidate(group review.Group, candidate review.Candidate) (reviewGroupAuthoritativeLink, bool) {
+	sourceName := strings.TrimSpace(candidate.SourceName)
+	if sourceName == "" {
+		sourceName = strings.TrimSpace(group.SourceName)
+	}
+	sourceURL := strings.TrimSpace(candidate.SourceURL)
+	if sourceURL == "" {
+		sourceURL = strings.TrimSpace(group.SourceURL)
+	}
+	sourceEventKey := strings.TrimSpace(candidate.ExternalID)
+	if sourceEventKey == "" {
+		sourceEventKey = sourceURL
+	}
+	if sourceName == "" || sourceURL == "" || sourceEventKey == "" {
+		return reviewGroupAuthoritativeLink{}, false
+	}
+	return reviewGroupAuthoritativeLink{
+		SourceName:     sourceName,
+		SourceURL:      sourceURL,
+		SourceEventKey: sourceEventKey,
+	}, true
+}
+
+func authoritativeOwnedVenueSlugForSourceName(sourceName string) string {
+	switch strings.TrimSpace(sourceName) {
+	case "Sidney & Matilda manual ingest":
+		return "sidney-and-matilda"
+	case "Yellow Arch manual ingest":
+		return "yellow-arch"
+	case "The Leadmill manual ingest":
+		return "leadmill"
+	default:
+		return ""
+	}
 }
 
 func buildResolvedEvent(group review.Group, selected map[review.Field]review.Candidate, publishedAt time.Time) (domain.Event, error) {

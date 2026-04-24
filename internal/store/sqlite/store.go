@@ -24,6 +24,7 @@ const (
 	schemaVersionV2   = 2
 	schemaVersionV3   = 3
 	schemaVersionV4   = 4
+	schemaVersionV5   = 5
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -36,6 +37,7 @@ var migrations = []struct {
 	{version: schemaVersionV2, path: "migrations/0002_review.sql"},
 	{version: schemaVersionV3, path: "migrations/0003_review_staging_idempotency.sql"},
 	{version: schemaVersionV4, path: "migrations/0004_event_source_links.sql"},
+	{version: schemaVersionV5, path: "migrations/0005_review_group_authoritative_link.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -105,6 +107,9 @@ func Open(path string) (st *Store, err error) {
 	}
 	if err := bootstrapIfEmpty(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: bootstrap seed data: %w", path, err)
+	}
+	if err := backfillOpenReviewGroupsAuthoritativeLinks(ctx, tx); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: backfill review group authoritative links: %w", path, err)
 	}
 	if err := validate(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: validate store: %w", path, err)
@@ -210,8 +215,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV4 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV4)
+	if version > schemaVersionV5 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV5)
 	}
 
 	for _, migration := range migrations {

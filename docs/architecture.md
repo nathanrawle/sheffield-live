@@ -68,8 +68,10 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 
 - raw snapshots capture fetched source pages and any source-specific secondary payloads such as ICS feeds
 - `review_groups.staging_key` has a unique index so staged reruns reuse the same group when the content key matches
+- review groups may also persist an authoritative source tuple when every staged candidate agrees on one owned-venue source event identity
 - review groups hold duplicate clusters or singleton new listings
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
+- authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
 - rejecting a review does not publish
 - the venue must already exist
 - the source row is ensured

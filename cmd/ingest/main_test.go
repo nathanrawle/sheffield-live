@@ -330,6 +330,70 @@ func TestCreateReviewGroupsFromReportReusesExistingGroupWhenOnlySourceMetadataDi
 	}
 }
 
+func TestCreateReviewGroupsFromReportPersistsAuthoritativeGroupMetadata(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	report := ingest.Report{
+		Source:      ingest.DefaultSource,
+		SourceURL:   "https://www.sidneyandmatilda.com/",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{
+			{
+				URL: "https://calendar.example.test/live.ics",
+				Candidates: []ingest.EventCandidate{
+					{
+						UID:      "shared-uid",
+						Summary:  "UTC Show",
+						Location: "Sidney & Matilda",
+						StartAt:  "2026-05-01T19:00:00Z",
+						EndAt:    "2026-05-01T22:00:00Z",
+					},
+					{
+						UID:      "shared-uid",
+						Summary:  "UTC Show duplicate",
+						Location: "Sidney & Matilda",
+						StartAt:  "2026-05-01T19:05:00Z",
+						EndAt:    "2026-05-01T22:05:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	stage, err := createReviewGroupsFromReport(ctx, st, report)
+	if err != nil {
+		t.Fatalf("create review groups: %v", err)
+	}
+	if got, want := len(stage.Groups), 1; got != want {
+		t.Fatalf("review groups = %d, want %d", got, want)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, stage.Groups[0].ID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if got, want := group.AuthoritativeSourceName, "Sidney & Matilda manual ingest"; got != want {
+		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := group.AuthoritativeSourceURL, "https://calendar.example.test/live.ics"; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := group.AuthoritativeSourceEventKey, "shared-uid"; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+}
+
 func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 	t.Parallel()
 
