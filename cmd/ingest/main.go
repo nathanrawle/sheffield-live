@@ -31,6 +31,7 @@ func run() error {
 
 type ingestCommandConfig struct {
 	source            string
+	allSources        bool
 	limit             int
 	timeout           time.Duration
 	httpUserAgent     string
@@ -40,6 +41,19 @@ type ingestCommandConfig struct {
 	stageReviewGroups bool
 	importRunID       int64
 }
+
+var (
+	openSQLiteStore = sqlite.Open
+	newHTTPFetcher  = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return ingest.NewHTTPFetcher(timeout, userAgent)
+	}
+	runManualImport = func(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+		return ingest.RunManual(ctx, st, fetcher, opts)
+	}
+	replayImportRun = func(ctx context.Context, st *sqlite.Store, importRunID int64, opts ingest.ReplayOptions) (ingest.Report, error) {
+		return ingest.ReplayImportRun(ctx, st, importRunID, opts)
+	}
+)
 
 func runWithArgs(args []string, stdout, stderr io.Writer) error {
 	if stdout == nil {
@@ -62,7 +76,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		path = "./data/sheffield-live.db"
 	}
 
-	st, err := sqlite.Open(path)
+	st, err := openSQLiteStore(path)
 	if err != nil {
 		return err
 	}
@@ -77,17 +91,37 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		return createReviewGroupFromFixture(context.Background(), st, stdout, cfg.reviewICSFixture, cfg.reviewTitle)
 	}
 
-	var (
-		report ingest.Report
-		runErr error
-	)
 	if cfg.limit < 1 || cfg.limit > ingest.MaxLimit {
 		return fmt.Errorf("-limit must be between 1 and %d", ingest.MaxLimit)
 	}
+	if cfg.allSources {
+		if cfg.httpUserAgent == "" {
+			return errors.New("-http-user-agent is required")
+		}
+		if cfg.timeout <= 0 {
+			return errors.New("-timeout must be positive")
+		}
+
+		fetcher, err := newHTTPFetcher(cfg.timeout, cfg.httpUserAgent)
+		if err != nil {
+			return err
+		}
+		return runAllSources(context.Background(), st, fetcher, cfg, stdout)
+	}
+
+	var result manualRunExecution
 	if cfg.importRunID > 0 {
-		report, runErr = ingest.ReplayImportRun(context.Background(), st, cfg.importRunID, ingest.ReplayOptions{
+		report, runErr := replayImportRun(context.Background(), st, cfg.importRunID, ingest.ReplayOptions{
 			Limit: cfg.limit,
 		})
+		result = manualRunExecution{Report: report, Err: runErr}
+		if cfg.stageReviewGroups && !(runErr != nil && report.ImportRunID == 0) {
+			stageReport, stageErr := reviewStageForReport(context.Background(), st, report, runErr)
+			result.ReviewStage = &stageReport
+			if stageErr != nil {
+				result.Err = stageErr
+			}
+		}
 	} else {
 		if cfg.httpUserAgent == "" {
 			return errors.New("-http-user-agent is required")
@@ -96,45 +130,19 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 			return errors.New("-timeout must be positive")
 		}
 
-		fetcher, err := ingest.NewHTTPFetcher(cfg.timeout, cfg.httpUserAgent)
+		fetcher, err := newHTTPFetcher(cfg.timeout, cfg.httpUserAgent)
 		if err != nil {
 			return err
 		}
-
-		report, runErr = ingest.RunManual(context.Background(), st, fetcher, ingest.Options{
-			Source: cfg.source,
-			Limit:  cfg.limit,
-		})
+		result = runSingleManualSource(context.Background(), st, fetcher, cfg, cfg.source)
 	}
-	if runErr != nil && report.ImportRunID == 0 {
-		return runErr
-	}
-
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	if cfg.stageReviewGroups {
-		stageReport, stageErr := reviewStageForReport(context.Background(), st, report, runErr)
-		if err := encoder.Encode(manualIngestReport{
-			Report:      report,
-			ReviewStage: stageReport,
-		}); err != nil {
-			return err
-		}
-		if stageErr != nil {
-			return stageErr
-		}
-		return runErr
-	}
-
-	if err := encoder.Encode(report); err != nil {
-		return err
-	}
-	return runErr
+	return encodeManualRunResult(stdout, cfg.stageReviewGroups, result)
 }
 
 func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	var cfg ingestCommandConfig
 	var (
+		sourceFlag             trackedStringFlag
 		canonicalHTTPUserAgent trackedStringFlag
 		aliasHTTPUserAgent     trackedStringFlag
 		canonicalFixture       trackedStringFlag
@@ -145,7 +153,8 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	fs.StringVar(&cfg.source, "source", ingest.DefaultSource, "source to ingest (sidney-and-matilda, yellow-arch, or leadmill)")
+	fs.Var(&sourceFlag, "source", "source to ingest (sidney-and-matilda, yellow-arch, or leadmill)")
+	fs.BoolVar(&cfg.allSources, "all-sources", false, "run all registered manual sources sequentially")
 	fs.IntVar(&cfg.limit, "limit", ingest.DefaultLimit, "maximum ICS links to fetch")
 	fs.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "HTTP timeout")
 	fs.Var(&canonicalHTTPUserAgent, "http-user-agent", "HTTP User-Agent header")
@@ -160,6 +169,11 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return ingestCommandConfig{}, err
+	}
+	if sourceFlag.set {
+		cfg.source = sourceFlag.value
+	} else {
+		cfg.source = ingest.DefaultSource
 	}
 	if conflictOnTrackedValues(canonicalHTTPUserAgent.values, aliasHTTPUserAgent.values) {
 		return ingestCommandConfig{}, errors.New("-http-user-agent and -user-agent must match")
@@ -190,6 +204,15 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	}
 	if strings.TrimSpace(cfg.reviewICSFixture) != "" && cfg.importRunID > 0 {
 		return ingestCommandConfig{}, errors.New("-review-ics-fixture and -import-run-id are mutually exclusive")
+	}
+	if cfg.allSources && sourceFlag.set {
+		return ingestCommandConfig{}, errors.New("-all-sources and -source are mutually exclusive")
+	}
+	if cfg.allSources && cfg.importRunID > 0 {
+		return ingestCommandConfig{}, errors.New("-all-sources and -import-run-id are mutually exclusive")
+	}
+	if cfg.allSources && strings.TrimSpace(cfg.reviewICSFixture) != "" {
+		return ingestCommandConfig{}, errors.New("-all-sources and -review-ics-fixture are mutually exclusive")
 	}
 	return cfg, nil
 }
@@ -260,6 +283,23 @@ type manualIngestReport struct {
 	ReviewStage reviewStageReport `json:"review_stage"`
 }
 
+type manualRunExecution struct {
+	Report      ingest.Report
+	ReviewStage *reviewStageReport
+	Err         error
+}
+
+type batchManualIngestReport struct {
+	Results []batchManualIngestResult `json:"results"`
+}
+
+type batchManualIngestResult struct {
+	Source      string             `json:"source"`
+	Report      ingest.Report      `json:"report"`
+	ReviewStage *reviewStageReport `json:"review_stage,omitempty"`
+	Error       string             `json:"error,omitempty"`
+}
+
 type reviewStageReport struct {
 	Enabled              bool                            `json:"enabled"`
 	GroupsCreated        int                             `json:"groups_created"`
@@ -292,6 +332,80 @@ func reviewStageForReport(ctx context.Context, st reviewStageStore, report inges
 		return emptyReviewStageReport(), nil
 	}
 	return createReviewGroupsFromReport(ctx, st, report)
+}
+
+func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, cfg ingestCommandConfig, source string) manualRunExecution {
+	report, runErr := runManualImport(ctx, st, fetcher, ingest.Options{
+		Source: source,
+		Limit:  cfg.limit,
+	})
+	if runErr != nil && report.ImportRunID == 0 {
+		return manualRunExecution{Report: report, Err: runErr}
+	}
+	if !cfg.stageReviewGroups {
+		return manualRunExecution{Report: report, Err: runErr}
+	}
+	stageReport, stageErr := reviewStageForReport(ctx, st, report, runErr)
+	if stageErr != nil {
+		return manualRunExecution{Report: report, ReviewStage: &stageReport, Err: stageErr}
+	}
+	return manualRunExecution{Report: report, ReviewStage: &stageReport, Err: runErr}
+}
+
+func encodeManualRunResult(stdout io.Writer, stageEnabled bool, result manualRunExecution) error {
+	if result.Err != nil && result.Report.ImportRunID == 0 {
+		return result.Err
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if stageEnabled {
+		stage := emptyReviewStageReport()
+		if result.ReviewStage != nil {
+			stage = *result.ReviewStage
+		}
+		if err := encoder.Encode(manualIngestReport{
+			Report:      result.Report,
+			ReviewStage: stage,
+		}); err != nil {
+			return err
+		}
+		return result.Err
+	}
+	if err := encoder.Encode(result.Report); err != nil {
+		return err
+	}
+	return result.Err
+}
+
+func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, cfg ingestCommandConfig, stdout io.Writer) error {
+	results := make([]batchManualIngestResult, 0, len(ingest.RegisteredSourceKeys()))
+	var failed bool
+	for _, source := range ingest.RegisteredSourceKeys() {
+		result := runSingleManualSource(ctx, st, fetcher, cfg, source)
+		batchResult := batchManualIngestResult{
+			Source: source,
+			Report: result.Report,
+		}
+		if result.ReviewStage != nil {
+			stageCopy := *result.ReviewStage
+			batchResult.ReviewStage = &stageCopy
+		}
+		if result.Err != nil {
+			batchResult.Error = result.Err.Error()
+			failed = true
+		}
+		results = append(results, batchResult)
+	}
+
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(batchManualIngestReport{Results: results}); err != nil {
+		return err
+	}
+	if failed {
+		return errors.New("one or more source ingests failed")
+	}
+	return nil
 }
 
 func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, report ingest.Report) (reviewStageReport, error) {

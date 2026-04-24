@@ -59,6 +59,14 @@ var sourceRegistry = []sourceConfig{
 	},
 }
 
+func RegisteredSourceKeys() []string {
+	keys := make([]string, 0, len(sourceRegistry))
+	for _, cfg := range sourceRegistry {
+		keys = append(keys, cfg.Key)
+	}
+	return keys
+}
+
 func configForSource(source string) (sourceConfig, error) {
 	key := strings.TrimSpace(source)
 	if key == "" {

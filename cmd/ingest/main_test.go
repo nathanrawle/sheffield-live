@@ -404,6 +404,7 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 		wantStage    bool
 		wantFixture  string
 		wantImportID int64
+		wantAll      bool
 		wantErr      bool
 	}{
 		{name: "canonical user agent", args: []string{"-http-user-agent", "agent"}, wantUA: "agent"},
@@ -422,6 +423,7 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 		{name: "canonical+alias fixture different", args: []string{"-review-ics-fixture", "one.ics", "-review-fixture", "two.ics"}, wantErr: true},
 		{name: "reordered fixture mismatch", args: []string{"-review-ics-fixture", "one.ics", "-review-fixture", "two.ics", "-review-ics-fixture", "one.ics"}, wantErr: true},
 		{name: "replay mode", args: []string{"-import-run-id", "42"}, wantImportID: 42},
+		{name: "all sources mode", args: []string{"-all-sources"}, wantAll: true},
 	}
 
 	for _, tc := range cases {
@@ -449,6 +451,9 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 			if got := cfg.importRunID; got != tc.wantImportID {
 				t.Fatalf("import run id = %d, want %d", got, tc.wantImportID)
 			}
+			if got := cfg.allSources; got != tc.wantAll {
+				t.Fatalf("all sources = %v, want %v", got, tc.wantAll)
+			}
 		})
 	}
 }
@@ -457,6 +462,27 @@ func TestParseIngestArgsRejectsFixtureReplayCombination(t *testing.T) {
 	_, err := parseIngestArgs([]string{"-review-ics-fixture", "fixture.ics", "-import-run-id", "1"})
 	if err == nil {
 		t.Fatal("expected fixture/replay conflict")
+	}
+}
+
+func TestParseIngestArgsRejectsAllSourcesSourceCombination(t *testing.T) {
+	_, err := parseIngestArgs([]string{"-all-sources", "-source", ingest.LeadmillSource})
+	if err == nil {
+		t.Fatal("expected all-sources/source conflict")
+	}
+}
+
+func TestParseIngestArgsRejectsAllSourcesReplayCombination(t *testing.T) {
+	_, err := parseIngestArgs([]string{"-all-sources", "-import-run-id", "1"})
+	if err == nil {
+		t.Fatal("expected all-sources/replay conflict")
+	}
+}
+
+func TestParseIngestArgsRejectsAllSourcesFixtureCombination(t *testing.T) {
+	_, err := parseIngestArgs([]string{"-all-sources", "-review-ics-fixture", "fixture.ics"})
+	if err == nil {
+		t.Fatal("expected all-sources/fixture conflict")
 	}
 }
 
@@ -820,6 +846,187 @@ func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.
 	}
 }
 
+func TestRunWithArgsAllSourcesRunsInRegistryOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	var stdout bytes.Buffer
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	var order []string
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+		order = append(order, opts.Source)
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: int64(len(order)),
+			StartedAt:   "2026-04-24T10:00:00Z",
+			FinishedAt:  "2026-04-24T10:01:00Z",
+			Status:      "succeeded",
+			Limit:       opts.Limit,
+			Links:       []string{},
+			Calendars:   []ingest.CalendarReport{},
+			Totals:      ingest.ReportTotals{},
+		}, nil
+	}
+
+	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("all-sources run: %v", err)
+	}
+
+	if got, want := order, ingest.RegisteredSourceKeys(); !equalStrings(got, want) {
+		t.Fatalf("run order = %#v, want %#v", got, want)
+	}
+
+	var got batchManualIngestReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode batch output: %v", err)
+	}
+	if gotCount, wantCount := len(got.Results), len(ingest.RegisteredSourceKeys()); gotCount != wantCount {
+		t.Fatalf("results = %d, want %d", gotCount, wantCount)
+	}
+	for i, source := range ingest.RegisteredSourceKeys() {
+		if got.Results[i].Source != source {
+			t.Fatalf("result %d source = %q, want %q", i, got.Results[i].Source, source)
+		}
+	}
+}
+
+func TestRunWithArgsAllSourcesContinuesAfterFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	var stdout bytes.Buffer
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	var order []string
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+		order = append(order, opts.Source)
+		report := ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: int64(len(order)),
+			StartedAt:   "2026-04-24T10:00:00Z",
+			FinishedAt:  "2026-04-24T10:01:00Z",
+			Status:      "succeeded",
+			Limit:       opts.Limit,
+			Links:       []string{},
+			Calendars:   []ingest.CalendarReport{},
+			Totals:      ingest.ReportTotals{},
+		}
+		if opts.Source == ingest.YellowArchSource {
+			report.Status = "failed"
+			report.Errors = []string{"yellow arch failed"}
+			return report, ingest.ErrRunFailed
+		}
+		return report, nil
+	}
+
+	err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent"}, &stdout, io.Discard)
+	if err == nil {
+		t.Fatal("expected batch failure")
+	}
+	if got, want := order, ingest.RegisteredSourceKeys(); !equalStrings(got, want) {
+		t.Fatalf("run order = %#v, want %#v", got, want)
+	}
+
+	var got batchManualIngestReport
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
+		t.Fatalf("decode batch output: %v", decodeErr)
+	}
+	if got.Results[1].Source != ingest.YellowArchSource {
+		t.Fatalf("failed result source = %q, want %q", got.Results[1].Source, ingest.YellowArchSource)
+	}
+	if got.Results[1].Error == "" {
+		t.Fatal("failed result error = empty, want error")
+	}
+	if got.Results[len(got.Results)-1].Source != ingest.LeadmillSource {
+		t.Fatalf("last result source = %q, want %q", got.Results[len(got.Results)-1].Source, ingest.LeadmillSource)
+	}
+}
+
+func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	var stdout bytes.Buffer
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: int64(len(opts.Source)),
+			StartedAt:   "2026-04-24T10:00:00Z",
+			FinishedAt:  "2026-04-24T10:01:00Z",
+			Status:      "succeeded",
+			Limit:       opts.Limit,
+			Calendars: []ingest.CalendarReport{{
+				URL: "https://" + opts.Source + ".example.test/calendar.ics",
+				Candidates: []ingest.EventCandidate{{
+					UID:      opts.Source + "-uid",
+					Summary:  strings.ToUpper(opts.Source) + " Show",
+					Location: "External Room",
+					StartAt:  "2026-05-01T19:00:00Z",
+					EndAt:    "2026-05-01T22:00:00Z",
+				}},
+			}},
+			Links:  []string{"https://" + opts.Source + ".example.test/calendar.ics"},
+			Totals: ingest.ReportTotals{Links: 1, Candidates: 1},
+		}, nil
+	}
+
+	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent", "-stage-review-groups"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("all-sources staged run: %v", err)
+	}
+
+	var got batchManualIngestReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode batch output: %v", err)
+	}
+	if gotCount, wantCount := len(got.Results), len(ingest.RegisteredSourceKeys()); gotCount != wantCount {
+		t.Fatalf("results = %d, want %d", gotCount, wantCount)
+	}
+	for _, result := range got.Results {
+		if result.ReviewStage == nil {
+			t.Fatalf("review stage missing for source %q", result.Source)
+		}
+		if result.ReviewStage.GroupsCreated != 1 {
+			t.Fatalf("groups created for %q = %d, want 1", result.Source, result.ReviewStage.GroupsCreated)
+		}
+		if result.ReviewStage.ReviewCandidateCount != 1 {
+			t.Fatalf("review candidate count for %q = %d, want 1", result.Source, result.ReviewStage.ReviewCandidateCount)
+		}
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got, want := countRows(t, db, "review_groups"), len(ingest.RegisteredSourceKeys()); got != want {
+		t.Fatalf("review_groups rows = %d, want %d", got, want)
+	}
+}
+
 func TestReviewStageForReportSkipsFailedManualRun(t *testing.T) {
 	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 101, created: true}}}
 
@@ -862,6 +1069,24 @@ type fakeReviewStageStore struct {
 	err              error
 	inputs           []review.GroupInput
 	promotedInputs   []review.GroupInput
+}
+
+type fakeFetcher struct{}
+
+func (fakeFetcher) Fetch(context.Context, string) (ingest.FetchResult, error) {
+	return ingest.FetchResult{}, nil
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type fakeReviewStageResult struct {

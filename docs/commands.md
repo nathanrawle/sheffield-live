@@ -94,6 +94,7 @@ Live ingest:
 - primary flag: `-http-user-agent`
 - alias: `-user-agent`
 - supports `sidney-and-matilda`, `yellow-arch`, and `leadmill`
+- `-all-sources` runs every registered source sequentially in registry order and emits one aggregated JSON report
 - fetches the selected source page
 - Sidney & Matilda snapshots the source page and fetched ICS payloads
 - Leadmill snapshots the source page and fetched ICS payloads, then keeps only `Live` listings with Sheffield locations
@@ -101,6 +102,8 @@ Live ingest:
 - parses candidates, skips, and errors
 - writes `sources`, `import_runs`, and `snapshots`
 - prints a JSON report to stdout
+- batch mode continues after per-source failures but returns non-zero if any source run fails
+- `-all-sources` is mutually exclusive with `-source`, `-import-run-id`, and `-review-ics-fixture`
 
 Replay:
 
