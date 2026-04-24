@@ -110,6 +110,42 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 	return groupID, false, nil
 }
 
+func (s *Store) PromoteSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput) (string, bool, error) {
+	if s == nil || s.db == nil {
+		return "", false, errors.New("sqlite store is not open")
+	}
+	sourceEventKey := authoritativeSourceEventKey(input)
+	if sourceEventKey == "" {
+		return "", false, nil
+	}
+
+	now := time.Now().UTC()
+	event, err := singletonResolvedEventFromGroupInput(input, now)
+	if err != nil {
+		return "", false, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	appliedEvent, applied, err := applyAuthoritativeEventTx(ctx, tx, event, sourceEventKey, now)
+	if err != nil {
+		return "", false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", false, err
+	}
+	if !applied {
+		return "", false, nil
+	}
+	return appliedEvent.Slug, true, nil
+}
+
 func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, stagingKey string) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, errors.New("sqlite store is not open")
@@ -168,6 +204,310 @@ func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, 
 		return 0, err
 	}
 	return groupID, nil
+}
+
+func singletonResolvedEventFromGroupInput(input review.GroupInput, publishedAt time.Time) (domain.Event, error) {
+	if len(input.Candidates) != 1 {
+		return domain.Event{}, errors.New("singleton review group promotion requires exactly one candidate")
+	}
+
+	candidate := input.Candidates[0]
+	group := review.Group{
+		Title:      strings.TrimSpace(input.Title),
+		SourceName: strings.TrimSpace(input.SourceName),
+		SourceURL:  strings.TrimSpace(input.SourceURL),
+	}
+	selectedCandidate := review.Candidate{
+		ID:          1,
+		ExternalID:  strings.TrimSpace(candidate.ExternalID),
+		Name:        strings.TrimSpace(candidate.Name),
+		VenueSlug:   strings.TrimSpace(candidate.VenueSlug),
+		StartAt:     strings.TrimSpace(candidate.StartAt),
+		EndAt:       strings.TrimSpace(candidate.EndAt),
+		Genre:       strings.TrimSpace(candidate.Genre),
+		Status:      strings.TrimSpace(candidate.Status),
+		Description: strings.TrimSpace(candidate.Description),
+		SourceName:  strings.TrimSpace(candidate.SourceName),
+		SourceURL:   strings.TrimSpace(candidate.SourceURL),
+		Provenance:  strings.TrimSpace(candidate.Provenance),
+	}
+
+	selected := make(map[review.Field]review.Candidate, len(review.CanonicalFields))
+	for _, field := range review.CanonicalFields {
+		selected[field] = selectedCandidate
+	}
+	return buildResolvedEvent(group, selected, publishedAt)
+}
+
+func authoritativeSourceEventKey(input review.GroupInput) string {
+	if len(input.Candidates) != 1 {
+		return ""
+	}
+	candidate := input.Candidates[0]
+	for _, value := range []string{candidate.ExternalID, candidate.SourceURL} {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+type eventRecord struct {
+	ID    int64
+	Event domain.Event
+}
+
+func applyAuthoritativeEventTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, event domain.Event, sourceEventKey string, now time.Time) (domain.Event, bool, error) {
+	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
+	if err != nil {
+		return domain.Event{}, false, err
+	}
+	if !ok {
+		return domain.Event{}, false, nil
+	}
+	sourceID, err := ensureSourceTx(ctx, tx, event.SourceName, event.SourceURL)
+	if err != nil {
+		return domain.Event{}, false, err
+	}
+
+	if linked, ok, err := loadEventRecordBySourceLinkTx(ctx, tx, sourceID, sourceEventKey); err != nil {
+		return domain.Event{}, false, err
+	} else if ok {
+		updated, err := updateEventAuthoritativelyTx(ctx, tx, linked, event, venueID, sourceID)
+		if err != nil {
+			return domain.Event{}, false, err
+		}
+		if err := ensureEventSourceLinkTx(ctx, tx, linked.ID, sourceID, sourceEventKey, now); err != nil {
+			return domain.Event{}, false, err
+		}
+		return updated, true, nil
+	}
+
+	if legacy, ok, err := loadEventRecordBySlugTx(ctx, tx, event.Slug); err != nil {
+		return domain.Event{}, false, err
+	} else if ok {
+		updated, err := updateEventAuthoritativelyTx(ctx, tx, legacy, event, venueID, sourceID)
+		if err != nil {
+			return domain.Event{}, false, err
+		}
+		if err := ensureEventSourceLinkTx(ctx, tx, legacy.ID, sourceID, sourceEventKey, now); err != nil {
+			return domain.Event{}, false, err
+		}
+		return updated, true, nil
+	}
+
+	eventID, err := insertEventTx(ctx, tx, event, venueID, sourceID)
+	if err != nil {
+		return domain.Event{}, false, err
+	}
+	if err := ensureEventSourceLinkTx(ctx, tx, eventID, sourceID, sourceEventKey, now); err != nil {
+		return domain.Event{}, false, err
+	}
+	return event, true, nil
+}
+
+func insertEventTx(ctx context.Context, tx execer, event domain.Event, venueID, sourceID int64) (int64, error) {
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			last_checked_at,
+			origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, event.Slug, venueID, sourceID, event.Name,
+		formatRFC3339UTC(event.Start),
+		formatRFC3339UTC(event.End),
+		event.Genre, event.Status, event.Description,
+		formatRFC3339UTC(event.LastChecked),
+		string(event.Origin))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing eventRecord, authoritative domain.Event, venueID, sourceID int64) (domain.Event, error) {
+	updated := existing.Event
+	updated.Name = authoritative.Name
+	updated.VenueSlug = authoritative.VenueSlug
+	updated.Start = authoritative.Start
+	updated.End = authoritative.End
+	if updated.Genre == "" {
+		updated.Genre = authoritative.Genre
+	}
+	if authoritative.Status != "" {
+		updated.Status = authoritative.Status
+	}
+	if updated.Description == "" {
+		updated.Description = authoritative.Description
+	}
+	updated.SourceName = authoritative.SourceName
+	updated.SourceURL = authoritative.SourceURL
+	updated.LastChecked = authoritative.LastChecked.UTC()
+	updated.Origin = authoritative.Origin
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE events
+		SET venue_id = ?,
+			source_id = ?,
+			name = ?,
+			start_at = ?,
+			end_at = ?,
+			genre = ?,
+			status = ?,
+			description = ?,
+			last_checked_at = ?,
+			origin = ?
+		WHERE id = ?
+	`, venueID, sourceID, updated.Name, formatRFC3339UTC(updated.Start), formatRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, formatRFC3339UTC(updated.LastChecked), string(updated.Origin), existing.ID); err != nil {
+		return domain.Event{}, err
+	}
+	return updated, nil
+}
+
+func ensureEventSourceLinkTx(ctx context.Context, tx execer, eventID, sourceID int64, sourceEventKey string, now time.Time) error {
+	if eventID <= 0 {
+		return errors.New("event source link event ID is required")
+	}
+	if sourceID <= 0 {
+		return errors.New("event source link source ID is required")
+	}
+	sourceEventKey = strings.TrimSpace(sourceEventKey)
+	if sourceEventKey == "" {
+		return errors.New("event source link key is required")
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+		ON CONFLICT(source_id, source_event_key) DO UPDATE SET
+			event_id = excluded.event_id,
+			is_authoritative = excluded.is_authoritative,
+			updated_at = excluded.updated_at
+	`, eventID, sourceID, sourceEventKey, formatRFC3339UTC(now), formatRFC3339UTC(now))
+	return err
+}
+
+func loadEventRecordBySourceLinkTx(ctx context.Context, q queryer, sourceID int64, sourceEventKey string) (eventRecord, bool, error) {
+	return loadEventRecord(ctx, q, `
+		SELECT
+			e.id,
+			e.slug,
+			e.name,
+			v.slug,
+			e.start_at,
+			e.end_at,
+			e.genre,
+			e.status,
+			e.description,
+			s.name,
+			s.url,
+			e.last_checked_at,
+			e.origin
+		FROM event_source_links l
+		JOIN events e ON e.id = l.event_id
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE l.source_id = ? AND l.source_event_key = ?
+		LIMIT 1
+	`, sourceID, sourceEventKey)
+}
+
+func loadEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (eventRecord, bool, error) {
+	return loadEventRecord(ctx, q, `
+		SELECT
+			e.id,
+			e.slug,
+			e.name,
+			v.slug,
+			e.start_at,
+			e.end_at,
+			e.genre,
+			e.status,
+			e.description,
+			s.name,
+			s.url,
+			e.last_checked_at,
+			e.origin
+		FROM events e
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE e.slug = ?
+		LIMIT 1
+	`, slug)
+}
+
+func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) (eventRecord, bool, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return eventRecord{}, false, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return eventRecord{}, false, err
+		}
+		return eventRecord{}, false, nil
+	}
+
+	var record eventRecord
+	var origin string
+	var startText string
+	var endText string
+	var lastCheckedText string
+	if err := rows.Scan(
+		&record.ID,
+		&record.Event.Slug,
+		&record.Event.Name,
+		&record.Event.VenueSlug,
+		&startText,
+		&endText,
+		&record.Event.Genre,
+		&record.Event.Status,
+		&record.Event.Description,
+		&record.Event.SourceName,
+		&record.Event.SourceURL,
+		&lastCheckedText,
+		&origin,
+	); err != nil {
+		return eventRecord{}, false, err
+	}
+	start, err := parseRFC3339UTC(startText)
+	if err != nil {
+		return eventRecord{}, false, fmt.Errorf("parse event %q start time: %w", record.Event.Slug, err)
+	}
+	end, err := parseRFC3339UTC(endText)
+	if err != nil {
+		return eventRecord{}, false, fmt.Errorf("parse event %q end time: %w", record.Event.Slug, err)
+	}
+	lastChecked, err := parseRFC3339UTC(lastCheckedText)
+	if err != nil {
+		return eventRecord{}, false, fmt.Errorf("parse event %q last checked time: %w", record.Event.Slug, err)
+	}
+	record.Event.Start = start
+	record.Event.End = end
+	record.Event.LastChecked = lastChecked
+	record.Event.Origin = domain.Origin(origin)
+	if err := rows.Err(); err != nil {
+		return eventRecord{}, false, err
+	}
+	return record, true, nil
 }
 
 func stagingKeyValue(value string) any {

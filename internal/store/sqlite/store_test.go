@@ -40,8 +40,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	db := mustRawDB(t, path)
 	defer db.Close()
 
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV3 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV3)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV4 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV4)
 	}
 	if got := mustCount(t, db, "venues"); got != 3 {
 		t.Fatalf("venues rows = %d, want 3", got)
@@ -64,8 +64,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT version, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version, &appliedAt); err != nil {
 		t.Fatalf("scan migration row: %v", err)
 	}
-	if version != schemaVersionV3 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV3)
+	if version != schemaVersionV4 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV4)
 	}
 	if _, err := time.Parse(time.RFC3339, appliedAt); err != nil {
 		t.Fatalf("applied_at %q is not RFC3339: %v", appliedAt, err)
@@ -78,6 +78,9 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	}
 	if got := mustCount(t, db, "review_draft_choices"); got != 0 {
 		t.Fatalf("review_draft_choices rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 0 {
+		t.Fatalf("event_source_links rows = %d, want 0", got)
 	}
 }
 
@@ -181,15 +184,15 @@ func TestOpenMigratesVersion1Database(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV3 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV3)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV4 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV4)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV3 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV3)
+	if version != schemaVersionV4 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV4)
 	}
 	if got := mustCount(t, db, "review_groups"); got != 0 {
 		t.Fatalf("review_groups rows = %d, want 0", got)
@@ -291,15 +294,18 @@ func TestOpenMigratesVersion2DatabasePreservesReviewDataAndAddsStagingKey(t *tes
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV3 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV3)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV4 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV4)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV3 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV3)
+	if version != schemaVersionV4 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV4)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 0 {
+		t.Fatalf("event_source_links rows = %d, want 0", got)
 	}
 
 	group, ok, err := st.LoadReviewGroup(context.Background(), groupID)
@@ -387,6 +393,82 @@ func TestOpenMigratesVersion2DatabasePreservesReviewDataAndAddsStagingKey(t *tes
 	}
 	if !foundIndex {
 		t.Fatal("missing staging key index")
+	}
+}
+
+func TestOpenMigratesVersion3DatabaseAddsEventSourceLinks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	db := mustRawDB(t, path)
+	initSQL, err := readMigration("migrations/0001_init.sql")
+	if err != nil {
+		t.Fatalf("read v1 migration: %v", err)
+	}
+	if _, err := db.Exec(initSQL); err != nil {
+		t.Fatalf("apply v1 migration: %v", err)
+	}
+	reviewSQL, err := readMigration("migrations/0002_review.sql")
+	if err != nil {
+		t.Fatalf("read v2 migration: %v", err)
+	}
+	if _, err := db.Exec(reviewSQL); err != nil {
+		t.Fatalf("apply v2 migration: %v", err)
+	}
+	stagingSQL, err := readMigration("migrations/0003_review_staging_idempotency.sql")
+	if err != nil {
+		t.Fatalf("read v3 migration: %v", err)
+	}
+	if _, err := db.Exec(stagingSQL); err != nil {
+		t.Fatalf("apply v3 migration: %v", err)
+	}
+	for version := schemaVersionV1; version <= schemaVersionV3; version++ {
+		if _, err := db.Exec(`
+			INSERT INTO schema_migrations (version, applied_at)
+			VALUES (?, ?)
+		`, version, formatRFC3339UTC(time.Date(2026, time.April, 19, 8+version, 0, 0, 0, time.UTC))); err != nil {
+			t.Fatalf("insert v%d migration row: %v", version, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db = mustRawDB(t, path)
+	defer db.Close()
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV4 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV4)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 0 {
+		t.Fatalf("event_source_links rows = %d, want 0", got)
+	}
+
+	indexRows, err := db.Query(`PRAGMA index_list(event_source_links)`)
+	if err != nil {
+		t.Fatalf("index list: %v", err)
+	}
+	defer indexRows.Close()
+	foundUnique := false
+	for indexRows.Next() {
+		var seq, unique, partial int
+		var name, origin string
+		if err := indexRows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan index row: %v", err)
+		}
+		if unique == 1 {
+			foundUnique = true
+		}
+	}
+	if err := indexRows.Err(); err != nil {
+		t.Fatalf("iterate index list: %v", err)
+	}
+	if !foundUnique {
+		t.Fatal("missing unique event source link index")
 	}
 }
 

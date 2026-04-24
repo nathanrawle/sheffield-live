@@ -46,6 +46,9 @@ func TestParseYellowArchSourcePageResolvesRelativeURLsAndAppliesLimit(t *testing
 	if got, want := result.Candidates[0].URL, "https://www.yellowarch.com/event/late-junction/"; got != want {
 		t.Fatalf("url = %q, want %q", got, want)
 	}
+	if got, want := result.Candidates[0].UID, "https://www.yellowarch.com/event/late-junction/"; got != want {
+		t.Fatalf("uid = %q, want %q", got, want)
+	}
 	if got, want := len(result.Skips), 1; got != want {
 		t.Fatalf("skips = %d, want %d", got, want)
 	}

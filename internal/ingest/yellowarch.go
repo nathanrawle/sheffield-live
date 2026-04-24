@@ -65,6 +65,9 @@ func ParseYellowArchSourcePage(pageURL string, raw []byte, limit int) ParseResul
 			continue
 		}
 		result.Candidates[i].URL = resolvedURL
+		if strings.TrimSpace(result.Candidates[i].UID) == "" && strings.TrimSpace(resolvedURL) != "" {
+			result.Candidates[i].UID = resolvedURL
+		}
 	}
 	return result
 }

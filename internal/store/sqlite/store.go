@@ -23,6 +23,7 @@ const (
 	schemaVersionV1   = 1
 	schemaVersionV2   = 2
 	schemaVersionV3   = 3
+	schemaVersionV4   = 4
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -34,6 +35,7 @@ var migrations = []struct {
 	{version: schemaVersionV1, path: "migrations/0001_init.sql"},
 	{version: schemaVersionV2, path: "migrations/0002_review.sql"},
 	{version: schemaVersionV3, path: "migrations/0003_review_staging_idempotency.sql"},
+	{version: schemaVersionV4, path: "migrations/0004_event_source_links.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -208,8 +210,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV3 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV3)
+	if version > schemaVersionV4 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV4)
 	}
 
 	for _, migration := range migrations {
@@ -349,6 +351,9 @@ func validate(ctx context.Context, q queryer) error {
 	if err := validateDanglingSourceRefs(ctx, q); err != nil {
 		return err
 	}
+	if err := validateDanglingEventSourceLinkRefs(ctx, q); err != nil {
+		return err
+	}
 	if _, err := loadEvents(ctx, q, `
 		SELECT
 			e.slug,
@@ -413,6 +418,26 @@ func validateDanglingSourceRefs(ctx context.Context, q queryer) error {
 		return err
 	}
 	return fmt.Errorf("event %q references missing source", eventSlug)
+}
+
+func validateDanglingEventSourceLinkRefs(ctx context.Context, q queryer) error {
+	row := q.QueryRowContext(ctx, `
+		SELECT l.id
+		FROM event_source_links l
+		LEFT JOIN sources s ON s.id = l.source_id
+		LEFT JOIN events e ON e.id = l.event_id
+		WHERE s.id IS NULL OR e.id IS NULL
+		ORDER BY l.id
+		LIMIT 1
+	`)
+	var linkID int64
+	switch err := row.Scan(&linkID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	return fmt.Errorf("event source link %d references missing source or event", linkID)
 }
 
 func countRows(ctx context.Context, q queryer, table string) (int, error) {

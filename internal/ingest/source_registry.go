@@ -20,6 +20,7 @@ type sourceConfig struct {
 	Key                   string
 	Name                  string
 	URL                   string
+	OwnedVenueSlug        string
 	CalendarSourceName    string
 	PageMode              pageProcessMode
 	ReviewStageSourceName string
@@ -31,6 +32,7 @@ var sourceRegistry = []sourceConfig{
 		Key:                   DefaultSource,
 		Name:                  "Sidney & Matilda listings",
 		URL:                   "https://www.sidneyandmatilda.com/",
+		OwnedVenueSlug:        "sidney-and-matilda",
 		CalendarSourceName:    "Sidney & Matilda Google Calendar ICS",
 		PageMode:              pageProcessLinkedICS,
 		ReviewStageSourceName: "Sidney & Matilda manual ingest",
@@ -40,6 +42,7 @@ var sourceRegistry = []sourceConfig{
 		Key:                   YellowArchSource,
 		Name:                  "Yellow Arch listings",
 		URL:                   "https://www.yellowarch.com/events/",
+		OwnedVenueSlug:        "yellow-arch",
 		PageMode:              pageProcessSourcePage,
 		ReviewStageSourceName: "Yellow Arch manual ingest",
 		ImportRunNotes:        "manual Yellow Arch source-page parse report",
@@ -48,6 +51,7 @@ var sourceRegistry = []sourceConfig{
 		Key:                   LeadmillSource,
 		Name:                  "The Leadmill listings",
 		URL:                   "https://leadmill.co.uk/live/",
+		OwnedVenueSlug:        "leadmill",
 		CalendarSourceName:    "The Leadmill iCal feed",
 		PageMode:              pageProcessLinkedICS,
 		ReviewStageSourceName: "The Leadmill manual ingest",
@@ -66,6 +70,14 @@ func configForSource(source string) (sourceConfig, error) {
 		}
 	}
 	return sourceConfig{}, fmt.Errorf("unsupported source %q", source)
+}
+
+func OwnedVenueSlugForSource(source string) string {
+	cfg, err := configForSource(source)
+	if err != nil {
+		return ""
+	}
+	return cfg.OwnedVenueSlug
 }
 
 func detectReplaySourcePageSnapshot(decoded []decodedReplaySnapshot) (sourceConfig, decodedReplaySnapshot, error) {

@@ -252,6 +252,7 @@ func conflictOnTrackedValues[T comparable](canonical, alias []T) bool {
 
 type reviewStageStore interface {
 	StageReviewGroup(ctx context.Context, input review.GroupInput) (int64, bool, error)
+	PromoteSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput) (string, bool, error)
 }
 
 type manualIngestReport struct {
@@ -260,12 +261,15 @@ type manualIngestReport struct {
 }
 
 type reviewStageReport struct {
-	Enabled        bool                     `json:"enabled"`
-	GroupsCreated  int                      `json:"groups_created"`
-	GroupsReused   int                      `json:"groups_reused"`
-	CandidateCount int                      `json:"candidate_count"`
-	Groups         []reviewStageGroupReport `json:"groups"`
-	Errors         []string                 `json:"errors"`
+	Enabled              bool                            `json:"enabled"`
+	GroupsCreated        int                             `json:"groups_created"`
+	GroupsReused         int                             `json:"groups_reused"`
+	CandidateCount       int                             `json:"candidate_count"`
+	ReviewCandidateCount int                             `json:"review_candidate_count"`
+	AutoPromotedCount    int                             `json:"auto_promoted_count"`
+	Groups               []reviewStageGroupReport        `json:"groups"`
+	AutoPromoted         []reviewStageAutoPromotedReport `json:"auto_promoted"`
+	Errors               []string                        `json:"errors"`
 }
 
 type reviewStageGroupReport struct {
@@ -274,6 +278,13 @@ type reviewStageGroupReport struct {
 	CandidateCount int    `json:"candidate_count"`
 	SourceURL      string `json:"source_url"`
 	Result         string `json:"result"`
+}
+
+type reviewStageAutoPromotedReport struct {
+	Title     string `json:"title"`
+	EventSlug string `json:"event_slug"`
+	SourceURL string `json:"source_url"`
+	Result    string `json:"result"`
 }
 
 func reviewStageForReport(ctx context.Context, st reviewStageStore, report ingest.Report, runErr error) (reviewStageReport, error) {
@@ -292,6 +303,26 @@ func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, repo
 	}
 
 	for _, group := range groups {
+		if autoPromoteEligible(report.Source, group) {
+			eventSlug, applied, err := st.PromoteSingletonReviewGroupIfMissing(ctx, group)
+			if err != nil {
+				message := fmt.Sprintf("auto-promote review group %q: %v", group.Title, err)
+				stage.Errors = append(stage.Errors, message)
+				return stage, errors.New(message)
+			}
+			if applied {
+				stage.AutoPromotedCount++
+				stage.AutoPromoted = append(stage.AutoPromoted, reviewStageAutoPromotedReport{
+					Title:     group.Title,
+					EventSlug: eventSlug,
+					SourceURL: group.SourceURL,
+					Result:    "applied",
+				})
+				continue
+			}
+		}
+
+		stage.ReviewCandidateCount += len(group.Candidates)
 		groupID, created, err := st.StageReviewGroup(ctx, group)
 		if err != nil {
 			message := fmt.Sprintf("stage review group %q: %v", group.Title, err)
@@ -318,10 +349,22 @@ func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, repo
 
 func emptyReviewStageReport() reviewStageReport {
 	return reviewStageReport{
-		Enabled: true,
-		Groups:  []reviewStageGroupReport{},
-		Errors:  []string{},
+		Enabled:      true,
+		Groups:       []reviewStageGroupReport{},
+		AutoPromoted: []reviewStageAutoPromotedReport{},
+		Errors:       []string{},
 	}
+}
+
+func autoPromoteEligible(source string, group review.GroupInput) bool {
+	if len(group.Candidates) != 1 {
+		return false
+	}
+	ownedVenueSlug := strings.TrimSpace(ingest.OwnedVenueSlugForSource(source))
+	if ownedVenueSlug == "" {
+		return false
+	}
+	return strings.TrimSpace(group.Candidates[0].VenueSlug) == ownedVenueSlug
 }
 
 type reviewFixtureReport struct {
