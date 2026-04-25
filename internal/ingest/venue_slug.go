@@ -19,6 +19,9 @@ func VenueSlugFromText(value string) string {
 	if strings.Contains(value, "lescar") {
 		return "lescar"
 	}
+	if strings.Contains(value, "greystones") {
+		return "greystones"
+	}
 	if strings.Contains(value, "leadmill") {
 		return "leadmill"
 	}

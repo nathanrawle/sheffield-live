@@ -77,6 +77,15 @@ func NewSeedStore() *Store {
 			Origin:        domain.OriginSeed,
 		},
 		{
+			Slug:          "greystones",
+			Name:          "The Greystones",
+			Address:       "Greystones Road, Sheffield",
+			Neighbourhood: "Ecclesall",
+			Description:   "A Sheffield pub and live room hosting touring folk, jazz, roots, and singer-songwriter shows.",
+			Website:       "https://www.mygreystones.co.uk/events/",
+			Origin:        domain.OriginSeed,
+		},
+		{
 			Slug:          "yellow-arch",
 			Name:          "Yellow Arch Studios",
 			Address:       "30-36 Burton Road, Sheffield",

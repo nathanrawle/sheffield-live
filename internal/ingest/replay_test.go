@@ -293,6 +293,78 @@ func TestReplayImportRunRebuildsJazzAtTheLescarReportFromSourcePageSnapshot(t *t
 	}
 }
 
+func TestReplayImportRunRebuildsTheGreystonesReportFromStoredMonthPages(t *testing.T) {
+	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         275,
+			StartedAt:  time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=1 candidates=2 skips=1 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         331,
+					SourceName: "The Greystones listings",
+					SourceURL:  "https://www.mygreystones.co.uk/events/",
+					CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.mygreystones.co.uk/events/",
+						FinalURL:    "https://www.mygreystones.co.uk/events/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "greystones_events.html"),
+						CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         332,
+					SourceName: "The Greystones month page",
+					SourceURL:  "https://www.mygreystones.co.uk/april/",
+					CapturedAt: time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.mygreystones.co.uk/april/",
+						FinalURL:    "https://www.mygreystones.co.uk/april/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "greystones_april.html"),
+						CapturedAt:  time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 275, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, TheGreystonesSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 2; got != want {
+		t.Fatalf("first month candidates = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Skips), 1; got != want {
+		t.Fatalf("first month skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "The Greystones"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+}
+
 func TestReplayImportRunRebuildsCafeNo9PaginatedReportFromSourcePageSnapshots(t *testing.T) {
 	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{

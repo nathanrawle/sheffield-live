@@ -9,6 +9,7 @@ const YellowArchSource = "yellow-arch"
 const yellowArchSource = YellowArchSource
 const CafeNo9Source = "cafe-no-9"
 const JazzAtTheLescarSource = "jazz-at-the-lescar"
+const TheGreystonesSource = "the-greystones"
 const LeadmillSource = "leadmill"
 const CorporationSource = "corporation"
 
@@ -68,6 +69,15 @@ var sourceRegistry = []sourceConfig{
 		PageMode:              pageProcessSourcePage,
 		ReviewStageSourceName: "Jazz at The Lescar manual ingest",
 		ImportRunNotes:        "manual Jazz at The Lescar source-page parse report",
+	},
+	{
+		Key:                   TheGreystonesSource,
+		Name:                  "The Greystones listings",
+		URL:                   "https://www.mygreystones.co.uk/events/",
+		LinkedPageSourceName:  "The Greystones month page",
+		PageMode:              pageProcessLinkedDetailPages,
+		ReviewStageSourceName: "The Greystones manual ingest",
+		ImportRunNotes:        "manual The Greystones snapshot + month-page parse report",
 	},
 	{
 		Key:                   LeadmillSource,
@@ -234,6 +244,8 @@ func extractLinkedDetailPageLinks(cfg sourceConfig, pageURL string, body []byte,
 	switch cfg.Key {
 	case CorporationSource:
 		return ExtractCorporationDetailLinks(pageURL, body, limit)
+	case TheGreystonesSource:
+		return ExtractTheGreystonesMonthLinks(pageURL, body, limit)
 	default:
 		return nil, fmt.Errorf("unsupported linked detail page source %q", cfg.Key)
 	}
@@ -243,6 +255,8 @@ func parseLinkedPageForSource(cfg sourceConfig, pageURL string, body []byte) (Pa
 	switch cfg.Key {
 	case CorporationSource:
 		return ParseCorporationDetailPage(pageURL, body), nil
+	case TheGreystonesSource:
+		return ParseTheGreystonesMonthPage(pageURL, body), nil
 	default:
 		return ParseResult{}, fmt.Errorf("unsupported linked page source %q", cfg.Key)
 	}

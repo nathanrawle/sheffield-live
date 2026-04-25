@@ -212,6 +212,60 @@ func TestRunManualJazzAtTheLescarParsesListingsFromSourcePage(t *testing.T) {
 	}
 }
 
+func TestRunManualTheGreystonesParsesListingsFromMonthPages(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.mygreystones.co.uk/events/": {
+				URL:         "https://www.mygreystones.co.uk/events/",
+				FinalURL:    "https://www.mygreystones.co.uk/events/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "greystones_events.html"),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+			},
+			"https://www.mygreystones.co.uk/april/": {
+				URL:         "https://www.mygreystones.co.uk/april/",
+				FinalURL:    "https://www.mygreystones.co.uk/april/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "greystones_april.html"),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: TheGreystonesSource, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 2; got != want {
+		t.Fatalf("first month candidates = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Skips), 1; got != want {
+		t.Fatalf("first month skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "The Greystones"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+	if report.Calendars[0].Candidates[0].UID != "" {
+		t.Fatalf("uid = %q, want blank", report.Calendars[0].Candidates[0].UID)
+	}
+}
+
 func TestRunManualCafeNo9ParsesPaginatedSourcePages(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
