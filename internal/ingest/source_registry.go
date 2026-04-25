@@ -8,6 +8,7 @@ import (
 const YellowArchSource = "yellow-arch"
 const yellowArchSource = YellowArchSource
 const CafeNo9Source = "cafe-no-9"
+const JazzAtTheLescarSource = "jazz-at-the-lescar"
 const LeadmillSource = "leadmill"
 const CorporationSource = "corporation"
 
@@ -59,6 +60,14 @@ var sourceRegistry = []sourceConfig{
 		PageMode:              pageProcessSourcePage,
 		ReviewStageSourceName: "Cafe No. 9 manual ingest",
 		ImportRunNotes:        "manual Cafe No. 9 source-page parse report",
+	},
+	{
+		Key:                   JazzAtTheLescarSource,
+		Name:                  "Jazz at The Lescar listings",
+		URL:                   "http://www.jazzatthelescar.com/index.html",
+		PageMode:              pageProcessSourcePage,
+		ReviewStageSourceName: "Jazz at The Lescar manual ingest",
+		ImportRunNotes:        "manual Jazz at The Lescar source-page parse report",
 	},
 	{
 		Key:                   LeadmillSource,
@@ -185,6 +194,8 @@ func parseSourcePageForSource(cfg sourceConfig, pageURL string, body []byte, lim
 		return ParseYellowArchSourcePage(pageURL, body, limit), nil
 	case CafeNo9Source:
 		return ParseCafeNo9SourcePage(pageURL, body, limit), nil
+	case JazzAtTheLescarSource:
+		return ParseJazzAtTheLescarSourcePage(pageURL, body, limit), nil
 	default:
 		return ParseResult{}, fmt.Errorf("unsupported source page parser %q", cfg.Key)
 	}

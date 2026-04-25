@@ -53,6 +53,11 @@ func TestVenueSlugFromText(t *testing.T) {
 			value: "Cafe No. 9",
 			want:  "cafe-no-9",
 		},
+		{
+			name:  "lescar canonicalized",
+			value: "The Lescar",
+			want:  "lescar",
+		},
 	}
 
 	for _, tc := range tests {

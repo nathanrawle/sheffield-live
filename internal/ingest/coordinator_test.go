@@ -164,6 +164,54 @@ func TestRunManualCafeNo9ParsesListingsFromSourcePage(t *testing.T) {
 	}
 }
 
+func TestRunManualJazzAtTheLescarParsesListingsFromSourcePage(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"http://www.jazzatthelescar.com/index.html": {
+				URL:         "http://www.jazzatthelescar.com/index.html",
+				FinalURL:    "http://www.jazzatthelescar.com/index.html",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "jazz_at_the_lescar.html"),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: JazzAtTheLescarSource, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := len(store.snapshots), 1; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Links, 0; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 3; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 1; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "The Lescar"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+	if report.Calendars[0].Candidates[0].UID != "" {
+		t.Fatalf("uid = %q, want blank", report.Calendars[0].Candidates[0].UID)
+	}
+}
+
 func TestRunManualCafeNo9ParsesPaginatedSourcePages(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}

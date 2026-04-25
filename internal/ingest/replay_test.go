@@ -236,6 +236,63 @@ func TestReplayImportRunRebuildsCafeNo9ReportFromSourcePageSnapshot(t *testing.T
 	}
 }
 
+func TestReplayImportRunRebuildsJazzAtTheLescarReportFromSourcePageSnapshot(t *testing.T) {
+	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         276,
+			StartedAt:  time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=0 candidates=3 skips=1 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         341,
+					SourceName: "Jazz at The Lescar listings",
+					SourceURL:  "http://www.jazzatthelescar.com/index.html",
+					CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "http://www.jazzatthelescar.com/index.html",
+						FinalURL:    "http://www.jazzatthelescar.com/index.html",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "jazz_at_the_lescar.html"),
+						CapturedAt:  time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 276, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, JazzAtTheLescarSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, "http://www.jazzatthelescar.com/index.html"; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := report.Totals.Links, 0; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 3; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "The Lescar"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+}
+
 func TestReplayImportRunRebuildsCafeNo9PaginatedReportFromSourcePageSnapshots(t *testing.T) {
 	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{

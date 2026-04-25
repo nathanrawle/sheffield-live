@@ -42,7 +42,13 @@ Leadmill uses the same pattern:
 go run ./cmd/ingest -source leadmill -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
-Sidney & Matilda and Leadmill snapshot the source page plus linked ICS payloads. Yellow Arch snapshots only the source page and parses embedded JSON-LD event data from that page. `-limit` caps linked ICS fetches for Sidney & Matilda and Leadmill and parsed source-page candidates for Yellow Arch. All commands print a JSON report.
+Jazz at The Lescar also uses the same pattern:
+
+```bash
+go run ./cmd/ingest -source jazz-at-the-lescar -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
+```
+
+Sidney & Matilda and Leadmill snapshot the source page plus linked ICS payloads. Yellow Arch, Cafe No. 9, and Jazz at The Lescar snapshot only the source page and parse candidates directly from that page. `-limit` caps linked ICS fetches for Sidney & Matilda and Leadmill and parsed source-page candidates for direct source-page parsers. All commands print a JSON report.
 
 ## Stage review groups after ingest
 

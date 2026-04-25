@@ -10,8 +10,8 @@ import (
 func TestSeedStoreLookups(t *testing.T) {
 	st := NewSeedStore()
 
-	if got := len(st.Venues()); got != 5 {
-		t.Fatalf("venues = %d, want 5", got)
+	if got := len(st.Venues()); got != 6 {
+		t.Fatalf("venues = %d, want 6", got)
 	}
 	if got := len(st.Events()); got != 4 {
 		t.Fatalf("events = %d, want 4", got)
@@ -25,6 +25,9 @@ func TestSeedStoreLookups(t *testing.T) {
 	}
 	if _, ok := st.VenueBySlug("cafe-no-9"); !ok {
 		t.Fatal("expected cafe-no-9 venue")
+	}
+	if _, ok := st.VenueBySlug("lescar"); !ok {
+		t.Fatal("expected lescar venue")
 	}
 	if _, ok := st.EventBySlug("matinee-noise-at-the-leadmill"); !ok {
 		t.Fatal("expected matinee-noise-at-the-leadmill event")

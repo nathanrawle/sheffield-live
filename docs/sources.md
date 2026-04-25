@@ -2,7 +2,7 @@
 
 ## Current Flow
 
-The current manual source pipeline supports Sidney & Matilda, Yellow Arch, Cafe No. 9, Leadmill, and Corporation.
+The current manual source pipeline supports Sidney & Matilda, Yellow Arch, Cafe No. 9, Jazz at The Lescar, Leadmill, and Corporation.
 
 Sources are registered in code with source metadata plus a page-processing mode. That mode decides whether ingest expands the page into linked ICS fetches or parses candidates directly from the stored page snapshot.
 
@@ -12,6 +12,7 @@ After that, parsing depends on the source:
 
 - Sidney & Matilda extracts ICS export links from the source page, fetches each ICS feed, stores raw ICS snapshots, and parses candidates, skips, and parse errors from ICS.
 - Cafe No. 9 parses music listings directly from the WeGotTickets organiser page snapshot and filters out offsite and non-music rows.
+- Jazz at The Lescar parses repeated source-page listing blocks into review candidates using the page-level default music time plus the footer year hint.
 - Leadmill extracts the official iCal feed from the source page, fetches that ICS payload, stores the raw ICS snapshot, and keeps only `Live` listings with Sheffield locations.
 - Yellow Arch parses candidates, skips, and parse errors directly from schema.org `Event` JSON-LD embedded in the source page. No secondary snapshots are fetched for that source.
 - Corporation extracts linked official event detail pages from the source page, fetches and stores those detail-page snapshots, and parses candidates from the detail-page HTML.
@@ -24,6 +25,7 @@ Sidney & Matilda extraction accepts Squarespace `?format=ical` ICS links and leg
 Leadmill extraction accepts the source page `<link rel="alternate" type="text/calendar">` feed reference and applies a source-specific `Live` plus Sheffield filter during ICS parsing.
 Yellow Arch parsing accepts embedded JSON-LD arrays or graphs that contain schema.org `Event` objects.
 Cafe No. 9 parsing accepts WeGotTickets organiser-page listing blocks and uses the resolved event URL as the candidate identity.
+Jazz at The Lescar parsing accepts repeated `art` / `ttl` / `dsc` blocks and emits review candidates without authoritative event identities.
 
 ## Snapshot Payloads
 

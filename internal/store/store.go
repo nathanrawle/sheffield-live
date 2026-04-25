@@ -68,6 +68,15 @@ func NewSeedStore() *Store {
 			Origin:        domain.OriginSeed,
 		},
 		{
+			Slug:          "lescar",
+			Name:          "The Lescar",
+			Address:       "303 Sharrow Vale Road, Sheffield",
+			Neighbourhood: "Sharrow Vale",
+			Description:   "A Sheffield pub venue that hosts weekly jazz nights and occasional live music events.",
+			Website:       "http://www.jazzatthelescar.com/index.html",
+			Origin:        domain.OriginSeed,
+		},
+		{
 			Slug:          "yellow-arch",
 			Name:          "Yellow Arch Studios",
 			Address:       "30-36 Burton Road, Sheffield",
