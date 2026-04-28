@@ -65,7 +65,7 @@ func ExtractCafeNo9SourcePageLinks(pageURL string, raw []byte, limit int) ([]str
 		return nil, fmt.Errorf("parse Cafe No. 9 source page URL: %w", err)
 	}
 
-	current := strings.TrimSpace(baseURL.String())
+	current := normalizeCafeNo9SourcePageURL(baseURL)
 	seen := map[string]struct{}{current: {}}
 	links := make([]string, 0)
 	matches := cafe9PageLinkPattern.FindAllSubmatch(raw, -1)
@@ -74,6 +74,7 @@ func ExtractCafeNo9SourcePageLinks(pageURL string, raw []byte, limit int) ([]str
 		if err != nil {
 			return nil, fmt.Errorf("resolve Cafe No. 9 page link %q: %w", string(match[1]), err)
 		}
+		resolved = normalizeCafeNo9SourcePageURLString(resolved)
 		if _, ok := seen[resolved]; ok {
 			continue
 		}
@@ -305,4 +306,37 @@ func resolvePageURL(baseURL *url.URL, raw string) (string, error) {
 		return "", err
 	}
 	return baseURL.ResolveReference(parsed).String(), nil
+}
+
+func normalizeCafeNo9SourcePageURLString(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return strings.TrimSpace(raw)
+	}
+	return normalizeCafeNo9SourcePageURL(parsed)
+}
+
+func normalizeCafeNo9SourcePageURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	normalized := *u
+	normalized.RawQuery = ""
+	normalized.Fragment = ""
+
+	path := strings.TrimSpace(normalized.Path)
+	switch {
+	case strings.EqualFold(strings.TrimSuffix(path, "/"), "/Cafe9"):
+		normalized.Path = "/Cafe9"
+	case cafe9IsFirstPaginationPath(path):
+		normalized.Path = "/Cafe9"
+	default:
+		normalized.Path = strings.TrimSuffix(path, "/")
+	}
+	return normalized.String()
+}
+
+func cafe9IsFirstPaginationPath(path string) bool {
+	trimmed := strings.TrimSuffix(strings.TrimSpace(path), "/")
+	return strings.EqualFold(trimmed, "/Cafe9/page/1")
 }

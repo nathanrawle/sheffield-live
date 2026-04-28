@@ -70,6 +70,46 @@ func TestExtractCafeNo9SourcePageLinks(t *testing.T) {
 	}
 }
 
+func TestExtractCafeNo9SourcePageLinksSkipsPageOneAlias(t *testing.T) {
+	links, err := ExtractCafeNo9SourcePageLinks("https://www.wegottickets.com/Cafe9", []byte(`
+		<div class="pagination">
+			<a href="/Cafe9/page/1#paginate">1</a>
+			<a href="/Cafe9/page/2#paginate">2</a>
+			<a href="/Cafe9/page/2#paginate">next</a>
+		</div>
+	`), 20)
+	if err != nil {
+		t.Fatalf("extract links: %v", err)
+	}
+	if got, want := len(links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := links[0], "https://www.wegottickets.com/Cafe9/page/2"; got != want {
+		t.Fatalf("link = %q, want %q", got, want)
+	}
+}
+
+func TestExtractCafeNo9SourcePageLinksNormalizesPageOneAliasFromPaginatedPage(t *testing.T) {
+	links, err := ExtractCafeNo9SourcePageLinks("https://www.wegottickets.com/Cafe9/page/2", []byte(`
+		<div class="pagination">
+			<a href="/Cafe9/page/1#paginate">1</a>
+			<a href="/Cafe9/page/3#paginate">3</a>
+		</div>
+	`), 20)
+	if err != nil {
+		t.Fatalf("extract links: %v", err)
+	}
+	if got, want := len(links), 2; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := links[0], "https://www.wegottickets.com/Cafe9"; got != want {
+		t.Fatalf("links[0] = %q, want %q", got, want)
+	}
+	if got, want := links[1], "https://www.wegottickets.com/Cafe9/page/3"; got != want {
+		t.Fatalf("links[1] = %q, want %q", got, want)
+	}
+}
+
 func TestParseCafeNo9PageAllowsMissingCategoryOnPaginatedPage(t *testing.T) {
 	result := ParseCafeNo9Page("https://www.wegottickets.com/Cafe9/page/2", readFixture(t, "cafe9_paged_2.html"))
 
