@@ -183,6 +183,85 @@ func TestCreateReviewGroupsFromReportAutoPromotesCafeNo9SingletonWithoutEndTime(
 	}
 }
 
+func TestCreateReviewGroupsFromReportResolvesMatchingStaleCafeNo9Singleton(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	report := ingest.Report{
+		Source:      ingest.CafeNo9Source,
+		SourceURL:   "https://www.wegottickets.com/Cafe9",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{{
+				UID:      "cafe-no-9-stale-1",
+				Summary:  "Cafe No. 9 Late Show",
+				Location: "Cafe No. 9",
+				StartAt:  "2026-05-10T18:30:00Z",
+			}},
+		}},
+	}
+	groups := ingest.ReviewGroupsFromReport(report)
+	if got, want := len(groups), 1; got != want {
+		t.Fatalf("seed groups = %d, want %d", got, want)
+	}
+	staleGroupID, created, err := st.StageReviewGroup(ctx, groups[0])
+	if err != nil {
+		t.Fatalf("stage stale review group: %v", err)
+	}
+	if !created {
+		t.Fatal("created = false, want true")
+	}
+
+	stage, err := createReviewGroupsFromReport(ctx, st, report)
+	if err != nil {
+		t.Fatalf("create review groups: %v", err)
+	}
+	if got, want := stage.AutoPromotedCount, 1; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.GroupsCreated, 0; got != want {
+		t.Fatalf("groups created = %d, want %d", got, want)
+	}
+	if got, want := stage.GroupsReused, 0; got != want {
+		t.Fatalf("groups reused = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 0; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+	if got, want := len(stage.Groups), 0; got != want {
+		t.Fatalf("review groups = %d, want %d", got, want)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, staleGroupID)
+	if err != nil {
+		t.Fatalf("load stale review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("stale review group not found")
+	}
+	if group.Status != review.StatusResolved {
+		t.Fatalf("stale group status = %q, want %q", group.Status, review.StatusResolved)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got, want := countRows(t, db, "review_groups"), 1; got != want {
+		t.Fatalf("review_groups rows = %d, want %d", got, want)
+	}
+}
+
 func TestCreateReviewGroupsFromReportKeepsOffsiteLeadmillSingletonInReview(t *testing.T) {
 	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 101, created: true}}}
 	report := ingest.Report{

@@ -154,6 +154,11 @@ func (s *Store) PromoteSingletonReviewGroupIfMissing(ctx context.Context, input 
 	if err != nil {
 		return "", false, err
 	}
+	if applied {
+		if err := resolveMatchingOpenReviewGroupsTx(ctx, tx, input, now); err != nil {
+			return "", false, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return "", false, err
 	}
@@ -288,7 +293,28 @@ func authoritativeSourceEventKey(input review.GroupInput) string {
 	}
 	return ""
 }
-type eventRecord struct {
+
+func resolveMatchingOpenReviewGroupsTx(ctx context.Context, tx execer, input review.GroupInput, now time.Time) error {
+	stagingKey := strings.TrimSpace(input.StagingKey)
+	if stagingKey == "" {
+		return nil
+	}
+
+	args := []any{review.StatusResolved, formatRFC3339UTC(now), review.StatusOpen, stagingKey}
+	query := `
+		UPDATE review_groups
+		SET status = ?, updated_at = ?
+		WHERE status = ?
+		  AND staging_key = ?
+	`
+	if sourceEventKey := strings.TrimSpace(input.AuthoritativeSourceEventKey); sourceEventKey != "" {
+		query += ` AND authoritative_source_event_key = ?`
+		args = append(args, sourceEventKey)
+	}
+	_, err := tx.ExecContext(ctx, query, args...)
+	return err
+}
+
 type eventRecord struct {
 	ID    int64
 	Event domain.Event
