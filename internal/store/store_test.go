@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -57,6 +58,29 @@ func TestSeedStoreMarksAllFixturesSeed(t *testing.T) {
 	}
 }
 
+func TestSeedStoreIncludesVenueCoverageMetadata(t *testing.T) {
+	st := NewSeedStore()
+
+	lescar, ok := st.VenueBySlug("lescar")
+	if !ok {
+		t.Fatal("expected lescar venue")
+	}
+	if lescar.CoverageKind != domain.CoverageKindProgram {
+		t.Fatalf("lescar coverage kind = %q, want %q", lescar.CoverageKind, domain.CoverageKindProgram)
+	}
+	if lescar.CoverageNote == "" {
+		t.Fatal("lescar coverage note is empty")
+	}
+
+	leadmill, ok := st.VenueBySlug("leadmill")
+	if !ok {
+		t.Fatal("expected leadmill venue")
+	}
+	if leadmill.CoverageKind != domain.CoverageKindVenue {
+		t.Fatalf("leadmill coverage kind = %q, want %q", leadmill.CoverageKind, domain.CoverageKindVenue)
+	}
+}
+
 func TestEventsAreSortedByStartThenSlug(t *testing.T) {
 	start := time.Date(2026, time.May, 8, 18, 0, 0, 0, time.UTC)
 	st := NewStore([]domain.Venue{
@@ -82,7 +106,7 @@ func TestValidateRejectsMissingVenueReference(t *testing.T) {
 		{Slug: "event", VenueSlug: "missing"},
 	})
 
-	if err := st.Validate(); err == nil {
+	if err := st.Validate(context.Background()); err == nil {
 		t.Fatal("expected missing venue validation error")
 	}
 }

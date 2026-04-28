@@ -210,7 +210,7 @@ func renderPath(t *testing.T, server http.Handler, path string) string {
 func mustServer(t *testing.T, st *store.Store) *Server {
 	t.Helper()
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}

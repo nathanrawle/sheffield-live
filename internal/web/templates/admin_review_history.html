@@ -17,6 +17,9 @@
       <tr>
         <th scope="col">Review group</th>
         <th scope="col">Status</th>
+        <th scope="col">Venue</th>
+        <th scope="col">Time</th>
+        <th scope="col">Authority</th>
         <th scope="col">Candidates</th>
         <th scope="col">Draft choices</th>
         {{if .HasImportRunDetail}}
@@ -31,10 +34,13 @@
       <tr>
         <td><a href="/admin/review/{{.ID}}">{{.Title}}</a></td>
         <td>{{.Status}}</td>
+        <td>{{if .SharedVenueSlug}}{{if .SharedVenueName}}{{.SharedVenueName}}{{else}}{{.SharedVenueSlug}}{{end}}{{else}}Mixed venues{{end}}</td>
+        <td>{{with .SharedStartAt}}{{dateShort .}} {{timeShort .}}{{else}}Mixed times{{end}}</td>
+        <td>{{if .Authoritative}}authoritative{{else}}non-authoritative{{end}}</td>
         <td>{{.CandidateCount}}</td>
         <td>{{.DraftCount}}</td>
         {{if $.HasImportRunDetail}}
-        <td>{{if .OriginImportRunID}}<a href="/admin/import-runs/{{.OriginImportRunID}}">Import run #{{.OriginImportRunID}}</a>{{else}}&mdash;{{end}}</td>
+        <td>{{if .LatestImportRunID}}<a href="/admin/import-runs/{{.LatestImportRunID}}">Import run #{{.LatestImportRunID}}</a>{{else}}&mdash;{{end}}</td>
         {{end}}
         <td>{{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</td>
         <td>{{.SourceName}}</td>

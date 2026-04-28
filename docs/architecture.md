@@ -13,7 +13,7 @@ Sheffield Live is a single Go monolith. It serves server-rendered HTML from one 
 - `internal/domain` defines shared venue, event, and origin types
 - `internal/ingest` fetches source pages, runs source-specific extraction and parsing, and stages review groups from ingest reports
 - `internal/review` defines review group and draft-choice types
-- `internal/store` provides the seed-store implementation and read-only store interface
+- `internal/store` provides the seed-store implementation and catalog interface
 - `internal/store/sqlite` opens SQLite, runs migrations, bootstraps seed data, and implements persistence
 - `internal/web` routes requests and renders pages
 - `internal/web/static` embeds `site.css`
@@ -41,22 +41,24 @@ The database path must point to writable storage because the application creates
 - `/admin/import-runs`
 - `/admin/import-runs/{id}`
 - `/healthz`
+- `/readyz`
 - `/static/site.css`
 
 ## Request Flow
 
 1. `cmd/web` opens the SQLite store.
-2. `internal/web` loads templates and embedded CSS.
-3. The router matches the request path.
-4. The page-specific template renders.
-5. The shared layout wraps the page body.
+2. `cmd/web` validates the opened store and passes explicit `internal/web.ServerDeps`.
+3. `internal/web` loads templates and embedded CSS.
+4. The router matches the request path.
+5. The page-specific template renders.
+6. The shared layout wraps the page body.
 
 ## Data Model
 
 Public records live in SQLite and are served from canonical `venues` and `events` rows.
 
-- `Venue` stores slug, name, address, neighbourhood, description, website, and origin
-- `Event` stores slug, name, venue slug, UTC start and end times, genre, status, description, source name, source URL, last checked time, and origin
+- `Venue` stores slug, name, address, neighbourhood, description, website, coverage kind, coverage note, and origin
+- `Event` stores slug, name, venue slug, a required UTC start time, an optional UTC end time, genre, status, description, source name, source URL, last checked time, and origin
 
 Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
 Authoritative review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema.
@@ -70,6 +72,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 
 - raw snapshots capture fetched source pages and any source-specific secondary payloads such as ICS feeds
 - `review_groups.staging_key` has a unique index so staged reruns reuse the same group when the content key matches
+- `import_run_review_groups` records every persisted import-run to review-group link with link time
 - review groups may also persist an authoritative source tuple when every staged candidate agrees on one owned-venue source event identity
 - review groups hold duplicate clusters or singleton new listings
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
@@ -79,8 +82,10 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - the venue must already exist
 - the source row is ensured
 - the published event uses live origin
+- canonical `events.end_at` may be `NULL` when the authoritative end time is unknown
 - the live slug is deterministic and derived from name, venue, and UTC time
 - slug conflicts are handled with upsert semantics
+- venue coverage semantics are data-backed; most venues are full-venue coverage, while The Lescar is marked program-only with a UI note
 
 ## Visibility
 

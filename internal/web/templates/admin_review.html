@@ -25,7 +25,16 @@
     <a class="review-group-link" href="/admin/review/{{.ID}}">
       <span class="review-group-title">{{.Title}}</span>
       <span class="review-group-meta">{{candidateCountLabel .CandidateCount}} · {{.DraftCount}} draft choices · {{.SourceName}}</span>
-      <span class="review-group-meta">Updated {{dateShort .UpdatedAt}}</span>
+      <span class="review-group-meta">
+        {{if .SharedVenueSlug}}<strong>{{if .SharedVenueName}}{{.SharedVenueName}}{{else}}{{.SharedVenueSlug}}{{end}}</strong>{{else}}Mixed venues{{end}}
+        ·
+        {{with .SharedStartAt}}{{dateShort .}} {{timeShort .}}{{else}}Mixed times{{end}}
+        ·
+        {{if .Authoritative}}authoritative{{else}}non-authoritative{{end}}
+        ·
+        {{if .LatestImportRunID}}run #{{.LatestImportRunID}}{{else}}no linked run{{end}}
+      </span>
+      <span class="review-group-meta">Updated {{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</span>
     </a>
     {{else}}
     <p class="empty-state">No open review groups.</p>

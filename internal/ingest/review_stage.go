@@ -35,9 +35,10 @@ func ReviewGroupsFromReport(report Report) []review.GroupInput {
 			if !exists {
 				cluster = &reviewStageCluster{
 					group: review.GroupInput{
-						SourceName: reviewStageSourceName(report),
-						SourceURL:  reviewStageFirstNonEmpty(calendar.URL, report.SourceURL),
-						Notes:      reviewStageNotes(report),
+						SourceName:  reviewStageSourceName(report),
+						SourceURL:   reviewStageFirstNonEmpty(calendar.URL, report.SourceURL),
+						ImportRunID: report.ImportRunID,
+						Notes:       reviewStageNotes(report),
 					},
 				}
 				clusters[key] = cluster
@@ -181,16 +182,7 @@ func reviewStageTitle(group review.GroupInput) string {
 }
 
 func reviewStageSourceName(report Report) string {
-	source := strings.TrimSpace(report.Source)
-	switch source {
-	case "", DefaultSource:
-		return reviewStageDefaultSourceName
-	default:
-		if cfg, err := configForSource(source); err == nil && cfg.ReviewStageSourceName != "" {
-			return cfg.ReviewStageSourceName
-		}
-		return source + " manual ingest"
-	}
+	return ReviewStageSourceNameForSource(report.Source)
 }
 
 func reviewStageNotes(report Report) string {

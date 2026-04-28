@@ -39,16 +39,21 @@ var CanonicalFields = []Field{
 }
 
 type GroupSummary struct {
-	ID             int64
-	Title          string
-	SourceName     string
-	SourceURL      string
-	Status         string
-	Notes          string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	CandidateCount int
-	DraftCount     int
+	ID                int64
+	Title             string
+	SourceName        string
+	SourceURL         string
+	Status            string
+	Notes             string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	CandidateCount    int
+	DraftCount        int
+	LatestImportRunID int64
+	Authoritative     bool
+	SharedStartAt     *time.Time
+	SharedVenueSlug   string
+	SharedVenueName   string
 }
 
 type Group struct {
@@ -63,6 +68,10 @@ type Group struct {
 	Notes                       string
 	CreatedAt                   time.Time
 	UpdatedAt                   time.Time
+	LatestImportRunID           int64
+	SharedStartAt               *time.Time
+	SharedVenueSlug             string
+	SharedVenueName             string
 	Candidates                  []Candidate
 	DraftChoices                map[Field]DraftChoice
 }
@@ -91,6 +100,7 @@ type GroupInput struct {
 	AuthoritativeSourceName     string
 	AuthoritativeSourceURL      string
 	AuthoritativeSourceEventKey string
+	ImportRunID                 int64
 	Notes                       string
 	StagingKey                  string
 	Candidates                  []CandidateInput

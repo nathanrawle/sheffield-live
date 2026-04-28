@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sheffield-live/internal/domain"
+	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/review"
 )
 
@@ -91,6 +92,9 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 				return 0, false, err
 			}
 		}
+		if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, groupID, now); err != nil {
+			return 0, false, err
+		}
 		if err := tx.Commit(); err != nil {
 			return 0, false, err
 		}
@@ -112,6 +116,9 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 		}, now); err != nil {
 			return 0, false, err
 		}
+	}
+	if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, group.ID, now); err != nil {
+		return 0, false, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -217,10 +224,24 @@ func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, 
 			return 0, err
 		}
 	}
+	if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, groupID, now); err != nil {
+		return 0, err
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return groupID, nil
+}
+
+func linkReviewGroupInputToImportRunTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, input review.GroupInput, groupID int64, linkedAt time.Time) error {
+	importRunID := input.ImportRunID
+	if importRunID <= 0 {
+		importRunID, _ = review.ParseOriginImportRunID(input.Notes)
+	}
+	return linkReviewGroupToImportRunTx(ctx, tx, importRunID, groupID, linkedAt)
 }
 
 func singletonResolvedEventFromGroupInput(input review.GroupInput, publishedAt time.Time) (domain.Event, error) {
@@ -248,7 +269,6 @@ func singletonResolvedEventFromGroupInput(input review.GroupInput, publishedAt t
 		SourceURL:   strings.TrimSpace(candidate.SourceURL),
 		Provenance:  strings.TrimSpace(candidate.Provenance),
 	}
-
 	selected := make(map[review.Field]review.Candidate, len(review.CanonicalFields))
 	for _, field := range review.CanonicalFields {
 		selected[field] = selectedCandidate
@@ -268,7 +288,7 @@ func authoritativeSourceEventKey(input review.GroupInput) string {
 	}
 	return ""
 }
-
+type eventRecord struct {
 type eventRecord struct {
 	ID    int64
 	Event domain.Event
@@ -343,7 +363,7 @@ func insertEventTx(ctx context.Context, tx execer, event domain.Event, venueID, 
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
-		formatRFC3339UTC(event.End),
+		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
 		formatRFC3339UTC(event.LastChecked),
 		string(event.Origin))
@@ -386,7 +406,7 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 			last_checked_at = ?,
 			origin = ?
 		WHERE id = ?
-	`, venueID, sourceID, updated.Name, formatRFC3339UTC(updated.Start), formatRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, formatRFC3339UTC(updated.LastChecked), string(updated.Origin), existing.ID); err != nil {
+	`, venueID, sourceID, updated.Name, formatRFC3339UTC(updated.Start), nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, formatRFC3339UTC(updated.LastChecked), string(updated.Origin), existing.ID); err != nil {
 		return domain.Event{}, err
 	}
 	return updated, nil
@@ -486,7 +506,7 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 	var record eventRecord
 	var origin string
 	var startText string
-	var endText string
+	var endText sql.NullString
 	var lastCheckedText string
 	if err := rows.Scan(
 		&record.ID,
@@ -509,7 +529,7 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 	if err != nil {
 		return eventRecord{}, false, fmt.Errorf("parse event %q start time: %w", record.Event.Slug, err)
 	}
-	end, err := parseRFC3339UTC(endText)
+	end, err := parseNullableRFC3339UTC(endText)
 	if err != nil {
 		return eventRecord{}, false, fmt.Errorf("parse event %q end time: %w", record.Event.Slug, err)
 	}
@@ -521,6 +541,9 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 	record.Event.End = end
 	record.Event.LastChecked = lastChecked
 	record.Event.Origin = domain.Origin(origin)
+	if err := record.Event.ValidateCanonical(); err != nil {
+		return eventRecord{}, false, fmt.Errorf("event %q %w", record.Event.Slug, err)
+	}
 	if err := rows.Err(); err != nil {
 		return eventRecord{}, false, err
 	}
@@ -550,13 +573,44 @@ func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary
 			g.source_name,
 			g.source_url,
 			g.status,
+			g.notes,
 			g.created_at,
 			g.updated_at,
 			COUNT(DISTINCT c.id),
-			COUNT(DISTINCT d.field)
+			COUNT(DISTINCT d.field),
+			COALESCE((
+				SELECT l.import_run_id
+				FROM import_run_review_groups l
+				WHERE l.review_group_id = g.id
+				ORDER BY l.linked_at DESC, l.import_run_id DESC
+				LIMIT 1
+			), 0),
+			CASE
+				WHEN COALESCE(g.authoritative_source_name, '') <> ''
+					AND COALESCE(g.authoritative_source_url, '') <> ''
+					AND COALESCE(g.authoritative_source_event_key, '') <> ''
+				THEN 1
+				ELSE 0
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.start_at), '')) = 1
+				THEN MIN(NULLIF(TRIM(c.start_at), ''))
+				ELSE NULL
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
+				THEN MIN(NULLIF(TRIM(c.venue_slug), ''))
+				ELSE ''
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
+				THEN MIN(COALESCE(v.name, ''))
+				ELSE ''
+			END
 		FROM review_groups g
 		LEFT JOIN review_candidates c ON c.group_id = g.id
 		LEFT JOIN review_draft_choices d ON d.group_id = g.id
+		LEFT JOIN venues v ON v.slug = c.venue_slug
 		WHERE g.status = ?
 		GROUP BY g.id
 		ORDER BY g.updated_at DESC, g.id DESC
@@ -568,32 +622,10 @@ func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary
 
 	var groups []review.GroupSummary
 	for rows.Next() {
-		var group review.GroupSummary
-		var createdAt string
-		var updatedAt string
-		if err := rows.Scan(
-			&group.ID,
-			&group.Title,
-			&group.SourceName,
-			&group.SourceURL,
-			&group.Status,
-			&createdAt,
-			&updatedAt,
-			&group.CandidateCount,
-			&group.DraftCount,
-		); err != nil {
+		group, err := scanReviewGroupSummaryRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		parsedCreatedAt, err := parseRFC3339UTC(createdAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse review group %d created_at: %w", group.ID, err)
-		}
-		parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse review group %d updated_at: %w", group.ID, err)
-		}
-		group.CreatedAt = parsedCreatedAt
-		group.UpdatedAt = parsedUpdatedAt
 		groups = append(groups, group)
 	}
 	if err := rows.Err(); err != nil {
@@ -621,10 +653,40 @@ func (s *Store) ListClosedReviewGroups(ctx context.Context, limit int) ([]review
 			g.created_at,
 			g.updated_at,
 			COUNT(DISTINCT c.id),
-			COUNT(DISTINCT d.field)
+			COUNT(DISTINCT d.field),
+			COALESCE((
+				SELECT l.import_run_id
+				FROM import_run_review_groups l
+				WHERE l.review_group_id = g.id
+				ORDER BY l.linked_at DESC, l.import_run_id DESC
+				LIMIT 1
+			), 0),
+			CASE
+				WHEN COALESCE(g.authoritative_source_name, '') <> ''
+					AND COALESCE(g.authoritative_source_url, '') <> ''
+					AND COALESCE(g.authoritative_source_event_key, '') <> ''
+				THEN 1
+				ELSE 0
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.start_at), '')) = 1
+				THEN MIN(NULLIF(TRIM(c.start_at), ''))
+				ELSE NULL
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
+				THEN MIN(NULLIF(TRIM(c.venue_slug), ''))
+				ELSE ''
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
+				THEN MIN(COALESCE(v.name, ''))
+				ELSE ''
+			END
 		FROM review_groups g
 		LEFT JOIN review_candidates c ON c.group_id = g.id
 		LEFT JOIN review_draft_choices d ON d.group_id = g.id
+		LEFT JOIN venues v ON v.slug = c.venue_slug
 		WHERE g.status IN (?, ?)
 		GROUP BY g.id
 		ORDER BY g.updated_at DESC, g.id DESC
@@ -637,33 +699,10 @@ func (s *Store) ListClosedReviewGroups(ctx context.Context, limit int) ([]review
 
 	var groups []review.GroupSummary
 	for rows.Next() {
-		var group review.GroupSummary
-		var createdAt string
-		var updatedAt string
-		if err := rows.Scan(
-			&group.ID,
-			&group.Title,
-			&group.SourceName,
-			&group.SourceURL,
-			&group.Status,
-			&group.Notes,
-			&createdAt,
-			&updatedAt,
-			&group.CandidateCount,
-			&group.DraftCount,
-		); err != nil {
+		group, err := scanReviewGroupSummaryRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		parsedCreatedAt, err := parseRFC3339UTC(createdAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse review group %d created_at: %w", group.ID, err)
-		}
-		parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse review group %d updated_at: %w", group.ID, err)
-		}
-		group.CreatedAt = parsedCreatedAt
-		group.UpdatedAt = parsedUpdatedAt
 		groups = append(groups, group)
 	}
 	if err := rows.Err(); err != nil {
@@ -680,7 +719,6 @@ func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID in
 		return nil, errors.New("import run ID is required")
 	}
 
-	idText := fmt.Sprintf("%d", importRunID)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			g.id,
@@ -692,15 +730,47 @@ func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID in
 			g.created_at,
 			g.updated_at,
 			COUNT(DISTINCT c.id),
-			COUNT(DISTINCT d.field)
+			COUNT(DISTINCT d.field),
+			COALESCE((
+				SELECT l.import_run_id
+				FROM import_run_review_groups l
+				WHERE l.review_group_id = g.id
+				ORDER BY l.linked_at DESC, l.import_run_id DESC
+				LIMIT 1
+			), 0),
+			CASE
+				WHEN COALESCE(g.authoritative_source_name, '') <> ''
+					AND COALESCE(g.authoritative_source_url, '') <> ''
+					AND COALESCE(g.authoritative_source_event_key, '') <> ''
+				THEN 1
+				ELSE 0
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.start_at), '')) = 1
+				THEN MIN(NULLIF(TRIM(c.start_at), ''))
+				ELSE NULL
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
+				THEN MIN(NULLIF(TRIM(c.venue_slug), ''))
+				ELSE ''
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
+				THEN MIN(COALESCE(v.name, ''))
+				ELSE ''
+			END
 		FROM review_groups g
+		JOIN import_run_review_groups l
+			ON l.review_group_id = g.id
+			AND l.import_run_id = ?
 		LEFT JOIN review_candidates c ON c.group_id = g.id
 		LEFT JOIN review_draft_choices d ON d.group_id = g.id
+		LEFT JOIN venues v ON v.slug = c.venue_slug
 		WHERE g.status IN (?, ?, ?)
-			AND (g.notes LIKE ? OR g.notes LIKE ?)
 		GROUP BY g.id
 		ORDER BY g.updated_at DESC, g.id DESC
-	`, review.StatusOpen, review.StatusResolved, review.StatusRejected, "%manual ingest run "+idText+"%", "%import run "+idText+"%")
+	`, importRunID, review.StatusOpen, review.StatusResolved, review.StatusRejected)
 	if err != nil {
 		return nil, err
 	}
@@ -708,37 +778,10 @@ func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID in
 
 	var groups []review.GroupSummary
 	for rows.Next() {
-		var group review.GroupSummary
-		var createdAt string
-		var updatedAt string
-		if err := rows.Scan(
-			&group.ID,
-			&group.Title,
-			&group.SourceName,
-			&group.SourceURL,
-			&group.Status,
-			&group.Notes,
-			&createdAt,
-			&updatedAt,
-			&group.CandidateCount,
-			&group.DraftCount,
-		); err != nil {
+		group, err := scanReviewGroupSummaryRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		originID, ok := review.ParseOriginImportRunID(group.Notes)
-		if !ok || originID != importRunID {
-			continue
-		}
-		parsedCreatedAt, err := parseRFC3339UTC(createdAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse review group %d created_at: %w", group.ID, err)
-		}
-		parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse review group %d updated_at: %w", group.ID, err)
-		}
-		group.CreatedAt = parsedCreatedAt
-		group.UpdatedAt = parsedUpdatedAt
 		groups = append(groups, group)
 	}
 	if err := rows.Err(); err != nil {
@@ -1043,19 +1086,44 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 func loadReviewGroup(ctx context.Context, q queryer, id int64) (review.Group, bool, error) {
 	row := q.QueryRowContext(ctx, `
 		SELECT
-			id,
-			title,
-			source_name,
-			source_url,
-			authoritative_source_name,
-			authoritative_source_url,
-			authoritative_source_event_key,
-			status,
-			notes,
-			created_at,
-			updated_at
-		FROM review_groups
-		WHERE id = ?
+			g.id,
+			g.title,
+			g.source_name,
+			g.source_url,
+			g.authoritative_source_name,
+			g.authoritative_source_url,
+			g.authoritative_source_event_key,
+			g.status,
+			g.notes,
+			g.created_at,
+			g.updated_at,
+			COALESCE((
+				SELECT l.import_run_id
+				FROM import_run_review_groups l
+				WHERE l.review_group_id = g.id
+				ORDER BY l.linked_at DESC, l.import_run_id DESC
+				LIMIT 1
+			), 0),
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
+				THEN MIN(NULLIF(TRIM(c.venue_slug), ''))
+				ELSE ''
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
+				THEN MIN(COALESCE(v.name, ''))
+				ELSE ''
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.start_at), '')) = 1
+				THEN MIN(NULLIF(TRIM(c.start_at), ''))
+				ELSE NULL
+			END
+		FROM review_groups g
+		LEFT JOIN review_candidates c ON c.group_id = g.id
+		LEFT JOIN venues v ON v.slug = c.venue_slug
+		WHERE g.id = ?
+		GROUP BY g.id
 		LIMIT 1
 	`, id)
 	return scanReviewGroupRow(row, id)
@@ -1064,19 +1132,44 @@ func loadReviewGroup(ctx context.Context, q queryer, id int64) (review.Group, bo
 func loadReviewGroupByStagingKey(ctx context.Context, q queryer, stagingKey string) (review.Group, bool, error) {
 	row := q.QueryRowContext(ctx, `
 		SELECT
-			id,
-			title,
-			source_name,
-			source_url,
-			authoritative_source_name,
-			authoritative_source_url,
-			authoritative_source_event_key,
-			status,
-			notes,
-			created_at,
-			updated_at
-		FROM review_groups
-		WHERE staging_key = ?
+			g.id,
+			g.title,
+			g.source_name,
+			g.source_url,
+			g.authoritative_source_name,
+			g.authoritative_source_url,
+			g.authoritative_source_event_key,
+			g.status,
+			g.notes,
+			g.created_at,
+			g.updated_at,
+			COALESCE((
+				SELECT l.import_run_id
+				FROM import_run_review_groups l
+				WHERE l.review_group_id = g.id
+				ORDER BY l.linked_at DESC, l.import_run_id DESC
+				LIMIT 1
+			), 0),
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
+				THEN MIN(NULLIF(TRIM(c.venue_slug), ''))
+				ELSE ''
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
+				THEN MIN(COALESCE(v.name, ''))
+				ELSE ''
+			END,
+			CASE
+				WHEN COUNT(DISTINCT NULLIF(TRIM(c.start_at), '')) = 1
+				THEN MIN(NULLIF(TRIM(c.start_at), ''))
+				ELSE NULL
+			END
+		FROM review_groups g
+		LEFT JOIN review_candidates c ON c.group_id = g.id
+		LEFT JOIN venues v ON v.slug = c.venue_slug
+		WHERE g.staging_key = ?
+		GROUP BY g.id
 		LIMIT 1
 	`, stagingKey)
 	return scanReviewGroupRow(row, 0)
@@ -1091,6 +1184,9 @@ func scanReviewGroupRow(scanner interface {
 	var authoritativeSourceEventKey sql.NullString
 	var createdAt string
 	var updatedAt string
+	var sharedVenueSlug string
+	var sharedVenueName string
+	var sharedStartAt sql.NullString
 	switch err := scanner.Scan(
 		&group.ID,
 		&group.Title,
@@ -1103,6 +1199,10 @@ func scanReviewGroupRow(scanner interface {
 		&group.Notes,
 		&createdAt,
 		&updatedAt,
+		&group.LatestImportRunID,
+		&sharedVenueSlug,
+		&sharedVenueName,
+		&sharedStartAt,
 	); {
 	case errors.Is(err, sql.ErrNoRows):
 		return review.Group{}, false, nil
@@ -1112,6 +1212,18 @@ func scanReviewGroupRow(scanner interface {
 	group.AuthoritativeSourceName = strings.TrimSpace(authoritativeSourceName.String)
 	group.AuthoritativeSourceURL = strings.TrimSpace(authoritativeSourceURL.String)
 	group.AuthoritativeSourceEventKey = strings.TrimSpace(authoritativeSourceEventKey.String)
+	group.SharedVenueSlug = strings.TrimSpace(sharedVenueSlug)
+	group.SharedVenueName = strings.TrimSpace(sharedVenueName)
+	if sharedStartAt.Valid && strings.TrimSpace(sharedStartAt.String) != "" {
+		parsedSharedStartAt, err := parseRFC3339UTC(sharedStartAt.String)
+		if err != nil {
+			if fallbackID == 0 {
+				fallbackID = group.ID
+			}
+			return review.Group{}, false, fmt.Errorf("parse review group %d shared_start_at: %w", fallbackID, err)
+		}
+		group.SharedStartAt = &parsedSharedStartAt
+	}
 	parsedCreatedAt, err := parseRFC3339UTC(createdAt)
 	if err != nil {
 		if fallbackID == 0 {
@@ -1129,6 +1241,56 @@ func scanReviewGroupRow(scanner interface {
 	group.CreatedAt = parsedCreatedAt
 	group.UpdatedAt = parsedUpdatedAt
 	return group, true, nil
+}
+
+func scanReviewGroupSummaryRow(scanner interface {
+	Scan(...any) error
+}) (review.GroupSummary, error) {
+	var group review.GroupSummary
+	var createdAt string
+	var updatedAt string
+	var authoritative int
+	var sharedStartAt sql.NullString
+	if err := scanner.Scan(
+		&group.ID,
+		&group.Title,
+		&group.SourceName,
+		&group.SourceURL,
+		&group.Status,
+		&group.Notes,
+		&createdAt,
+		&updatedAt,
+		&group.CandidateCount,
+		&group.DraftCount,
+		&group.LatestImportRunID,
+		&authoritative,
+		&sharedStartAt,
+		&group.SharedVenueSlug,
+		&group.SharedVenueName,
+	); err != nil {
+		return review.GroupSummary{}, err
+	}
+	parsedCreatedAt, err := parseRFC3339UTC(createdAt)
+	if err != nil {
+		return review.GroupSummary{}, fmt.Errorf("parse review group %d created_at: %w", group.ID, err)
+	}
+	parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
+	if err != nil {
+		return review.GroupSummary{}, fmt.Errorf("parse review group %d updated_at: %w", group.ID, err)
+	}
+	group.CreatedAt = parsedCreatedAt
+	group.UpdatedAt = parsedUpdatedAt
+	group.Authoritative = authoritative == 1
+	group.SharedVenueSlug = strings.TrimSpace(group.SharedVenueSlug)
+	group.SharedVenueName = strings.TrimSpace(group.SharedVenueName)
+	if sharedStartAt.Valid && strings.TrimSpace(sharedStartAt.String) != "" {
+		parsedSharedStartAt, err := parseRFC3339UTC(sharedStartAt.String)
+		if err != nil {
+			return review.GroupSummary{}, fmt.Errorf("parse review group %d shared_start_at: %w", group.ID, err)
+		}
+		group.SharedStartAt = &parsedSharedStartAt
+	}
+	return group, nil
 }
 
 type reviewGroupAuthoritativeLink struct {
@@ -1281,7 +1443,7 @@ func deriveReviewGroupAuthoritativeLink(group review.Group, candidates []review.
 			return reviewGroupAuthoritativeLink{}, false
 		}
 	}
-	if authoritativeOwnedVenueSlugForSourceName(link.SourceName) != venueSlug {
+	if ingest.OwnedVenueSlugForReviewStageSourceName(link.SourceName) != venueSlug {
 		return reviewGroupAuthoritativeLink{}, false
 	}
 	return link, true
@@ -1308,21 +1470,6 @@ func authoritativeLinkFromStoredReviewCandidate(group review.Group, candidate re
 		SourceURL:      sourceURL,
 		SourceEventKey: sourceEventKey,
 	}, true
-}
-
-func authoritativeOwnedVenueSlugForSourceName(sourceName string) string {
-	switch strings.TrimSpace(sourceName) {
-	case "Sidney & Matilda manual ingest":
-		return "sidney-and-matilda"
-	case "Yellow Arch manual ingest":
-		return "yellow-arch"
-	case "Cafe No. 9 manual ingest":
-		return "cafe-no-9"
-	case "The Leadmill manual ingest":
-		return "leadmill"
-	default:
-		return ""
-	}
 }
 
 func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
@@ -1459,9 +1606,6 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 	if startText == "" {
 		return domain.Event{}, errors.New("review event start time is required")
 	}
-	if endText == "" {
-		return domain.Event{}, errors.New("review event end time is required")
-	}
 	if sourceName == "" {
 		return domain.Event{}, errors.New("review event source name is required")
 	}
@@ -1473,16 +1617,19 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 	if err != nil {
 		return domain.Event{}, fmt.Errorf("parse review event start time: %w", err)
 	}
-	end, err := parseRFC3339UTC(endText)
-	if err != nil {
-		return domain.Event{}, fmt.Errorf("parse review event end time: %w", err)
+	end := time.Time{}
+	if endText != "" {
+		end, err = parseRFC3339UTC(endText)
+		if err != nil {
+			return domain.Event{}, fmt.Errorf("parse review event end time: %w", err)
+		}
 	}
 	slug, err := buildLiveEventSlug(name, venueSlug, start)
 	if err != nil {
 		return domain.Event{}, err
 	}
 
-	return domain.Event{
+	event := domain.Event{
 		Slug:        slug,
 		Name:        name,
 		VenueSlug:   venueSlug,
@@ -1495,7 +1642,11 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 		SourceURL:   sourceURL,
 		LastChecked: publishedAt.UTC(),
 		Origin:      domain.OriginLive,
-	}, nil
+	}
+	if err := event.ValidateCanonical(); err != nil {
+		return domain.Event{}, fmt.Errorf("review event %w", err)
+	}
+	return event, nil
 }
 
 func buildLiveEventSlug(name, venueSlug string, start time.Time) (string, error) {
@@ -1574,7 +1725,7 @@ func upsertEventTx(ctx context.Context, tx interface {
 			origin = excluded.origin
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
-		formatRFC3339UTC(event.End),
+		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
 		formatRFC3339UTC(event.LastChecked),
 		string(event.Origin))

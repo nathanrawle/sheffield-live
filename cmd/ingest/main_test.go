@@ -127,6 +127,62 @@ func TestCreateReviewGroupsFromReportAutoPromotesOwnedVenueSingleton(t *testing.
 	}
 }
 
+func TestCreateReviewGroupsFromReportAutoPromotesCafeNo9SingletonWithoutEndTime(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	report := ingest.Report{
+		Source:      ingest.CafeNo9Source,
+		SourceURL:   "https://www.wegottickets.com/Cafe9",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{{
+				UID:      "cafe-no-9-1",
+				Summary:  "Cafe No. 9 Late Show",
+				Location: "Cafe No. 9",
+				StartAt:  "2026-05-10T18:30:00Z",
+			}},
+		}},
+	}
+
+	stage, err := createReviewGroupsFromReport(ctx, st, report)
+	if err != nil {
+		t.Fatalf("create review groups: %v", err)
+	}
+	if got, want := stage.AutoPromotedCount, 1; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 0; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+	if got, want := len(stage.Groups), 0; got != want {
+		t.Fatalf("review groups = %d, want %d", got, want)
+	}
+	if got, want := len(stage.AutoPromoted), 1; got != want {
+		t.Fatalf("auto promoted = %d, want %d", got, want)
+	}
+
+	event, ok := st.EventBySlug(stage.AutoPromoted[0].EventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", stage.AutoPromoted[0].EventSlug)
+	}
+	if !event.End.IsZero() {
+		t.Fatalf("end = %v, want zero time for unknown end", event.End)
+	}
+}
+
 func TestCreateReviewGroupsFromReportKeepsOffsiteLeadmillSingletonInReview(t *testing.T) {
 	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 101, created: true}}}
 	report := ingest.Report{
@@ -620,14 +676,14 @@ func TestRunWithArgsReplayDoesNotRequireUserAgent(t *testing.T) {
 	if got := len(got.Report.Links); got != 1 {
 		t.Fatalf("links = %d, want 1", got)
 	}
-	if got := got.ReviewStage.GroupsCreated; got != 2 {
-		t.Fatalf("review groups created = %d, want 2", got)
+	if got := got.ReviewStage.GroupsCreated; got != 1 {
+		t.Fatalf("review groups created = %d, want 1", got)
 	}
-	if got := got.ReviewStage.AutoPromotedCount; got != 0 {
-		t.Fatalf("auto promoted count = %d, want 0", got)
+	if got := got.ReviewStage.AutoPromotedCount; got != 1 {
+		t.Fatalf("auto promoted count = %d, want 1", got)
 	}
-	if got := got.ReviewStage.ReviewCandidateCount; got != 3 {
-		t.Fatalf("review candidate count = %d, want 3", got)
+	if got := got.ReviewStage.ReviewCandidateCount; got != 2 {
+		t.Fatalf("review candidate count = %d, want 2", got)
 	}
 }
 
@@ -770,17 +826,17 @@ func TestRunWithArgsReplayLeadmillUsesStoredSourcePath(t *testing.T) {
 	if got := len(got.Report.Calendars[0].Candidates); got != 1 {
 		t.Fatalf("candidates = %d, want 1", got)
 	}
-	if got := got.ReviewStage.GroupsCreated; got != 1 {
-		t.Fatalf("review groups created = %d, want 1", got)
+	if got := got.ReviewStage.GroupsCreated; got != 0 {
+		t.Fatalf("review groups created = %d, want 0", got)
 	}
-	if got := got.ReviewStage.AutoPromotedCount; got != 0 {
-		t.Fatalf("auto promoted count = %d, want 0", got)
+	if got := got.ReviewStage.AutoPromotedCount; got != 1 {
+		t.Fatalf("auto promoted count = %d, want 1", got)
 	}
-	if got := len(got.ReviewStage.Groups); got != 1 {
-		t.Fatalf("review groups = %d, want 1", got)
+	if got := len(got.ReviewStage.Groups); got != 0 {
+		t.Fatalf("review groups = %d, want 0", got)
 	}
-	if got := got.ReviewStage.ReviewCandidateCount; got != 1 {
-		t.Fatalf("review candidate count = %d, want 1", got)
+	if got := got.ReviewStage.ReviewCandidateCount; got != 0 {
+		t.Fatalf("review candidate count = %d, want 0", got)
 	}
 	st, err := sqlite.Open(path)
 	if err != nil {
@@ -792,15 +848,18 @@ func TestRunWithArgsReplayLeadmillUsesStoredSourcePath(t *testing.T) {
 		}
 	}()
 
-	group, ok, err := st.LoadReviewGroup(context.Background(), got.ReviewStage.Groups[0].ID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
+	if got := len(got.ReviewStage.AutoPromoted); got != 1 {
+		t.Fatalf("auto promoted groups = %d, want 1", got)
 	}
+	event, ok := st.EventBySlug(got.ReviewStage.AutoPromoted[0].EventSlug)
 	if !ok {
-		t.Fatal("review group not found")
+		t.Fatalf("published event %q not found", got.ReviewStage.AutoPromoted[0].EventSlug)
 	}
-	if got := group.Candidates[0].VenueSlug; got != "leadmill" {
+	if got := event.VenueSlug; got != "leadmill" {
 		t.Fatalf("venue slug = %q, want leadmill", got)
+	}
+	if !event.End.IsZero() {
+		t.Fatalf("end = %v, want zero time for unknown end", event.End)
 	}
 }
 

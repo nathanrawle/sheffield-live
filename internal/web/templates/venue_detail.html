@@ -15,6 +15,13 @@
     </div>
   </section>
 
+  {{with .Venue.CoverageNote}}
+  <section class="section-block">
+    <h2>Coverage note</h2>
+    <p>{{.}}</p>
+  </section>
+  {{end}}
+
   <section class="section-block">
     <h2>Coming up here</h2>
     <div class="event-list compact">

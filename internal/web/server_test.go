@@ -23,7 +23,7 @@ import (
 )
 
 func TestRoutes(t *testing.T) {
-	server, err := NewServer(store.NewSeedStore())
+	server, err := NewServer(testServerDeps(store.NewSeedStore()))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -43,6 +43,7 @@ func TestRoutes(t *testing.T) {
 		{name: "admin import history missing", path: "/admin/import-runs", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "admin review history missing", path: "/admin/review/history", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "healthz", path: "/healthz", code: http.StatusOK, body: "ok"},
+		{name: "readyz", path: "/readyz", code: http.StatusOK, body: "ok"},
 		{name: "missing", path: "/events/missing", code: http.StatusNotFound, body: "404 page not found"},
 	}
 
@@ -77,21 +78,21 @@ func TestNewServerRejectsMissingEventVenue(t *testing.T) {
 		},
 	})
 
-	if _, err := NewServer(st); err == nil {
-		t.Fatal("expected missing venue validation error")
+	if _, err := NewServer(testServerDeps(st)); err == nil {
+		t.Fatal("new server error = nil, want validation error")
 	}
 }
 
 func TestNewServerAcceptsReadOnlyStore(t *testing.T) {
 	st := readOnlyStoreStub{}
 
-	if _, err := NewServer(st); err != nil {
+	if _, err := NewServer(testServerDeps(st)); err != nil {
 		t.Fatalf("new server: %v", err)
 	}
 }
 
 func TestAdminReviewOmitsLatestImportWithoutImportHistoryStore(t *testing.T) {
-	server, err := NewServer(reviewOnlyStoreStub{})
+	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestSQLiteStoreSmoke(t *testing.T) {
 		}
 	}()
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestSQLiteAdminImportRunsEmptyAndPopulated(t *testing.T) {
 		}
 	}()
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestSQLiteAdminImportRunsRenderReviewGroupStatusSummary(t *testing.T) {
 		}
 	}()
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -198,9 +199,9 @@ func TestSQLiteAdminImportRunsRenderReviewGroupStatusSummary(t *testing.T) {
 		t.Fatalf("seed import history: %v", err)
 	}
 
-	_ = mustCreateWebReviewGroupForImportRun(t, st, "Open import group", "Created from manual ingest run 1 review staging.", 1)
-	rejectedID := mustCreateWebReviewGroupForImportRun(t, st, "Rejected import group", "Created from manual ingest run 1 review staging.", 1)
-	secondRejectedID := mustCreateWebReviewGroupForImportRun(t, st, "Second rejected import group", "Created from import run 1 review staging.", 1)
+	_ = mustCreateWebReviewGroupForImportRun(t, st, path, "Open import group", "Created from manual ingest run 1 review staging.", 1)
+	rejectedID := mustCreateWebReviewGroupForImportRun(t, st, path, "Rejected import group", "Created from manual ingest run 1 review staging.", 1)
+	secondRejectedID := mustCreateWebReviewGroupForImportRun(t, st, path, "Second rejected import group", "Created from import run 1 review staging.", 1)
 	if err := st.UpdateReviewGroupStatus(contextForTesting(), rejectedID, review.StatusRejected); err != nil {
 		t.Fatalf("reject review group: %v", err)
 	}
@@ -216,7 +217,7 @@ func TestSQLiteAdminImportRunsRenderReviewGroupStatusSummary(t *testing.T) {
 }
 
 func TestSQLiteAdminImportRunDetailRendersMetadataOnly(t *testing.T) {
-	st, server, runID, bodyText := mustImportRunDetailServer(t, false)
+	st, server, runID, bodyText, _ := mustImportRunDetailServer(t, false)
 	defer st.Close()
 
 	body := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
@@ -240,14 +241,14 @@ func TestSQLiteAdminImportRunDetailRendersMetadataOnly(t *testing.T) {
 }
 
 func TestSQLiteAdminImportRunDetailRendersReviewGroupsForRun(t *testing.T) {
-	st, server, runID, bodyText := mustImportRunDetailServer(t, false)
+	st, server, runID, bodyText, path := mustImportRunDetailServer(t, false)
 	defer st.Close()
 
-	openID := mustCreateWebReviewGroupForImportRun(t, st, "Open import group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 2)
-	resolvedID := mustCreateWebPublishableReviewGroupForImportRun(t, st, "Resolved import group", "Created from import run "+strconvFormatInt(runID)+" review staging.")
-	rejectedID := mustCreateWebReviewGroupForImportRun(t, st, "Rejected import group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 1)
-	_ = mustCreateWebReviewGroupForImportRun(t, st, "Wrong import group", "Created from manual ingest run 123 review staging.", 1)
-	_ = mustCreateWebReviewGroupForImportRun(t, st, "Malformed import group", "Created from manual ingest run "+strconvFormatInt(runID)+"abc review staging.", 1)
+	openID := mustCreateWebReviewGroupForImportRun(t, st, path, "Open import group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 2)
+	resolvedID := mustCreateWebPublishableReviewGroupForImportRun(t, st, path, "Resolved import group", "Created from import run "+strconvFormatInt(runID)+" review staging.")
+	rejectedID := mustCreateWebReviewGroupForImportRun(t, st, path, "Rejected import group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 1)
+	_ = mustCreateWebReviewGroupForImportRun(t, st, path, "Wrong import group", "Created from manual ingest run 123 review staging.", 1)
+	_ = mustCreateWebReviewGroupForImportRun(t, st, path, "Malformed import group", "Created from manual ingest run "+strconvFormatInt(runID)+"abc review staging.", 1)
 
 	open, ok, err := st.LoadReviewGroup(contextForTesting(), openID)
 	if err != nil {
@@ -294,7 +295,7 @@ func TestSQLiteAdminImportRunDetailRendersReviewGroupsForRun(t *testing.T) {
 }
 
 func TestSQLiteAdminImportRunDetailInvalidAndMissingIDs(t *testing.T) {
-	st, server, _, _ := mustImportRunDetailServer(t, false)
+	st, server, _, _, _ := mustImportRunDetailServer(t, false)
 	defer st.Close()
 
 	tests := []struct {
@@ -327,7 +328,7 @@ func TestSQLiteAdminImportRunDetailInvalidAndMissingIDs(t *testing.T) {
 }
 
 func TestAdminImportRunDetailMissingStoreSupport404(t *testing.T) {
-	server, err := NewServer(store.NewSeedStore())
+	server, err := NewServer(testServerDeps(store.NewSeedStore()))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -341,7 +342,7 @@ func TestAdminImportRunDetailMissingStoreSupport404(t *testing.T) {
 }
 
 func TestAdminImportRunPagesOmitReviewQueueWithoutReviewStorage(t *testing.T) {
-	server, err := NewServer(importHistoryWithDetailNoReviewStoreStub{})
+	server, err := NewServer(testServerDeps(importHistoryWithDetailNoReviewStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -357,7 +358,7 @@ func TestAdminImportRunPagesOmitReviewQueueWithoutReviewStorage(t *testing.T) {
 }
 
 func TestAdminImportRunsOmitsDetailLinksWithoutReplayStore(t *testing.T) {
-	server, err := NewServer(importHistoryOnlyStoreStub{})
+	server, err := NewServer(testServerDeps(importHistoryOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -369,7 +370,7 @@ func TestAdminImportRunsOmitsDetailLinksWithoutReplayStore(t *testing.T) {
 }
 
 func TestAdminImportRunsReviewGroupSummaryIsPlainTextWithoutDetailStore(t *testing.T) {
-	server, err := NewServer(importHistoryWithReviewGroupsNoDetailStoreStub{})
+	server, err := NewServer(testServerDeps(importHistoryWithReviewGroupsNoDetailStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -381,7 +382,7 @@ func TestAdminImportRunsReviewGroupSummaryIsPlainTextWithoutDetailStore(t *testi
 }
 
 func TestSQLiteAdminImportRunDetailMalformedPayloadDoesNotCrash(t *testing.T) {
-	st, server, runID, rawPayloadText := mustImportRunDetailServer(t, true)
+	st, server, runID, rawPayloadText, _ := mustImportRunDetailServer(t, true)
 	defer st.Close()
 
 	body := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
@@ -488,7 +489,7 @@ func TestSQLiteEventDetailRendersSecondarySourceInfo(t *testing.T) {
 		}
 	}
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -515,7 +516,7 @@ func TestSQLiteEventDetailOmitsSecondarySourceInfoWhenNoneExists(t *testing.T) {
 		}
 	}()
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -555,6 +556,16 @@ func TestEventsFiltersToday(t *testing.T) {
 	assertNotContains(t, body, "Friday Leadmill")
 }
 
+func TestEventsFiltersTonight(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/events?window=tonight")
+
+	assertContains(t, body, "Tonight Leadmill")
+	assertContains(t, body, `option value="tonight" selected`)
+	assertNotContains(t, body, "Tomorrow Yellow Arch")
+	assertNotContains(t, body, "Friday Leadmill")
+}
+
 func TestEventsFiltersWeekAndVenue(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/events?window=week&venue=leadmill")
@@ -589,6 +600,19 @@ func TestEventsShowsEmptyState(t *testing.T) {
 	assertNotContains(t, body, "Tonight Leadmill")
 }
 
+func TestEventsFiltersWeekendAndArea(t *testing.T) {
+	server := mustFixtureServer(t)
+
+	weekendBody := renderPath(t, server, "/events?window=weekend")
+	assertContains(t, weekendBody, "Tonight Leadmill")
+	assertNotContains(t, weekendBody, "Friday Leadmill")
+
+	areaBody := renderPath(t, server, "/events?area=Neepsend")
+	assertContains(t, areaBody, "Tomorrow Yellow Arch")
+	assertContains(t, areaBody, `option value="Neepsend" selected`)
+	assertNotContains(t, areaBody, "Tonight Leadmill")
+}
+
 func TestEventsUnknownVenueBehavesLikeAllVenues(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/events?venue=missing")
@@ -607,6 +631,91 @@ func TestVenueDetailShowsEmptyState(t *testing.T) {
 	body := renderPath(t, server, "/venues/empty-room")
 
 	assertContains(t, body, "No upcoming shows listed for this venue.")
+}
+
+func TestVenueAndEventDetailShowCoverageNote(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "lescar",
+			Name:          "The Lescar",
+			Address:       "303 Sharrow Vale Road, Sheffield",
+			Neighbourhood: "Sharrow Vale",
+			Description:   "Venue",
+			Website:       "https://example.test/lescar",
+			CoverageKind:  domain.CoverageKindProgram,
+			CoverageNote:  "Programme-only coverage.",
+		}},
+		[]domain.Event{{
+			Slug:        "lescar-jazz",
+			Name:        "Lescar Jazz",
+			VenueSlug:   "lescar",
+			Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+			End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+			Genre:       "Jazz",
+			Status:      "Listed",
+			Description: "Event",
+			SourceName:  "Jazz at The Lescar manual ingest",
+			SourceURL:   "https://example.test/lescar-jazz",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+		}},
+	))
+
+	venueBody := renderPath(t, server, "/venues/lescar")
+	assertContains(t, venueBody, "Coverage note")
+	assertContains(t, venueBody, "Programme-only coverage.")
+
+	eventBody := renderPath(t, server, "/events/lescar-jazz")
+	assertContains(t, eventBody, "Coverage note")
+	assertContains(t, eventBody, "Programme-only coverage.")
+	assertContains(t, eventBody, "View official listing")
+}
+
+func TestEventDetailShowsStartOnlyCopyWhenEndIsUnknown(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+			CoverageKind:  domain.CoverageKindVenue,
+		}},
+		[]domain.Event{{
+			Slug:        "leadmill-unknown-end",
+			Name:        "Leadmill Unknown End",
+			VenueSlug:   "leadmill",
+			Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "Event",
+			SourceName:  "Leadmill manual ingest",
+			SourceURL:   "https://example.test/leadmill-unknown-end",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+		}},
+	))
+
+	body := renderPath(t, server, "/events/leadmill-unknown-end")
+	assertContains(t, body, "Starts at 20:00")
+	assertNotContains(t, body, "20:00 to")
+}
+
+func TestReadyzReturnsServiceUnavailableWhenReadinessFails(t *testing.T) {
+	server, err := NewServer(ServerDeps{
+		Catalog:      store.NewSeedStore(),
+		ReadyChecker: failingReadyChecker{},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusServiceUnavailable)
+	}
 }
 
 func TestLayoutMetadataAndActiveNav(t *testing.T) {
@@ -786,8 +895,8 @@ func TestSQLiteAdminReviewHistoryRendersOriginImportRunColumn(t *testing.T) {
 	st, server, _, path := mustReviewServerWithGroupPath(t)
 	defer st.Close()
 
-	linkedID := mustCreateWebReviewGroupForImportRun(t, st, "Linked history group", "Created from manual ingest run 12 review staging.", 1)
-	noLinkID := mustCreateWebReviewGroupForImportRun(t, st, "Offline history group", "Created from offline fixture.", 1)
+	linkedID := mustCreateWebReviewGroupForImportRun(t, st, path, "Linked history group", "Created from manual ingest run 12 review staging.", 1)
+	noLinkID := mustCreateWebReviewGroupForImportRun(t, st, path, "Offline history group", "Created from offline fixture.", 1)
 	if err := st.UpdateReviewGroupStatus(contextForTesting(), linkedID, review.StatusRejected); err != nil {
 		t.Fatalf("reject linked review group: %v", err)
 	}
@@ -814,7 +923,7 @@ func TestSQLiteAdminReviewHistoryRendersOriginImportRunColumn(t *testing.T) {
 }
 
 func TestAdminReviewHistoryHidesOriginImportRunColumnWithoutDetailSupport(t *testing.T) {
-	server, err := NewServer(reviewOnlyStoreStub{
+	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{
 		closedGroups: []review.GroupSummary{
 			{
 				ID:             1,
@@ -828,7 +937,7 @@ func TestAdminReviewHistoryHidesOriginImportRunColumnWithoutDetailSupport(t *tes
 				CandidateCount: 1,
 			},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -856,7 +965,7 @@ func TestAdminReviewShowsLatestSuccessfulImportLink(t *testing.T) {
 }
 
 func TestAdminReviewShowsLatestSuccessfulImportWithoutDetailLink(t *testing.T) {
-	server, err := NewServer(reviewImportHistoryOnlyStoreStub{})
+	server, err := NewServer(testServerDeps(reviewImportHistoryOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -892,6 +1001,30 @@ func TestAdminReviewDetailShowsOriginImportRunLinkFromNotes(t *testing.T) {
 	}
 }
 
+func TestAdminReviewDetailShowsOriginImportRunWithoutDetailLink(t *testing.T) {
+	server, err := NewServer(testServerDeps(reviewImportHistoryOnlyStoreStub{
+		reviewOnlyStoreStub: reviewOnlyStoreStub{
+			group: review.Group{
+				ID:                12,
+				Title:             "Linked review",
+				SourceName:        "Fixture ICS",
+				SourceURL:         "file:test.ics",
+				Status:            review.StatusOpen,
+				Notes:             "Created from manual ingest run 123 review staging.",
+				LatestImportRunID: 123,
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review/12")
+	assertContains(t, body, "Import run #123")
+	assertNotContains(t, body, `href="/admin/import-runs/123"`)
+	assertContains(t, body, "Run #123")
+}
+
 func TestAdminReviewDetailOmitsOriginImportRunLinkWhenUnavailable(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -914,7 +1047,7 @@ func TestAdminReviewDetailOmitsOriginImportRunLinkWhenUnavailable(t *testing.T) 
 		})
 	}
 
-	server, err := NewServer(reviewOnlyStoreStub{
+	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{
 		group: review.Group{
 			ID:           1,
 			Title:        "Fixture review",
@@ -927,7 +1060,7 @@ func TestAdminReviewDetailOmitsOriginImportRunLinkWhenUnavailable(t *testing.T) 
 				{ID: 1, Position: 1, Name: "Solo Show"},
 			},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -1001,7 +1134,7 @@ func TestAdminReviewDetailFallsBackToCandidateNumberWhenExternalIDIsMissing(t *t
 		t.Fatalf("close raw db: %v", err)
 	}
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -1345,6 +1478,50 @@ func TestAdminReviewSingletonAcceptResolvesWithCanonicalChoices(t *testing.T) {
 	assertNotContains(t, closedBody, `name="choice_name"`)
 }
 
+func TestAdminReviewSingletonAcceptPublishesUnknownEndWhenCandidateEndIsBlank(t *testing.T) {
+	st, server, groupID, path := mustReviewServerWithSingletonGroup(t)
+	defer st.Close()
+
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	db := mustRawDB(t, path)
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET end_at = ''
+		WHERE id = ?
+	`, group.Candidates[0].ID); err != nil {
+		t.Fatalf("blank candidate end field: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	form := url.Values{}
+	form.Set("action", "accept")
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+
+	event, ok := st.EventBySlug("live-solo-show-sidney-and-matilda-20260503190000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	if !event.End.IsZero() {
+		t.Fatalf("end = %v, want zero time for unknown end", event.End)
+	}
+}
+
 func TestAdminReviewClosedGroupIsReadOnlyAndRejectsPost(t *testing.T) {
 	st, server, groupID := mustReviewServerWithGroup(t)
 	defer st.Close()
@@ -1496,7 +1673,7 @@ func mustReviewServerWithGroup(t *testing.T) (*sqlitestore.Store, *Server, int64
 		t.Fatalf("create review group: %v", err)
 	}
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		_ = st.Close()
 		t.Fatalf("new server: %v", err)
@@ -1518,6 +1695,7 @@ func mustReviewServerWithGroupPathAndNotes(t *testing.T, notes string) (*sqlites
 	if err != nil {
 		t.Fatalf("open sqlite store: %v", err)
 	}
+	ensureImportRunFixtureForNotes(t, path, notes)
 
 	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
 		Title:      "Fixture review",
@@ -1558,7 +1736,7 @@ func mustReviewServerWithGroupPathAndNotes(t *testing.T, notes string) (*sqlites
 		t.Fatalf("create review group: %v", err)
 	}
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		_ = st.Close()
 		t.Fatalf("new server: %v", err)
@@ -1600,7 +1778,7 @@ func mustReviewServerWithSingletonGroup(t *testing.T) (*sqlitestore.Store, *Serv
 		t.Fatalf("create review group: %v", err)
 	}
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		_ = st.Close()
 		t.Fatalf("new server: %v", err)
@@ -1630,7 +1808,7 @@ func setWebReviewGroupUpdatedAt(db *sql.DB, groupID int64, updatedAt string) err
 	return err
 }
 
-func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store, *Server, int64, string) {
+func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store, *Server, int64, string, string) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -1639,7 +1817,7 @@ func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store
 		t.Fatalf("open sqlite store: %v", err)
 	}
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		_ = st.Close()
 		t.Fatalf("new server: %v", err)
@@ -1687,7 +1865,7 @@ func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store
 		t.Fatalf("insert snapshot: %v", err)
 	}
 
-	return st, server, runID, bodyText
+	return st, server, runID, bodyText, path
 }
 
 func mustWebSnapshotPayload(t *testing.T, result ingest.FetchResult) string {
@@ -1746,6 +1924,23 @@ func seedImportRunHistoryWithDB(db *sql.DB) error {
 	return nil
 }
 
+func ensureImportRunFixtureForNotes(t *testing.T, path, notes string) {
+	t.Helper()
+
+	importRunID, ok := review.ParseOriginImportRunID(notes)
+	if !ok {
+		return
+	}
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if _, err := db.Exec(`
+		INSERT OR IGNORE INTO import_runs (id, started_at, finished_at, status, notes)
+		VALUES (?, ?, ?, ?, ?)
+	`, importRunID, "2026-04-20T10:00:00Z", "2026-04-20T10:05:00Z", "succeeded", "fixture import run"); err != nil {
+		t.Fatalf("insert import run fixture %d: %v", importRunID, err)
+	}
+}
+
 func nullableString(value sql.NullString) any {
 	if value.Valid {
 		return value.String
@@ -1773,8 +1968,9 @@ func fullWebReviewChoices(t *testing.T, group review.Group) []review.DraftChoice
 	return choices
 }
 
-func mustCreateWebReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, title, notes string, candidateCount int) int64 {
+func mustCreateWebReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, path, title, notes string, candidateCount int) int64 {
 	t.Helper()
+	ensureImportRunFixtureForNotes(t, path, notes)
 
 	candidates := make([]review.CandidateInput, 0, candidateCount)
 	for i := 0; i < candidateCount; i++ {
@@ -1798,8 +1994,9 @@ func mustCreateWebReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, t
 	return groupID
 }
 
-func mustCreateWebPublishableReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, title, notes string) int64 {
+func mustCreateWebPublishableReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, path, title, notes string) int64 {
 	t.Helper()
+	ensureImportRunFixtureForNotes(t, path, notes)
 
 	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
 		Title:      title,
@@ -1830,21 +2027,25 @@ func mustCreateWebPublishableReviewGroupForImportRun(t *testing.T, st *sqlitesto
 
 type readOnlyStoreStub struct{}
 
-func (readOnlyStoreStub) Venues() []domain.Venue { return nil }
+func (readOnlyStoreStub) ListVenues(context.Context) ([]domain.Venue, error) { return nil, nil }
 
-func (readOnlyStoreStub) Events() []domain.Event { return nil }
+func (readOnlyStoreStub) ListEvents(context.Context) ([]domain.Event, error) { return nil, nil }
 
-func (readOnlyStoreStub) VenueBySlug(string) (domain.Venue, bool) {
-	return domain.Venue{}, false
+func (readOnlyStoreStub) LoadVenueBySlug(context.Context, string) (domain.Venue, bool, error) {
+	return domain.Venue{}, false, nil
 }
 
-func (readOnlyStoreStub) EventBySlug(string) (domain.Event, bool) {
-	return domain.Event{}, false
+func (readOnlyStoreStub) LoadEventBySlug(context.Context, string) (domain.Event, bool, error) {
+	return domain.Event{}, false, nil
 }
 
-func (readOnlyStoreStub) EventsForVenue(string) []domain.Event { return nil }
+func (readOnlyStoreStub) ListEventsForVenue(context.Context, string) ([]domain.Event, error) {
+	return nil, nil
+}
 
-func (readOnlyStoreStub) Validate() error { return nil }
+func (readOnlyStoreStub) Validate(context.Context) error { return nil }
+
+func (readOnlyStoreStub) Ready(context.Context) error { return nil }
 
 type reviewOnlyStoreStub struct {
 	readOnlyStoreStub
@@ -1929,6 +2130,12 @@ func (importHistoryWithReviewGroupsNoDetailStoreStub) ListReviewGroupsForImportR
 
 type importHistoryWithDetailNoReviewStoreStub struct {
 	importHistoryOnlyStoreStub
+}
+
+type failingReadyChecker struct{}
+
+func (failingReadyChecker) Ready(context.Context) error {
+	return fmt.Errorf("not ready")
 }
 
 func (importHistoryWithDetailNoReviewStoreStub) LoadImportRun(context.Context, int64) (ingest.ReplayRun, error) {
@@ -2057,7 +2264,7 @@ func mustFixtureServer(t *testing.T) *Server {
 func mustClockedServer(t *testing.T, st *store.Store) *Server {
 	t.Helper()
 
-	server, err := NewServer(st)
+	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -2065,6 +2272,36 @@ func mustClockedServer(t *testing.T, st *store.Store) *Server {
 		return fixtureLocalTime(2026, time.April, 19, 10, 0)
 	})
 	return server
+}
+
+func testServerDeps(value any) ServerDeps {
+	deps := ServerDeps{
+		Catalog: store.NewSeedStore(),
+	}
+	if catalog, ok := value.(store.CatalogStore); ok {
+		deps.Catalog = catalog
+	}
+	if reviewStore, ok := value.(ReviewStore); ok {
+		deps.ReviewStore = reviewStore
+	}
+	if importRunStore, ok := value.(ingest.ImportRunStore); ok {
+		deps.ImportRunStore = importRunStore
+	}
+	if replayStore, ok := value.(ingest.ReplayStore); ok {
+		deps.ReplayStore = replayStore
+	}
+	if importRunReviewGroupStore, ok := value.(ImportRunReviewGroupStore); ok {
+		deps.ImportRunReviewGroupStore = importRunReviewGroupStore
+	}
+	if secondarySourceStore, ok := value.(EventSecondarySourceInfoStore); ok {
+		deps.EventSecondarySourceStore = secondarySourceStore
+	}
+	if readyChecker, ok := value.(ReadyChecker); ok {
+		deps.ReadyChecker = readyChecker
+	} else if readyChecker, ok := deps.Catalog.(ReadyChecker); ok {
+		deps.ReadyChecker = readyChecker
+	}
+	return deps
 }
 
 func fixtureLocalTime(year int, month time.Month, day, hour, minute int) time.Time {

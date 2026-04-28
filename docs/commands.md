@@ -21,6 +21,7 @@ Environment:
 Behavior:
 
 - opens and bootstraps the SQLite database on startup
+- validates the opened store once before serving
 - serves server-rendered HTML
 - uses `modernc.org/sqlite`
 - requires writable storage for the database path
@@ -39,11 +40,13 @@ Routes:
 - `GET /admin/import-runs/{id}` read-only import run snapshot metadata
 - `POST /admin/review/{groupID}` review actions
 - `GET /healthz` plain-text health check
+- `GET /readyz` plain-text readiness check backed by a cheap store probe
 - `GET /static/site.css` embedded stylesheet
 
 `/events` query parameters:
 
-- `window=all|today|week`
+- `window=all|today|tonight|week|weekend`
+- `area={venue-neighbourhood}`
 - `venue={venue-slug}`
 
 `/admin/review` and `/admin/review/{groupID}` flash query parameters:
@@ -131,6 +134,7 @@ Stage review groups:
 - creates singleton review groups
 - reports `groups_created` and `groups_reused`
 - each staged group includes `result: created|reused`
+- each staged or reused group persists a link to the current import run
 - only runs after a successful ingest
 
 Offline review fixture:

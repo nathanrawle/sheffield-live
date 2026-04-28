@@ -20,11 +20,37 @@
 <section class="section-block">
   <h2>Review notes</h2>
   <p>{{.}}</p>
-  {{with $.ReviewDetail.OriginImportRunID}}
-  <p><a href="/admin/import-runs/{{.}}">Import run #{{.}}</a></p>
+  {{with $.ReviewDetail.Group.LatestImportRunID}}
+  <p>{{if $.HasImportRunDetail}}<a href="/admin/import-runs/{{.}}">Import run #{{.}}</a>{{else}}Import run #{{.}}{{end}}</p>
   {{end}}
 </section>
 {{end}}
+
+<section class="section-block">
+  <h2>Triage</h2>
+  <div class="review-summary">
+    <div class="review-summary-row">
+      <div class="review-summary-label">Shared venue</div>
+      <div class="review-summary-value">{{if .ReviewDetail.Group.SharedVenueSlug}}{{if .ReviewDetail.Group.SharedVenueName}}{{.ReviewDetail.Group.SharedVenueName}}{{else}}{{.ReviewDetail.Group.SharedVenueSlug}}{{end}}{{else}}Mixed venues{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Shared time</div>
+      <div class="review-summary-value">{{with .ReviewDetail.Group.SharedStartAt}}{{dateShort .}} {{timeShort .}}{{else}}Mixed times{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Authority</div>
+      <div class="review-summary-value">{{if .ReviewDetail.Group.AuthoritativeSourceEventKey}}authoritative{{else}}non-authoritative{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Latest import run</div>
+      <div class="review-summary-value">{{if .ReviewDetail.Group.LatestImportRunID}}{{if .HasImportRunDetail}}<a href="/admin/import-runs/{{.ReviewDetail.Group.LatestImportRunID}}">Run #{{.ReviewDetail.Group.LatestImportRunID}}</a>{{else}}Run #{{.ReviewDetail.Group.LatestImportRunID}}{{end}}{{else}}No linked run{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+  </div>
+</section>
 
 {{if .ReviewDetail.IsDuplicate}}
 <section class="section-block">

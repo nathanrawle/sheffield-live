@@ -1,8 +1,10 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"sheffield-live/internal/domain"
@@ -13,16 +15,17 @@ type Store struct {
 	events []domain.Event
 }
 
-type ReadOnlyStore interface {
-	Venues() []domain.Venue
-	Events() []domain.Event
-	VenueBySlug(slug string) (domain.Venue, bool)
-	EventBySlug(slug string) (domain.Event, bool)
-	EventsForVenue(venueSlug string) []domain.Event
-	Validate() error
+type CatalogStore interface {
+	ListVenues(ctx context.Context) ([]domain.Venue, error)
+	ListEvents(ctx context.Context) ([]domain.Event, error)
+	LoadVenueBySlug(ctx context.Context, slug string) (domain.Venue, bool, error)
+	LoadEventBySlug(ctx context.Context, slug string) (domain.Event, bool, error)
+	ListEventsForVenue(ctx context.Context, venueSlug string) ([]domain.Event, error)
+	Validate(ctx context.Context) error
+	Ready(ctx context.Context) error
 }
 
-var _ ReadOnlyStore = (*Store)(nil)
+var _ CatalogStore = (*Store)(nil)
 
 func NewStore(venues []domain.Venue, events []domain.Event) *Store {
 	venueCopy := make([]domain.Venue, len(venues))
@@ -47,6 +50,7 @@ func NewSeedStore() *Store {
 			Neighbourhood: "Nether Edge",
 			Description:   "An intimate Sheffield listening room hosting acoustic, folk, jazz, and songwriter bills.",
 			Website:       "https://www.cafe9sheffield.co.uk/",
+			CoverageKind:  domain.CoverageKindVenue,
 			Origin:        domain.OriginSeed,
 		},
 		{
@@ -56,6 +60,7 @@ func NewSeedStore() *Store {
 			Neighbourhood: "City Centre",
 			Description:   "A Sheffield live venue and club space hosting touring acts, tribute nights, and alternative club events.",
 			Website:       "https://www.corporation.org.uk/live/",
+			CoverageKind:  domain.CoverageKindVenue,
 			Origin:        domain.OriginSeed,
 		},
 		{
@@ -65,6 +70,7 @@ func NewSeedStore() *Store {
 			Neighbourhood: "City Centre",
 			Description:   "A long-running Sheffield venue for touring bands and club nights.",
 			Website:       "https://leadmill.co.uk/events/live-music/",
+			CoverageKind:  domain.CoverageKindVenue,
 			Origin:        domain.OriginSeed,
 		},
 		{
@@ -74,6 +80,8 @@ func NewSeedStore() *Store {
 			Neighbourhood: "Sharrow Vale",
 			Description:   "A Sheffield pub venue that hosts weekly jazz nights and occasional live music events.",
 			Website:       "http://www.jazzatthelescar.com/index.html",
+			CoverageKind:  domain.CoverageKindProgram,
+			CoverageNote:  "Current coverage follows the Jazz at The Lescar programme rather than every event at The Lescar.",
 			Origin:        domain.OriginSeed,
 		},
 		{
@@ -83,6 +91,7 @@ func NewSeedStore() *Store {
 			Neighbourhood: "Ecclesall",
 			Description:   "A Sheffield pub and live room hosting touring folk, jazz, roots, and singer-songwriter shows.",
 			Website:       "https://www.mygreystones.co.uk/events/",
+			CoverageKind:  domain.CoverageKindVenue,
 			Origin:        domain.OriginSeed,
 		},
 		{
@@ -92,6 +101,7 @@ func NewSeedStore() *Store {
 			Neighbourhood: "Neepsend",
 			Description:   "A studio and venue space for live shows, club nights, and independent promoters.",
 			Website:       "https://www.yellowarch.com/events/",
+			CoverageKind:  domain.CoverageKindVenue,
 			Origin:        domain.OriginSeed,
 		},
 		{
@@ -101,6 +111,7 @@ func NewSeedStore() *Store {
 			Neighbourhood: "Cultural Industries Quarter",
 			Description:   "A venue and gallery space with mixed bills, DJs, and late-night shows.",
 			Website:       "https://www.sidneyandmatilda.com/",
+			CoverageKind:  domain.CoverageKindVenue,
 			Origin:        domain.OriginSeed,
 		},
 	}
@@ -169,52 +180,91 @@ func NewSeedStore() *Store {
 }
 
 func (s *Store) Venues() []domain.Venue {
+	venues, _ := s.ListVenues(context.Background())
+	return venues
+}
+
+func (s *Store) ListVenues(context.Context) ([]domain.Venue, error) {
 	out := make([]domain.Venue, len(s.venues))
 	copy(out, s.venues)
-	return out
+	return out, nil
 }
 
 func (s *Store) Events() []domain.Event {
+	events, _ := s.ListEvents(context.Background())
+	return events
+}
+
+func (s *Store) ListEvents(context.Context) ([]domain.Event, error) {
 	out := make([]domain.Event, len(s.events))
 	copy(out, s.events)
-	return out
+	return out, nil
 }
 
 func (s *Store) VenueBySlug(slug string) (domain.Venue, bool) {
+	venue, ok, _ := s.LoadVenueBySlug(context.Background(), slug)
+	return venue, ok
+}
+
+func (s *Store) LoadVenueBySlug(_ context.Context, slug string) (domain.Venue, bool, error) {
 	for _, venue := range s.venues {
 		if venue.Slug == slug {
-			return venue, true
+			return venue, true, nil
 		}
 	}
-	return domain.Venue{}, false
+	return domain.Venue{}, false, nil
 }
 
 func (s *Store) EventBySlug(slug string) (domain.Event, bool) {
+	event, ok, _ := s.LoadEventBySlug(context.Background(), slug)
+	return event, ok
+}
+
+func (s *Store) LoadEventBySlug(_ context.Context, slug string) (domain.Event, bool, error) {
 	for _, event := range s.events {
 		if event.Slug == slug {
-			return event, true
+			return event, true, nil
 		}
 	}
-	return domain.Event{}, false
+	return domain.Event{}, false, nil
 }
 
 func (s *Store) EventsForVenue(venueSlug string) []domain.Event {
+	events, _ := s.ListEventsForVenue(context.Background(), venueSlug)
+	return events
+}
+
+func (s *Store) ListEventsForVenue(_ context.Context, venueSlug string) ([]domain.Event, error) {
 	var out []domain.Event
 	for _, event := range s.events {
 		if event.VenueSlug == venueSlug {
 			out = append(out, event)
 		}
 	}
-	return out
+	return out, nil
 }
 
-func (s *Store) Validate() error {
+func (s *Store) Validate(_ context.Context) error {
 	for _, event := range s.events {
-		if _, ok := s.VenueBySlug(event.VenueSlug); !ok {
+		if _, ok, _ := s.LoadVenueBySlug(context.Background(), event.VenueSlug); !ok {
 			return fmt.Errorf("event %q references missing venue %q", event.Slug, event.VenueSlug)
+		}
+		if err := event.ValidateCanonical(); err != nil {
+			return fmt.Errorf("event %q %w", event.Slug, err)
 		}
 	}
 	return nil
+}
+
+func (s *Store) Ready(context.Context) error {
+	return nil
+}
+
+func VenueCoverageKind(venue domain.Venue) domain.CoverageKind {
+	if strings.TrimSpace(string(venue.CoverageKind)) == "" {
+		return domain.CoverageKindVenue
+	}
+	return venue.CoverageKind
 }
 
 func sortEvents(events []domain.Event) {

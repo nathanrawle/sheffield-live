@@ -41,8 +41,12 @@
         <tr>
           <th scope="col">Review group</th>
           <th scope="col">Status</th>
+          <th scope="col">Venue</th>
+          <th scope="col">Time</th>
+          <th scope="col">Authority</th>
           <th scope="col">Candidates</th>
           <th scope="col">Draft choices</th>
+          <th scope="col">Latest run</th>
           <th scope="col">Updated</th>
         </tr>
       </thead>
@@ -51,8 +55,12 @@
         <tr>
           <td>{{if $.HasReviewStorage}}<a href="/admin/review/{{.ID}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
           <td>{{.Status}}</td>
+          <td>{{if .SharedVenueSlug}}{{if .SharedVenueName}}{{.SharedVenueName}}{{else}}{{.SharedVenueSlug}}{{end}}{{else}}Mixed venues{{end}}</td>
+          <td>{{with .SharedStartAt}}{{dateShort .}} {{timeShort .}}{{else}}Mixed times{{end}}</td>
+          <td>{{if .Authoritative}}authoritative{{else}}non-authoritative{{end}}</td>
           <td>{{.CandidateCount}}</td>
           <td>{{.DraftCount}}</td>
+          <td>{{if .LatestImportRunID}}<a href="/admin/import-runs/{{.LatestImportRunID}}">Run #{{.LatestImportRunID}}</a>{{else}}&mdash;{{end}}</td>
           <td>{{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</td>
         </tr>
         {{end}}

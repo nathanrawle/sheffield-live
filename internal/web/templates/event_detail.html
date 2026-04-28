@@ -4,13 +4,15 @@
     <h1>{{.Event.Name}}</h1>
     {{with originLabel .Event.Origin}}<p class="origin-badge">{{.}}</p>{{end}}
     <p class="lede">{{.Event.Description}}</p>
+    <p><a class="primary-button" href="{{.Event.SourceURL}}">View official listing</a></p>
+    <p class="review-group-meta">Checked from {{.Event.SourceName}} on {{dateShort .Event.LastChecked}}.</p>
   </header>
 
   <section class="detail-grid">
     <div class="detail-card">
       <h2>When</h2>
       <p>{{dateLong .Event.Start}}</p>
-      <p>{{timeShort .Event.Start}} to {{timeShort .Event.End}}</p>
+      <p>{{if .Event.HasEnd}}{{timeShort .Event.Start}} to {{timeShort .Event.End}}{{else}}Starts at {{timeShort .Event.Start}}{{end}}</p>
       <p>{{.Event.Genre}} · {{.Event.Status}}</p>
     </div>
     <div class="detail-card">
@@ -21,14 +23,12 @@
     </div>
   </section>
 
+  {{with .Venue.CoverageNote}}
   <section class="section-block">
-    <h2>Source</h2>
-    <p>
-      Checked from
-      <a href="{{.Event.SourceURL}}">{{.Event.SourceName}}</a>
-      on {{dateShort .Event.LastChecked}}.
-    </p>
+    <h2>Coverage note</h2>
+    <p>{{.}}</p>
   </section>
+  {{end}}
 
   {{if .EventSecondarySources}}
   <section class="section-block">

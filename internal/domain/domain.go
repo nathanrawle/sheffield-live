@@ -1,14 +1,21 @@
 package domain
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type Origin string
+type CoverageKind string
 
 const (
 	OriginSeed Origin = "seed"
 	OriginTest Origin = "test"
 	OriginDev  Origin = "dev"
 	OriginLive Origin = "live"
+
+	CoverageKindVenue   CoverageKind = "venue"
+	CoverageKindProgram CoverageKind = "program"
 )
 
 type Venue struct {
@@ -18,6 +25,8 @@ type Venue struct {
 	Neighbourhood string
 	Description   string
 	Website       string
+	CoverageKind  CoverageKind
+	CoverageNote  string
 	Origin        Origin
 }
 
@@ -34,4 +43,18 @@ type Event struct {
 	SourceURL   string
 	LastChecked time.Time
 	Origin      Origin
+}
+
+func (e Event) HasEnd() bool {
+	return !e.End.IsZero()
+}
+
+func (e Event) ValidateCanonical() error {
+	if e.Start.IsZero() {
+		return errors.New("start time is required")
+	}
+	if e.HasEnd() && !e.End.After(e.Start) {
+		return errors.New("end time must be later than start time")
+	}
+	return nil
 }

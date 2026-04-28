@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -29,7 +30,19 @@ func run() error {
 		}
 	}()
 
-	server, err := web.NewServer(st)
+	if err := st.Validate(context.Background()); err != nil {
+		return err
+	}
+
+	server, err := web.NewServer(web.ServerDeps{
+		Catalog:                   st,
+		ReviewStore:               st,
+		ImportRunStore:            st,
+		ReplayStore:               st,
+		ImportRunReviewGroupStore: st,
+		EventSecondarySourceStore: st,
+		ReadyChecker:              st,
+	})
 	if err != nil {
 		return err
 	}

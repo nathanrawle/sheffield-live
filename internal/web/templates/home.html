@@ -4,6 +4,7 @@
   <p class="lede">
     Shows from Sheffield venues, gathered into one place and linked back to the original listings.
   </p>
+  <p class="review-group-meta"><a href="/events?window=tonight">Tonight</a> · <a href="/events?window=week">This week</a> · <a href="/events?window=weekend">This weekend</a></p>
 </section>
 
 <section class="section-block">
@@ -16,7 +17,7 @@
     <a class="event-card" href="/events/{{.Slug}}">
       <span class="event-date">{{dateShort .Start}} · {{timeShort .Start}}</span>
       <span class="event-title">{{.Name}}</span>
-      <span class="event-meta">{{venueName .VenueSlug}} · {{.Genre}}</span>
+      <span class="event-meta">{{venueName $.VenueNames .VenueSlug}} · {{.Genre}}</span>
       {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
     </a>
     {{else}}
@@ -35,7 +36,7 @@
     <a class="event-card" href="/events/{{.Slug}}">
       <span class="event-date">{{dateShort .Start}} · {{timeShort .Start}}</span>
       <span class="event-title">{{.Name}}</span>
-      <span class="event-meta">{{venueName .VenueSlug}} · {{.Genre}}</span>
+      <span class="event-meta">{{venueName $.VenueNames .VenueSlug}} · {{.Genre}}</span>
       {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
     </a>
     {{else}}

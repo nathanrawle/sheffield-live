@@ -130,6 +130,38 @@ func OwnedVenueSlugForSource(source string) string {
 	return cfg.OwnedVenueSlug
 }
 
+func ReviewStageSourceNameForSource(source string) string {
+	cfg, err := configForSource(source)
+	if err != nil {
+		source = strings.TrimSpace(source)
+		if source == "" {
+			return reviewStageDefaultSourceName
+		}
+		return source + " manual ingest"
+	}
+	if strings.TrimSpace(cfg.ReviewStageSourceName) != "" {
+		return cfg.ReviewStageSourceName
+	}
+	if strings.TrimSpace(cfg.Key) == "" || cfg.Key == DefaultSource {
+		return reviewStageDefaultSourceName
+	}
+	return cfg.Key + " manual ingest"
+}
+
+func OwnedVenueSlugForReviewStageSourceName(sourceName string) string {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		return ""
+	}
+	for _, cfg := range sourceRegistry {
+		if strings.TrimSpace(cfg.ReviewStageSourceName) != sourceName {
+			continue
+		}
+		return strings.TrimSpace(cfg.OwnedVenueSlug)
+	}
+	return ""
+}
+
 func detectReplaySourcePageSnapshot(decoded []decodedReplaySnapshot) (sourceConfig, decodedReplaySnapshot, error) {
 	var matchedCfg sourceConfig
 	var matchedSnapshot decodedReplaySnapshot

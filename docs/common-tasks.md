@@ -54,7 +54,7 @@ The Greystones also uses the same pattern:
 go run ./cmd/ingest -source the-greystones -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
-Sidney & Matilda and Leadmill snapshot the source page plus linked ICS payloads. Yellow Arch, Cafe No. 9, and Jazz at The Lescar snapshot only the source page and parse candidates directly from that page. The Greystones snapshots the source page plus linked month pages. `-limit` caps linked ICS or linked month-page fetches and parsed source-page candidates for direct source-page parsers. All commands print a JSON report.
+Sidney & Matilda and Leadmill snapshot the source page plus linked ICS payloads. Yellow Arch, Cafe No. 9, and Jazz at The Lescar snapshot only the source page and parse candidates directly from that page. The Greystones and Corporation snapshot the source page plus linked detail pages. `-limit` caps linked ICS or linked detail-page fetches and parsed source-page candidates for direct source-page parsers. All commands print a JSON report.
 
 ## Stage review groups after ingest
 
@@ -62,7 +62,7 @@ Sidney & Matilda and Leadmill snapshot the source page plus linked ICS payloads.
 go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-review-groups
 ```
 
-This adds duplicate and singleton review groups after a successful ingest, and reruns reuse existing groups when the staged content matches.
+This adds duplicate and singleton review groups after a successful ingest. Reruns reuse existing groups when the staged content matches and record the new import-run link in the persisted provenance table.
 
 ## Replay a stored ingest run
 

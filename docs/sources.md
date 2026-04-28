@@ -5,10 +5,11 @@
 The current manual source pipeline supports Sidney & Matilda, Yellow Arch, Cafe No. 9, Jazz at The Lescar, The Greystones, Leadmill, and Corporation.
 
 Sources are registered in code with source metadata plus a page-processing mode. That mode decides whether ingest expands the page into linked ICS fetches or parses candidates directly from the stored page snapshot.
+Owned-venue authority also lives in that registry. The registry is the only place that maps a source key or review-stage source name to an owned venue slug.
 
 Every ingest run fetches the source page and stores a raw source-page snapshot.
 
-After that, parsing depends on the source:
+After that, parsing depends on the source mode:
 
 - Sidney & Matilda extracts ICS export links from the source page, fetches each ICS feed, stores raw ICS snapshots, and parses candidates, skips, and parse errors from ICS.
 - Cafe No. 9 parses music listings directly from the WeGotTickets organiser page snapshot and filters out offsite and non-music rows.
@@ -38,8 +39,8 @@ Snapshot payloads are stored as JSON envelopes that contain the response body in
 `cmd/ingest` can stage review groups from a successful ingest report.
 
 Review staging creates duplicate clusters and singleton new listings. Duplicate review groups support field-level canonical choices plus a canonical draft summary. Singleton review groups support accept or reject.
-Review staging uses a durable key, so source metadata changes alone do not create a new group, and closed groups are not reopened.
-When every candidate in a staged group agrees on one owned-venue source identity, the group persists that authoritative source name, URL, and event key for later resolution.
+Review staging uses a durable key, so source metadata changes alone do not create a new group, closed groups are not reopened, and reruns link the group to the current import run through the persisted `import_run_review_groups` relation.
+When every candidate in a staged group agrees on one owned-venue source identity from a registry-owned venue source, the group persists that authoritative source name, URL, and event key for later resolution. Non-owned or program-only sources such as Jazz at The Lescar do not mint authoritative event identities.
 
 Replay auto-detects the source from stored page snapshot metadata, reconstructs the same source-specific extraction path from stored snapshots, validates the snapshot envelope version and SHA-256, and refuses missing or ambiguous snapshot matches.
 
@@ -54,6 +55,7 @@ When a review group resolves:
 - selected review fields map to `internal/domain.Event`
 - authoritative groups pin source name and source URL from the persisted authoritative tuple
 - non-authoritative groups let source name and source URL fall back to the review-group source only when the selected field is blank
+- canonical end times may be omitted; unknown canonical ends publish as `events.end_at = NULL`
 - the venue must already exist
 - the source row is ensured transactionally
 - authoritative groups resolve through `event_source_links` identity before any slug-based publish path

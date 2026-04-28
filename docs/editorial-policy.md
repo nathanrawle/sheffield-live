@@ -38,6 +38,9 @@ The canonical event policy is:
 - avoid duplicate public events
 - prefer accurate venue names and links
 - keep descriptions neutral and factual
+- require a canonical start time
+- allow a canonical end time to be unknown
+- when present, require the canonical end time to be later than the start time
 - keep one canonical slug per venue and event
 - retain the source link
 - treat freshness as source-check metadata rather than marketing

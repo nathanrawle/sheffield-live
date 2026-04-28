@@ -15,6 +15,7 @@ import (
 
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
+	"sheffield-live/internal/review"
 	seedstore "sheffield-live/internal/store"
 )
 
@@ -26,6 +27,9 @@ const (
 	schemaVersionV4   = 4
 	schemaVersionV5   = 5
 	schemaVersionV6   = 6
+	schemaVersionV7   = 7
+	schemaVersionV8   = 8
+	schemaVersionV9   = 9
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -40,6 +44,9 @@ var migrations = []struct {
 	{version: schemaVersionV4, path: "migrations/0004_event_source_links.sql"},
 	{version: schemaVersionV5, path: "migrations/0005_review_group_authoritative_link.sql"},
 	{version: schemaVersionV6, path: "migrations/0006_event_secondary_source_info.sql"},
+	{version: schemaVersionV7, path: "migrations/0007_import_run_review_groups.sql"},
+	{version: schemaVersionV8, path: "migrations/0008_venue_coverage.sql"},
+	{version: schemaVersionV9, path: "migrations/0009_events_nullable_end_at.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -49,7 +56,7 @@ type Store struct {
 	db *sql.DB
 }
 
-var _ seedstore.ReadOnlyStore = (*Store)(nil)
+var _ seedstore.CatalogStore = (*Store)(nil)
 var _ ingest.ImportRunStore = (*Store)(nil)
 
 type queryer interface {
@@ -110,8 +117,17 @@ func Open(path string) (st *Store, err error) {
 	if err := bootstrapIfEmpty(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: bootstrap seed data: %w", path, err)
 	}
+	if err := backfillReviewGroupImportRunLinks(ctx, tx); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: backfill review group import-run links: %w", path, err)
+	}
 	if err := backfillOpenReviewGroupsAuthoritativeLinks(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill review group authoritative links: %w", path, err)
+	}
+	if err := backfillCanonicalUnknownEnds(ctx, tx); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: backfill canonical unknown ends: %w", path, err)
+	}
+	if err := auditCanonicalEqualTimeEnds(ctx, tx); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: audit canonical equal-time ends: %w", path, err)
 	}
 	if err := validate(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: validate store: %w", path, err)
@@ -132,15 +148,27 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Venues() []domain.Venue {
-	venues, err := loadVenues(context.Background(), s.db)
-	if err != nil {
-		return nil
-	}
+	venues, _ := s.ListVenues(context.Background())
 	return venues
 }
 
+func (s *Store) ListVenues(ctx context.Context) ([]domain.Venue, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite store is not open")
+	}
+	return loadVenues(ctx, s.db)
+}
+
 func (s *Store) Events() []domain.Event {
-	events, err := loadEvents(context.Background(), s.db, `
+	events, _ := s.ListEvents(context.Background())
+	return events
+}
+
+func (s *Store) ListEvents(ctx context.Context) ([]domain.Event, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite store is not open")
+	}
+	return loadEvents(ctx, s.db, `
 		SELECT
 			e.slug,
 			e.name,
@@ -159,26 +187,30 @@ func (s *Store) Events() []domain.Event {
 		JOIN sources s ON s.id = e.source_id
 		ORDER BY e.start_at, e.slug
 	`)
-	if err != nil {
-		return nil
-	}
-	return events
 }
 
 func (s *Store) VenueBySlug(slug string) (domain.Venue, bool) {
-	venue, ok, err := loadVenueBySlug(context.Background(), s.db, slug)
-	if err != nil || !ok {
-		return domain.Venue{}, false
+	venue, ok, _ := s.LoadVenueBySlug(context.Background(), slug)
+	return venue, ok
+}
+
+func (s *Store) LoadVenueBySlug(ctx context.Context, slug string) (domain.Venue, bool, error) {
+	if s == nil || s.db == nil {
+		return domain.Venue{}, false, errors.New("sqlite store is not open")
 	}
-	return venue, true
+	return loadVenueBySlug(ctx, s.db, slug)
 }
 
 func (s *Store) EventBySlug(slug string) (domain.Event, bool) {
-	event, ok, err := loadEventBySlug(context.Background(), s.db, slug)
-	if err != nil || !ok {
-		return domain.Event{}, false
+	event, ok, _ := s.LoadEventBySlug(context.Background(), slug)
+	return event, ok
+}
+
+func (s *Store) LoadEventBySlug(ctx context.Context, slug string) (domain.Event, bool, error) {
+	if s == nil || s.db == nil {
+		return domain.Event{}, false, errors.New("sqlite store is not open")
 	}
-	return event, true
+	return loadEventBySlug(ctx, s.db, slug)
 }
 
 func (s *Store) EventSecondarySourceInfoByEventSlug(ctx context.Context, slug string) ([]seedstore.EventSecondarySourceInfo, error) {
@@ -189,7 +221,15 @@ func (s *Store) EventSecondarySourceInfoByEventSlug(ctx context.Context, slug st
 }
 
 func (s *Store) EventsForVenue(venueSlug string) []domain.Event {
-	events, err := loadEvents(context.Background(), s.db, `
+	events, _ := s.ListEventsForVenue(context.Background(), venueSlug)
+	return events
+}
+
+func (s *Store) ListEventsForVenue(ctx context.Context, venueSlug string) ([]domain.Event, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite store is not open")
+	}
+	return loadEvents(ctx, s.db, `
 		SELECT
 			e.slug,
 			e.name,
@@ -209,14 +249,24 @@ func (s *Store) EventsForVenue(venueSlug string) []domain.Event {
 		WHERE v.slug = ?
 		ORDER BY e.start_at, e.slug
 	`, venueSlug)
-	if err != nil {
-		return nil
-	}
-	return events
 }
 
-func (s *Store) Validate() error {
-	return validate(context.Background(), s.db)
+func (s *Store) Validate(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	return validate(ctx, s.db)
+}
+
+func (s *Store) Ready(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	var ready int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1`).Scan(&ready); err != nil {
+		return err
+	}
+	return nil
 }
 
 func migrate(ctx context.Context, tx *sql.Tx) error {
@@ -224,8 +274,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV6 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV6)
+	if version > schemaVersionV9 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV9)
 	}
 
 	for _, migration := range migrations {
@@ -311,9 +361,9 @@ func bootstrapSeedData(ctx context.Context, tx *sql.Tx) error {
 
 func insertVenue(ctx context.Context, tx execer, venue domain.Venue) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO venues (slug, name, address, neighbourhood, description, website, origin)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, venue.Slug, venue.Name, venue.Address, venue.Neighbourhood, venue.Description, venue.Website, string(venue.Origin))
+		INSERT INTO venues (slug, name, address, neighbourhood, description, website, coverage_kind, coverage_note, origin)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, venue.Slug, venue.Name, venue.Address, venue.Neighbourhood, venue.Description, venue.Website, normalizedCoverageKind(venue), strings.TrimSpace(venue.CoverageNote), string(venue.Origin))
 	if err != nil {
 		return 0, err
 	}
@@ -348,7 +398,7 @@ func insertEvent(ctx context.Context, tx execer, event domain.Event, venueID, so
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
-		formatRFC3339UTC(event.End),
+		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
 		formatRFC3339UTC(event.LastChecked),
 		string(event.Origin))
@@ -369,6 +419,12 @@ func validate(ctx context.Context, q queryer) error {
 		return err
 	}
 	if err := validateDanglingEventSecondarySourceInfoRefs(ctx, q); err != nil {
+		return err
+	}
+	if err := validateDanglingImportRunReviewGroupRefs(ctx, q); err != nil {
+		return err
+	}
+	if err := auditCanonicalEqualTimeEnds(ctx, q); err != nil {
 		return err
 	}
 	if _, err := loadEvents(ctx, q, `
@@ -477,6 +533,27 @@ func validateDanglingEventSecondarySourceInfoRefs(ctx context.Context, q queryer
 	return fmt.Errorf("event secondary source info %d references missing source or event", infoID)
 }
 
+func validateDanglingImportRunReviewGroupRefs(ctx context.Context, q queryer) error {
+	row := q.QueryRowContext(ctx, `
+		SELECT l.import_run_id, l.review_group_id
+		FROM import_run_review_groups l
+		LEFT JOIN import_runs ir ON ir.id = l.import_run_id
+		LEFT JOIN review_groups rg ON rg.id = l.review_group_id
+		WHERE ir.id IS NULL OR rg.id IS NULL
+		ORDER BY l.review_group_id, l.import_run_id
+		LIMIT 1
+	`)
+	var importRunID int64
+	var reviewGroupID int64
+	switch err := row.Scan(&importRunID, &reviewGroupID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	return fmt.Errorf("import-run review-group link (%d, %d) references missing rows", importRunID, reviewGroupID)
+}
+
 func countRows(ctx context.Context, q queryer, table string) (int, error) {
 	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", table)
 	row := q.QueryRowContext(ctx, query)
@@ -522,7 +599,7 @@ func tableExists(ctx context.Context, q queryer, table string) (bool, error) {
 
 func loadVenues(ctx context.Context, q queryer) ([]domain.Venue, error) {
 	rows, err := q.QueryContext(ctx, `
-		SELECT slug, name, address, neighbourhood, description, website, origin
+		SELECT slug, name, address, neighbourhood, description, website, coverage_kind, coverage_note, origin
 		FROM venues
 		ORDER BY id
 	`)
@@ -534,10 +611,12 @@ func loadVenues(ctx context.Context, q queryer) ([]domain.Venue, error) {
 	var venues []domain.Venue
 	for rows.Next() {
 		var venue domain.Venue
+		var coverageKind string
 		var origin string
-		if err := rows.Scan(&venue.Slug, &venue.Name, &venue.Address, &venue.Neighbourhood, &venue.Description, &venue.Website, &origin); err != nil {
+		if err := rows.Scan(&venue.Slug, &venue.Name, &venue.Address, &venue.Neighbourhood, &venue.Description, &venue.Website, &coverageKind, &venue.CoverageNote, &origin); err != nil {
 			return nil, err
 		}
+		venue.CoverageKind = domain.CoverageKind(normalizedCoverageKindValue(coverageKind))
 		venue.Origin = domain.Origin(origin)
 		venues = append(venues, venue)
 	}
@@ -549,19 +628,21 @@ func loadVenues(ctx context.Context, q queryer) ([]domain.Venue, error) {
 
 func loadVenueBySlug(ctx context.Context, q queryer, slug string) (domain.Venue, bool, error) {
 	row := q.QueryRowContext(ctx, `
-		SELECT slug, name, address, neighbourhood, description, website, origin
+		SELECT slug, name, address, neighbourhood, description, website, coverage_kind, coverage_note, origin
 		FROM venues
 		WHERE slug = ?
 		LIMIT 1
 	`, slug)
 	var venue domain.Venue
+	var coverageKind string
 	var origin string
-	switch err := row.Scan(&venue.Slug, &venue.Name, &venue.Address, &venue.Neighbourhood, &venue.Description, &venue.Website, &origin); {
+	switch err := row.Scan(&venue.Slug, &venue.Name, &venue.Address, &venue.Neighbourhood, &venue.Description, &venue.Website, &coverageKind, &venue.CoverageNote, &origin); {
 	case errors.Is(err, sql.ErrNoRows):
 		return domain.Venue{}, false, nil
 	case err != nil:
 		return domain.Venue{}, false, err
 	}
+	venue.CoverageKind = domain.CoverageKind(normalizedCoverageKindValue(coverageKind))
 	venue.Origin = domain.Origin(origin)
 	return venue, true, nil
 }
@@ -681,7 +762,7 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 	var event domain.Event
 	var origin string
 	var startText string
-	var endText string
+	var endText sql.NullString
 	var lastCheckedText string
 	if err := rows.Scan(
 		&event.Slug,
@@ -704,7 +785,7 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 	if err != nil {
 		return domain.Event{}, fmt.Errorf("parse event %q start time: %w", event.Slug, err)
 	}
-	end, err := parseRFC3339UTC(endText)
+	end, err := parseNullableRFC3339UTC(endText)
 	if err != nil {
 		return domain.Event{}, fmt.Errorf("parse event %q end time: %w", event.Slug, err)
 	}
@@ -717,11 +798,21 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 	event.End = end
 	event.LastChecked = lastChecked
 	event.Origin = domain.Origin(origin)
+	if err := event.ValidateCanonical(); err != nil {
+		return domain.Event{}, fmt.Errorf("event %q %w", event.Slug, err)
+	}
 	return event, nil
 }
 
 func formatRFC3339UTC(t time.Time) string {
 	return t.UTC().Format(rfc3339Timestamp)
+}
+
+func nullableRFC3339UTC(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return formatRFC3339UTC(t)
 }
 
 func parseRFC3339UTC(value string) (time.Time, error) {
@@ -730,6 +821,13 @@ func parseRFC3339UTC(value string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return parsed.UTC(), nil
+}
+
+func parseNullableRFC3339UTC(value sql.NullString) (time.Time, error) {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return time.Time{}, nil
+	}
+	return parseRFC3339UTC(value.String)
 }
 
 func readMigration(path string) (string, error) {
@@ -746,4 +844,160 @@ func dsnForPath(path string) string {
 		return "file://" + slashed + "?_pragma=foreign_keys(1)"
 	}
 	return "file:" + slashed + "?_pragma=foreign_keys(1)"
+}
+
+func backfillCanonicalUnknownEnds(ctx context.Context, tx interface {
+	execer
+	queryer
+}) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT
+			e.id,
+			e.slug,
+			v.slug,
+			s.name,
+			EXISTS(
+				SELECT 1
+				FROM event_source_links l
+				WHERE l.event_id = e.id
+					AND l.source_id = e.source_id
+					AND l.is_authoritative = 1
+			)
+		FROM events e
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE e.origin = ?
+			AND e.end_at IS NOT NULL
+			AND e.start_at = e.end_at
+		ORDER BY e.id
+	`, string(domain.OriginLive))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var eventID int64
+		var eventSlug string
+		var venueSlug string
+		var sourceName string
+		var authoritative int
+		if err := rows.Scan(&eventID, &eventSlug, &venueSlug, &sourceName, &authoritative); err != nil {
+			return err
+		}
+		if authoritative != 1 {
+			continue
+		}
+		if strings.TrimSpace(ingest.OwnedVenueSlugForReviewStageSourceName(sourceName)) != strings.TrimSpace(venueSlug) {
+			continue
+		}
+		ids = append(ids, eventID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, eventID := range ids {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE events
+			SET end_at = NULL
+			WHERE id = ?
+		`, eventID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func auditCanonicalEqualTimeEnds(ctx context.Context, q queryer) error {
+	row := q.QueryRowContext(ctx, `
+		SELECT slug
+		FROM events
+		WHERE end_at IS NOT NULL
+			AND start_at = end_at
+		ORDER BY id
+		LIMIT 1
+	`)
+	var slug string
+	switch err := row.Scan(&slug); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	return fmt.Errorf("event %q still uses placeholder end_at equal to start_at; set a real end or clear end_at to NULL", slug)
+}
+
+func backfillReviewGroupImportRunLinks(ctx context.Context, tx interface {
+	execer
+	queryer
+}) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, notes, created_at
+		FROM review_groups
+		ORDER BY id
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var groupID int64
+		var notes string
+		var createdAt string
+		if err := rows.Scan(&groupID, &notes, &createdAt); err != nil {
+			return err
+		}
+		importRunID, ok := review.ParseOriginImportRunID(notes)
+		if !ok {
+			continue
+		}
+		linkedAt, err := parseRFC3339UTC(createdAt)
+		if err != nil {
+			return fmt.Errorf("parse review group %d created_at for import-run backfill: %w", groupID, err)
+		}
+		if err := linkReviewGroupToImportRunTx(ctx, tx, importRunID, groupID, linkedAt); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func linkReviewGroupToImportRunTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, importRunID, reviewGroupID int64, linkedAt time.Time) error {
+	if importRunID <= 0 || reviewGroupID <= 0 {
+		return nil
+	}
+	var exists int
+	switch err := tx.QueryRowContext(ctx, `
+		SELECT 1
+		FROM import_runs
+		WHERE id = ?
+		LIMIT 1
+	`, importRunID).Scan(&exists); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO import_run_review_groups (import_run_id, review_group_id, linked_at)
+		VALUES (?, ?, ?)
+	`, importRunID, reviewGroupID, formatRFC3339UTC(linkedAt))
+	return err
+}
+
+func normalizedCoverageKind(venue domain.Venue) string {
+	return normalizedCoverageKindValue(string(venue.CoverageKind))
+}
+
+func normalizedCoverageKindValue(value string) string {
+	if strings.TrimSpace(value) == string(domain.CoverageKindProgram) {
+		return string(domain.CoverageKindProgram)
+	}
+	return string(domain.CoverageKindVenue)
 }

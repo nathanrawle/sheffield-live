@@ -5,6 +5,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -30,11 +31,13 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type Server struct {
-	store                     store.ReadOnlyStore
+	catalog                   store.CatalogStore
 	reviewStore               ReviewStore
 	importRunStore            ingest.ImportRunStore
 	replayStore               ingest.ReplayStore
 	importRunReviewGroupStore ImportRunReviewGroupStore
+	secondarySourceStore      EventSecondarySourceInfoStore
+	readyChecker              ReadyChecker
 	localLocation             *time.Location
 	clock                     func() time.Time
 	layout                    *template.Template
@@ -61,6 +64,20 @@ type EventSecondarySourceInfoStore interface {
 	EventSecondarySourceInfoByEventSlug(ctx context.Context, slug string) ([]store.EventSecondarySourceInfo, error)
 }
 
+type ReadyChecker interface {
+	Ready(ctx context.Context) error
+}
+
+type ServerDeps struct {
+	Catalog                   store.CatalogStore
+	ReviewStore               ReviewStore
+	ImportRunStore            ingest.ImportRunStore
+	ReplayStore               ingest.ReplayStore
+	ImportRunReviewGroupStore ImportRunReviewGroupStore
+	EventSecondarySourceStore EventSecondarySourceInfoStore
+	ReadyChecker              ReadyChecker
+}
+
 type PageData struct {
 	SiteName                 string
 	PageTitle                string
@@ -71,13 +88,17 @@ type PageData struct {
 	Events                   []domain.Event
 	EventGroups              []EventGroup
 	EventFilters             EventFilters
+	VenueNames               map[string]string
+	Areas                    []string
 	Event                    domain.Event
 	EventSecondarySources    []store.EventSecondarySourceInfo
 	Venues                   []domain.Venue
 	Venue                    domain.Venue
 	FeaturedEvent            domain.Event
 	TodayEvents              []domain.Event
+	TonightEvents            []domain.Event
 	ThisWeekEvents           []domain.Event
+	ThisWeekendEvents        []domain.Event
 	VenueEvents              []domain.Event
 	ReviewGroups             []review.GroupSummary
 	ReviewHistoryRows        []ReviewHistoryRow
@@ -100,13 +121,13 @@ type EventGroup struct {
 type EventFilters struct {
 	Window string
 	Venue  string
+	Area   string
 }
 
 type ReviewDetail struct {
 	Group                review.Group
 	IsDuplicate          bool
 	IsSingleton          bool
-	OriginImportRunID    int64
 	CanonicalSummaryRows []ReviewCanonicalSummaryRow
 	Rows                 []ReviewFieldRow
 	Preview              []ReviewPreviewRow
@@ -115,7 +136,6 @@ type ReviewDetail struct {
 
 type ReviewHistoryRow struct {
 	review.GroupSummary
-	OriginImportRunID int64
 }
 
 type ReviewFieldRow struct {
@@ -192,9 +212,12 @@ type adminSnapshotEnvelope struct {
 	Truncated bool                           `json:"truncated"`
 }
 
-func NewServer(st store.ReadOnlyStore) (*Server, error) {
-	if err := st.Validate(); err != nil {
-		return nil, fmt.Errorf("validate store: %w", err)
+func NewServer(deps ServerDeps) (*Server, error) {
+	if deps.Catalog == nil {
+		return nil, errors.New("catalog store is required")
+	}
+	if err := deps.Catalog.Validate(context.Background()); err != nil {
+		return nil, fmt.Errorf("validate catalog store: %w", err)
 	}
 
 	localLocation, err := time.LoadLocation("Europe/London")
@@ -248,12 +271,14 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 			}
 			return t.In(localLocation).Format("15:04")
 		},
-		"venueName": func(slug string) string {
-			venue, ok := st.VenueBySlug(slug)
-			if !ok {
+		"venueName": func(venueNames map[string]string, slug string) string {
+			if venueNames == nil {
 				return slug
 			}
-			return venue.Name
+			if name := strings.TrimSpace(venueNames[slug]); name != "" {
+				return name
+			}
+			return slug
 		},
 		"year":        func(t time.Time) string { return t.In(localLocation).Format("2006") },
 		"joinStrings": func(values []string, sep string) string { return strings.Join(values, sep) },
@@ -291,11 +316,13 @@ func NewServer(st store.ReadOnlyStore) (*Server, error) {
 	}
 
 	return &Server{
-		store:                     st,
-		reviewStore:               reviewStoreFor(st),
-		importRunStore:            importRunStoreFor(st),
-		replayStore:               replayStoreFor(st),
-		importRunReviewGroupStore: importRunReviewGroupStoreFor(st),
+		catalog:                   deps.Catalog,
+		reviewStore:               deps.ReviewStore,
+		importRunStore:            deps.ImportRunStore,
+		replayStore:               deps.ReplayStore,
+		importRunReviewGroupStore: deps.ImportRunReviewGroupStore,
+		secondarySourceStore:      deps.EventSecondarySourceStore,
+		readyChecker:              deps.ReadyChecker,
 		localLocation:             localLocation,
 		clock:                     func() time.Time { return time.Now().UTC() },
 		layout:                    layout,
@@ -319,6 +346,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleVenues(w, r)
 	case cleaned == "/healthz":
 		s.handleHealthz(w, r)
+	case cleaned == "/readyz":
+		s.handleReadyz(w, r)
 	case cleaned == "/admin/review":
 		s.handleAdminReview(w, r)
 	case cleaned == "/admin/review/history":
@@ -706,42 +735,65 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		HasReviewStorage:   s.reviewStore != nil,
 		Flash:              flash,
 	}
-	detail := buildReviewDetail(group)
-	if s.replayStore != nil {
-		detail.OriginImportRunID, _ = review.ParseOriginImportRunID(group.Notes)
-	}
-	data.ReviewDetail = detail
+	data.ReviewDetail = buildReviewDetail(group)
 	s.renderPage(w, "templates/admin_review_detail.html", data)
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
-	events := sortEventsForDisplay(upcomingEvents(s.store.Events(), now, s.localLocation))
+	venues, err := s.catalog.ListVenues(r.Context())
+	if err != nil {
+		http.Error(w, "load venues", http.StatusInternalServerError)
+		return
+	}
+	events, err := s.catalog.ListEvents(r.Context())
+	if err != nil {
+		http.Error(w, "load events", http.StatusInternalServerError)
+		return
+	}
+	events = sortEventsForDisplay(upcomingEvents(events, now, s.localLocation))
 	todayEvents := filterEventsByWindow(events, now, s.localLocation, "today")
+	tonightEvents := filterEventsByWindow(events, now, s.localLocation, "tonight")
 	thisWeekEvents := filterEventsByWindow(events, now, s.localLocation, "week")
+	thisWeekendEvents := filterEventsByWindow(events, now, s.localLocation, "weekend")
 	thisWeekEvents = excludeLocalDate(thisWeekEvents, localDayStart(now, s.localLocation), s.localLocation)
 	if len(events) > 3 {
 		events = events[:3]
 	}
 	data := PageData{
-		SiteName:        "Sheffield Live",
-		PageTitle:       "Sheffield live music",
-		MetaDescription: "Upcoming live music in Sheffield, grouped by date and linked back to venue sources.",
-		Active:          "home",
-		Now:             now,
-		Venues:          s.store.Venues(),
-		Events:          events,
-		FeaturedEvent:   firstEvent(events),
-		TodayEvents:     todayEvents,
-		ThisWeekEvents:  thisWeekEvents,
+		SiteName:          "Sheffield Live",
+		PageTitle:         "Sheffield live music",
+		MetaDescription:   "Upcoming live music in Sheffield, grouped by date and linked back to venue sources.",
+		Active:            "home",
+		Now:               now,
+		VenueNames:        venueNameMap(venues),
+		Venues:            venues,
+		Events:            events,
+		FeaturedEvent:     firstEvent(events),
+		TodayEvents:       todayEvents,
+		TonightEvents:     tonightEvents,
+		ThisWeekEvents:    thisWeekEvents,
+		ThisWeekendEvents: thisWeekendEvents,
 	}
 	s.renderPage(w, "templates/home.html", data)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
-	filters := parseEventFilters(r, s.store)
-	events := filterEventsByVenue(s.store.Events(), filters.Venue)
+	venues, err := s.catalog.ListVenues(r.Context())
+	if err != nil {
+		http.Error(w, "load venues", http.StatusInternalServerError)
+		return
+	}
+	events, err := s.catalog.ListEvents(r.Context())
+	if err != nil {
+		http.Error(w, "load events", http.StatusInternalServerError)
+		return
+	}
+	filters := parseEventFilters(r, venues)
+	venueNames := venueNameMap(venues)
+	events = filterEventsByVenue(events, filters.Venue)
+	events = filterEventsByArea(events, venues, filters.Area)
 	events = filterEventsByWindow(events, now, s.localLocation, filters.Window)
 	events = sortEventsForDisplay(events)
 	data := PageData{
@@ -753,25 +805,35 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		Events:          events,
 		EventGroups:     groupEventsByLocalDate(events, s.localLocation),
 		EventFilters:    filters,
-		Venues:          s.store.Venues(),
+		VenueNames:      venueNames,
+		Areas:           venueAreas(venues),
+		Venues:          venues,
 	}
 	s.renderPage(w, "templates/events.html", data)
 }
 
 func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug string) {
-	event, ok := s.store.EventBySlug(slug)
+	event, ok, err := s.catalog.LoadEventBySlug(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "load event", http.StatusInternalServerError)
+		return
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	venue, ok := s.store.VenueBySlug(event.VenueSlug)
+	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), event.VenueSlug)
+	if err != nil {
+		http.Error(w, "load event venue", http.StatusInternalServerError)
+		return
+	}
 	if !ok {
 		http.Error(w, "event venue not found", http.StatusInternalServerError)
 		return
 	}
 	var secondarySources []store.EventSecondarySourceInfo
-	if secondaryStore, ok := s.store.(EventSecondarySourceInfoStore); ok {
-		loaded, err := secondaryStore.EventSecondarySourceInfoByEventSlug(r.Context(), slug)
+	if s.secondarySourceStore != nil {
+		loaded, err := s.secondarySourceStore.EventSecondarySourceInfoByEventSlug(r.Context(), slug)
 		if err != nil {
 			http.Error(w, "event secondary source info not available", http.StatusInternalServerError)
 			return
@@ -792,24 +854,38 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 }
 
 func (s *Server) handleVenues(w http.ResponseWriter, r *http.Request) {
+	venues, err := s.catalog.ListVenues(r.Context())
+	if err != nil {
+		http.Error(w, "load venues", http.StatusInternalServerError)
+		return
+	}
 	data := PageData{
 		SiteName:        "Sheffield Live",
 		PageTitle:       "Venues",
 		MetaDescription: "Sheffield venues with upcoming live music listings.",
 		Active:          "venues",
 		Now:             s.now(),
-		Venues:          s.store.Venues(),
+		Venues:          venues,
 	}
 	s.renderPage(w, "templates/venues.html", data)
 }
 
 func (s *Server) handleVenueDetail(w http.ResponseWriter, r *http.Request, slug string) {
-	venue, ok := s.store.VenueBySlug(slug)
+	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "load venue", http.StatusInternalServerError)
+		return
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 	now := s.now()
+	events, err := s.catalog.ListEventsForVenue(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "load venue events", http.StatusInternalServerError)
+		return
+	}
 	data := PageData{
 		SiteName:        "Sheffield Live",
 		PageTitle:       venue.Name,
@@ -817,12 +893,24 @@ func (s *Server) handleVenueDetail(w http.ResponseWriter, r *http.Request, slug 
 		Active:          "venues",
 		Now:             now,
 		Venue:           venue,
-		VenueEvents:     sortEventsForDisplay(upcomingEvents(s.store.EventsForVenue(slug), now, s.localLocation)),
+		VenueEvents:     sortEventsForDisplay(upcomingEvents(events, now, s.localLocation)),
 	}
 	s.renderPage(w, "templates/venue_detail.html", data)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
+}
+
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if s.readyChecker != nil {
+		if err := s.readyChecker.Ready(r.Context()); err != nil {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok\n"))
@@ -867,23 +955,43 @@ func (s *Server) now() time.Time {
 	return s.clock().UTC()
 }
 
-func parseEventFilters(r *http.Request, st store.ReadOnlyStore) EventFilters {
-	window := r.URL.Query().Get("window")
-	switch window {
-	case "today", "week", "all":
-	default:
+func parseEventFilters(r *http.Request, venues []domain.Venue) EventFilters {
+	validWindows := map[string]struct{}{
+		"today":   {},
+		"tonight": {},
+		"week":    {},
+		"weekend": {},
+		"all":     {},
+	}
+	window := strings.TrimSpace(r.URL.Query().Get("window"))
+	if _, ok := validWindows[window]; !ok {
 		window = "all"
 	}
-	venue := r.URL.Query().Get("venue")
+
+	validVenues := make(map[string]struct{}, len(venues))
+	validAreas := make(map[string]struct{}, len(venues))
+	for _, venue := range venues {
+		validVenues[venue.Slug] = struct{}{}
+		if area := strings.TrimSpace(venue.Neighbourhood); area != "" {
+			validAreas[area] = struct{}{}
+		}
+	}
+
+	venue := strings.TrimSpace(r.URL.Query().Get("venue"))
 	if venue != "" {
-		if _, ok := st.VenueBySlug(venue); !ok {
+		if _, ok := validVenues[venue]; !ok {
 			venue = ""
 		}
 	}
-	return EventFilters{
-		Window: window,
-		Venue:  venue,
+
+	area := strings.TrimSpace(r.URL.Query().Get("area"))
+	if area != "" {
+		if _, ok := validAreas[area]; !ok {
+			area = ""
+		}
 	}
+
+	return EventFilters{Window: window, Venue: venue, Area: area}
 }
 
 func filterEventsByVenue(events []domain.Event, venueSlug string) []domain.Event {
@@ -893,6 +1001,24 @@ func filterEventsByVenue(events []domain.Event, venueSlug string) []domain.Event
 	out := make([]domain.Event, 0, len(events))
 	for _, event := range events {
 		if event.VenueSlug == venueSlug {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func filterEventsByArea(events []domain.Event, venues []domain.Venue, area string) []domain.Event {
+	area = strings.TrimSpace(area)
+	if area == "" {
+		return events
+	}
+	areasBySlug := make(map[string]string, len(venues))
+	for _, venue := range venues {
+		areasBySlug[venue.Slug] = strings.TrimSpace(venue.Neighbourhood)
+	}
+	out := make([]domain.Event, 0, len(events))
+	for _, event := range events {
+		if areasBySlug[event.VenueSlug] == area {
 			out = append(out, event)
 		}
 	}
@@ -917,15 +1043,22 @@ func filterEventsByWindow(events []domain.Event, now time.Time, loc *time.Locati
 	}
 
 	today := localDayStart(now, loc)
+	windowStart := today
 	end := today.AddDate(0, 0, 1)
-	if window == "week" {
+	switch window {
+	case "today":
+	case "tonight":
+		windowStart = now.In(loc)
+	case "week":
 		end = today.AddDate(0, 0, 7)
+	case "weekend":
+		windowStart, end = weekendWindow(now, loc)
 	}
 
 	out := make([]domain.Event, 0, len(events))
 	for _, event := range events {
-		start := event.Start.In(loc)
-		if !start.Before(today) && start.Before(end) {
+		eventStart := event.Start.In(loc)
+		if !eventStart.Before(windowStart) && eventStart.Before(end) {
 			out = append(out, event)
 		}
 	}
@@ -976,36 +1109,46 @@ func sameLocalDate(a, b time.Time, loc *time.Location) bool {
 	return ay == by && am == bm && ad == bd
 }
 
-func reviewStoreFor(st store.ReadOnlyStore) ReviewStore {
-	reviewStore, ok := st.(ReviewStore)
-	if !ok {
-		return nil
+func venueNameMap(venues []domain.Venue) map[string]string {
+	names := make(map[string]string, len(venues))
+	for _, venue := range venues {
+		names[venue.Slug] = venue.Name
 	}
-	return reviewStore
+	return names
 }
 
-func importRunStoreFor(st store.ReadOnlyStore) ingest.ImportRunStore {
-	importRunStore, ok := st.(ingest.ImportRunStore)
-	if !ok {
-		return nil
+func venueAreas(venues []domain.Venue) []string {
+	seen := make(map[string]struct{}, len(venues))
+	areas := make([]string, 0, len(venues))
+	for _, venue := range venues {
+		area := strings.TrimSpace(venue.Neighbourhood)
+		if area == "" {
+			continue
+		}
+		if _, ok := seen[area]; ok {
+			continue
+		}
+		seen[area] = struct{}{}
+		areas = append(areas, area)
 	}
-	return importRunStore
+	sort.Strings(areas)
+	return areas
 }
 
-func replayStoreFor(st store.ReadOnlyStore) ingest.ReplayStore {
-	replayStore, ok := st.(ingest.ReplayStore)
-	if !ok {
-		return nil
+func weekendWindow(now time.Time, loc *time.Location) (time.Time, time.Time) {
+	today := localDayStart(now, loc)
+	switch today.Weekday() {
+	case time.Friday:
+		return today, today.AddDate(0, 0, 3)
+	case time.Saturday:
+		return today, today.AddDate(0, 0, 2)
+	case time.Sunday:
+		return today, today.AddDate(0, 0, 1)
+	default:
+		offset := (int(time.Friday) - int(today.Weekday()) + 7) % 7
+		start := today.AddDate(0, 0, offset)
+		return start, start.AddDate(0, 0, 3)
 	}
-	return replayStore
-}
-
-func importRunReviewGroupStoreFor(st store.ReadOnlyStore) ImportRunReviewGroupStore {
-	reviewGroupStore, ok := st.(ImportRunReviewGroupStore)
-	if !ok {
-		return nil
-	}
-	return reviewGroupStore
 }
 
 func parseStrictPositiveIDPath(rawPath, prefix string) (int64, bool) {
@@ -1094,9 +1237,7 @@ func reviewStatusSortRank(status string) int {
 func buildReviewHistoryRows(groups []review.GroupSummary) []ReviewHistoryRow {
 	rows := make([]ReviewHistoryRow, 0, len(groups))
 	for _, group := range groups {
-		row := ReviewHistoryRow{GroupSummary: group}
-		row.OriginImportRunID, _ = review.ParseOriginImportRunID(group.Notes)
-		rows = append(rows, row)
+		rows = append(rows, ReviewHistoryRow{GroupSummary: group})
 	}
 	return rows
 }
