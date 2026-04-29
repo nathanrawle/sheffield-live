@@ -1848,6 +1848,9 @@ func TestPromoteSingletonReviewGroupIfMissingAllowsOwnedVenueBlankEndTime(t *tes
 	if !promoted {
 		t.Fatal("promoted = false, want true")
 	}
+	if eventSlug == "" {
+		t.Fatal("event slug = empty, want published slug")
+	}
 	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
 		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
 	}
@@ -1862,6 +1865,385 @@ func TestPromoteSingletonReviewGroupIfMissingAllowsOwnedVenueBlankEndTime(t *tes
 	}
 	if !event.End.IsZero() {
 		t.Fatalf("end = %v, want zero time for unknown end", event.End)
+	}
+}
+
+func TestPromoteSingletonReviewGroupIfMissingPublishesNonAuthoritativeSingletonWhenSlugAbsent(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeEventCount := mustCount(t, db, "events")
+
+	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:      "The Greystones singleton",
+		SourceName: "The Greystones manual ingest",
+		SourceURL:  "https://www.mygreystones.co.uk/events/",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "greystones-1",
+			Name:        "Roots Night",
+			VenueSlug:   "greystones",
+			StartAt:     "2026-05-16T19:30:00Z",
+			EndAt:       "2026-05-16T22:00:00Z",
+			Status:      "Listed",
+			Description: "Initial Greystones listing",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	if eventSlug == "" {
+		t.Fatal("event slug = empty, want published slug")
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 0 {
+		t.Fatalf("event_source_links rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
+		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
+	}
+
+	event, ok := st.EventBySlug(eventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", eventSlug)
+	}
+	if got, want := event.VenueSlug, "greystones"; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+}
+
+func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenNonAuthoritativeSlugExists(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:      "The Greystones singleton",
+		SourceName: "The Greystones manual ingest",
+		SourceURL:  "https://www.mygreystones.co.uk/events/",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "greystones-existing-1",
+			Name:        "Roots Night",
+			VenueSlug:   "greystones",
+			StartAt:     "2026-05-16T19:30:00Z",
+			EndAt:       "2026-05-16T22:00:00Z",
+			Status:      "Listed",
+			Description: "First description",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("first promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("first promoted = false, want true")
+	}
+	beforeEventCount := mustCount(t, db, "events")
+
+	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:      "The Greystones singleton updated",
+		SourceName: "The Greystones manual ingest",
+		SourceURL:  "https://www.mygreystones.co.uk/events/",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "greystones-existing-2",
+			Name:        "Roots Night",
+			VenueSlug:   "greystones",
+			StartAt:     "2026-05-16T19:30:00Z",
+			EndAt:       "2026-05-16T22:00:00Z",
+			Status:      "Sold out",
+			Description: "Updated description",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("second promote singleton review group: %v", err)
+	}
+	if promoted {
+		t.Fatal("second promoted = true, want false")
+	}
+	if secondSlug != "" {
+		t.Fatalf("second slug = %q, want empty", secondSlug)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 0 {
+		t.Fatalf("event_source_links rows = %d, want 0", got)
+	}
+
+	event, ok := st.EventBySlug(firstSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", firstSlug)
+	}
+	if event.Status != "Listed" {
+		t.Fatalf("status = %q, want preserved %q", event.Status, "Listed")
+	}
+	if event.Description != "First description" {
+		t.Fatalf("description = %q, want preserved %q", event.Description, "First description")
+	}
+}
+
+func TestPromoteSingletonReviewGroupIfMissingPublishesJazzAtTheLescarSingletonWhenAbsent(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeEventCount := mustCount(t, db, "events")
+
+	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:      "Jazz at The Lescar singleton",
+		SourceName: "Jazz at The Lescar manual ingest",
+		SourceURL:  "http://www.jazzatthelescar.com/index.html",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "jazz-lescar-1",
+			Name:        "Jazz at The Lescar Quartet",
+			VenueSlug:   "lescar",
+			StartAt:     "2026-05-14T19:30:00Z",
+			Status:      "Listed",
+			Description: "Missing published end time",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	if eventSlug == "" {
+		t.Fatal("event slug = empty, want published slug")
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 0 {
+		t.Fatalf("event_source_links rows = %d, want 0", got)
+	}
+
+	event, ok := st.EventBySlug(eventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", eventSlug)
+	}
+	if !event.End.IsZero() {
+		t.Fatalf("end = %v, want zero time for unknown end", event.End)
+	}
+
+	var storedEnd sql.NullString
+	if err := db.QueryRow(`SELECT end_at FROM events WHERE slug = ?`, eventSlug).Scan(&storedEnd); err != nil {
+		t.Fatalf("load stored end_at: %v", err)
+	}
+	if storedEnd.Valid {
+		t.Fatalf("stored end_at = %q, want NULL", storedEnd.String)
+	}
+}
+
+func TestPromoteSingletonReviewGroupIfMissingCreatesNoNewStagedGroupForNonAuthoritativeSingleton(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeEventCount := mustCount(t, db, "events")
+	beforeReviewGroupCount := mustCount(t, db, "review_groups")
+
+	groupInput := mustGreystonesSingletonReviewGroupInput(t, 99, "greystones-direct-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
+	if groupInput.StagingKey == "" {
+		t.Fatal("staging key = empty, want populated")
+	}
+
+	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, groupInput)
+	if err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	if eventSlug == "" {
+		t.Fatal("event slug = empty, want published slug")
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
+	}
+	if got := mustCount(t, db, "review_groups"); got != beforeReviewGroupCount {
+		t.Fatalf("review_groups rows = %d, want unchanged %d", got, beforeReviewGroupCount)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 0 {
+		t.Fatalf("event_source_links rows = %d, want 0", got)
+	}
+}
+
+func TestPromoteSingletonReviewGroupIfMissingResolvesMatchingStaleNonAuthoritativeSingletonGroup(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	mustInsertImportRunFixture(t, st, 98)
+	mustInsertImportRunFixture(t, st, 99)
+
+	staleInput := mustGreystonesSingletonReviewGroupInput(t, 98, "greystones-stale-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
+	currentInput := mustGreystonesSingletonReviewGroupInput(t, 99, "greystones-stale-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
+	if staleInput.StagingKey != currentInput.StagingKey {
+		t.Fatalf("staging key mismatch: stale %q current %q", staleInput.StagingKey, currentInput.StagingKey)
+	}
+
+	groupID, created, err := st.StageReviewGroup(ctx, staleInput)
+	if err != nil {
+		t.Fatalf("stage stale review group: %v", err)
+	}
+	if !created {
+		t.Fatal("created = false, want true")
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeEventCount := mustCount(t, db, "events")
+
+	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, currentInput)
+	if err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	if eventSlug == "" {
+		t.Fatal("event slug = empty, want published slug")
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
+	}
+	if got := mustCount(t, db, "review_groups"); got != 1 {
+		t.Fatalf("review_groups rows = %d, want 1", got)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 0 {
+		t.Fatalf("event_source_links rows = %d, want 0", got)
+	}
+
+	staleGroup, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load stale review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("stale review group not found after promotion")
+	}
+	if staleGroup.Status != review.StatusResolved {
+		t.Fatalf("stale group status = %q, want %q", staleGroup.Status, review.StatusResolved)
+	}
+}
+
+func TestPromoteSingletonReviewGroupIfMissingLinksMatchingStaleNonAuthoritativeSingletonGroupToCurrentImportRun(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	mustInsertImportRunFixture(t, st, 98)
+	mustInsertImportRunFixture(t, st, 99)
+
+	staleInput := mustGreystonesSingletonReviewGroupInput(t, 98, "greystones-link-1", "Roots Night", "2026-05-18T19:30:00Z", "2026-05-18T22:00:00Z")
+	currentInput := mustGreystonesSingletonReviewGroupInput(t, 99, "greystones-link-1", "Roots Night", "2026-05-18T19:30:00Z", "2026-05-18T22:00:00Z")
+
+	groupID, created, err := st.StageReviewGroup(ctx, staleInput)
+	if err != nil {
+		t.Fatalf("stage stale review group: %v", err)
+	}
+	if !created {
+		t.Fatal("created = false, want true")
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	var beforeLinkCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM import_run_review_groups
+		WHERE import_run_id = ? AND review_group_id = ?
+	`, 99, groupID).Scan(&beforeLinkCount); err != nil {
+		t.Fatalf("count import-run links before promotion: %v", err)
+	}
+	if beforeLinkCount != 0 {
+		t.Fatalf("pre-promotion import-run link count = %d, want 0", beforeLinkCount)
+	}
+
+	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, currentInput); err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	} else if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+
+	var afterLinkCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM import_run_review_groups
+		WHERE import_run_id = ? AND review_group_id = ?
+	`, 99, groupID).Scan(&afterLinkCount); err != nil {
+		t.Fatalf("count import-run links after promotion: %v", err)
+	}
+	if afterLinkCount != 1 {
+		t.Fatalf("post-promotion import-run link count = %d, want 1", afterLinkCount)
 	}
 }
 
@@ -1958,7 +2340,7 @@ func TestPromoteSingletonReviewGroupIfMissingResolvesMatchingStaleStagedGroup(t 
 	}
 }
 
-func TestPromoteSingletonReviewGroupIfMissingLeavesDifferentStagingKeyOpen(t *testing.T) {
+func TestPromoteSingletonReviewGroupIfMissingLeavesDifferentNonAuthoritativeStagingKeyOpen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -1972,54 +2354,25 @@ func TestPromoteSingletonReviewGroupIfMissingLeavesDifferentStagingKeyOpen(t *te
 		}
 	}()
 
-	matchingReport := ingest.Report{
-		Source:      ingest.CafeNo9Source,
-		SourceURL:   "https://www.wegottickets.com/Cafe9",
-		ImportRunID: 99,
-		Status:      "succeeded",
-		Calendars: []ingest.CalendarReport{{
-			URL: "https://www.wegottickets.com/Cafe9",
-			Candidates: []ingest.EventCandidate{{
-				UID:      "cafe-no-9-match-1",
-				Summary:  "Cafe No. 9 Late Show",
-				Location: "Cafe No. 9",
-				StartAt:  "2026-05-10T18:30:00Z",
-			}},
-		}},
-	}
-	otherReport := ingest.Report{
-		Source:      ingest.CafeNo9Source,
-		SourceURL:   "https://www.wegottickets.com/Cafe9",
-		ImportRunID: 99,
-		Status:      "succeeded",
-		Calendars: []ingest.CalendarReport{{
-			URL: "https://www.wegottickets.com/Cafe9",
-			Candidates: []ingest.EventCandidate{{
-				UID:      "cafe-no-9-other-1",
-				Summary:  "Cafe No. 9 Early Show",
-				Location: "Cafe No. 9",
-				StartAt:  "2026-05-11T18:30:00Z",
-			}},
-		}},
+	mustInsertImportRunFixture(t, st, 98)
+	mustInsertImportRunFixture(t, st, 99)
+
+	matchingStaleInput := mustGreystonesSingletonReviewGroupInput(t, 98, "greystones-match-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
+	matchingCurrentInput := mustGreystonesSingletonReviewGroupInput(t, 99, "greystones-match-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
+	otherInput := mustGreystonesSingletonReviewGroupInput(t, 98, "greystones-other-1", "Early Show", "2026-05-17T18:30:00Z", "2026-05-17T21:30:00Z")
+
+	if matchingStaleInput.StagingKey == otherInput.StagingKey {
+		t.Fatalf("staging key collision: matching and other both %q", otherInput.StagingKey)
 	}
 
-	matchingGroups := ingest.ReviewGroupsFromReport(matchingReport)
-	if got, want := len(matchingGroups), 1; got != want {
-		t.Fatalf("matching review groups = %d, want %d", got, want)
-	}
-	otherGroups := ingest.ReviewGroupsFromReport(otherReport)
-	if got, want := len(otherGroups), 1; got != want {
-		t.Fatalf("other review groups = %d, want %d", got, want)
-	}
-
-	_, created, err := st.StageReviewGroup(ctx, matchingGroups[0])
+	_, created, err := st.StageReviewGroup(ctx, matchingStaleInput)
 	if err != nil {
 		t.Fatalf("stage matching review group: %v", err)
 	}
 	if !created {
 		t.Fatal("matching created = false, want true")
 	}
-	otherGroupID, created, err := st.StageReviewGroup(ctx, otherGroups[0])
+	otherGroupID, created, err := st.StageReviewGroup(ctx, otherInput)
 	if err != nil {
 		t.Fatalf("stage other review group: %v", err)
 	}
@@ -2027,7 +2380,7 @@ func TestPromoteSingletonReviewGroupIfMissingLeavesDifferentStagingKeyOpen(t *te
 		t.Fatal("other created = false, want true")
 	}
 
-	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, matchingGroups[0]); err != nil {
+	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, matchingCurrentInput); err != nil {
 		t.Fatalf("promote singleton review group: %v", err)
 	} else if !promoted {
 		t.Fatal("promoted = false, want true")
@@ -2776,6 +3129,42 @@ func ensureImportRunForNotes(t *testing.T, st *Store, notes string) {
 	`, importRunID, "2026-04-20T10:00:00Z", "2026-04-20T10:05:00Z", "succeeded", "fixture import run"); err != nil {
 		t.Fatalf("insert import run fixture %d: %v", importRunID, err)
 	}
+}
+
+func mustInsertImportRunFixture(t *testing.T, st *Store, importRunID int64) {
+	t.Helper()
+
+	if _, err := st.db.Exec(`
+		INSERT OR IGNORE INTO import_runs (id, started_at, finished_at, status, notes)
+		VALUES (?, ?, ?, ?, ?)
+	`, importRunID, "2026-04-20T10:00:00Z", "2026-04-20T10:05:00Z", "succeeded", "fixture import run"); err != nil {
+		t.Fatalf("insert import run fixture %d: %v", importRunID, err)
+	}
+}
+
+func mustGreystonesSingletonReviewGroupInput(t *testing.T, importRunID int64, uid, summary, startAt, endAt string) review.GroupInput {
+	t.Helper()
+
+	groups := ingest.ReviewGroupsFromReport(ingest.Report{
+		Source:      ingest.TheGreystonesSource,
+		SourceURL:   "https://www.mygreystones.co.uk/events/",
+		ImportRunID: importRunID,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.mygreystones.co.uk/events/",
+			Candidates: []ingest.EventCandidate{{
+				UID:      uid,
+				Summary:  summary,
+				Location: "The Greystones",
+				StartAt:  startAt,
+				EndAt:    endAt,
+			}},
+		}},
+	})
+	if got, want := len(groups), 1; got != want {
+		t.Fatalf("review groups = %d, want %d", got, want)
+	}
+	return groups[0]
 }
 
 func mustCreatePublishableSingletonReviewGroup(t *testing.T, st *Store, title string) int64 {

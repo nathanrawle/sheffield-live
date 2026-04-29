@@ -183,6 +183,60 @@ func TestCreateReviewGroupsFromReportAutoPromotesCafeNo9SingletonWithoutEndTime(
 	}
 }
 
+func TestCreateReviewGroupsFromReportAutoPromotesJazzAtTheLescarSingleton(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	report := ingest.Report{
+		Source:      ingest.JazzAtTheLescarSource,
+		SourceURL:   "http://www.jazzatthelescar.com/index.html",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "http://www.jazzatthelescar.com/index.html",
+			Candidates: []ingest.EventCandidate{{
+				UID:      "jazz-lescar-1",
+				Summary:  "Jazz at The Lescar Quartet",
+				Location: "The Lescar",
+				StartAt:  "2026-05-14T19:30:00Z",
+				EndAt:    "2026-05-14T22:00:00Z",
+			}},
+		}},
+	}
+
+	stage, err := createReviewGroupsFromReport(ctx, st, report)
+	if err != nil {
+		t.Fatalf("create review groups: %v", err)
+	}
+	if got, want := stage.AutoPromotedCount, 1; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 0; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+	if got, want := len(stage.Groups), 0; got != want {
+		t.Fatalf("review groups = %d, want %d", got, want)
+	}
+
+	event, ok := st.EventBySlug(stage.AutoPromoted[0].EventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", stage.AutoPromoted[0].EventSlug)
+	}
+	if got, want := event.VenueSlug, "lescar"; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+}
+
 func TestCreateReviewGroupsFromReportResolvesMatchingStaleCafeNo9Singleton(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -277,6 +331,97 @@ func TestCreateReviewGroupsFromReportKeepsOffsiteLeadmillSingletonInReview(t *te
 				Location: "Yellow Arch Studios",
 				StartAt:  "2026-05-10T18:30:00Z",
 				EndAt:    "2026-05-10T22:00:00Z",
+			}},
+		}},
+	}
+
+	stage, err := createReviewGroupsFromReport(context.Background(), st, report)
+	if err != nil {
+		t.Fatalf("create review groups: %v", err)
+	}
+
+	if got, want := stage.GroupsCreated, 1; got != want {
+		t.Fatalf("groups created = %d, want %d", got, want)
+	}
+	if got, want := stage.AutoPromotedCount, 0; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 1; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+	if got, want := len(st.promotedInputs), 0; got != want {
+		t.Fatalf("promoted inputs = %d, want %d", got, want)
+	}
+	if got, want := len(st.inputs), 1; got != want {
+		t.Fatalf("staged review groups = %d, want %d", got, want)
+	}
+}
+
+func TestCreateReviewGroupsFromReportStagesDuplicateJazzAtTheLescarGroup(t *testing.T) {
+	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 301, created: true}}}
+	report := ingest.Report{
+		Source:      ingest.JazzAtTheLescarSource,
+		SourceURL:   "http://www.jazzatthelescar.com/index.html",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "http://www.jazzatthelescar.com/index.html",
+			Candidates: []ingest.EventCandidate{
+				{
+					UID:      "jazz-duplicate-1",
+					Summary:  "Jazz Residency Early Set",
+					Location: "The Lescar",
+					StartAt:  "2026-05-12T18:00:00Z",
+					EndAt:    "2026-05-12T19:30:00Z",
+				},
+				{
+					UID:      "jazz-duplicate-1",
+					Summary:  "Jazz Residency Late Set",
+					Location: "The Lescar",
+					StartAt:  "2026-05-12T20:00:00Z",
+					EndAt:    "2026-05-12T21:30:00Z",
+				},
+			},
+		}},
+	}
+
+	stage, err := createReviewGroupsFromReport(context.Background(), st, report)
+	if err != nil {
+		t.Fatalf("create review groups: %v", err)
+	}
+
+	if got, want := stage.AutoPromotedCount, 0; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.GroupsCreated, 1; got != want {
+		t.Fatalf("groups created = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 2; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+	if got, want := len(st.promotedInputs), 0; got != want {
+		t.Fatalf("promoted inputs = %d, want %d", got, want)
+	}
+	if got, want := len(st.inputs), 1; got != want {
+		t.Fatalf("staged review groups = %d, want %d", got, want)
+	}
+}
+
+func TestCreateReviewGroupsFromReportKeepsWrongVenueJazzAtTheLescarSingletonInReview(t *testing.T) {
+	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 302, created: true}}}
+	report := ingest.Report{
+		Source:      ingest.JazzAtTheLescarSource,
+		SourceURL:   "http://www.jazzatthelescar.com/index.html",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "http://www.jazzatthelescar.com/index.html",
+			Candidates: []ingest.EventCandidate{{
+				UID:      "jazz-offsite-1",
+				Summary:  "Jazz offsite special",
+				Location: "Yellow Arch Studios",
+				StartAt:  "2026-05-15T19:30:00Z",
+				EndAt:    "2026-05-15T22:00:00Z",
 			}},
 		}},
 	}

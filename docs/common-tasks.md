@@ -62,7 +62,7 @@ Sidney & Matilda and Leadmill snapshot the source page plus linked ICS payloads.
 go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-review-groups
 ```
 
-This adds duplicate and singleton review groups after a successful ingest. Reruns reuse existing groups when the staged content matches and record the new import-run link in the persisted provenance table.
+This stages duplicate groups and any singleton groups that were not auto-promoted after a successful ingest. Eligible singletons may auto-publish first through authoritative owned-source identity or configured non-authoritative slug-absent publish. Reruns reuse existing staging keys when the staged content matches and record the new import-run link in the persisted provenance table.
 
 ## Replay a stored ingest run
 
@@ -70,7 +70,7 @@ This adds duplicate and singleton review groups after a successful ingest. Rerun
 go run ./cmd/ingest -import-run-id 42 -limit 20 -stage-review-groups
 ```
 
-This rebuilds the report from stored snapshots without using the network. Reruns are safe and reuse existing groups when the staged content matches. Omit `-stage-review-groups` if you only want the replay report.
+This rebuilds the report from stored snapshots without using the network. Reruns are safe and reuse existing groups when the staged content matches, and eligible singletons may auto-promote instead of creating a review group. Omit `-stage-review-groups` if you only want the replay report.
 Replay auto-detects whether the stored run used linked ICS extraction or direct source-page parsing.
 
 ## Create an offline review group from a local ICS file
@@ -97,7 +97,7 @@ Use this only for a disposable local database. Do not delete a shared or product
 Open `/admin/review` in the browser.
 
 - duplicate groups use field choices and a canonical draft summary
-- singleton groups use accept/reject
+- singleton groups use accept/reject when they were not auto-promoted during staging
 - resolving or accepting publishes one canonical public event
 - rejecting does not publish
 - open `/admin/review/history` for the 50 newest resolved and rejected groups

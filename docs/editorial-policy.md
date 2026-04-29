@@ -29,9 +29,10 @@ Each record shows provenance and freshness. Live browsing should make the source
 
 ## Review policy
 
-Admin review exists for curated publication control. Duplicate reviews expose field-level choices and a canonical draft summary. Singleton new listings can be accepted or rejected.
+Admin review exists for curated publication control. Duplicate reviews expose field-level choices and a canonical draft summary. Singleton new listings can be accepted or rejected when they are not auto-promoted first.
 
 Resolving a duplicate review or accepting a singleton review publishes exactly one canonical public event. Rejecting a review does not publish anything.
+Eligible singleton imports may also auto-publish before review in two cases: authoritative owned-source identity for owned venue sources, or non-authoritative slug-absent publish for configured singleton sources. Duplicate groups still require review.
 
 The canonical event policy is:
 
@@ -44,6 +45,13 @@ The canonical event policy is:
 - keep one canonical slug per venue and event
 - retain the source link
 - treat freshness as source-check metadata rather than marketing
+
+Non-authoritative singleton auto-promotion is intentionally narrower than authoritative publish:
+
+- it is insert-only
+- it does not create authoritative source links
+- it does not create secondary-source info rows
+- Jazz at The Lescar remains a non-authoritative, program-only source even when its eligible singletons auto-publish
 
 Reviews are held or rejected when the source is not good enough to publish:
 

@@ -74,10 +74,13 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - `review_groups.staging_key` has a unique index so staged reruns reuse the same group when the content key matches
 - `import_run_review_groups` records every persisted import-run to review-group link with link time
 - review groups may also persist an authoritative source tuple when every staged candidate agrees on one owned-venue source event identity
-- review groups hold duplicate clusters or singleton new listings
+- duplicate groups always stay in review; singleton new listings may either auto-promote or stay in review
+- singleton auto-promotion can happen through authoritative owned-source identity or through configured non-authoritative slug-absent publish
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
 - authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
 - authoritative review groups may also persist secondary-source `genre` and `description` rows keyed by secondary source plus candidate venue, name, and start time
+- non-authoritative singleton auto-promotion is insert-only, does not create authoritative `event_source_links`, and does not create `event_secondary_source_info` rows
+- successful non-authoritative singleton auto-promotion resolves matching stale open singleton groups by `staging_key` and links the current import run to those groups
 - rejecting a review does not publish
 - the venue must already exist
 - the source row is ensured
@@ -85,7 +88,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - canonical `events.end_at` may be `NULL` when the authoritative end time is unknown
 - the live slug is deterministic and derived from name, venue, and UTC time
 - slug conflicts are handled with upsert semantics
-- venue coverage semantics are data-backed; most venues are full-venue coverage, while The Lescar is marked program-only with a UI note
+- venue coverage semantics are data-backed; most venues are full-venue coverage, while The Lescar is marked program-only with a UI note even when Jazz at The Lescar singletons auto-publish
 
 ## Visibility
 

@@ -131,12 +131,21 @@ func (s *Store) PromoteSingletonReviewGroupIfMissing(ctx context.Context, input 
 	if s == nil || s.db == nil {
 		return "", false, errors.New("sqlite store is not open")
 	}
-	sourceEventKey := authoritativeSourceEventKey(input)
+	now := time.Now().UTC()
+
+	eventSlug, applied, err := s.promoteAuthoritativeSingletonReviewGroupIfMissing(ctx, input, now)
+	if err != nil || applied {
+		return eventSlug, applied, err
+	}
+	return s.promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx, input, now)
+}
+
+func (s *Store) promoteAuthoritativeSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput, now time.Time) (string, bool, error) {
+	sourceEventKey := authoritativeSingletonSourceEventKey(input)
 	if sourceEventKey == "" {
 		return "", false, nil
 	}
 
-	now := time.Now().UTC()
 	event, err := singletonResolvedEventFromGroupInput(input, now)
 	if err != nil {
 		return "", false, nil
@@ -166,6 +175,58 @@ func (s *Store) PromoteSingletonReviewGroupIfMissing(ctx context.Context, input 
 		return "", false, nil
 	}
 	return appliedEvent.Event.Slug, true, nil
+}
+
+func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput, now time.Time) (string, bool, error) {
+	expectedVenueSlug := nonAuthoritativeSingletonVenueSlug(input)
+	if expectedVenueSlug == "" {
+		return "", false, nil
+	}
+
+	event, err := singletonResolvedEventFromGroupInput(input, now)
+	if err != nil {
+		return "", false, nil
+	}
+	if event.VenueSlug != expectedVenueSlug {
+		return "", false, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if _, ok, err := loadEventRecordBySlugTx(ctx, tx, event.Slug); err != nil {
+		return "", false, err
+	} else if ok {
+		return "", false, nil
+	}
+
+	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, expectedVenueSlug)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok {
+		return "", false, nil
+	}
+
+	sourceID, err := ensureSourceTx(ctx, tx, event.SourceName, event.SourceURL)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := insertEventTx(ctx, tx, event, venueID, sourceID); err != nil {
+		return "", false, err
+	}
+	if err := resolveMatchingOpenNonAuthoritativeSingletonReviewGroupsTx(ctx, tx, input, now); err != nil {
+		return "", false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", false, err
+	}
+	return event.Slug, true, nil
 }
 
 func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, stagingKey string) (int64, error) {
@@ -294,6 +355,41 @@ func authoritativeSourceEventKey(input review.GroupInput) string {
 	return ""
 }
 
+func authoritativeSingletonSourceEventKey(input review.GroupInput) string {
+	sourceEventKey := authoritativeSourceEventKey(input)
+	if sourceEventKey == "" {
+		return ""
+	}
+
+	sourceName := strings.TrimSpace(input.SourceName)
+	if ingest.NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName) != "" {
+		return ""
+	}
+
+	ownedVenueSlug := strings.TrimSpace(ingest.OwnedVenueSlugForReviewStageSourceName(sourceName))
+	if ownedVenueSlug == "" {
+		return sourceEventKey
+	}
+	if strings.TrimSpace(input.Candidates[0].VenueSlug) != ownedVenueSlug {
+		return ""
+	}
+	return sourceEventKey
+}
+
+func nonAuthoritativeSingletonVenueSlug(input review.GroupInput) string {
+	if len(input.Candidates) != 1 {
+		return ""
+	}
+	expectedVenueSlug := strings.TrimSpace(ingest.NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(input.SourceName))
+	if expectedVenueSlug == "" {
+		return ""
+	}
+	if strings.TrimSpace(input.Candidates[0].VenueSlug) != expectedVenueSlug {
+		return ""
+	}
+	return expectedVenueSlug
+}
+
 func resolveMatchingOpenReviewGroupsTx(ctx context.Context, tx execer, input review.GroupInput, now time.Time) error {
 	stagingKey := strings.TrimSpace(input.StagingKey)
 	if stagingKey == "" {
@@ -313,6 +409,56 @@ func resolveMatchingOpenReviewGroupsTx(ctx context.Context, tx execer, input rev
 	}
 	_, err := tx.ExecContext(ctx, query, args...)
 	return err
+}
+
+func resolveMatchingOpenNonAuthoritativeSingletonReviewGroupsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, input review.GroupInput, now time.Time) error {
+	stagingKey := strings.TrimSpace(input.StagingKey)
+	if stagingKey == "" {
+		return nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT g.id
+		FROM review_groups g
+		JOIN review_candidates c ON c.group_id = g.id
+		WHERE g.status = ?
+		  AND g.staging_key = ?
+		GROUP BY g.id
+		HAVING COUNT(c.id) = 1
+	`, review.StatusOpen, stagingKey)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var groupIDs []int64
+	for rows.Next() {
+		var groupID int64
+		if err := rows.Scan(&groupID); err != nil {
+			return err
+		}
+		groupIDs = append(groupIDs, groupID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, groupID := range groupIDs {
+		if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, groupID, now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE review_groups
+			SET status = ?, updated_at = ?
+			WHERE id = ?
+		`, review.StatusResolved, formatRFC3339UTC(now), groupID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type eventRecord struct {

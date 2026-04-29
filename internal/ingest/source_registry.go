@@ -22,15 +22,17 @@ const (
 )
 
 type sourceConfig struct {
-	Key                   string
-	Name                  string
-	URL                   string
-	OwnedVenueSlug        string
-	CalendarSourceName    string
-	LinkedPageSourceName  string
-	PageMode              pageProcessMode
-	ReviewStageSourceName string
-	ImportRunNotes        string
+	Key                                            string
+	Name                                           string
+	URL                                            string
+	OwnedVenueSlug                                 string
+	NonAuthoritativeSingletonVenueSlug             string
+	NonAuthoritativeSingletonAutoPromotionDisabled bool
+	CalendarSourceName                             string
+	LinkedPageSourceName                           string
+	PageMode                                       pageProcessMode
+	ReviewStageSourceName                          string
+	ImportRunNotes                                 string
 }
 
 var sourceRegistry = []sourceConfig{
@@ -63,21 +65,23 @@ var sourceRegistry = []sourceConfig{
 		ImportRunNotes:        "manual Cafe No. 9 source-page parse report",
 	},
 	{
-		Key:                   JazzAtTheLescarSource,
-		Name:                  "Jazz at The Lescar listings",
-		URL:                   "http://www.jazzatthelescar.com/index.html",
-		PageMode:              pageProcessSourcePage,
-		ReviewStageSourceName: "Jazz at The Lescar manual ingest",
-		ImportRunNotes:        "manual Jazz at The Lescar source-page parse report",
+		Key:                                JazzAtTheLescarSource,
+		Name:                               "Jazz at The Lescar listings",
+		URL:                                "http://www.jazzatthelescar.com/index.html",
+		NonAuthoritativeSingletonVenueSlug: "lescar",
+		PageMode:                           pageProcessSourcePage,
+		ReviewStageSourceName:              "Jazz at The Lescar manual ingest",
+		ImportRunNotes:                     "manual Jazz at The Lescar source-page parse report",
 	},
 	{
-		Key:                   TheGreystonesSource,
-		Name:                  "The Greystones listings",
-		URL:                   "https://www.mygreystones.co.uk/events/",
-		LinkedPageSourceName:  "The Greystones month page",
-		PageMode:              pageProcessLinkedDetailPages,
-		ReviewStageSourceName: "The Greystones manual ingest",
-		ImportRunNotes:        "manual The Greystones snapshot + month-page parse report",
+		Key:                                TheGreystonesSource,
+		Name:                               "The Greystones listings",
+		URL:                                "https://www.mygreystones.co.uk/events/",
+		NonAuthoritativeSingletonVenueSlug: "greystones",
+		LinkedPageSourceName:               "The Greystones month page",
+		PageMode:                           pageProcessLinkedDetailPages,
+		ReviewStageSourceName:              "The Greystones manual ingest",
+		ImportRunNotes:                     "manual The Greystones snapshot + month-page parse report",
 	},
 	{
 		Key:                   LeadmillSource,
@@ -160,6 +164,35 @@ func OwnedVenueSlugForReviewStageSourceName(sourceName string) string {
 		return strings.TrimSpace(cfg.OwnedVenueSlug)
 	}
 	return ""
+}
+
+func NonAuthoritativeSingletonVenueSlugForSource(source string) string {
+	cfg, err := configForSource(source)
+	if err != nil {
+		return ""
+	}
+	return cfg.nonAuthoritativeSingletonVenueSlug()
+}
+
+func NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName string) string {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		return ""
+	}
+	for _, cfg := range sourceRegistry {
+		if strings.TrimSpace(cfg.ReviewStageSourceName) != sourceName {
+			continue
+		}
+		return cfg.nonAuthoritativeSingletonVenueSlug()
+	}
+	return ""
+}
+
+func (cfg sourceConfig) nonAuthoritativeSingletonVenueSlug() string {
+	if strings.TrimSpace(cfg.OwnedVenueSlug) != "" || cfg.NonAuthoritativeSingletonAutoPromotionDisabled {
+		return ""
+	}
+	return strings.TrimSpace(cfg.NonAuthoritativeSingletonVenueSlug)
 }
 
 func detectReplaySourcePageSnapshot(decoded []decodedReplaySnapshot) (sourceConfig, decodedReplaySnapshot, error) {
