@@ -19,6 +19,15 @@ import (
 	"sheffield-live/internal/store/sqlite"
 )
 
+func testSourceCatalog(t *testing.T) *ingest.Catalog {
+	t.Helper()
+	catalog, err := ingest.LoadRepoCatalog()
+	if err != nil {
+		t.Fatalf("load repo catalog: %v", err)
+	}
+	return catalog
+}
+
 func TestCreateReviewGroupsFromReportStagesReviewGroups(t *testing.T) {
 	st := &fakeReviewStageStore{results: []fakeReviewStageResult{
 		{id: 101, created: true},
@@ -26,7 +35,7 @@ func TestCreateReviewGroupsFromReportStagesReviewGroups(t *testing.T) {
 	}}
 	report := successfulManualReportForReviewStage()
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, report)
+	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
 		t.Fatalf("stage review groups: %v", err)
 	}
@@ -96,7 +105,7 @@ func TestCreateReviewGroupsFromReportAutoPromotesOwnedVenueSingleton(t *testing.
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, report)
+	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
 		t.Fatalf("create review groups: %v", err)
 	}
@@ -157,7 +166,7 @@ func TestCreateReviewGroupsFromReportAutoPromotesCafeNo9SingletonWithoutEndTime(
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(ctx, st, report)
+	stage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), report)
 	if err != nil {
 		t.Fatalf("create review groups: %v", err)
 	}
@@ -214,7 +223,7 @@ func TestCreateReviewGroupsFromReportAutoPromotesJazzAtTheLescarSingleton(t *tes
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(ctx, st, report)
+	stage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), report)
 	if err != nil {
 		t.Fatalf("create review groups: %v", err)
 	}
@@ -279,7 +288,7 @@ func TestCreateReviewGroupsFromReportResolvesMatchingStaleCafeNo9Singleton(t *te
 		t.Fatal("created = false, want true")
 	}
 
-	stage, err := createReviewGroupsFromReport(ctx, st, report)
+	stage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), report)
 	if err != nil {
 		t.Fatalf("create review groups: %v", err)
 	}
@@ -336,7 +345,7 @@ func TestCreateReviewGroupsFromReportKeepsOffsiteLeadmillSingletonInReview(t *te
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, report)
+	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
 		t.Fatalf("create review groups: %v", err)
 	}
@@ -386,7 +395,7 @@ func TestCreateReviewGroupsFromReportStagesDuplicateJazzAtTheLescarGroup(t *test
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, report)
+	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
 		t.Fatalf("create review groups: %v", err)
 	}
@@ -427,7 +436,7 @@ func TestCreateReviewGroupsFromReportKeepsWrongVenueJazzAtTheLescarSingletonInRe
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, report)
+	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
 		t.Fatalf("create review groups: %v", err)
 	}
@@ -474,7 +483,7 @@ func TestCreateReviewGroupsFromReportFallsBackToReviewWhenAutoPromoteSeesExistin
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, report)
+	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
 		t.Fatalf("create review groups: %v", err)
 	}
@@ -533,7 +542,7 @@ func TestCreateReviewGroupsFromReportReusesExistingGroupWhenOnlySourceMetadataDi
 			},
 		},
 	}
-	firstStage, err := createReviewGroupsFromReport(ctx, st, firstReport)
+	firstStage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), firstReport)
 	if err != nil {
 		t.Fatalf("stage first report: %v", err)
 	}
@@ -573,7 +582,7 @@ func TestCreateReviewGroupsFromReportReusesExistingGroupWhenOnlySourceMetadataDi
 			},
 		},
 	}
-	secondStage, err := createReviewGroupsFromReport(ctx, st, secondReport)
+	secondStage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), secondReport)
 	if err != nil {
 		t.Fatalf("stage second report: %v", err)
 	}
@@ -649,7 +658,7 @@ func TestCreateReviewGroupsFromReportPersistsAuthoritativeGroupMetadata(t *testi
 		},
 	}
 
-	stage, err := createReviewGroupsFromReport(ctx, st, report)
+	stage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), report)
 	if err != nil {
 		t.Fatalf("create review groups: %v", err)
 	}
@@ -1192,7 +1201,7 @@ func TestRunWithArgsAllSourcesRunsInRegistryOrder(t *testing.T) {
 		return fakeFetcher{}, nil
 	}
 	var order []string
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
 		order = append(order, opts.Source)
 		return ingest.Report{
 			Source:      opts.Source,
@@ -1251,7 +1260,7 @@ func TestRunWithArgsUsesDerivedDefaultUserAgent(t *testing.T) {
 		gotUA = userAgent
 		return fakeFetcher{}, nil
 	}
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
 		return ingest.Report{
 			Source:      opts.Source,
 			SourceURL:   "https://" + opts.Source + ".example.test/",
@@ -1292,7 +1301,7 @@ func TestRunWithArgsContactSuppressionRemovesContactFromDefaultUserAgent(t *test
 		gotUA = userAgent
 		return fakeFetcher{}, nil
 	}
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
 		return ingest.Report{
 			Source:      opts.Source,
 			SourceURL:   "https://" + opts.Source + ".example.test/",
@@ -1327,7 +1336,7 @@ func TestRunWithArgsAllSourcesContinuesAfterFailure(t *testing.T) {
 		return fakeFetcher{}, nil
 	}
 	var order []string
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
 		order = append(order, opts.Source)
 		report := ingest.Report{
 			Source:      opts.Source,
@@ -1386,7 +1395,7 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
 		return fakeFetcher{}, nil
 	}
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
 		return ingest.Report{
 			Source:      opts.Source,
 			SourceURL:   "https://" + opts.Source + ".example.test/",
@@ -1443,7 +1452,7 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 func TestReviewStageForReportSkipsFailedManualRun(t *testing.T) {
 	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 101, created: true}}}
 
-	stage, err := reviewStageForReport(context.Background(), st, successfulManualReportForReviewStage(), errors.New("manual ingest failed"))
+	stage, err := reviewStageForReport(context.Background(), st, testSourceCatalog(t), successfulManualReportForReviewStage(), errors.New("manual ingest failed"))
 	if err != nil {
 		t.Fatalf("review stage for failed run: %v", err)
 	}
@@ -1461,7 +1470,7 @@ func TestReviewStageForReportSkipsFailedManualRun(t *testing.T) {
 func TestCreateReviewGroupsFromReportReportsCreateError(t *testing.T) {
 	st := &fakeReviewStageStore{err: errors.New("insert failed")}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, successfulManualReportForReviewStage())
+	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), successfulManualReportForReviewStage())
 	if err == nil {
 		t.Fatal("expected staging error")
 	}

@@ -49,11 +49,11 @@ var (
 	newHTTPFetcher  = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
 		return ingest.NewHTTPFetcher(timeout, userAgent)
 	}
-	runManualImport = func(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
-		return ingest.RunManual(ctx, st, fetcher, opts)
+	runManualImport = func(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		return ingest.RunManualWithCatalog(ctx, st, fetcher, catalog, opts)
 	}
-	replayImportRun = func(ctx context.Context, st *sqlite.Store, importRunID int64, opts ingest.ReplayOptions) (ingest.Report, error) {
-		return ingest.ReplayImportRun(ctx, st, importRunID, opts)
+	replayImportRun = func(ctx context.Context, st *sqlite.Store, catalog *ingest.Catalog, importRunID int64, opts ingest.ReplayOptions) (ingest.Report, error) {
+		return ingest.ReplayImportRunWithCatalog(ctx, st, catalog, importRunID, opts)
 	}
 	lookupGitUserEmail = func(ctx context.Context) string {
 		for _, args := range [][]string{
@@ -99,7 +99,6 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	ingest.SetDefaultCatalog(catalog)
 
 	st, err := openSQLiteStore(path, catalog)
 	if err != nil {
@@ -134,12 +133,12 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 
 	var result manualRunExecution
 	if cfg.importRunID > 0 {
-		report, runErr := replayImportRun(context.Background(), st, cfg.importRunID, ingest.ReplayOptions{
+		report, runErr := replayImportRun(context.Background(), st, catalog, cfg.importRunID, ingest.ReplayOptions{
 			Limit: cfg.limit,
 		})
 		result = manualRunExecution{Report: report, Err: runErr}
 		if cfg.stageReviewGroups && !(runErr != nil && report.ImportRunID == 0) {
-			stageReport, stageErr := reviewStageForReport(context.Background(), st, report, runErr)
+			stageReport, stageErr := reviewStageForReport(context.Background(), st, catalog, report, runErr)
 			result.ReviewStage = &stageReport
 			if stageErr != nil {
 				result.Err = stageErr
@@ -386,15 +385,15 @@ type reviewStageDuplicateAutoResolvedReport struct {
 	CanonicalEventSlug string `json:"canonical_event_slug,omitempty"`
 }
 
-func reviewStageForReport(ctx context.Context, st reviewStageStore, report ingest.Report, runErr error) (reviewStageReport, error) {
+func reviewStageForReport(ctx context.Context, st reviewStageStore, catalog *ingest.Catalog, report ingest.Report, runErr error) (reviewStageReport, error) {
 	if runErr != nil {
 		return emptyReviewStageReport(), nil
 	}
-	return createReviewGroupsFromReport(ctx, st, report)
+	return createReviewGroupsFromReport(ctx, st, catalog, report)
 }
 
 func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, source string) manualRunExecution {
-	report, runErr := runManualImport(ctx, st, fetcher, ingest.Options{
+	report, runErr := runManualImport(ctx, st, fetcher, catalog, ingest.Options{
 		Source: source,
 		Limit:  cfg.limit,
 	})
@@ -404,7 +403,7 @@ func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest
 	if !cfg.stageReviewGroups {
 		return manualRunExecution{Report: report, Err: runErr}
 	}
-	stageReport, stageErr := reviewStageForReport(ctx, st, report, runErr)
+	stageReport, stageErr := reviewStageForReport(ctx, st, catalog, report, runErr)
 	if stageErr != nil {
 		return manualRunExecution{Report: report, ReviewStage: &stageReport, Err: stageErr}
 	}
@@ -467,15 +466,7 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 	return nil
 }
 
-func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, report ingest.Report) (reviewStageReport, error) {
-	catalog, err := ingest.DefaultCatalog()
-	if err != nil {
-		return emptyReviewStageReport(), err
-	}
-	return createReviewGroupsFromReportWithCatalog(ctx, st, catalog, report)
-}
-
-func createReviewGroupsFromReportWithCatalog(ctx context.Context, st reviewStageStore, catalog *ingest.Catalog, report ingest.Report) (reviewStageReport, error) {
+func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, catalog *ingest.Catalog, report ingest.Report) (reviewStageReport, error) {
 	groups := ingest.ReviewGroupsFromReportWithCatalog(catalog, report)
 	stage := emptyReviewStageReport()
 	stage.Groups = make([]reviewStageGroupReport, 0, len(groups))
