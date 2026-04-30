@@ -74,7 +74,18 @@ type ReportTotals struct {
 }
 
 func RunManual(ctx context.Context, st Store, fetcher Fetcher, opts Options) (Report, error) {
-	cfg, err := configForSource(opts.Source)
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		return Report{}, err
+	}
+	return RunManualWithCatalog(ctx, st, fetcher, catalog, opts)
+}
+
+func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalog *Catalog, opts Options) (Report, error) {
+	if catalog == nil {
+		return Report{}, errors.New("catalog is nil")
+	}
+	cfg, err := catalog.configForSource(opts.Source)
 	if err != nil {
 		return Report{}, err
 	}

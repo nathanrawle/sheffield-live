@@ -155,7 +155,7 @@ func (s *Store) PromoteSingletonReviewGroupIfMissing(ctx context.Context, input 
 }
 
 func (s *Store) promoteAuthoritativeSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput, now time.Time) (string, bool, error) {
-	sourceEventKey := authoritativeSingletonSourceEventKey(input)
+	sourceEventKey := authoritativeSingletonSourceEventKey(s.sourceMetadata, input)
 	if sourceEventKey == "" {
 		return "", false, nil
 	}
@@ -192,7 +192,7 @@ func (s *Store) promoteAuthoritativeSingletonReviewGroupIfMissing(ctx context.Co
 }
 
 func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput, now time.Time) (string, bool, error) {
-	expectedVenueSlug := nonAuthoritativeSingletonVenueSlug(input)
+	expectedVenueSlug := nonAuthoritativeSingletonVenueSlug(s.sourceMetadata, input)
 	if expectedVenueSlug == "" {
 		return "", false, nil
 	}
@@ -507,7 +507,7 @@ func computeReviewFieldDefaults(candidates []review.Candidate, now time.Time) ma
 	defaults := make(map[review.Field]review.DraftChoice)
 	for _, field := range reviewConsensusFields() {
 		type tally struct {
-			count      int
+			count       int
 			candidateID int64
 		}
 		counts := make(map[string]tally)
@@ -805,18 +805,18 @@ func authoritativeSourceEventKey(input review.GroupInput) string {
 	return ""
 }
 
-func authoritativeSingletonSourceEventKey(input review.GroupInput) string {
+func authoritativeSingletonSourceEventKey(sourceMetadata ingest.SourceMetadataLookup, input review.GroupInput) string {
 	sourceEventKey := authoritativeSourceEventKey(input)
 	if sourceEventKey == "" {
 		return ""
 	}
 
 	sourceName := strings.TrimSpace(input.SourceName)
-	if ingest.NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName) != "" {
+	if sourceMetadata.NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName) != "" {
 		return ""
 	}
 
-	ownedVenueSlug := strings.TrimSpace(ingest.OwnedVenueSlugForReviewStageSourceName(sourceName))
+	ownedVenueSlug := strings.TrimSpace(sourceMetadata.OwnedVenueSlugForReviewStageSourceName(sourceName))
 	if ownedVenueSlug == "" {
 		return sourceEventKey
 	}
@@ -826,11 +826,11 @@ func authoritativeSingletonSourceEventKey(input review.GroupInput) string {
 	return sourceEventKey
 }
 
-func nonAuthoritativeSingletonVenueSlug(input review.GroupInput) string {
+func nonAuthoritativeSingletonVenueSlug(sourceMetadata ingest.SourceMetadataLookup, input review.GroupInput) string {
 	if len(input.Candidates) != 1 {
 		return ""
 	}
-	expectedVenueSlug := strings.TrimSpace(ingest.NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(input.SourceName))
+	expectedVenueSlug := strings.TrimSpace(sourceMetadata.NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(input.SourceName))
 	if expectedVenueSlug == "" {
 		return ""
 	}
@@ -2025,7 +2025,7 @@ func reviewGroupAuthoritativeSource(group review.Group) (reviewGroupAuthoritativ
 func backfillOpenReviewGroupsAuthoritativeLinks(ctx context.Context, tx interface {
 	execer
 	queryer
-}) error {
+}, sourceMetadata ingest.SourceMetadataLookup) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id
 		FROM review_groups
@@ -2069,7 +2069,7 @@ func backfillOpenReviewGroupsAuthoritativeLinks(ctx context.Context, tx interfac
 		if err != nil {
 			return err
 		}
-		link, ok := deriveReviewGroupAuthoritativeLink(group, candidates)
+		link, ok := deriveReviewGroupAuthoritativeLink(sourceMetadata, group, candidates)
 		if !ok {
 			continue
 		}
@@ -2164,7 +2164,7 @@ func normalizeReviewGroupAuthoritativeLinkInput(input reviewGroupAuthoritativeLi
 	return link, true
 }
 
-func deriveReviewGroupAuthoritativeLink(group review.Group, candidates []review.Candidate) (reviewGroupAuthoritativeLink, bool) {
+func deriveReviewGroupAuthoritativeLink(sourceMetadata ingest.SourceMetadataLookup, group review.Group, candidates []review.Candidate) (reviewGroupAuthoritativeLink, bool) {
 	candidates = stagedReviewCandidates(candidates)
 	if len(candidates) == 0 {
 		return reviewGroupAuthoritativeLink{}, false
@@ -2195,7 +2195,7 @@ func deriveReviewGroupAuthoritativeLink(group review.Group, candidates []review.
 			return reviewGroupAuthoritativeLink{}, false
 		}
 	}
-	if ingest.OwnedVenueSlugForReviewStageSourceName(link.SourceName) != venueSlug {
+	if sourceMetadata.OwnedVenueSlugForReviewStageSourceName(link.SourceName) != venueSlug {
 		return reviewGroupAuthoritativeLink{}, false
 	}
 	return link, true

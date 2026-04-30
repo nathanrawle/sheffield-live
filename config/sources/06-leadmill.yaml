@@ -1,0 +1,12 @@
+key: leadmill
+name: The Leadmill listings
+url: https://leadmill.co.uk/live/
+review_stage_source_name: The Leadmill manual ingest
+import_run_notes: manual The Leadmill snapshot + ICS parse report
+owned_venue_slug: leadmill
+mode: linked_ics
+linked_ics:
+  secondary_source_name: The Leadmill iCal feed
+  ics_link_extractor: leadmill_calendar
+  ics_parser: leadmill
+  venue_normalizer: leadmill

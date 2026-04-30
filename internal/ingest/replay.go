@@ -39,8 +39,19 @@ type ReplayOptions struct {
 }
 
 func ReplayImportRun(ctx context.Context, st ReplayStore, importRunID int64, opts ReplayOptions) (Report, error) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		return Report{}, err
+	}
+	return ReplayImportRunWithCatalog(ctx, st, catalog, importRunID, opts)
+}
+
+func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Catalog, importRunID int64, opts ReplayOptions) (Report, error) {
 	if st == nil {
 		return Report{}, errors.New("replay store is nil")
+	}
+	if catalog == nil {
+		return Report{}, errors.New("catalog is nil")
 	}
 	if importRunID <= 0 {
 		return Report{}, errors.New("import run ID is required")
@@ -74,7 +85,7 @@ func ReplayImportRun(ctx context.Context, st ReplayStore, importRunID int64, opt
 		}
 	}
 
-	sourceCfg, page, err := detectReplaySourcePageSnapshot(decoded)
+	sourceCfg, page, err := catalog.detectReplaySourcePageSnapshot(decoded)
 	if err != nil {
 		return Report{}, fmt.Errorf("import run %d: %w", importRunID, err)
 	}

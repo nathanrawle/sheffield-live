@@ -95,7 +95,13 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		path = "./data/sheffield-live.db"
 	}
 
-	st, err := openSQLiteStore(path)
+	catalog, err := ingest.LoadRepoCatalog()
+	if err != nil {
+		return err
+	}
+	ingest.SetDefaultCatalog(catalog)
+
+	st, err := openSQLiteStore(path, catalog)
 	if err != nil {
 		return err
 	}
@@ -123,7 +129,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return runAllSources(context.Background(), st, fetcher, cfg, stdout)
+		return runAllSources(context.Background(), st, fetcher, catalog, cfg, stdout)
 	}
 
 	var result manualRunExecution
@@ -149,7 +155,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		result = runSingleManualSource(context.Background(), st, fetcher, cfg, cfg.source)
+		result = runSingleManualSource(context.Background(), st, fetcher, catalog, cfg, cfg.source)
 	}
 	return encodeManualRunResult(stdout, cfg.stageReviewGroups, result)
 }
@@ -344,17 +350,17 @@ type batchManualIngestResult struct {
 }
 
 type reviewStageReport struct {
-	Enabled                    bool                                   `json:"enabled"`
-	GroupsCreated              int                                    `json:"groups_created"`
-	GroupsReused               int                                    `json:"groups_reused"`
-	CandidateCount             int                                    `json:"candidate_count"`
-	ReviewCandidateCount       int                                    `json:"review_candidate_count"`
-	AutoPromotedCount          int                                    `json:"auto_promoted_count"`
-	DuplicateAutoResolvedCount int                                    `json:"duplicate_auto_resolved_count"`
-	Groups                     []reviewStageGroupReport               `json:"groups"`
-	AutoPromoted               []reviewStageAutoPromotedReport        `json:"auto_promoted"`
+	Enabled                    bool                                     `json:"enabled"`
+	GroupsCreated              int                                      `json:"groups_created"`
+	GroupsReused               int                                      `json:"groups_reused"`
+	CandidateCount             int                                      `json:"candidate_count"`
+	ReviewCandidateCount       int                                      `json:"review_candidate_count"`
+	AutoPromotedCount          int                                      `json:"auto_promoted_count"`
+	DuplicateAutoResolvedCount int                                      `json:"duplicate_auto_resolved_count"`
+	Groups                     []reviewStageGroupReport                 `json:"groups"`
+	AutoPromoted               []reviewStageAutoPromotedReport          `json:"auto_promoted"`
 	DuplicateAutoResolved      []reviewStageDuplicateAutoResolvedReport `json:"duplicate_auto_resolved"`
-	Errors                     []string                               `json:"errors"`
+	Errors                     []string                                 `json:"errors"`
 }
 
 type reviewStageGroupReport struct {
@@ -387,7 +393,7 @@ func reviewStageForReport(ctx context.Context, st reviewStageStore, report inges
 	return createReviewGroupsFromReport(ctx, st, report)
 }
 
-func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, cfg ingestCommandConfig, source string) manualRunExecution {
+func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, source string) manualRunExecution {
 	report, runErr := runManualImport(ctx, st, fetcher, ingest.Options{
 		Source: source,
 		Limit:  cfg.limit,
@@ -430,11 +436,11 @@ func encodeManualRunResult(stdout io.Writer, stageEnabled bool, result manualRun
 	return result.Err
 }
 
-func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, cfg ingestCommandConfig, stdout io.Writer) error {
-	results := make([]batchManualIngestResult, 0, len(ingest.RegisteredSourceKeys()))
+func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer) error {
+	results := make([]batchManualIngestResult, 0, len(catalog.Keys()))
 	var failed bool
-	for _, source := range ingest.RegisteredSourceKeys() {
-		result := runSingleManualSource(ctx, st, fetcher, cfg, source)
+	for _, source := range catalog.Keys() {
+		result := runSingleManualSource(ctx, st, fetcher, catalog, cfg, source)
 		batchResult := batchManualIngestResult{
 			Source: source,
 			Report: result.Report,
@@ -462,7 +468,15 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 }
 
 func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, report ingest.Report) (reviewStageReport, error) {
-	groups := ingest.ReviewGroupsFromReport(report)
+	catalog, err := ingest.DefaultCatalog()
+	if err != nil {
+		return emptyReviewStageReport(), err
+	}
+	return createReviewGroupsFromReportWithCatalog(ctx, st, catalog, report)
+}
+
+func createReviewGroupsFromReportWithCatalog(ctx context.Context, st reviewStageStore, catalog *ingest.Catalog, report ingest.Report) (reviewStageReport, error) {
+	groups := ingest.ReviewGroupsFromReportWithCatalog(catalog, report)
 	stage := emptyReviewStageReport()
 	stage.Groups = make([]reviewStageGroupReport, 0, len(groups))
 	for _, group := range groups {
@@ -471,9 +485,9 @@ func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, repo
 
 	for _, group := range groups {
 		autoPromote := false
-		if authoritativeSingletonAutoPromoteEligible(report.Source, group) {
+		if authoritativeSingletonAutoPromoteEligible(catalog, report.Source, group) {
 			autoPromote = true
-		} else if nonAuthoritativeSingletonAutoPromoteEligible(report.Source, group) {
+		} else if nonAuthoritativeSingletonAutoPromoteEligible(catalog, report.Source, group) {
 			autoPromote = true
 		}
 		if autoPromote {
@@ -542,22 +556,22 @@ func emptyReviewStageReport() reviewStageReport {
 	}
 }
 
-func authoritativeSingletonAutoPromoteEligible(source string, group review.GroupInput) bool {
+func authoritativeSingletonAutoPromoteEligible(catalog *ingest.Catalog, source string, group review.GroupInput) bool {
 	if len(group.Candidates) != 1 {
 		return false
 	}
-	ownedVenueSlug := strings.TrimSpace(ingest.OwnedVenueSlugForSource(source))
+	ownedVenueSlug := strings.TrimSpace(catalog.OwnedVenueSlugForSource(source))
 	if ownedVenueSlug == "" {
 		return false
 	}
 	return strings.TrimSpace(group.Candidates[0].VenueSlug) == ownedVenueSlug
 }
 
-func nonAuthoritativeSingletonAutoPromoteEligible(source string, group review.GroupInput) bool {
+func nonAuthoritativeSingletonAutoPromoteEligible(catalog *ingest.Catalog, source string, group review.GroupInput) bool {
 	if len(group.Candidates) != 1 {
 		return false
 	}
-	expectedVenueSlug := strings.TrimSpace(ingest.NonAuthoritativeSingletonVenueSlugForSource(source))
+	expectedVenueSlug := strings.TrimSpace(catalog.NonAuthoritativeSingletonVenueSlugForSource(source))
 	if expectedVenueSlug == "" {
 		return false
 	}

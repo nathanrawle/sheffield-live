@@ -17,6 +17,17 @@ type reviewStageCluster struct {
 }
 
 func ReviewGroupsFromReport(report Report) []review.GroupInput {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		return nil
+	}
+	return ReviewGroupsFromReportWithCatalog(catalog, report)
+}
+
+func ReviewGroupsFromReportWithCatalog(catalog *Catalog, report Report) []review.GroupInput {
+	if catalog == nil {
+		return nil
+	}
 	if report.Status != importStatusSucceeded {
 		return nil
 	}
@@ -26,7 +37,7 @@ func ReviewGroupsFromReport(report Report) []review.GroupInput {
 
 	for _, calendar := range report.Calendars {
 		for _, candidate := range calendar.Candidates {
-			key, ok := reviewStageKey(report.Source, candidate)
+			key, ok := reviewStageKey(catalog, report.Source, candidate)
 			if !ok {
 				continue
 			}
@@ -35,7 +46,7 @@ func ReviewGroupsFromReport(report Report) []review.GroupInput {
 			if !exists {
 				cluster = &reviewStageCluster{
 					group: review.GroupInput{
-						SourceName:  reviewStageSourceName(report),
+						SourceName:  reviewStageSourceName(catalog, report),
 						SourceURL:   reviewStageFirstNonEmpty(calendar.URL, report.SourceURL),
 						ImportRunID: report.ImportRunID,
 						Notes:       reviewStageNotes(report),
@@ -45,7 +56,7 @@ func ReviewGroupsFromReport(report Report) []review.GroupInput {
 				order = append(order, key)
 			}
 
-			cluster.group.Candidates = append(cluster.group.Candidates, reviewStageCandidateInput(report, calendar, candidate))
+			cluster.group.Candidates = append(cluster.group.Candidates, reviewStageCandidateInput(catalog, report, calendar, candidate))
 		}
 	}
 
@@ -54,14 +65,14 @@ func ReviewGroupsFromReport(report Report) []review.GroupInput {
 		group := clusters[key].group
 		group.Title = reviewStageTitle(group)
 		group.StagingKey = reviewStageStagingKey(group)
-		group.AuthoritativeSourceName, group.AuthoritativeSourceURL, group.AuthoritativeSourceEventKey = reviewStageAuthoritativeSource(report.Source, group)
+		group.AuthoritativeSourceName, group.AuthoritativeSourceURL, group.AuthoritativeSourceEventKey = reviewStageAuthoritativeSource(catalog, report.Source, group)
 		groups = append(groups, group)
 	}
 	return groups
 }
 
-func reviewStageAuthoritativeSource(source string, group review.GroupInput) (string, string, string) {
-	ownedVenueSlug := strings.TrimSpace(OwnedVenueSlugForSource(source))
+func reviewStageAuthoritativeSource(catalog *Catalog, source string, group review.GroupInput) (string, string, string) {
+	ownedVenueSlug := strings.TrimSpace(catalog.OwnedVenueSlugForSource(source))
 	if ownedVenueSlug == "" || len(group.Candidates) == 0 {
 		return "", "", ""
 	}
@@ -132,7 +143,7 @@ func writeReviewStageHashPart(sum interface{ Write([]byte) (int, error) }, value
 	_, _ = fmt.Fprintf(sum, "%d:%s\x00", len(value), value)
 }
 
-func reviewStageKey(source string, candidate EventCandidate) (string, bool) {
+func reviewStageKey(catalog *Catalog, source string, candidate EventCandidate) (string, bool) {
 	if uid := strings.TrimSpace(candidate.UID); uid != "" {
 		return "uid\x00" + uid, true
 	}
@@ -147,21 +158,21 @@ func reviewStageKey(source string, candidate EventCandidate) (string, bool) {
 		"fallback",
 		summary,
 		startAt,
-		reviewStageVenueSlug(source, candidate.Location),
+		reviewStageVenueSlug(catalog, source, candidate.Location),
 	}, "\x00"), true
 }
 
-func reviewStageCandidateInput(report Report, calendar CalendarReport, candidate EventCandidate) review.CandidateInput {
+func reviewStageCandidateInput(catalog *Catalog, report Report, calendar CalendarReport, candidate EventCandidate) review.CandidateInput {
 	return review.CandidateInput{
 		ExternalID:  strings.TrimSpace(candidate.UID),
 		Name:        strings.TrimSpace(candidate.Summary),
-		VenueSlug:   reviewStageVenueSlug(report.Source, candidate.Location),
+		VenueSlug:   reviewStageVenueSlug(catalog, report.Source, candidate.Location),
 		StartAt:     strings.TrimSpace(candidate.StartAt),
 		EndAt:       strings.TrimSpace(candidate.EndAt),
 		Genre:       "",
 		Status:      reviewStageStatus(candidate.Status),
 		Description: strings.TrimSpace(candidate.Description),
-		SourceName:  reviewStageSourceName(report),
+		SourceName:  reviewStageSourceName(catalog, report),
 		SourceURL:   reviewStageFirstNonEmpty(candidate.URL, calendar.URL, report.SourceURL),
 		Provenance:  reviewStageProvenance(report, calendar, candidate),
 	}
@@ -181,8 +192,8 @@ func reviewStageTitle(group review.GroupInput) string {
 	return prefix
 }
 
-func reviewStageSourceName(report Report) string {
-	return ReviewStageSourceNameForSource(report.Source)
+func reviewStageSourceName(catalog *Catalog, report Report) string {
+	return catalog.ReviewStageSourceNameForSource(report.Source)
 }
 
 func reviewStageNotes(report Report) string {
@@ -236,15 +247,9 @@ func reviewStageFirstNonEmpty(values ...string) string {
 	return ""
 }
 
-func reviewStageVenueSlug(source, value string) string {
-	if strings.TrimSpace(source) == YellowArchSource {
-		lower := strings.ToLower(strings.TrimSpace(value))
-		if strings.Contains(lower, "yellow") && strings.Contains(lower, "arch") {
-			return "yellow-arch"
-		}
+func reviewStageVenueSlug(catalog *Catalog, source, value string) string {
+	if catalog == nil {
+		return VenueSlugFromText(value)
 	}
-	if strings.TrimSpace(source) == LeadmillSource {
-		return VenueSlugFromText(leadmillVenueText(value))
-	}
-	return VenueSlugFromText(value)
+	return catalog.VenueSlugForSourceLocation(source, value)
 }

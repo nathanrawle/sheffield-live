@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 
+	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/store/sqlite"
 	"sheffield-live/internal/web"
 )
@@ -20,7 +21,12 @@ func run() error {
 	addr := env("ADDR", ":8080")
 	dbPath := env("DB_PATH", "./data/sheffield-live.db")
 
-	st, err := sqlite.Open(dbPath)
+	sourceCatalog, err := ingest.LoadRepoCatalog()
+	if err != nil {
+		return err
+	}
+
+	st, err := sqlite.Open(dbPath, sourceCatalog)
 	if err != nil {
 		return err
 	}

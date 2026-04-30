@@ -4,14 +4,14 @@
 
 Sheffield Live is a single Go monolith. It serves server-rendered HTML from one SQLite-backed application and keeps the public browsing flow and the manual ingestion flow in the same repository.
 
-`cmd/web` starts the site. `cmd/ingest` handles manual ingestion and review staging.
+`cmd/web` starts the site. `cmd/ingest` handles manual ingestion and review staging. Both binaries load the source catalog from `config/sources` on startup.
 
 ## Packages
 
 - `cmd/web` starts the HTTP server
 - `cmd/ingest` runs manual ingestion and optional review staging
 - `internal/domain` defines shared venue, event, and origin types
-- `internal/ingest` fetches source pages, runs source-specific extraction and parsing, and stages review groups from ingest reports
+- `internal/ingest` loads the source catalog, fetches source pages, dispatches to bounded parser/extractor families, and stages review groups from ingest reports
 - `internal/review` defines review group, candidate, default-choice, and draft-choice types
 - `internal/store` provides the seed-store implementation and catalog interface
 - `internal/store/sqlite` opens SQLite, runs migrations, bootstraps seed data, and implements persistence
@@ -27,6 +27,8 @@ The app uses SQLite through `modernc.org/sqlite`.
 `DB_PATH` defaults to `./data/sheffield-live.db`.
 
 The database path must point to writable storage because the application creates or updates the SQLite file on startup.
+
+The source catalog path is fixed to the repository `config/sources` directory in v1. It is not a runtime flag yet.
 
 ## Routes
 
@@ -46,7 +48,7 @@ The database path must point to writable storage because the application creates
 
 ## Request Flow
 
-1. `cmd/web` opens the SQLite store.
+1. `cmd/web` loads the source catalog and opens the SQLite store with source-metadata lookup support.
 2. `cmd/web` validates the opened store and passes explicit `internal/web.ServerDeps`.
 3. `internal/web` loads templates and embedded CSS.
 4. The router matches the request path.
@@ -72,6 +74,8 @@ When the backing store also exposes secondary-source event info, the public even
 Raw source snapshots feed review groups, and review resolution publishes canonical public events.
 
 - raw snapshots capture fetched source pages and any source-specific secondary payloads such as ICS feeds
+- source metadata and ingest runtime selection come from repo-backed YAML catalog files
+- replay and review identity depend on stable source identity fields: `key`, `name`, `url`, and `review_stage_source_name`
 - `review_groups.staging_key` has a unique index so staged reruns reuse the same group when the content key matches
 - `import_run_review_groups` records every persisted import-run to review-group link with link time
 - review groups may also persist an authoritative source tuple when every staged candidate agrees on one owned-venue source event identity

@@ -55,7 +55,8 @@ var migrations = []struct {
 var migrationFS embed.FS
 
 type Store struct {
-	db *sql.DB
+	db             *sql.DB
+	sourceMetadata ingest.SourceMetadataLookup
 }
 
 var _ seedstore.CatalogStore = (*Store)(nil)
@@ -70,9 +71,19 @@ type execer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-func Open(path string) (st *Store, err error) {
+func Open(path string, sourceMetadata ...ingest.SourceMetadataLookup) (st *Store, err error) {
 	if path == "" {
 		path = defaultPath
+	}
+	var metadata ingest.SourceMetadataLookup
+	if len(sourceMetadata) > 0 {
+		metadata = sourceMetadata[0]
+	}
+	if metadata == nil {
+		metadata, err = ingest.DefaultCatalog()
+		if err != nil {
+			return nil, fmt.Errorf("open sqlite store %q: load source metadata: %w", path, err)
+		}
 	}
 
 	if info, statErr := os.Stat(path); statErr == nil {
@@ -122,13 +133,13 @@ func Open(path string) (st *Store, err error) {
 	if err := backfillReviewGroupImportRunLinks(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill review group import-run links: %w", path, err)
 	}
-	if err := backfillOpenReviewGroupsAuthoritativeLinks(ctx, tx); err != nil {
+	if err := backfillOpenReviewGroupsAuthoritativeLinks(ctx, tx, metadata); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill review group authoritative links: %w", path, err)
 	}
 	if err := backfillReviewFieldDefaults(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill review field defaults: %w", path, err)
 	}
-	if err := backfillCanonicalUnknownEnds(ctx, tx); err != nil {
+	if err := backfillCanonicalUnknownEnds(ctx, tx, metadata); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill canonical unknown ends: %w", path, err)
 	}
 	if err := auditCanonicalEqualTimeEnds(ctx, tx); err != nil {
@@ -141,7 +152,7 @@ func Open(path string) (st *Store, err error) {
 		return nil, fmt.Errorf("open sqlite store %q: commit transaction: %w", path, err)
 	}
 
-	st = &Store{db: db}
+	st = &Store{db: db, sourceMetadata: metadata}
 	return st, nil
 }
 
@@ -854,7 +865,7 @@ func dsnForPath(path string) string {
 func backfillCanonicalUnknownEnds(ctx context.Context, tx interface {
 	execer
 	queryer
-}) error {
+}, sourceMetadata ingest.SourceMetadataLookup) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
 			e.id,
@@ -894,7 +905,7 @@ func backfillCanonicalUnknownEnds(ctx context.Context, tx interface {
 		if authoritative != 1 {
 			continue
 		}
-		if strings.TrimSpace(ingest.OwnedVenueSlugForReviewStageSourceName(sourceName)) != strings.TrimSpace(venueSlug) {
+		if strings.TrimSpace(sourceMetadata.OwnedVenueSlugForReviewStageSourceName(sourceName)) != strings.TrimSpace(venueSlug) {
 			continue
 		}
 		ids = append(ids, eventID)

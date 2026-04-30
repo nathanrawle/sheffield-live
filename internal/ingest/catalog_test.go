@@ -1,0 +1,157 @@
+package ingest
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
+	catalog, err := LoadRepoCatalog()
+	if err != nil {
+		t.Fatalf("load repo catalog: %v", err)
+	}
+
+	got := catalog.Keys()
+	want := []string{
+		DefaultSource,
+		YellowArchSource,
+		CafeNo9Source,
+		JazzAtTheLescarSource,
+		TheGreystonesSource,
+		LeadmillSource,
+		CorporationSource,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("catalog keys = %v, want %v", got, want)
+	}
+
+	cfg, err := catalog.ConfigForSource(LeadmillSource)
+	if err != nil {
+		t.Fatalf("config for leadmill: %v", err)
+	}
+	if got, want := cfg.ICSParserFamily, "leadmill"; got != want {
+		t.Fatalf("leadmill ics parser family = %q, want %q", got, want)
+	}
+}
+
+func TestLoadCatalogRejectsInvalidDefinitions(t *testing.T) {
+	tests := []struct {
+		name    string
+		files   map[string]string
+		wantErr string
+	}{
+		{
+			name: "duplicate key",
+			files: map[string]string{
+				"01-one.yaml": minimalSourceYAML("sidney-and-matilda", "One", "https://one.example.test/", "One manual ingest"),
+				"02-two.yaml": minimalSourceYAML("sidney-and-matilda", "Two", "https://two.example.test/", "Two manual ingest"),
+			},
+			wantErr: `duplicate source key "sidney-and-matilda"`,
+		},
+		{
+			name: "duplicate review stage source name",
+			files: map[string]string{
+				"01-one.yaml": minimalSourceYAML("one", "One", "https://one.example.test/", "Shared manual ingest"),
+				"02-two.yaml": minimalSourceYAML("two", "Two", "https://two.example.test/", "Shared manual ingest"),
+			},
+			wantErr: `duplicate review stage source name "Shared manual ingest"`,
+		},
+		{
+			name: "conflicting ownership",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+owned_venue_slug: one
+non_authoritative_singleton_venue_slug: one
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+`) + "\n",
+			},
+			wantErr: "owned_venue_slug and non_authoritative_singleton_venue_slug cannot both be set",
+		},
+		{
+			name: "mode mismatch",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+mode: source_page
+linked_ics:
+  secondary_source_name: One ICS
+  ics_link_extractor: sidney_and_matilda
+  ics_parser: generic
+`) + "\n",
+			},
+			wantErr: "source_page config is required for mode source_page",
+		},
+		{
+			name: "unknown family",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+mode: source_page
+source_page:
+  source_page_parser: not_real
+`) + "\n",
+			},
+			wantErr: `unknown source page parser family "not_real"`,
+		},
+		{
+			name: "unknown yaml field",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+  venue_normaliser: leadmill
+`) + "\n",
+			},
+			wantErr: "field venue_normaliser not found",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, body := range tc.files {
+				path := filepath.Join(dir, name)
+				if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+					t.Fatalf("write %s: %v", path, err)
+				}
+			}
+
+			_, err := LoadCatalog(dir)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("LoadCatalog() error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func minimalSourceYAML(key, name, url, reviewStageSourceName string) string {
+	return strings.TrimSpace(`
+key: `+key+`
+name: `+name+`
+url: `+url+`
+review_stage_source_name: `+reviewStageSourceName+`
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+`) + "\n"
+}

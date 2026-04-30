@@ -1,0 +1,11 @@
+key: corporation
+name: Corporation Sheffield live listings
+url: https://www.corporation.org.uk/live/
+review_stage_source_name: Corporation Sheffield manual ingest
+import_run_notes: manual Corporation Sheffield snapshot + detail-page parse report
+owned_venue_slug: corporation
+mode: linked_detail_pages
+linked_detail_pages:
+  secondary_source_name: Corporation Sheffield event detail page
+  linked_page_link_extractor: corporation_detail_links
+  linked_page_parser: corporation_detail_page

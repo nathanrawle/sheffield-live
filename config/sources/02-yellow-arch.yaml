@@ -1,0 +1,9 @@
+key: yellow-arch
+name: Yellow Arch listings
+url: https://www.yellowarch.com/events/
+review_stage_source_name: Yellow Arch manual ingest
+import_run_notes: manual Yellow Arch source-page parse report
+owned_venue_slug: yellow-arch
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld

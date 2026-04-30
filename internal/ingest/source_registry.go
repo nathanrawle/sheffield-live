@@ -5,233 +5,84 @@ import (
 	"strings"
 )
 
-const YellowArchSource = "yellow-arch"
-const yellowArchSource = YellowArchSource
-const CafeNo9Source = "cafe-no-9"
-const JazzAtTheLescarSource = "jazz-at-the-lescar"
-const TheGreystonesSource = "the-greystones"
-const LeadmillSource = "leadmill"
-const CorporationSource = "corporation"
-
-type pageProcessMode string
-
-const (
-	pageProcessLinkedICS         pageProcessMode = "linked_ics"
-	pageProcessSourcePage        pageProcessMode = "source_page"
-	pageProcessLinkedDetailPages pageProcessMode = "linked_detail_pages"
-)
-
-type sourceConfig struct {
-	Key                                            string
-	Name                                           string
-	URL                                            string
-	OwnedVenueSlug                                 string
-	NonAuthoritativeSingletonVenueSlug             string
-	NonAuthoritativeSingletonAutoPromotionDisabled bool
-	CalendarSourceName                             string
-	LinkedPageSourceName                           string
-	PageMode                                       pageProcessMode
-	ReviewStageSourceName                          string
-	ImportRunNotes                                 string
-}
-
-var sourceRegistry = []sourceConfig{
-	{
-		Key:                   DefaultSource,
-		Name:                  "Sidney & Matilda listings",
-		URL:                   "https://www.sidneyandmatilda.com/",
-		OwnedVenueSlug:        "sidney-and-matilda",
-		CalendarSourceName:    "Sidney & Matilda Google Calendar ICS",
-		PageMode:              pageProcessLinkedICS,
-		ReviewStageSourceName: "Sidney & Matilda manual ingest",
-		ImportRunNotes:        "manual Sidney & Matilda snapshot + ICS parse report",
-	},
-	{
-		Key:                   YellowArchSource,
-		Name:                  "Yellow Arch listings",
-		URL:                   "https://www.yellowarch.com/events/",
-		OwnedVenueSlug:        "yellow-arch",
-		PageMode:              pageProcessSourcePage,
-		ReviewStageSourceName: "Yellow Arch manual ingest",
-		ImportRunNotes:        "manual Yellow Arch source-page parse report",
-	},
-	{
-		Key:                   CafeNo9Source,
-		Name:                  "Cafe No. 9 listings",
-		URL:                   "https://www.wegottickets.com/Cafe9",
-		OwnedVenueSlug:        "cafe-no-9",
-		PageMode:              pageProcessSourcePage,
-		ReviewStageSourceName: "Cafe No. 9 manual ingest",
-		ImportRunNotes:        "manual Cafe No. 9 source-page parse report",
-	},
-	{
-		Key:                                JazzAtTheLescarSource,
-		Name:                               "Jazz at The Lescar listings",
-		URL:                                "http://www.jazzatthelescar.com/index.html",
-		NonAuthoritativeSingletonVenueSlug: "lescar",
-		PageMode:                           pageProcessSourcePage,
-		ReviewStageSourceName:              "Jazz at The Lescar manual ingest",
-		ImportRunNotes:                     "manual Jazz at The Lescar source-page parse report",
-	},
-	{
-		Key:                                TheGreystonesSource,
-		Name:                               "The Greystones listings",
-		URL:                                "https://www.mygreystones.co.uk/events/",
-		NonAuthoritativeSingletonVenueSlug: "greystones",
-		LinkedPageSourceName:               "The Greystones month page",
-		PageMode:                           pageProcessLinkedDetailPages,
-		ReviewStageSourceName:              "The Greystones manual ingest",
-		ImportRunNotes:                     "manual The Greystones snapshot + month-page parse report",
-	},
-	{
-		Key:                   LeadmillSource,
-		Name:                  "The Leadmill listings",
-		URL:                   "https://leadmill.co.uk/live/",
-		OwnedVenueSlug:        "leadmill",
-		CalendarSourceName:    "The Leadmill iCal feed",
-		PageMode:              pageProcessLinkedICS,
-		ReviewStageSourceName: "The Leadmill manual ingest",
-		ImportRunNotes:        "manual The Leadmill snapshot + ICS parse report",
-	},
-	{
-		Key:                   CorporationSource,
-		Name:                  "Corporation Sheffield live listings",
-		URL:                   "https://www.corporation.org.uk/live/",
-		OwnedVenueSlug:        "corporation",
-		LinkedPageSourceName:  "Corporation Sheffield event detail page",
-		PageMode:              pageProcessLinkedDetailPages,
-		ReviewStageSourceName: "Corporation Sheffield manual ingest",
-		ImportRunNotes:        "manual Corporation Sheffield snapshot + detail-page parse report",
-	},
-}
-
-func RegisteredSourceKeys() []string {
-	keys := make([]string, 0, len(sourceRegistry))
-	for _, cfg := range sourceRegistry {
-		keys = append(keys, cfg.Key)
-	}
-	return keys
-}
-
-func configForSource(source string) (sourceConfig, error) {
-	key := strings.TrimSpace(source)
-	if key == "" {
-		key = DefaultSource
-	}
-	for _, cfg := range sourceRegistry {
-		if cfg.Key == key {
-			return cfg, nil
-		}
-	}
-	return sourceConfig{}, fmt.Errorf("unsupported source %q", source)
-}
-
-func OwnedVenueSlugForSource(source string) string {
-	cfg, err := configForSource(source)
-	if err != nil {
-		return ""
-	}
-	return cfg.OwnedVenueSlug
-}
-
-func ReviewStageSourceNameForSource(source string) string {
-	cfg, err := configForSource(source)
-	if err != nil {
-		source = strings.TrimSpace(source)
-		if source == "" {
-			return reviewStageDefaultSourceName
-		}
-		return source + " manual ingest"
-	}
-	if strings.TrimSpace(cfg.ReviewStageSourceName) != "" {
-		return cfg.ReviewStageSourceName
-	}
-	if strings.TrimSpace(cfg.Key) == "" || cfg.Key == DefaultSource {
-		return reviewStageDefaultSourceName
-	}
-	return cfg.Key + " manual ingest"
-}
-
-func OwnedVenueSlugForReviewStageSourceName(sourceName string) string {
-	sourceName = strings.TrimSpace(sourceName)
-	if sourceName == "" {
-		return ""
-	}
-	for _, cfg := range sourceRegistry {
-		if strings.TrimSpace(cfg.ReviewStageSourceName) != sourceName {
-			continue
-		}
-		return strings.TrimSpace(cfg.OwnedVenueSlug)
-	}
-	return ""
-}
-
-func NonAuthoritativeSingletonVenueSlugForSource(source string) string {
-	cfg, err := configForSource(source)
-	if err != nil {
-		return ""
-	}
-	return cfg.nonAuthoritativeSingletonVenueSlug()
-}
-
-func NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName string) string {
-	sourceName = strings.TrimSpace(sourceName)
-	if sourceName == "" {
-		return ""
-	}
-	for _, cfg := range sourceRegistry {
-		if strings.TrimSpace(cfg.ReviewStageSourceName) != sourceName {
-			continue
-		}
-		return cfg.nonAuthoritativeSingletonVenueSlug()
-	}
-	return ""
-}
-
-func (cfg sourceConfig) nonAuthoritativeSingletonVenueSlug() string {
-	if strings.TrimSpace(cfg.OwnedVenueSlug) != "" || cfg.NonAuthoritativeSingletonAutoPromotionDisabled {
-		return ""
-	}
-	return strings.TrimSpace(cfg.NonAuthoritativeSingletonVenueSlug)
-}
-
-func detectReplaySourcePageSnapshot(decoded []decodedReplaySnapshot) (sourceConfig, decodedReplaySnapshot, error) {
-	var matchedCfg sourceConfig
-	var matchedSnapshot decodedReplaySnapshot
-	found := false
-
-	for _, cfg := range sourceRegistry {
-		var matches []decodedReplaySnapshot
-		for _, snapshot := range decoded {
-			if !cfg.matchesReplayPageSnapshot(snapshot) {
-				continue
-			}
-			matches = append(matches, snapshot)
-		}
-		switch len(matches) {
-		case 0:
-			continue
-		case 1:
-			if found {
-				return sourceConfig{}, decodedReplaySnapshot{}, fmt.Errorf("multiple source page snapshots matched supported sources")
-			}
-			matchedCfg = cfg
-			matchedSnapshot = matches[0]
-			found = true
-		default:
-			return sourceConfig{}, decodedReplaySnapshot{}, fmt.Errorf("multiple source page snapshots for %q at %q", cfg.Name, cfg.URL)
-		}
-	}
-
-	if !found {
-		return sourceConfig{}, decodedReplaySnapshot{}, fmt.Errorf("no source page snapshot matched a supported source")
-	}
-	return matchedCfg, matchedSnapshot, nil
-}
-
 type sourcePageParseResult struct {
 	Links []string
 	Parse ParseResult
+}
+
+type sourcePageParserFunc func(pageURL string, body []byte, limit int) ParseResult
+type pageLinkExtractorFunc func(pageURL string, body []byte, limit int) ([]string, error)
+type icsParserFunc func(body []byte) ParseResult
+type venueNormalizerFunc func(value string) string
+
+var sourcePageParserFamilies = map[string]sourcePageParserFunc{
+	"yellow_arch_jsonld": ParseYellowArchSourcePage,
+	"cafe_no_9":          ParseCafeNo9SourcePage,
+	"jazz_at_the_lescar": ParseJazzAtTheLescarSourcePage,
+}
+
+var sourcePageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
+	"cafe_no_9_pagination": ExtractCafeNo9SourcePageLinks,
+}
+
+var icsLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
+	"sidney_and_matilda": ExtractSidneyAndMatildaICSLinks,
+	"leadmill_calendar":  ExtractLeadmillICSLinks,
+}
+
+var icsParserFamilies = map[string]icsParserFunc{
+	"generic":  ParseICS,
+	"leadmill": ParseLeadmillICS,
+}
+
+var linkedPageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
+	"corporation_detail_links": ExtractCorporationDetailLinks,
+	"greystones_month_links":   ExtractTheGreystonesMonthLinks,
+}
+
+var linkedPageParserFamilies = map[string]func(pageURL string, body []byte) ParseResult{
+	"corporation_detail_page": ParseCorporationDetailPage,
+	"greystones_month_page":   ParseTheGreystonesMonthPage,
+}
+
+var venueNormalizerFamilies = map[string]venueNormalizerFunc{
+	"default":  VenueSlugFromText,
+	"leadmill": func(value string) string { return VenueSlugFromText(leadmillVenueText(value)) },
+}
+
+func hasSourcePageParserFamily(name string) bool {
+	_, ok := sourcePageParserFamilies[strings.TrimSpace(name)]
+	return ok
+}
+
+func hasSourcePageLinkExtractorFamily(name string) bool {
+	_, ok := sourcePageLinkExtractorFamilies[strings.TrimSpace(name)]
+	return ok
+}
+
+func hasICSLinkExtractorFamily(name string) bool {
+	_, ok := icsLinkExtractorFamilies[strings.TrimSpace(name)]
+	return ok
+}
+
+func hasICSParserFamily(name string) bool {
+	_, ok := icsParserFamilies[strings.TrimSpace(name)]
+	return ok
+}
+
+func hasLinkedPageLinkExtractorFamily(name string) bool {
+	_, ok := linkedPageLinkExtractorFamilies[strings.TrimSpace(name)]
+	return ok
+}
+
+func hasLinkedPageParserFamily(name string) bool {
+	_, ok := linkedPageParserFamilies[strings.TrimSpace(name)]
+	return ok
+}
+
+func hasVenueNormalizerFamily(name string) bool {
+	_, ok := venueNormalizerFamilies[strings.TrimSpace(name)]
+	return ok
 }
 
 func parseSourcePage(cfg sourceConfig, pageURL string, body []byte, limit int) (sourcePageParseResult, error) {
@@ -264,80 +115,70 @@ func parseSourcePage(cfg sourceConfig, pageURL string, body []byte, limit int) (
 }
 
 func parseSourcePageForSource(cfg sourceConfig, pageURL string, body []byte, limit int) (ParseResult, error) {
-	switch cfg.Key {
-	case YellowArchSource:
-		return ParseYellowArchSourcePage(pageURL, body, limit), nil
-	case CafeNo9Source:
-		return ParseCafeNo9SourcePage(pageURL, body, limit), nil
-	case JazzAtTheLescarSource:
-		return ParseJazzAtTheLescarSourcePage(pageURL, body, limit), nil
-	default:
-		return ParseResult{}, fmt.Errorf("unsupported source page parser %q", cfg.Key)
+	parser, ok := sourcePageParserFamilies[strings.TrimSpace(cfg.SourcePageParserFamily)]
+	if !ok {
+		return ParseResult{}, fmt.Errorf("unsupported source page parser family %q", cfg.SourcePageParserFamily)
 	}
+	return parser(pageURL, body, limit), nil
 }
 
 func extractSourcePageLinksForSource(cfg sourceConfig, pageURL string, body []byte, limit int) ([]string, error) {
-	switch cfg.Key {
-	case CafeNo9Source:
-		return ExtractCafeNo9SourcePageLinks(pageURL, body, limit)
-	default:
+	if strings.TrimSpace(cfg.SourcePageLinkExtractorFamily) == "" {
 		return nil, nil
 	}
+	extractor, ok := sourcePageLinkExtractorFamilies[strings.TrimSpace(cfg.SourcePageLinkExtractorFamily)]
+	if !ok {
+		return nil, fmt.Errorf("unsupported source page link extractor family %q", cfg.SourcePageLinkExtractorFamily)
+	}
+	return extractor(pageURL, body, limit)
 }
 
 func extractLinkedICSLinks(cfg sourceConfig, pageURL string, body []byte, limit int) ([]string, error) {
-	switch cfg.Key {
-	case DefaultSource:
-		return ExtractSidneyAndMatildaICSLinks(pageURL, body, limit)
-	case LeadmillSource:
-		return ExtractLeadmillICSLinks(pageURL, body, limit)
-	default:
-		return nil, fmt.Errorf("unsupported linked ICS source %q", cfg.Key)
+	extractor, ok := icsLinkExtractorFamilies[strings.TrimSpace(cfg.ICSLinkExtractorFamily)]
+	if !ok {
+		return nil, fmt.Errorf("unsupported linked ICS source family %q", cfg.ICSLinkExtractorFamily)
 	}
+	return extractor(pageURL, body, limit)
 }
 
 func parseICSForSource(cfg sourceConfig, body []byte) ParseResult {
-	switch cfg.Key {
-	case LeadmillSource:
-		return ParseLeadmillICS(body)
-	default:
-		return ParseICS(body)
+	parser, ok := icsParserFamilies[strings.TrimSpace(cfg.ICSParserFamily)]
+	if !ok {
+		return ParseResult{Errors: []string{fmt.Sprintf("unsupported ICS parser family %q", cfg.ICSParserFamily)}}
 	}
+	return parser(body)
 }
 
 func extractLinkedDetailPageLinks(cfg sourceConfig, pageURL string, body []byte, limit int) ([]string, error) {
-	switch cfg.Key {
-	case CorporationSource:
-		return ExtractCorporationDetailLinks(pageURL, body, limit)
-	case TheGreystonesSource:
-		return ExtractTheGreystonesMonthLinks(pageURL, body, limit)
-	default:
-		return nil, fmt.Errorf("unsupported linked detail page source %q", cfg.Key)
+	extractor, ok := linkedPageLinkExtractorFamilies[strings.TrimSpace(cfg.LinkedPageLinkExtractorFamily)]
+	if !ok {
+		return nil, fmt.Errorf("unsupported linked detail page source family %q", cfg.LinkedPageLinkExtractorFamily)
 	}
+	return extractor(pageURL, body, limit)
 }
 
 func parseLinkedPageForSource(cfg sourceConfig, pageURL string, body []byte) (ParseResult, error) {
-	switch cfg.Key {
-	case CorporationSource:
-		return ParseCorporationDetailPage(pageURL, body), nil
-	case TheGreystonesSource:
-		return ParseTheGreystonesMonthPage(pageURL, body), nil
-	default:
-		return ParseResult{}, fmt.Errorf("unsupported linked page source %q", cfg.Key)
+	parser, ok := linkedPageParserFamilies[strings.TrimSpace(cfg.LinkedPageParserFamily)]
+	if !ok {
+		return ParseResult{}, fmt.Errorf("unsupported linked page source family %q", cfg.LinkedPageParserFamily)
 	}
+	return parser(pageURL, body), nil
 }
 
-func (cfg sourceConfig) matchesReplayPageSnapshot(snapshot decodedReplaySnapshot) bool {
-	if strings.TrimSpace(snapshot.snapshot.SourceName) != cfg.Name {
-		return false
+func VenueSlugForSourceLocation(source, value string) string {
+	cfg, err := configForSource(source)
+	if err != nil {
+		return VenueSlugFromText(value)
 	}
-	if strings.TrimSpace(snapshot.snapshot.SourceURL) != cfg.URL {
-		return false
+	family := strings.TrimSpace(cfg.VenueNormalizerFamily)
+	if family == "" {
+		return VenueSlugFromText(value)
 	}
-	if strings.TrimSpace(snapshot.envelope.Metadata.URL) != cfg.URL {
-		return false
+	normalizer, ok := venueNormalizerFamilies[family]
+	if !ok {
+		return VenueSlugFromText(value)
 	}
-	return true
+	return normalizer(value)
 }
 
 func limitParseResult(parse ParseResult, limit int) ParseResult {

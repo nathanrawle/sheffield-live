@@ -1,0 +1,10 @@
+key: cafe-no-9
+name: Cafe No. 9 listings
+url: https://www.wegottickets.com/Cafe9
+review_stage_source_name: Cafe No. 9 manual ingest
+import_run_notes: manual Cafe No. 9 source-page parse report
+owned_venue_slug: cafe-no-9
+mode: source_page
+source_page:
+  source_page_parser: cafe_no_9
+  source_page_link_extractor: cafe_no_9_pagination

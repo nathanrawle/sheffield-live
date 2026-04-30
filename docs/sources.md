@@ -1,11 +1,24 @@
 # Sources
 
-## Current Flow
+## Source Catalog
 
 The current manual source pipeline supports Sidney & Matilda, Yellow Arch, Cafe No. 9, Jazz at The Lescar, The Greystones, Leadmill, and Corporation.
 
-Sources are registered in code with source metadata plus a page-processing mode. That mode decides whether ingest expands the page into linked ICS fetches or parses candidates directly from the stored page snapshot.
-Owned-venue authority also lives in that registry. The registry is the only place that maps a source key or review-stage source name to an owned venue slug.
+Sources now live in repo-backed YAML files under `config/sources/`.
+Each file defines:
+
+- stable identity fields: `key`, `name`, `url`, `review_stage_source_name`
+- ownership and singleton-review policy fields
+- one page-processing `mode`
+- one mode-specific runtime block
+
+The catalog is loaded from that fixed repo path by `cmd/ingest` and `cmd/web` at startup.
+
+The stable identity fields are replay-sensitive and review-sensitive in v1. Changing them can break historical replay or review/publish behavior, so treat them as immutable unless the replay/versioning design changes too.
+
+Owned-venue authority also lives in the catalog. The catalog is the only place that maps a source key or review-stage source name to owned-venue and non-authoritative singleton policy.
+
+## Current Flow
 
 Every ingest run fetches the source page and stores a raw source-page snapshot.
 
@@ -23,12 +36,25 @@ Snapshots are kept as separate raw artifacts. They are not the same thing as can
 
 The ingest run writes to `sources`, `import_runs`, and `snapshots`, and it records the parsed report output rather than publishing public events directly.
 
-Sidney & Matilda extraction accepts Squarespace `?format=ical` ICS links and legacy Google Calendar-style ICS labels.
-Leadmill extraction accepts the source page `<link rel="alternate" type="text/calendar">` feed reference and applies a source-specific `Live` plus Sheffield filter during ICS parsing.
-Yellow Arch parsing accepts embedded JSON-LD arrays or graphs that contain schema.org `Event` objects.
-Cafe No. 9 parsing accepts WeGotTickets organiser-page listing blocks and uses the resolved event URL as the candidate identity.
-Jazz at The Lescar parsing accepts repeated `art` / `ttl` / `dsc` blocks and emits review candidates without authoritative event identities.
-The Greystones parsing accepts linked month pages and emits multiple review candidates from each stored month-page snapshot.
+## Runtime Families
+
+The runtime no longer branches on source key directly. Each catalog entry selects a bounded family implementation for the chosen mode.
+
+Template-fit families:
+
+- Sidney & Matilda uses a configured ICS-link extractor plus the generic ICS parser
+- Yellow Arch uses a configured JSON-LD source-page parser
+
+Custom adapter families:
+
+- Leadmill uses a custom ICS parser family
+- Cafe No. 9 uses custom source-page parser and pagination families
+- Jazz at The Lescar uses a custom source-page parser family
+- The Greystones uses custom month-link and month-page families
+- Corporation uses custom detail-link and detail-page families
+
+Adding a new source is YAML-only when it fits an existing family.
+Add a new Go family only when the source needs new parsing or link-extraction behavior that cannot be expressed by the existing bounded family set.
 
 ## Snapshot Payloads
 
@@ -48,7 +74,7 @@ Review staging uses a durable key, so source metadata changes alone do not creat
 When every candidate in a staged group agrees on one owned-venue source identity from a registry-owned venue source, the group persists that authoritative source name, URL, and event key for later resolution. Duplicate staging also derives the current live slug from `name + venue_slug + start_at` and can attach one live canonical snapshot row when all staged slug matches point to the same `events.origin = 'live'` row. Open-group restaging refreshes that snapshot and recomputes persisted defaults while preserving manual draft choices. Non-authoritative singleton auto-promotion does not mint authoritative event identities, does not create `event_source_links`, and does not create `event_secondary_source_info` rows. Jazz at The Lescar remains non-authoritative and program-only even when its eligible singletons auto-publish.
 Exact canonical duplicates and unanimous staged duplicates are stored as closed review history rows through duplicate auto-resolution rather than remaining in the open queue.
 
-Replay auto-detects the source from stored page snapshot metadata, reconstructs the same source-specific extraction path from stored snapshots, validates the snapshot envelope version and SHA-256, and refuses missing or ambiguous snapshot matches.
+Replay auto-detects the source from stored page snapshot metadata, reconstructs the same catalog-selected extraction path from stored snapshots, validates the snapshot envelope version and SHA-256, and refuses missing or ambiguous snapshot matches.
 
 ## Publish Rules
 

@@ -1,0 +1,11 @@
+key: sidney-and-matilda
+name: Sidney & Matilda listings
+url: https://www.sidneyandmatilda.com/
+review_stage_source_name: Sidney & Matilda manual ingest
+import_run_notes: manual Sidney & Matilda snapshot + ICS parse report
+owned_venue_slug: sidney-and-matilda
+mode: linked_ics
+linked_ics:
+  secondary_source_name: Sidney & Matilda Google Calendar ICS
+  ics_link_extractor: sidney_and_matilda
+  ics_parser: generic
