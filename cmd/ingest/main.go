@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ type ingestCommandConfig struct {
 	limit             int
 	timeout           time.Duration
 	httpUserAgent     string
+	contact           string
 	dbPath            string
 	reviewICSFixture  string
 	reviewTitle       string
@@ -52,6 +54,23 @@ var (
 	}
 	replayImportRun = func(ctx context.Context, st *sqlite.Store, importRunID int64, opts ingest.ReplayOptions) (ingest.Report, error) {
 		return ingest.ReplayImportRun(ctx, st, importRunID, opts)
+	}
+	lookupGitUserEmail = func(ctx context.Context) string {
+		for _, args := range [][]string{
+			{"config", "--get", "user.email"},
+			{"config", "--global", "--get", "user.email"},
+		} {
+			cmd := exec.CommandContext(ctx, "git", args...)
+			output, err := cmd.Output()
+			if err != nil {
+				continue
+			}
+			email := strings.TrimSpace(string(output))
+			if email != "" {
+				return email
+			}
+		}
+		return ""
 	}
 )
 
@@ -95,9 +114,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("-limit must be between 1 and %d", ingest.MaxLimit)
 	}
 	if cfg.allSources {
-		if cfg.httpUserAgent == "" {
-			return errors.New("-http-user-agent is required")
-		}
+		cfg.httpUserAgent = effectiveHTTPUserAgent(context.Background(), cfg)
 		if cfg.timeout <= 0 {
 			return errors.New("-timeout must be positive")
 		}
@@ -123,9 +140,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 			}
 		}
 	} else {
-		if cfg.httpUserAgent == "" {
-			return errors.New("-http-user-agent is required")
-		}
+		cfg.httpUserAgent = effectiveHTTPUserAgent(context.Background(), cfg)
 		if cfg.timeout <= 0 {
 			return errors.New("-timeout must be positive")
 		}
@@ -159,6 +174,7 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	fs.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "HTTP timeout")
 	fs.Var(&canonicalHTTPUserAgent, "http-user-agent", "HTTP User-Agent header")
 	fs.Var(&aliasHTTPUserAgent, "user-agent", "HTTP User-Agent header")
+	fs.StringVar(&cfg.contact, "contact", "", "contact detail for the default HTTP User-Agent header; use none|null|false to suppress contact info")
 	fs.StringVar(&cfg.dbPath, "db", "", "SQLite database path")
 	fs.Var(&canonicalFixture, "review-ics-fixture", "offline ICS fixture path used to create an admin review group")
 	fs.Var(&aliasFixture, "review-fixture", "offline ICS fixture path used to create an admin review group")
@@ -215,6 +231,33 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 		return ingestCommandConfig{}, errors.New("-all-sources and -review-ics-fixture are mutually exclusive")
 	}
 	return cfg, nil
+}
+
+func effectiveHTTPUserAgent(ctx context.Context, cfg ingestCommandConfig) string {
+	if strings.TrimSpace(cfg.httpUserAgent) != "" {
+		return strings.TrimSpace(cfg.httpUserAgent)
+	}
+	contact, include := effectiveContact(ctx, cfg.contact)
+	if include {
+		return fmt.Sprintf("sheffield-live ingest/1.0 (contact: %s)", contact)
+	}
+	return "sheffield-live ingest/1.0"
+}
+
+func effectiveContact(ctx context.Context, contactFlag string) (string, bool) {
+	contactFlag = strings.TrimSpace(contactFlag)
+	switch {
+	case contactFlag == "":
+		derived := strings.TrimSpace(lookupGitUserEmail(ctx))
+		if derived == "" {
+			return "", false
+		}
+		return derived, true
+	case strings.EqualFold(contactFlag, "none"), strings.EqualFold(contactFlag, "null"), strings.EqualFold(contactFlag, "false"):
+		return "", false
+	default:
+		return contactFlag, true
+	}
 }
 
 type trackedStringFlag struct {

@@ -682,6 +682,7 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 		name         string
 		args         []string
 		wantUA       string
+		wantContact  string
 		wantStage    bool
 		wantFixture  string
 		wantImportID int64
@@ -693,6 +694,8 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 		{name: "canonical+alias user agent same", args: []string{"-http-user-agent", "agent", "-user-agent", "agent"}, wantUA: "agent"},
 		{name: "canonical+alias user agent different", args: []string{"-http-user-agent", "agent-a", "-user-agent", "agent-b"}, wantErr: true},
 		{name: "reordered user agent mismatch", args: []string{"-http-user-agent", "agent-a", "-user-agent", "agent-b", "-http-user-agent", "agent-a"}, wantErr: true},
+		{name: "contact override", args: []string{"-contact", "ops@example.com"}, wantContact: "ops@example.com"},
+		{name: "contact suppression", args: []string{"-contact", "none"}, wantContact: "none"},
 		{name: "canonical stage groups", args: []string{"-stage-review-groups"}, wantStage: true},
 		{name: "alias stage groups", args: []string{"-stage-review"}, wantStage: true},
 		{name: "canonical+alias stage groups same", args: []string{"-stage-review-groups=true", "-stage-review=true"}, wantStage: true},
@@ -723,6 +726,9 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 			if got := cfg.httpUserAgent; got != tc.wantUA {
 				t.Fatalf("user agent = %q, want %q", got, tc.wantUA)
 			}
+			if got := cfg.contact; got != tc.wantContact {
+				t.Fatalf("contact = %q, want %q", got, tc.wantContact)
+			}
 			if got := cfg.stageReviewGroups; got != tc.wantStage {
 				t.Fatalf("stage review groups = %v, want %v", got, tc.wantStage)
 			}
@@ -736,6 +742,47 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 				t.Fatalf("all sources = %v, want %v", got, tc.wantAll)
 			}
 		})
+	}
+}
+
+func TestEffectiveHTTPUserAgentDefaultsFromGitEmail(t *testing.T) {
+	originalLookup := lookupGitUserEmail
+	defer func() {
+		lookupGitUserEmail = originalLookup
+	}()
+	lookupGitUserEmail = func(context.Context) string {
+		return "git-user@example.com"
+	}
+
+	got := effectiveHTTPUserAgent(context.Background(), ingestCommandConfig{})
+	want := "sheffield-live ingest/1.0 (contact: git-user@example.com)"
+	if got != want {
+		t.Fatalf("user agent = %q, want %q", got, want)
+	}
+}
+
+func TestEffectiveHTTPUserAgentContactOverrideAndSuppression(t *testing.T) {
+	originalLookup := lookupGitUserEmail
+	defer func() {
+		lookupGitUserEmail = originalLookup
+	}()
+	lookupGitUserEmail = func(context.Context) string {
+		return "git-user@example.com"
+	}
+
+	if got, want := effectiveHTTPUserAgent(context.Background(), ingestCommandConfig{contact: "ops@example.com"}), "sheffield-live ingest/1.0 (contact: ops@example.com)"; got != want {
+		t.Fatalf("override user agent = %q, want %q", got, want)
+	}
+	for _, value := range []string{"none", "null", "false"} {
+		if got, want := effectiveHTTPUserAgent(context.Background(), ingestCommandConfig{contact: value}), "sheffield-live ingest/1.0"; got != want {
+			t.Fatalf("suppressed user agent for %q = %q, want %q", value, got, want)
+		}
+	}
+}
+
+func TestEffectiveHTTPUserAgentRespectsExplicitValue(t *testing.T) {
+	if got, want := effectiveHTTPUserAgent(context.Background(), ingestCommandConfig{httpUserAgent: "custom-agent"}), "custom-agent"; got != want {
+		t.Fatalf("user agent = %q, want %q", got, want)
 	}
 }
 
@@ -1180,6 +1227,88 @@ func TestRunWithArgsAllSourcesRunsInRegistryOrder(t *testing.T) {
 		if got.Results[i].Source != source {
 			t.Fatalf("result %d source = %q, want %q", i, got.Results[i].Source, source)
 		}
+	}
+}
+
+func TestRunWithArgsUsesDerivedDefaultUserAgent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	originalLookup := lookupGitUserEmail
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+		lookupGitUserEmail = originalLookup
+	}()
+
+	lookupGitUserEmail = func(context.Context) string {
+		return "git-user@example.com"
+	}
+
+	var gotUA string
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		gotUA = userAgent
+		return fakeFetcher{}, nil
+	}
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: 1,
+			StartedAt:   "2026-04-24T10:00:00Z",
+			FinishedAt:  "2026-04-24T10:01:00Z",
+			Status:      "succeeded",
+			Limit:       opts.Limit,
+		}, nil
+	}
+
+	if err := runWithArgs([]string{"-db", path}, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runWithArgs: %v", err)
+	}
+	if got, want := gotUA, "sheffield-live ingest/1.0 (contact: git-user@example.com)"; got != want {
+		t.Fatalf("user agent = %q, want %q", got, want)
+	}
+}
+
+func TestRunWithArgsContactSuppressionRemovesContactFromDefaultUserAgent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	originalLookup := lookupGitUserEmail
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+		lookupGitUserEmail = originalLookup
+	}()
+
+	lookupGitUserEmail = func(context.Context) string {
+		return "git-user@example.com"
+	}
+
+	var gotUA string
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		gotUA = userAgent
+		return fakeFetcher{}, nil
+	}
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, opts ingest.Options) (ingest.Report, error) {
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: 1,
+			StartedAt:   "2026-04-24T10:00:00Z",
+			FinishedAt:  "2026-04-24T10:01:00Z",
+			Status:      "succeeded",
+			Limit:       opts.Limit,
+		}, nil
+	}
+
+	if err := runWithArgs([]string{"-db", path, "-contact", "none"}, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runWithArgs: %v", err)
+	}
+	if got, want := gotUA, "sheffield-live ingest/1.0"; got != want {
+		t.Fatalf("user agent = %q, want %q", got, want)
 	}
 }
 
