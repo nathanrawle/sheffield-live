@@ -214,11 +214,12 @@ func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.
 		},
 	}
 
-	groupID, created, err := st.StageReviewGroup(ctx, input)
+	stageResult, err := st.StageReviewGroup(ctx, input)
 	if err != nil {
 		t.Fatalf("stage review group: %v", err)
 	}
-	if !created {
+	groupID := stageResult.ID
+	if !stageResult.Created {
 		t.Fatal("created = false, want true")
 	}
 
@@ -246,11 +247,12 @@ func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.
 	changed.Candidates[1].SourceName = "Changed candidate source B"
 	changed.Candidates[1].SourceURL = "file:changed-b.ics"
 
-	reusedID, created, err := st.StageReviewGroup(ctx, changed)
+	reusedResult, err := st.StageReviewGroup(ctx, changed)
 	if err != nil {
 		t.Fatalf("restage review group: %v", err)
 	}
-	if created {
+	reusedID := reusedResult.ID
+	if reusedResult.Created {
 		t.Fatal("created = true, want false")
 	}
 	if reusedID != groupID {
@@ -316,11 +318,12 @@ func TestStageReviewGroupRestagingOpenGroupPopulatesAndRefreshesAuthoritativeTup
 		},
 	}
 
-	groupID, created, err := st.StageReviewGroup(ctx, input)
+	stageResult, err := st.StageReviewGroup(ctx, input)
 	if err != nil {
 		t.Fatalf("stage review group: %v", err)
 	}
-	if !created {
+	groupID := stageResult.ID
+	if !stageResult.Created {
 		t.Fatal("created = false, want true")
 	}
 
@@ -340,11 +343,12 @@ func TestStageReviewGroupRestagingOpenGroupPopulatesAndRefreshesAuthoritativeTup
 	populated.AuthoritativeSourceURL = "https://calendar.example.test/live.ics"
 	populated.AuthoritativeSourceEventKey = "shared-uid"
 
-	reusedID, created, err := st.StageReviewGroup(ctx, populated)
+	reusedResult, err := st.StageReviewGroup(ctx, populated)
 	if err != nil {
 		t.Fatalf("restage review group with authoritative tuple: %v", err)
 	}
-	if created {
+	reusedID := reusedResult.ID
+	if reusedResult.Created {
 		t.Fatal("created = true, want false")
 	}
 	if reusedID != groupID {
@@ -378,11 +382,12 @@ func TestStageReviewGroupRestagingOpenGroupPopulatesAndRefreshesAuthoritativeTup
 	refreshed.AuthoritativeSourceURL = "https://calendar.example.test/live-updated.ics"
 	refreshed.AuthoritativeSourceEventKey = "shared-uid-updated"
 
-	reusedID, created, err = st.StageReviewGroup(ctx, refreshed)
+	reusedResult, err = st.StageReviewGroup(ctx, refreshed)
 	if err != nil {
 		t.Fatalf("restage review group with refreshed authoritative tuple: %v", err)
 	}
-	if created {
+	reusedID = reusedResult.ID
+	if reusedResult.Created {
 		t.Fatal("created = true, want false")
 	}
 	if reusedID != groupID {
@@ -458,11 +463,12 @@ func TestStageReviewGroupReusesClosedMatchingGroupWithoutReopening(t *testing.T)
 				},
 			}
 
-			groupID, created, err := st.StageReviewGroup(ctx, input)
+			stageResult, err := st.StageReviewGroup(ctx, input)
 			if err != nil {
 				t.Fatalf("stage review group: %v", err)
 			}
-			if !created {
+			groupID := stageResult.ID
+			if !stageResult.Created {
 				t.Fatal("created = false, want true")
 			}
 
@@ -477,11 +483,12 @@ func TestStageReviewGroupReusesClosedMatchingGroupWithoutReopening(t *testing.T)
 				t.Fatalf("close review group: %v", err)
 			}
 
-			reusedID, created, err := st.StageReviewGroup(ctx, input)
+			reusedResult, err := st.StageReviewGroup(ctx, input)
 			if err != nil {
 				t.Fatalf("restage review group: %v", err)
 			}
-			if created {
+			reusedID := reusedResult.ID
+			if reusedResult.Created {
 				t.Fatal("created = true, want false")
 			}
 			if reusedID != groupID {
@@ -537,19 +544,21 @@ func TestStageReviewGroupCreatesNewGroupWhenStagingKeyChanges(t *testing.T) {
 	changed.Candidates = append([]review.CandidateInput(nil), base.Candidates...)
 	changed.Candidates[0].EndAt = "2026-05-01T23:00:00Z"
 
-	firstID, created, err := st.StageReviewGroup(ctx, base)
+	firstResult, err := st.StageReviewGroup(ctx, base)
 	if err != nil {
 		t.Fatalf("stage first group: %v", err)
 	}
-	if !created {
+	firstID := firstResult.ID
+	if !firstResult.Created {
 		t.Fatal("first group created = false, want true")
 	}
 
-	secondID, created, err := st.StageReviewGroup(ctx, changed)
+	secondResult, err := st.StageReviewGroup(ctx, changed)
 	if err != nil {
 		t.Fatalf("stage changed group: %v", err)
 	}
-	if !created {
+	secondID := secondResult.ID
+	if !secondResult.Created {
 		t.Fatal("changed group created = false, want true")
 	}
 	if secondID == firstID {
@@ -2141,11 +2150,12 @@ func TestPromoteSingletonReviewGroupIfMissingResolvesMatchingStaleNonAuthoritati
 		t.Fatalf("staging key mismatch: stale %q current %q", staleInput.StagingKey, currentInput.StagingKey)
 	}
 
-	groupID, created, err := st.StageReviewGroup(ctx, staleInput)
+	stageResult, err := st.StageReviewGroup(ctx, staleInput)
 	if err != nil {
 		t.Fatalf("stage stale review group: %v", err)
 	}
-	if !created {
+	groupID := stageResult.ID
+	if !stageResult.Created {
 		t.Fatal("created = false, want true")
 	}
 
@@ -2205,11 +2215,12 @@ func TestPromoteSingletonReviewGroupIfMissingLinksMatchingStaleNonAuthoritativeS
 	staleInput := mustGreystonesSingletonReviewGroupInput(t, 98, "greystones-link-1", "Roots Night", "2026-05-18T19:30:00Z", "2026-05-18T22:00:00Z")
 	currentInput := mustGreystonesSingletonReviewGroupInput(t, 99, "greystones-link-1", "Roots Night", "2026-05-18T19:30:00Z", "2026-05-18T22:00:00Z")
 
-	groupID, created, err := st.StageReviewGroup(ctx, staleInput)
+	stageResult, err := st.StageReviewGroup(ctx, staleInput)
 	if err != nil {
 		t.Fatalf("stage stale review group: %v", err)
 	}
-	if !created {
+	groupID := stageResult.ID
+	if !stageResult.Created {
 		t.Fatal("created = false, want true")
 	}
 
@@ -2288,11 +2299,12 @@ func TestPromoteSingletonReviewGroupIfMissingResolvesMatchingStaleStagedGroup(t 
 		t.Fatal("authoritative source event key = empty, want populated")
 	}
 
-	groupID, created, err := st.StageReviewGroup(ctx, groupInput)
+	stageResult, err := st.StageReviewGroup(ctx, groupInput)
 	if err != nil {
 		t.Fatalf("stage review group: %v", err)
 	}
-	if !created {
+	groupID := stageResult.ID
+	if !stageResult.Created {
 		t.Fatal("created = false, want true")
 	}
 
@@ -2365,18 +2377,19 @@ func TestPromoteSingletonReviewGroupIfMissingLeavesDifferentNonAuthoritativeStag
 		t.Fatalf("staging key collision: matching and other both %q", otherInput.StagingKey)
 	}
 
-	_, created, err := st.StageReviewGroup(ctx, matchingStaleInput)
+	matchingResult, err := st.StageReviewGroup(ctx, matchingStaleInput)
 	if err != nil {
 		t.Fatalf("stage matching review group: %v", err)
 	}
-	if !created {
+	if !matchingResult.Created {
 		t.Fatal("matching created = false, want true")
 	}
-	otherGroupID, created, err := st.StageReviewGroup(ctx, otherInput)
+	otherResult, err := st.StageReviewGroup(ctx, otherInput)
 	if err != nil {
 		t.Fatalf("stage other review group: %v", err)
 	}
-	if !created {
+	otherGroupID := otherResult.ID
+	if !otherResult.Created {
 		t.Fatal("other created = false, want true")
 	}
 

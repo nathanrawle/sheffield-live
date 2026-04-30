@@ -17,17 +17,17 @@ func (s *Store) CreateReviewGroup(ctx context.Context, input review.GroupInput) 
 	return s.createReviewGroup(ctx, input, "")
 }
 
-func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (int64, bool, error) {
+func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (review.StageGroupResult, error) {
 	if s == nil || s.db == nil {
-		return 0, false, errors.New("sqlite store is not open")
+		return review.StageGroupResult{}, errors.New("sqlite store is not open")
 	}
 	stagingKey := strings.TrimSpace(input.StagingKey)
 	if stagingKey == "" {
 		groupID, err := s.createReviewGroup(ctx, input, "")
 		if err != nil {
-			return 0, false, err
+			return review.StageGroupResult{}, err
 		}
-		return groupID, true, nil
+		return review.StageGroupResult{ID: groupID, Created: true}, nil
 	}
 	input.Title = strings.TrimSpace(input.Title)
 	input.SourceName = strings.TrimSpace(input.SourceName)
@@ -36,18 +36,18 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 		input.Title = "Review group"
 	}
 	if input.SourceName == "" {
-		return 0, false, errors.New("review source name is required")
+		return review.StageGroupResult{}, errors.New("review source name is required")
 	}
 	if input.SourceURL == "" {
-		return 0, false, errors.New("review source URL is required")
+		return review.StageGroupResult{}, errors.New("review source URL is required")
 	}
 	if len(input.Candidates) == 0 {
-		return 0, false, errors.New("at least one review candidate is required")
+		return review.StageGroupResult{}, errors.New("at least one review candidate is required")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, false, err
+		return review.StageGroupResult{}, err
 	}
 	defer func() {
 		_ = tx.Rollback()
@@ -74,39 +74,50 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 		nullableReviewText(input.AuthoritativeSourceEventKey),
 		stagingKeyValue(stagingKey), review.StatusOpen, input.Notes, formatRFC3339UTC(now), formatRFC3339UTC(now))
 	if err != nil {
-		return 0, false, err
+		return review.StageGroupResult{}, err
 	}
 
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
-		return 0, false, err
+		return review.StageGroupResult{}, err
 	}
 
 	if rowsAffected == 1 {
 		groupID, err := res.LastInsertId()
 		if err != nil {
-			return 0, false, err
+			return review.StageGroupResult{}, err
 		}
-		for i, candidate := range input.Candidates {
-			if err := insertReviewCandidate(ctx, tx, groupID, i+1, candidate, input.SourceName, input.SourceURL); err != nil {
-				return 0, false, err
-			}
+		if err := replaceReviewCandidatesTx(ctx, tx, groupID, input.Candidates, input.SourceName, input.SourceURL); err != nil {
+			return review.StageGroupResult{}, err
+		}
+		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, groupID, input, now); err != nil {
+			return review.StageGroupResult{}, err
+		}
+		autoResolved, outcome, canonicalSlug, err := maybeAutoResolveDuplicateReviewGroupTx(ctx, tx, groupID, now)
+		if err != nil {
+			return review.StageGroupResult{}, err
 		}
 		if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, groupID, now); err != nil {
-			return 0, false, err
+			return review.StageGroupResult{}, err
 		}
 		if err := tx.Commit(); err != nil {
-			return 0, false, err
+			return review.StageGroupResult{}, err
 		}
-		return groupID, true, nil
+		return review.StageGroupResult{
+			ID:                 groupID,
+			Created:            true,
+			AutoResolved:       autoResolved,
+			AutoResolvedResult: outcome,
+			CanonicalEventSlug: canonicalSlug,
+		}, nil
 	}
 
 	group, ok, err := loadReviewGroupByStagingKey(ctx, tx, stagingKey)
 	if err != nil {
-		return 0, false, err
+		return review.StageGroupResult{}, err
 	}
 	if !ok {
-		return 0, false, errors.New("staged review group not found after ignore")
+		return review.StageGroupResult{}, errors.New("staged review group not found after ignore")
 	}
 	if group.Status == review.StatusOpen {
 		if err := refreshReviewGroupAuthoritativeLinkTx(ctx, tx, group.ID, reviewGroupAuthoritativeLinkInput{
@@ -114,17 +125,20 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 			SourceURL:      input.AuthoritativeSourceURL,
 			SourceEventKey: input.AuthoritativeSourceEventKey,
 		}, now); err != nil {
-			return 0, false, err
+			return review.StageGroupResult{}, err
+		}
+		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, group.ID, input, now); err != nil {
+			return review.StageGroupResult{}, err
 		}
 	}
 	if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, group.ID, now); err != nil {
-		return 0, false, err
+		return review.StageGroupResult{}, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, false, err
+		return review.StageGroupResult{}, err
 	}
-	return group.ID, false, nil
+	return review.StageGroupResult{ID: group.ID, Created: false}, nil
 }
 
 func (s *Store) PromoteSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput) (string, bool, error) {
@@ -285,10 +299,11 @@ func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, 
 		return 0, err
 	}
 
-	for i, candidate := range input.Candidates {
-		if err := insertReviewCandidate(ctx, tx, groupID, i+1, candidate, input.SourceName, input.SourceURL); err != nil {
-			return 0, err
-		}
+	if err := insertReviewCandidatesTx(ctx, tx, groupID, input.Candidates, input.SourceName, input.SourceURL); err != nil {
+		return 0, err
+	}
+	if err := recomputeReviewFieldDefaultsTx(ctx, tx, groupID, now); err != nil {
+		return 0, err
 	}
 	if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, groupID, now); err != nil {
 		return 0, err
@@ -297,6 +312,441 @@ func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, 
 		return 0, err
 	}
 	return groupID, nil
+}
+
+func replaceReviewCandidatesTx(ctx context.Context, tx execer, groupID int64, candidates []review.CandidateInput, defaultSourceName, defaultSourceURL string) error {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM review_candidates
+		WHERE group_id = ? AND canonical_event_id IS NULL
+	`, groupID); err != nil {
+		return err
+	}
+	for i, candidate := range candidates {
+		candidate.CanonicalEventID = 0
+		if err := insertReviewCandidate(ctx, tx, groupID, i+1, candidate, defaultSourceName, defaultSourceURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertReviewCandidatesTx(ctx context.Context, tx execer, groupID int64, candidates []review.CandidateInput, defaultSourceName, defaultSourceURL string) error {
+	for i, candidate := range candidates {
+		if err := insertReviewCandidate(ctx, tx, groupID, i+1, candidate, defaultSourceName, defaultSourceURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func refreshCanonicalSnapshotAndDefaultsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, groupID int64, input review.GroupInput, now time.Time) (*eventRecord, error) {
+	canonical, err := attachCanonicalSnapshotTx(ctx, tx, groupID, input)
+	if err != nil {
+		return nil, err
+	}
+	if err := recomputeReviewFieldDefaultsTx(ctx, tx, groupID, now); err != nil {
+		return nil, err
+	}
+	return canonical, nil
+}
+
+func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, groupID int64, input review.GroupInput) (*eventRecord, error) {
+	record, err := canonicalMatchForGroupInputTx(ctx, tx, input)
+	if err != nil {
+		return nil, err
+	}
+	if record == nil {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM review_candidates
+			WHERE group_id = ? AND canonical_event_id IS NOT NULL
+		`, groupID); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	position := len(input.Candidates) + 1
+	candidate := review.CandidateInput{
+		CanonicalEventID: record.ID,
+		ExternalID:       "",
+		Name:             record.Event.Name,
+		VenueSlug:        record.Event.VenueSlug,
+		StartAt:          formatRFC3339UTC(record.Event.Start),
+		EndAt:            formatOptionalTime(record.Event.End),
+		Genre:            record.Event.Genre,
+		Status:           record.Event.Status,
+		Description:      record.Event.Description,
+		SourceName:       record.Event.SourceName,
+		SourceURL:        record.Event.SourceURL,
+		Provenance:       "Canonical live event snapshot",
+	}
+
+	existing, ok, err := loadCanonicalSnapshotCandidate(ctx, tx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE review_candidates
+			SET position = ?,
+				canonical_event_id = ?,
+				external_id = ?,
+				name = ?,
+				venue_slug = ?,
+				start_at = ?,
+				end_at = ?,
+				genre = ?,
+				status = ?,
+				description = ?,
+				source_name = ?,
+				source_url = ?,
+				provenance = ?
+			WHERE id = ? AND group_id = ?
+		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.SourceName, candidate.SourceURL, candidate.Provenance, existing.ID, groupID); err != nil {
+			return nil, err
+		}
+		return record, nil
+	}
+	if err := insertReviewCandidate(ctx, tx, groupID, position, candidate, input.SourceName, input.SourceURL); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+func canonicalMatchForGroupInputTx(ctx context.Context, q queryer, input review.GroupInput) (*eventRecord, error) {
+	matched := make(map[int64]eventRecord)
+	derivedAny := false
+	for _, candidate := range input.Candidates {
+		slug, ok := derivedCandidateLiveSlug(candidate)
+		if !ok {
+			continue
+		}
+		derivedAny = true
+		record, ok, err := loadLiveEventRecordBySlugTx(ctx, q, slug)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		matched[record.ID] = record
+	}
+	if !derivedAny || len(matched) != 1 {
+		return nil, nil
+	}
+	for _, record := range matched {
+		copy := record
+		return &copy, nil
+	}
+	return nil, nil
+}
+
+func derivedCandidateLiveSlug(candidate review.CandidateInput) (string, bool) {
+	name := strings.TrimSpace(candidate.Name)
+	venueSlug := strings.TrimSpace(candidate.VenueSlug)
+	startText := strings.TrimSpace(candidate.StartAt)
+	if name == "" || venueSlug == "" || startText == "" {
+		return "", false
+	}
+	start, err := parseRFC3339UTC(startText)
+	if err != nil {
+		return "", false
+	}
+	slug, err := buildLiveEventSlug(name, venueSlug, start)
+	if err != nil {
+		return "", false
+	}
+	return slug, true
+}
+
+func formatOptionalTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return formatRFC3339UTC(value)
+}
+
+func recomputeReviewFieldDefaultsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, groupID int64, now time.Time) error {
+	candidates, err := loadReviewCandidates(ctx, tx, groupID)
+	if err != nil {
+		return err
+	}
+	defaults := computeReviewFieldDefaults(candidates, now)
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM review_field_defaults
+		WHERE group_id = ?
+	`, groupID); err != nil {
+		return err
+	}
+	for _, choice := range defaults {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO review_field_defaults (
+				group_id,
+				field,
+				candidate_id,
+				value,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?)
+		`, groupID, string(choice.Field), choice.CandidateID, choice.Value, formatRFC3339UTC(choice.UpdatedAt)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func computeReviewFieldDefaults(candidates []review.Candidate, now time.Time) map[review.Field]review.DraftChoice {
+	defaults := make(map[review.Field]review.DraftChoice)
+	for _, field := range reviewConsensusFields() {
+		type tally struct {
+			count      int
+			candidateID int64
+		}
+		counts := make(map[string]tally)
+		for _, candidate := range candidates {
+			value := review.CandidateValue(candidate, field)
+			entry := counts[value]
+			entry.count++
+			if entry.candidateID == 0 {
+				entry.candidateID = candidate.ID
+			}
+			counts[value] = entry
+		}
+		threshold := len(candidates) / 2
+		for value, entry := range counts {
+			if entry.count > threshold {
+				defaults[field] = review.DraftChoice{
+					Field:       field,
+					CandidateID: entry.candidateID,
+					Value:       value,
+					UpdatedAt:   now,
+				}
+				break
+			}
+		}
+	}
+	return defaults
+}
+
+func reviewConsensusFields() []review.Field {
+	return []review.Field{
+		review.FieldName,
+		review.FieldVenueSlug,
+		review.FieldStartAt,
+		review.FieldEndAt,
+		review.FieldGenre,
+		review.FieldStatus,
+		review.FieldDescription,
+	}
+}
+
+func maybeAutoResolveDuplicateReviewGroupTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, groupID int64, now time.Time) (bool, string, string, error) {
+	group, ok, err := loadReviewGroup(ctx, tx, groupID)
+	if err != nil {
+		return false, "", "", err
+	}
+	if !ok {
+		return false, "", "", fmt.Errorf("review group %d not found", groupID)
+	}
+	candidates, err := loadReviewCandidates(ctx, tx, groupID)
+	if err != nil {
+		return false, "", "", err
+	}
+	group.Candidates = candidates
+	defaults, err := loadReviewDefaultChoices(ctx, tx, groupID)
+	if err != nil {
+		return false, "", "", err
+	}
+	group.DefaultChoices = defaults
+
+	canonical, hasCanonical := canonicalSnapshotCandidate(candidates)
+	if hasCanonical && exactCanonicalDuplicate(candidates) {
+		if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
+			targetID, ok, err := authoritativeLinkedEventIDTx(ctx, tx, authoritative)
+			if err != nil {
+				return false, "", "", err
+			}
+			if ok && targetID != canonical.CanonicalEventID {
+				return false, "", "", nil
+			}
+		}
+		if err := persistResolvedChoiceSetTx(ctx, tx, groupID, chooseAllFieldsFromCandidate(canonical, now), now); err != nil {
+			return false, "", "", err
+		}
+		if err := markReviewGroupResolvedTx(ctx, tx, groupID, now); err != nil {
+			return false, "", "", err
+		}
+		return true, "canonical_exact_match", candidateDerivedSlug(canonical), nil
+	}
+
+	staged := stagedReviewCandidates(candidates)
+	if !hasCanonical && len(staged) >= 2 && unanimousStagedDuplicate(staged) {
+		winner := staged[0]
+		for _, candidate := range staged[1:] {
+			if candidate.Position < winner.Position || (candidate.Position == winner.Position && candidate.ID < winner.ID) {
+				winner = candidate
+			}
+		}
+		if err := persistResolvedChoiceSetTx(ctx, tx, groupID, chooseAllFieldsFromCandidate(winner, now), now); err != nil {
+			return false, "", "", err
+		}
+		event, err := buildResolvedEvent(group, choiceMapFromChoices(winner), now)
+		if err != nil {
+			return false, "", "", err
+		}
+		if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
+			event.SourceName = authoritative.SourceName
+			event.SourceURL = authoritative.SourceURL
+			record, applied, err := applyAuthoritativeEventTx(ctx, tx, event, authoritative.SourceEventKey, now)
+			if err != nil {
+				return false, "", "", err
+			}
+			if !applied {
+				return false, "", "", fmt.Errorf("venue %q not found", event.VenueSlug)
+			}
+			if err := upsertEventSecondarySourceInfoTx(ctx, tx, record.ID, authoritative, staged, now); err != nil {
+				return false, "", "", err
+			}
+		} else if err := upsertEventTx(ctx, tx, event); err != nil {
+			return false, "", "", err
+		}
+		if err := markReviewGroupResolvedTx(ctx, tx, groupID, now); err != nil {
+			return false, "", "", err
+		}
+		return true, "unanimous_duplicate", "", nil
+	}
+
+	return false, "", "", nil
+}
+
+func candidateDerivedSlug(candidate review.Candidate) string {
+	start, err := parseRFC3339UTC(strings.TrimSpace(candidate.StartAt))
+	if err != nil {
+		return ""
+	}
+	slug, err := buildLiveEventSlug(candidate.Name, candidate.VenueSlug, start)
+	if err != nil {
+		return ""
+	}
+	return slug
+}
+
+func choiceMapFromChoices(candidate review.Candidate) map[review.Field]review.Candidate {
+	selected := make(map[review.Field]review.Candidate, len(review.CanonicalFields))
+	for _, field := range review.CanonicalFields {
+		selected[field] = candidate
+	}
+	return selected
+}
+
+func chooseAllFieldsFromCandidate(candidate review.Candidate, now time.Time) []review.DraftChoice {
+	choices := make([]review.DraftChoice, 0, len(review.CanonicalFields))
+	for _, field := range review.CanonicalFields {
+		choices = append(choices, review.DraftChoice{
+			Field:       field,
+			CandidateID: candidate.ID,
+			Value:       review.CandidateValue(candidate, field),
+			UpdatedAt:   now,
+		})
+	}
+	return choices
+}
+
+func persistResolvedChoiceSetTx(ctx context.Context, tx execer, groupID int64, choices []review.DraftChoice, now time.Time) error {
+	for _, choice := range choices {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO review_draft_choices (
+				group_id,
+				field,
+				candidate_id,
+				value,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(group_id, field) DO UPDATE SET
+				candidate_id = excluded.candidate_id,
+				value = excluded.value,
+				updated_at = excluded.updated_at
+		`, groupID, string(choice.Field), choice.CandidateID, choice.Value, formatRFC3339UTC(now)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func markReviewGroupResolvedTx(ctx context.Context, tx execer, groupID int64, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE review_groups
+		SET status = ?, updated_at = ?
+		WHERE id = ?
+	`, review.StatusResolved, formatRFC3339UTC(now), groupID)
+	return err
+}
+
+func canonicalSnapshotCandidate(candidates []review.Candidate) (review.Candidate, bool) {
+	for _, candidate := range candidates {
+		if candidate.IsCanonicalSnapshot() {
+			return candidate, true
+		}
+	}
+	return review.Candidate{}, false
+}
+
+func stagedReviewCandidates(candidates []review.Candidate) []review.Candidate {
+	staged := make([]review.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !candidate.IsCanonicalSnapshot() {
+			staged = append(staged, candidate)
+		}
+	}
+	return staged
+}
+
+func exactCanonicalDuplicate(candidates []review.Candidate) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+	for _, field := range reviewConsensusFields() {
+		var value string
+		first := true
+		for _, candidate := range candidates {
+			candidateValue := review.CandidateValue(candidate, field)
+			if first {
+				value = candidateValue
+				first = false
+				continue
+			}
+			if candidateValue != value {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func unanimousStagedDuplicate(candidates []review.Candidate) bool {
+	if len(candidates) < 2 {
+		return false
+	}
+	for _, field := range reviewConsensusFields() {
+		value := review.CandidateValue(candidates[0], field)
+		for _, candidate := range candidates[1:] {
+			if review.CandidateValue(candidate, field) != value {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func linkReviewGroupInputToImportRunTx(ctx context.Context, tx interface {
@@ -612,6 +1062,38 @@ func ensureEventSourceLinkTx(ctx context.Context, tx execer, eventID, sourceID i
 	return err
 }
 
+func authoritativeLinkedEventIDTx(ctx context.Context, q queryer, authoritative reviewGroupAuthoritativeLink) (int64, bool, error) {
+	var sourceID int64
+	err := q.QueryRowContext(ctx, `
+		SELECT id
+		FROM sources
+		WHERE name = ? AND url = ?
+		LIMIT 1
+	`, authoritative.SourceName, authoritative.SourceURL).Scan(&sourceID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, err
+	}
+
+	var eventID int64
+	err = q.QueryRowContext(ctx, `
+		SELECT event_id
+		FROM event_source_links
+		WHERE source_id = ? AND source_event_key = ?
+		LIMIT 1
+	`, sourceID, authoritative.SourceEventKey).Scan(&eventID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, err
+	default:
+		return eventID, true, nil
+	}
+}
+
 func loadEventRecordBySourceLinkTx(ctx context.Context, q queryer, sourceID int64, sourceEventKey string) (eventRecord, bool, error) {
 	return loadEventRecord(ctx, q, `
 		SELECT
@@ -659,6 +1141,30 @@ func loadEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (event
 		WHERE e.slug = ?
 		LIMIT 1
 	`, slug)
+}
+
+func loadLiveEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (eventRecord, bool, error) {
+	return loadEventRecord(ctx, q, `
+		SELECT
+			e.id,
+			e.slug,
+			e.name,
+			v.slug,
+			e.start_at,
+			e.end_at,
+			e.genre,
+			e.status,
+			e.description,
+			s.name,
+			s.url,
+			e.last_checked_at,
+			e.origin
+		FROM events e
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE e.slug = ? AND e.origin = ?
+		LIMIT 1
+	`, slug, string(domain.OriginLive))
 }
 
 func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) (eventRecord, bool, error) {
@@ -733,6 +1239,13 @@ func nullableReviewText(value string) any {
 	return strings.TrimSpace(value)
 }
 
+func nullableCanonicalEventID(id int64) any {
+	if id <= 0 {
+		return nil
+	}
+	return id
+}
+
 func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("sqlite store is not open")
@@ -748,7 +1261,7 @@ func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary
 			g.notes,
 			g.created_at,
 			g.updated_at,
-			COUNT(DISTINCT c.id),
+			COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN c.id END),
 			COUNT(DISTINCT d.field),
 			COALESCE((
 				SELECT l.import_run_id
@@ -765,18 +1278,18 @@ func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary
 				ELSE 0
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.start_at), '')) = 1
-				THEN MIN(NULLIF(TRIM(c.start_at), ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END)
 				ELSE NULL
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
-				THEN MIN(NULLIF(TRIM(c.venue_slug), ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END)
 				ELSE ''
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
-				THEN MIN(COALESCE(v.name, ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN COALESCE(v.name, '') END)
 				ELSE ''
 			END
 		FROM review_groups g
@@ -824,7 +1337,7 @@ func (s *Store) ListClosedReviewGroups(ctx context.Context, limit int) ([]review
 			g.notes,
 			g.created_at,
 			g.updated_at,
-			COUNT(DISTINCT c.id),
+			COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN c.id END),
 			COUNT(DISTINCT d.field),
 			COALESCE((
 				SELECT l.import_run_id
@@ -841,18 +1354,18 @@ func (s *Store) ListClosedReviewGroups(ctx context.Context, limit int) ([]review
 				ELSE 0
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.start_at), '')) = 1
-				THEN MIN(NULLIF(TRIM(c.start_at), ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END)
 				ELSE NULL
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
-				THEN MIN(NULLIF(TRIM(c.venue_slug), ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END)
 				ELSE ''
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
-				THEN MIN(COALESCE(v.name, ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN COALESCE(v.name, '') END)
 				ELSE ''
 			END
 		FROM review_groups g
@@ -901,7 +1414,7 @@ func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID in
 			g.notes,
 			g.created_at,
 			g.updated_at,
-			COUNT(DISTINCT c.id),
+			COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN c.id END),
 			COUNT(DISTINCT d.field),
 			COALESCE((
 				SELECT l.import_run_id
@@ -918,18 +1431,18 @@ func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID in
 				ELSE 0
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.start_at), '')) = 1
-				THEN MIN(NULLIF(TRIM(c.start_at), ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END)
 				ELSE NULL
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
-				THEN MIN(NULLIF(TRIM(c.venue_slug), ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END)
 				ELSE ''
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
-				THEN MIN(COALESCE(v.name, ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN COALESCE(v.name, '') END)
 				ELSE ''
 			END
 		FROM review_groups g
@@ -982,8 +1495,13 @@ func (s *Store) LoadReviewGroup(ctx context.Context, id int64) (review.Group, bo
 	if err != nil {
 		return review.Group{}, false, err
 	}
+	defaults, err := loadReviewDefaultChoices(ctx, s.db, id)
+	if err != nil {
+		return review.Group{}, false, err
+	}
 	group.Candidates = candidates
 	group.DraftChoices = choices
+	group.DefaultChoices = defaults
 	return group, true, nil
 }
 
@@ -1094,6 +1612,7 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	if err != nil {
 		return err
 	}
+	group.Candidates = candidates
 
 	seen := make(map[review.Field]struct{}, len(choices))
 	selectedCandidates := make(map[review.Field]review.Candidate, len(choices))
@@ -1137,6 +1656,7 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	if err != nil {
 		return err
 	}
+	canonicalCandidate, hasCanonicalCandidate := canonicalSnapshotCandidate(candidates)
 	if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
 		event.SourceName = authoritative.SourceName
 		event.SourceURL = authoritative.SourceURL
@@ -1147,7 +1667,14 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		if !applied {
 			return fmt.Errorf("venue %q not found", event.VenueSlug)
 		}
-		if err := upsertEventSecondarySourceInfoTx(ctx, tx, canonicalRecord.ID, authoritative, candidates, now); err != nil {
+		if err := upsertEventSecondarySourceInfoTx(ctx, tx, canonicalRecord.ID, authoritative, stagedReviewCandidates(candidates), now); err != nil {
+			return err
+		}
+		if hasCanonicalCandidate && canonicalCandidate.CanonicalEventID > 0 && canonicalCandidate.CanonicalEventID != canonicalRecord.ID {
+			// The authoritative target wins when it disagrees with the canonical slug match.
+		}
+	} else if hasCanonicalCandidate {
+		if err := updateCanonicalMatchedEventTx(ctx, tx, canonicalCandidate.CanonicalEventID, event); err != nil {
 			return err
 		}
 	} else {
@@ -1230,6 +1757,7 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 		INSERT INTO review_candidates (
 			group_id,
 			position,
+			canonical_event_id,
 			external_id,
 			name,
 			venue_slug,
@@ -1241,8 +1769,8 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 			source_name,
 			source_url,
 			provenance
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, groupID, position, strings.TrimSpace(input.ExternalID), input.Name,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, groupID, position, nullableCanonicalEventID(input.CanonicalEventID), strings.TrimSpace(input.ExternalID), input.Name,
 		strings.TrimSpace(input.VenueSlug),
 		strings.TrimSpace(input.StartAt),
 		strings.TrimSpace(input.EndAt),
@@ -1276,19 +1804,20 @@ func loadReviewGroup(ctx context.Context, q queryer, id int64) (review.Group, bo
 				ORDER BY l.linked_at DESC, l.import_run_id DESC
 				LIMIT 1
 			), 0),
+			COUNT(CASE WHEN c.canonical_event_id IS NULL THEN 1 END),
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
-				THEN MIN(NULLIF(TRIM(c.venue_slug), ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END)
 				ELSE ''
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
-				THEN MIN(COALESCE(v.name, ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN COALESCE(v.name, '') END)
 				ELSE ''
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.start_at), '')) = 1
-				THEN MIN(NULLIF(TRIM(c.start_at), ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END)
 				ELSE NULL
 			END
 		FROM review_groups g
@@ -1322,19 +1851,20 @@ func loadReviewGroupByStagingKey(ctx context.Context, q queryer, stagingKey stri
 				ORDER BY l.linked_at DESC, l.import_run_id DESC
 				LIMIT 1
 			), 0),
+			COUNT(CASE WHEN c.canonical_event_id IS NULL THEN 1 END),
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
-				THEN MIN(NULLIF(TRIM(c.venue_slug), ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END)
 				ELSE ''
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.venue_slug), '')) = 1
-				THEN MIN(COALESCE(v.name, ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN COALESCE(v.name, '') END)
 				ELSE ''
 			END,
 			CASE
-				WHEN COUNT(DISTINCT NULLIF(TRIM(c.start_at), '')) = 1
-				THEN MIN(NULLIF(TRIM(c.start_at), ''))
+				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END) = 1
+				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END)
 				ELSE NULL
 			END
 		FROM review_groups g
@@ -1372,6 +1902,7 @@ func scanReviewGroupRow(scanner interface {
 		&createdAt,
 		&updatedAt,
 		&group.LatestImportRunID,
+		&group.StagedCandidateCount,
 		&sharedVenueSlug,
 		&sharedVenueName,
 		&sharedStartAt,
@@ -1549,10 +2080,58 @@ func backfillOpenReviewGroupsAuthoritativeLinks(ctx context.Context, tx interfac
 	return nil
 }
 
+func backfillReviewFieldDefaults(ctx context.Context, tx interface {
+	execer
+	queryer
+}) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id
+		FROM review_groups
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var groupIDs []int64
+	for rows.Next() {
+		var groupID int64
+		if err := rows.Scan(&groupID); err != nil {
+			return err
+		}
+		groupIDs = append(groupIDs, groupID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	for _, groupID := range groupIDs {
+		if err := recomputeReviewFieldDefaultsTx(ctx, tx, groupID, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func refreshReviewGroupAuthoritativeLinkTx(ctx context.Context, tx execer, groupID int64, input reviewGroupAuthoritativeLinkInput, now time.Time) error {
 	link, ok := normalizeReviewGroupAuthoritativeLinkInput(input)
 	if !ok {
-		return nil
+		_, err := tx.ExecContext(ctx, `
+			UPDATE review_groups
+			SET authoritative_source_name = NULL,
+				authoritative_source_url = NULL,
+				authoritative_source_event_key = NULL,
+				updated_at = CASE
+					WHEN COALESCE(authoritative_source_name, '') <> ''
+						OR COALESCE(authoritative_source_url, '') <> ''
+						OR COALESCE(authoritative_source_event_key, '') <> ''
+					THEN ?
+					ELSE updated_at
+				END
+			WHERE id = ?
+		`, formatRFC3339UTC(now), groupID)
+		return err
 	}
 	_, err := tx.ExecContext(ctx, `
 		UPDATE review_groups
@@ -1586,6 +2165,7 @@ func normalizeReviewGroupAuthoritativeLinkInput(input reviewGroupAuthoritativeLi
 }
 
 func deriveReviewGroupAuthoritativeLink(group review.Group, candidates []review.Candidate) (reviewGroupAuthoritativeLink, bool) {
+	candidates = stagedReviewCandidates(candidates)
 	if len(candidates) == 0 {
 		return reviewGroupAuthoritativeLink{}, false
 	}
@@ -1904,6 +2484,53 @@ func upsertEventTx(ctx context.Context, tx interface {
 	return err
 }
 
+func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, eventID int64, event domain.Event) error {
+	if eventID <= 0 {
+		return errors.New("canonical event ID is required")
+	}
+	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("venue %q not found", event.VenueSlug)
+	}
+	sourceID, err := ensureSourceTx(ctx, tx, event.SourceName, event.SourceURL)
+	if err != nil {
+		return err
+	}
+	if conflict, ok, err := loadEventRecordBySlugTx(ctx, tx, event.Slug); err != nil {
+		return err
+	} else if ok && conflict.ID != eventID {
+		return fmt.Errorf("review event slug %q already belongs to a different event", event.Slug)
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE events
+		SET slug = ?,
+			venue_id = ?,
+			source_id = ?,
+			name = ?,
+			start_at = ?,
+			end_at = ?,
+			genre = ?,
+			status = ?,
+			description = ?,
+			last_checked_at = ?,
+			origin = ?
+		WHERE id = ?
+	`, event.Slug, venueID, sourceID, event.Name,
+		formatRFC3339UTC(event.Start),
+		nullableRFC3339UTC(event.End),
+		event.Genre, event.Status, event.Description,
+		formatRFC3339UTC(event.LastChecked),
+		string(event.Origin),
+		eventID)
+	return err
+}
+
 func loadVenueIDBySlugTx(ctx context.Context, q queryer, slug string) (int64, bool, error) {
 	row := q.QueryRowContext(ctx, `
 		SELECT id
@@ -1932,6 +2559,7 @@ func loadReviewCandidates(ctx context.Context, q queryer, groupID int64) ([]revi
 			id,
 			group_id,
 			position,
+			COALESCE(canonical_event_id, 0),
 			external_id,
 			name,
 			venue_slug,
@@ -1945,7 +2573,7 @@ func loadReviewCandidates(ctx context.Context, q queryer, groupID int64) ([]revi
 			provenance
 		FROM review_candidates
 		WHERE group_id = ?
-		ORDER BY position, id
+		ORDER BY CASE WHEN canonical_event_id IS NULL THEN 0 ELSE 1 END, position, id
 	`, groupID)
 	if err != nil {
 		return nil, err
@@ -1972,6 +2600,7 @@ func loadReviewCandidate(ctx context.Context, q queryer, groupID, candidateID in
 			id,
 			group_id,
 			position,
+			COALESCE(canonical_event_id, 0),
 			external_id,
 			name,
 			venue_slug,
@@ -2008,12 +2637,56 @@ func loadReviewCandidate(ctx context.Context, q queryer, groupID, candidateID in
 	return candidate, true, nil
 }
 
+func loadCanonicalSnapshotCandidate(ctx context.Context, q queryer, groupID int64) (review.Candidate, bool, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT
+			id,
+			group_id,
+			position,
+			COALESCE(canonical_event_id, 0),
+			external_id,
+			name,
+			venue_slug,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			source_name,
+			source_url,
+			provenance
+		FROM review_candidates
+		WHERE group_id = ? AND canonical_event_id IS NOT NULL
+		ORDER BY id
+		LIMIT 1
+	`, groupID)
+	if err != nil {
+		return review.Candidate{}, false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return review.Candidate{}, false, err
+		}
+		return review.Candidate{}, false, nil
+	}
+	candidate, err := scanReviewCandidate(rows)
+	if err != nil {
+		return review.Candidate{}, false, err
+	}
+	if err := rows.Err(); err != nil {
+		return review.Candidate{}, false, err
+	}
+	return candidate, true, nil
+}
+
 func scanReviewCandidate(rows *sql.Rows) (review.Candidate, error) {
 	var candidate review.Candidate
 	if err := rows.Scan(
 		&candidate.ID,
 		&candidate.GroupID,
 		&candidate.Position,
+		&candidate.CanonicalEventID,
 		&candidate.ExternalID,
 		&candidate.Name,
 		&candidate.VenueSlug,
@@ -2058,6 +2731,44 @@ func loadReviewDraftChoices(ctx context.Context, q queryer, groupID int64) (map[
 		parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse review choice %q updated_at: %w", field, err)
+		}
+		choice.Field = parsedField
+		choice.UpdatedAt = parsedUpdatedAt
+		choices[parsedField] = choice
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return choices, nil
+}
+
+func loadReviewDefaultChoices(ctx context.Context, q queryer, groupID int64) (map[review.Field]review.DraftChoice, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT field, candidate_id, value, updated_at
+		FROM review_field_defaults
+		WHERE group_id = ?
+		ORDER BY field
+	`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	choices := make(map[review.Field]review.DraftChoice)
+	for rows.Next() {
+		var choice review.DraftChoice
+		var field string
+		var updatedAt string
+		if err := rows.Scan(&field, &choice.CandidateID, &choice.Value, &updatedAt); err != nil {
+			return nil, err
+		}
+		parsedField, ok := review.ParseField(field)
+		if !ok {
+			return nil, fmt.Errorf("invalid stored review default field %q", field)
+		}
+		parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse review default %q updated_at: %w", field, err)
 		}
 		choice.Field = parsedField
 		choice.UpdatedAt = parsedUpdatedAt

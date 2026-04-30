@@ -1005,13 +1005,14 @@ func TestAdminReviewDetailShowsOriginImportRunWithoutDetailLink(t *testing.T) {
 	server, err := NewServer(testServerDeps(reviewImportHistoryOnlyStoreStub{
 		reviewOnlyStoreStub: reviewOnlyStoreStub{
 			group: review.Group{
-				ID:                12,
-				Title:             "Linked review",
-				SourceName:        "Fixture ICS",
-				SourceURL:         "file:test.ics",
-				Status:            review.StatusOpen,
-				Notes:             "Created from manual ingest run 123 review staging.",
-				LatestImportRunID: 123,
+				ID:                   12,
+				Title:                "Linked review",
+				SourceName:           "Fixture ICS",
+				SourceURL:            "file:test.ics",
+				Status:               review.StatusOpen,
+				Notes:                "Created from manual ingest run 123 review staging.",
+				StagedCandidateCount: 1,
+				LatestImportRunID:    123,
 			},
 		},
 	}))
@@ -1049,13 +1050,14 @@ func TestAdminReviewDetailOmitsOriginImportRunLinkWhenUnavailable(t *testing.T) 
 
 	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{
 		group: review.Group{
-			ID:           1,
-			Title:        "Fixture review",
-			SourceName:   "Fixture ICS",
-			SourceURL:    "file:sidney.ics",
-			Status:       review.StatusOpen,
-			Notes:        "Created from manual ingest run 123 review staging.",
-			DraftChoices: map[review.Field]review.DraftChoice{},
+			ID:                   1,
+			Title:                "Fixture review",
+			SourceName:           "Fixture ICS",
+			SourceURL:            "file:sidney.ics",
+			Status:               review.StatusOpen,
+			Notes:                "Created from manual ingest run 123 review staging.",
+			StagedCandidateCount: 1,
+			DraftChoices:         map[review.Field]review.DraftChoice{},
 			Candidates: []review.Candidate{
 				{ID: 1, Position: 1, Name: "Solo Show"},
 			},
@@ -1148,6 +1150,7 @@ func TestAdminReviewDetailFallsBackToCandidateNumberWhenExternalIDIsMissing(t *t
 
 func TestBuildReviewDetailCanonicalSummaryKeepsBlankSelectionsDistinct(t *testing.T) {
 	detail := buildReviewDetail(review.Group{
+		StagedCandidateCount: 2,
 		Candidates: []review.Candidate{
 			{ID: 1, Position: 1, Name: "First"},
 			{ID: 2, Position: 2, Name: "Second"},
@@ -1180,6 +1183,266 @@ func TestBuildReviewDetailCanonicalSummaryKeepsBlankSelectionsDistinct(t *testin
 	}
 	if second.Candidate != "" {
 		t.Fatalf("venue slug candidate = %q, want empty", second.Candidate)
+	}
+}
+
+func TestBuildReviewDetailPrefersDraftChoicesOverDefaultsAndMarksConsensus(t *testing.T) {
+	detail := buildReviewDetail(review.Group{
+		StagedCandidateCount: 2,
+		Candidates: []review.Candidate{
+			{ID: 1, Position: 1, Name: "Staged Alpha"},
+			{ID: 2, Position: 2, Name: "Staged Beta"},
+			{ID: 3, Position: 3, CanonicalEventID: 99, Name: "Live Canonical"},
+		},
+		DraftChoices: map[review.Field]review.DraftChoice{
+			review.FieldName: {
+				Field:       review.FieldName,
+				CandidateID: 2,
+				Value:       "Staged Beta",
+			},
+		},
+		DefaultChoices: map[review.Field]review.DraftChoice{
+			review.FieldName: {
+				Field:       review.FieldName,
+				CandidateID: 3,
+				Value:       "Live Canonical",
+			},
+		},
+	})
+
+	if !detail.IsDuplicate {
+		t.Fatal("duplicate review = false, want true")
+	}
+	row := detail.Rows[0]
+	if !row.Cells[1].Checked {
+		t.Fatal("draft-selected cell = unchecked, want checked")
+	}
+	if row.Cells[1].SelectedConsensus {
+		t.Fatal("draft-selected cell = selected consensus, want false")
+	}
+	if !row.Cells[2].Consensus {
+		t.Fatal("default cell = non-consensus, want consensus")
+	}
+	if got, want := detail.CanonicalSummaryRows[0].Candidate, "Candidate 2"; got != want {
+		t.Fatalf("summary candidate = %q, want %q", got, want)
+	}
+	if !detail.CanonicalSummaryRows[0].Selected {
+		t.Fatal("summary row = unselected, want selected")
+	}
+}
+
+func TestBuildReviewDetailFallsBackToDefaultChoicesAndLabelsCanonicalSnapshots(t *testing.T) {
+	detail := buildReviewDetail(review.Group{
+		StagedCandidateCount: 2,
+		Candidates: []review.Candidate{
+			{ID: 1, Position: 1, Name: "Staged Alpha"},
+			{ID: 2, Position: 2, Name: "Staged Beta"},
+			{ID: 3, Position: 3, CanonicalEventID: 99, Name: "Live Canonical"},
+		},
+		DefaultChoices: map[review.Field]review.DraftChoice{
+			review.FieldName: {
+				Field:       review.FieldName,
+				CandidateID: 3,
+				Value:       "Live Canonical",
+			},
+		},
+	})
+
+	row := detail.Rows[0]
+	if !row.Cells[2].Checked {
+		t.Fatal("default-selected cell = unchecked, want checked")
+	}
+	if !row.Cells[2].Consensus {
+		t.Fatal("default-selected cell = non-consensus, want consensus")
+	}
+	if !row.Cells[2].SelectedConsensus {
+		t.Fatal("default-selected cell = non-selected-consensus, want true")
+	}
+	if got, want := detail.CanonicalSummaryRows[0].Candidate, "Live canonical snapshot"; got != want {
+		t.Fatalf("summary candidate = %q, want %q", got, want)
+	}
+	if got, want := detail.CanonicalSummaryRows[0].Value, "Live Canonical"; got != want {
+		t.Fatalf("summary value = %q, want %q", got, want)
+	}
+}
+
+func TestSQLiteAdminReviewDetailRendersCanonicalSnapshotRowsAndConsensusStyles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	groupID := mustCreateWebCanonicalReviewGroupForImportRun(t, st, path, "Canonical snapshot review", "Created from manual ingest run 1 review staging.")
+	body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertContains(t, body, "Live canonical snapshot")
+	assertContains(t, body, "selected-consensus")
+	assertContains(t, body, "consensus")
+	assertContains(t, body, "No draft choices saved yet.")
+}
+
+func TestSQLiteAdminReviewDetailClosedViewStillShowsCanonicalRowsAndFinalSelections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	notes := "Created from manual ingest run 1 review staging."
+	ensureImportRunFixtureForNotes(t, path, notes)
+	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Canonical snapshot review",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:canonical.ics",
+		Notes:      notes,
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "staged-1",
+				Name:        "Staged Alpha",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "First staged description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/staged-alpha",
+				Provenance:  "fixture UID staged-1",
+			},
+			{
+				ExternalID:  "staged-2",
+				Name:        "Staged Beta",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-02T18:30:00Z",
+				EndAt:       "2026-05-02T21:30:00Z",
+				Genre:       "Rock",
+				Status:      "Listed",
+				Description: "Second staged description",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/staged-beta",
+				Provenance:  "fixture UID staged-2",
+			},
+			{
+				ExternalID:       "canonical-1",
+				CanonicalEventID: 77,
+				Name:             "Live Canonical",
+				VenueSlug:        "leadmill",
+				StartAt:          "2026-05-02T18:30:00Z",
+				EndAt:            "2026-05-02T21:30:00Z",
+				Genre:            "Rock",
+				Status:           "Listed",
+				Description:      "Second staged description",
+				SourceName:       "Fixture ICS",
+				SourceURL:        "https://example.test/canonical",
+				Provenance:       "fixture canonical snapshot",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if len(group.Candidates) != 3 {
+		t.Fatalf("candidate count = %d, want 3", len(group.Candidates))
+	}
+	canonical := group.Candidates[2]
+	db := mustRawDB(t, path)
+	if _, err := db.Exec(`
+		DELETE FROM review_field_defaults
+		WHERE group_id = ?
+	`, groupID); err != nil {
+		t.Fatalf("clear review field defaults: %v", err)
+	}
+	for _, field := range review.CanonicalFields {
+		if _, err := db.Exec(`
+			INSERT INTO review_field_defaults (
+				group_id,
+				field,
+				candidate_id,
+				value,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?)
+		`, groupID, string(field), canonical.ID, review.CandidateValue(canonical, field), "2026-04-21T10:00:00Z"); err != nil {
+			t.Fatalf("set review field default for %s: %v", field, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	group, ok, err = st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("reload review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after defaults update")
+	}
+	if err := st.ResolveReviewGroup(contextForTesting(), groupID, fullWebReviewChoicesForCandidate(t, canonical.ID)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertContains(t, body, "This review is closed and read-only.")
+	assertContains(t, body, "Live canonical snapshot")
+	assertContains(t, body, "selected-consensus")
+}
+
+func TestAdminReviewQueueAndImportRunCountsStayStagedOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	groupID := mustCreateWebCanonicalReviewGroupForImportRun(t, st, path, "Canonical snapshot review", "Created from manual ingest run 1 review staging.")
+	body := renderPath(t, server, "/admin/review")
+	assertContains(t, body, "Canonical snapshot review")
+	assertContains(t, body, "Duplicate review - 2 candidates")
+	assertNotContains(t, body, "Duplicate review - 3 candidates")
+
+	importRunBody := renderPath(t, server, "/admin/import-runs/1")
+	assertContains(t, importRunBody, "Review groups from this import run")
+	assertContains(t, importRunBody, "Canonical snapshot review")
+	assertContains(t, importRunBody, ">2</td>")
+	assertNotContains(t, importRunBody, ">3</td>")
+	if groupID <= 0 {
+		t.Fatal("group ID = 0, want positive")
 	}
 }
 
@@ -1966,6 +2229,75 @@ func fullWebReviewChoices(t *testing.T, group review.Group) []review.DraftChoice
 		})
 	}
 	return choices
+}
+
+func fullWebReviewChoicesForCandidate(t *testing.T, candidateID int64) []review.DraftChoiceInput {
+	t.Helper()
+
+	if candidateID <= 0 {
+		t.Fatal("candidate ID is required")
+	}
+	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
+	for _, field := range review.CanonicalFields {
+		choices = append(choices, review.DraftChoiceInput{
+			Field:       field,
+			CandidateID: candidateID,
+		})
+	}
+	return choices
+}
+
+func mustCreateWebCanonicalReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, path, title, notes string) int64 {
+	t.Helper()
+
+	groupID := mustCreateWebReviewGroupForImportRun(t, st, path, title, notes, 3)
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if len(group.Candidates) != 3 {
+		t.Fatalf("candidate count = %d, want 3", len(group.Candidates))
+	}
+	canonical := group.Candidates[2]
+
+	db := mustRawDB(t, path)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close raw db: %v", err)
+		}
+	}()
+
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET canonical_event_id = ?
+		WHERE id = ?
+	`, canonical.ID+1000, canonical.ID); err != nil {
+		t.Fatalf("mark canonical snapshot candidate: %v", err)
+	}
+	if _, err := db.Exec(`
+		DELETE FROM review_field_defaults
+		WHERE group_id = ?
+	`, groupID); err != nil {
+		t.Fatalf("clear review field defaults: %v", err)
+	}
+	for _, field := range review.CanonicalFields {
+		if _, err := db.Exec(`
+			INSERT INTO review_field_defaults (
+				group_id,
+				field,
+				candidate_id,
+				value,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?)
+		`, groupID, string(field), canonical.ID, review.CandidateValue(canonical, field), "2026-04-21T10:00:00Z"); err != nil {
+			t.Fatalf("set review field default for %s: %v", field, err)
+		}
+	}
+
+	return groupID
 }
 
 func mustCreateWebReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, path, title, notes string, candidateCount int) int64 {

@@ -58,10 +58,14 @@ Routes:
 
 Review behavior:
 
-- duplicate groups use field-by-field draft choices and a canonical draft summary
+- duplicate groups use field-by-field draft choices, a canonical draft summary, and persisted majority defaults
+- open duplicate reviews preselect those persisted defaults when no manual draft exists
+- duplicate reviews may include a `Live canonical snapshot` matrix column sourced from an existing live event
 - the review queue shows a read-only link to the latest successful import when the store provides import history
 - `action=save` stores draft choices for duplicate groups
 - `action=resolved` confirms a duplicate and resolves it, publishing one canonical public event
+- canonical-backed duplicate resolution can update the matched live event in place
+- when authoritative source identity and canonical slug match point at different live events, authoritative identity wins
 - singleton groups use accept/reject actions when they were staged instead of auto-promoted
 - `action=accept` resolves a singleton group and publishes one canonical public event
 - `action=rejected` rejects a duplicate or singleton group without publishing
@@ -133,10 +137,12 @@ Stage review groups:
 - creates duplicate review groups
 - creates singleton review groups only for singleton candidates that were not auto-promoted first
 - singleton candidates may auto-promote through authoritative owned-source identity or configured non-authoritative slug-absent publish
-- duplicate groups still require review
+- duplicate groups may also auto-resolve as `canonical_exact_match` or `unanimous_duplicate`
 - reports `groups_created` and `groups_reused`
 - reports `auto_promoted_count` and `auto_promoted`
+- reports `duplicate_auto_resolved_count` and `duplicate_auto_resolved`
 - each staged group includes `result: created|reused`
+- each duplicate auto-resolved row includes `title`, `result`, `review_group_id`, `candidate_count`, and `canonical_event_slug` when applicable
 - each staged or reused group persists a link to the current import run
 - successful non-authoritative singleton auto-promotion is insert-only, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton groups by `staging_key` while linking the current import run
 - only runs after a successful ingest

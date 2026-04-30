@@ -30,6 +30,7 @@ const (
 	schemaVersionV7   = 7
 	schemaVersionV8   = 8
 	schemaVersionV9   = 9
+	schemaVersionV10  = 10
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -47,6 +48,7 @@ var migrations = []struct {
 	{version: schemaVersionV7, path: "migrations/0007_import_run_review_groups.sql"},
 	{version: schemaVersionV8, path: "migrations/0008_venue_coverage.sql"},
 	{version: schemaVersionV9, path: "migrations/0009_events_nullable_end_at.sql"},
+	{version: schemaVersionV10, path: "migrations/0010_review_canonical_defaults.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -122,6 +124,9 @@ func Open(path string) (st *Store, err error) {
 	}
 	if err := backfillOpenReviewGroupsAuthoritativeLinks(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill review group authoritative links: %w", path, err)
+	}
+	if err := backfillReviewFieldDefaults(ctx, tx); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: backfill review field defaults: %w", path, err)
 	}
 	if err := backfillCanonicalUnknownEnds(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill canonical unknown ends: %w", path, err)
@@ -274,8 +279,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV9 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV9)
+	if version > schemaVersionV10 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV10)
 	}
 
 	for _, migration := range migrations {

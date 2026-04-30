@@ -38,14 +38,15 @@ Snapshot payloads are stored as JSON envelopes that contain the response body in
 
 `cmd/ingest` can stage review groups from a successful ingest report.
 
-Review staging always creates duplicate clusters, and it creates singleton review groups only when a singleton is not auto-promoted first. Duplicate review groups support field-level canonical choices plus a canonical draft summary. Singleton review groups support accept or reject.
+Review staging always creates duplicate clusters, and it creates singleton review groups only when a singleton is not auto-promoted first. Duplicate review groups support field-level canonical choices, a canonical draft summary, persisted majority defaults, and optional live canonical snapshot context. Singleton review groups support accept or reject.
 Singletons may auto-promote in two paths:
 
 - authoritative owned-source identity for registry-owned venue sources
 - non-authoritative slug-absent publish for configured singleton sources such as The Greystones and Jazz at The Lescar
 
 Review staging uses a durable key, so source metadata changes alone do not create a new group, closed groups are not reopened, and reruns link the group to the current import run through the persisted `import_run_review_groups` relation.
-When every candidate in a staged group agrees on one owned-venue source identity from a registry-owned venue source, the group persists that authoritative source name, URL, and event key for later resolution. Non-authoritative singleton auto-promotion does not mint authoritative event identities, does not create `event_source_links`, and does not create `event_secondary_source_info` rows. Jazz at The Lescar remains non-authoritative and program-only even when its eligible singletons auto-publish.
+When every candidate in a staged group agrees on one owned-venue source identity from a registry-owned venue source, the group persists that authoritative source name, URL, and event key for later resolution. Duplicate staging also derives the current live slug from `name + venue_slug + start_at` and can attach one live canonical snapshot row when all staged slug matches point to the same `events.origin = 'live'` row. Open-group restaging refreshes that snapshot and recomputes persisted defaults while preserving manual draft choices. Non-authoritative singleton auto-promotion does not mint authoritative event identities, does not create `event_source_links`, and does not create `event_secondary_source_info` rows. Jazz at The Lescar remains non-authoritative and program-only even when its eligible singletons auto-publish.
+Exact canonical duplicates and unanimous staged duplicates are stored as closed review history rows through duplicate auto-resolution rather than remaining in the open queue.
 
 Replay auto-detects the source from stored page snapshot metadata, reconstructs the same source-specific extraction path from stored snapshots, validates the snapshot envelope version and SHA-256, and refuses missing or ambiguous snapshot matches.
 
@@ -64,10 +65,13 @@ When a review group resolves:
 - the venue must already exist
 - the source row is ensured transactionally
 - authoritative groups resolve through `event_source_links` identity before any slug-based publish path
+- if authoritative identity and canonical slug match point at different live events, authoritative identity wins
 - authoritative groups can also store secondary-source `genre` and `description` rows for explicit non-authoritative candidate sources in the same transaction
 - the published event origin is `live`
 - the slug is `live-<slug(name)>-<slug(venue)>-<YYYYMMDDHHMMSS UTC>`
-- slug conflicts are handled with upsert semantics
+- canonical-backed non-authoritative duplicate resolution updates the matched live event row in place and recomputes the live slug
+- canonical-backed in-place resolution fails if the recomputed slug already belongs to a different event
+- non-canonical publish paths still use slug-based upsert semantics
 
 When a singleton auto-promotes without review:
 

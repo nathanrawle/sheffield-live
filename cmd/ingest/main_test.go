@@ -270,11 +270,12 @@ func TestCreateReviewGroupsFromReportResolvesMatchingStaleCafeNo9Singleton(t *te
 	if got, want := len(groups), 1; got != want {
 		t.Fatalf("seed groups = %d, want %d", got, want)
 	}
-	staleGroupID, created, err := st.StageReviewGroup(ctx, groups[0])
+	stageResult, err := st.StageReviewGroup(ctx, groups[0])
 	if err != nil {
 		t.Fatalf("stage stale review group: %v", err)
 	}
-	if !created {
+	staleGroupID := stageResult.ID
+	if !stageResult.Created {
 		t.Fatal("created = false, want true")
 	}
 
@@ -1373,8 +1374,11 @@ func equalStrings(got, want []string) bool {
 }
 
 type fakeReviewStageResult struct {
-	id      int64
-	created bool
+	id                 int64
+	created            bool
+	autoResolved       bool
+	autoResolvedResult string
+	canonicalEventSlug string
 }
 
 type fakePromotionResult struct {
@@ -1383,17 +1387,23 @@ type fakePromotionResult struct {
 	err       error
 }
 
-func (s *fakeReviewStageStore) StageReviewGroup(_ context.Context, input review.GroupInput) (int64, bool, error) {
+func (s *fakeReviewStageStore) StageReviewGroup(_ context.Context, input review.GroupInput) (review.StageGroupResult, error) {
 	s.inputs = append(s.inputs, input)
 	if s.err != nil {
-		return 0, false, s.err
+		return review.StageGroupResult{}, s.err
 	}
 	if len(s.results) == 0 {
-		return int64(len(s.inputs)), true, nil
+		return review.StageGroupResult{ID: int64(len(s.inputs)), Created: true}, nil
 	}
 	result := s.results[0]
 	s.results = s.results[1:]
-	return result.id, result.created, nil
+	return review.StageGroupResult{
+		ID:                 result.id,
+		Created:            result.created,
+		AutoResolved:       result.autoResolved,
+		AutoResolvedResult: result.autoResolvedResult,
+		CanonicalEventSlug: result.canonicalEventSlug,
+	}, nil
 }
 
 func (s *fakeReviewStageStore) PromoteSingletonReviewGroupIfMissing(_ context.Context, input review.GroupInput) (string, bool, error) {

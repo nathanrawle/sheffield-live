@@ -73,24 +73,27 @@ type Group struct {
 	SharedVenueSlug             string
 	SharedVenueName             string
 	Candidates                  []Candidate
+	StagedCandidateCount        int
 	DraftChoices                map[Field]DraftChoice
+	DefaultChoices              map[Field]DraftChoice
 }
 
 type Candidate struct {
-	ID          int64
-	GroupID     int64
-	Position    int
-	ExternalID  string
-	Name        string
-	VenueSlug   string
-	StartAt     string
-	EndAt       string
-	Genre       string
-	Status      string
-	Description string
-	SourceName  string
-	SourceURL   string
-	Provenance  string
+	ID               int64
+	GroupID          int64
+	Position         int
+	CanonicalEventID int64
+	ExternalID       string
+	Name             string
+	VenueSlug        string
+	StartAt          string
+	EndAt            string
+	Genre            string
+	Status           string
+	Description      string
+	SourceName       string
+	SourceURL        string
+	Provenance       string
 }
 
 type GroupInput struct {
@@ -107,17 +110,18 @@ type GroupInput struct {
 }
 
 type CandidateInput struct {
-	ExternalID  string
-	Name        string
-	VenueSlug   string
-	StartAt     string
-	EndAt       string
-	Genre       string
-	Status      string
-	Description string
-	SourceName  string
-	SourceURL   string
-	Provenance  string
+	CanonicalEventID int64
+	ExternalID       string
+	Name             string
+	VenueSlug        string
+	StartAt          string
+	EndAt            string
+	Genre            string
+	Status           string
+	Description      string
+	SourceName       string
+	SourceURL        string
+	Provenance       string
 }
 
 type DraftChoice struct {
@@ -130,6 +134,14 @@ type DraftChoice struct {
 type DraftChoiceInput struct {
 	Field       Field
 	CandidateID int64
+}
+
+type StageGroupResult struct {
+	ID                 int64
+	Created            bool
+	AutoResolved       bool
+	AutoResolvedResult string
+	CanonicalEventSlug string
 }
 
 func ParseField(value string) (Field, bool) {
@@ -238,4 +250,8 @@ func CandidateValue(candidate Candidate, field Field) string {
 	default:
 		return ""
 	}
+}
+
+func (c Candidate) IsCanonicalSnapshot() bool {
+	return c.CanonicalEventID > 0
 }

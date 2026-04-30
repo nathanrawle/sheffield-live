@@ -145,10 +145,12 @@ type ReviewFieldRow struct {
 }
 
 type ReviewChoiceCell struct {
-	CandidateID int64
-	Value       string
-	Checked     bool
-	Provenance  string
+	CandidateID       int64
+	Value             string
+	Checked           bool
+	Consensus         bool
+	SelectedConsensus bool
+	Provenance        string
 }
 
 type ReviewPreviewRow struct {
@@ -162,6 +164,7 @@ type ReviewCanonicalSummaryRow struct {
 	Value     string
 	Candidate string
 	Selected  bool
+	Defaulted bool
 }
 
 type ReviewSingleCandidateRow struct {
@@ -251,6 +254,25 @@ func NewServer(deps ServerDeps) (*Server, error) {
 				return "(blank)"
 			}
 			return value
+		},
+		"candidateDisplayLabel": func(candidate review.Candidate) string {
+			if candidate.IsCanonicalSnapshot() {
+				return "Live canonical snapshot"
+			}
+			return fmt.Sprintf("Candidate %d", candidate.Position)
+		},
+		"choiceCellClass": func(cell ReviewChoiceCell) string {
+			classes := []string{"choice-cell"}
+			if cell.Checked {
+				classes = append(classes, "selected-choice")
+			}
+			if cell.Consensus {
+				classes = append(classes, "consensus")
+			}
+			if cell.SelectedConsensus {
+				classes = append(classes, "selected-consensus")
+			}
+			return strings.Join(classes, " ")
 		},
 		"snapshotCountLabel": func(count int) string {
 			if count == 1 {
@@ -698,11 +720,11 @@ func singletonReviewChoices(group review.Group) ([]review.DraftChoiceInput, erro
 }
 
 func reviewGroupIsDuplicate(group review.Group) bool {
-	return len(group.Candidates) >= 2
+	return group.StagedCandidateCount >= 2 || reviewGroupHasCanonicalSnapshot(group)
 }
 
 func reviewGroupIsSingleton(group review.Group) bool {
-	return len(group.Candidates) == 1
+	return group.StagedCandidateCount == 1 && !reviewGroupHasCanonicalSnapshot(group)
 }
 
 func groupCandidateExists(candidates []review.Candidate, candidateID int64) bool {
@@ -1307,50 +1329,72 @@ func buildReviewDetail(group review.Group) ReviewDetail {
 			Field: field,
 			Label: field.Label(),
 		}
-		choice, hasChoice := group.DraftChoices[field]
+		selectedChoice, hasSelectedChoice := reviewChoiceForField(group, field)
+		defaultChoice, hasDefaultChoice := group.DefaultChoices[field]
+		draftChoice, hasDraftChoice := group.DraftChoices[field]
+		defaulted := hasSelectedChoice && !hasDraftChoice && hasDefaultChoice && selectedChoice.CandidateID == defaultChoice.CandidateID
 		if detail.IsDuplicate {
 			candidate := ""
-			if hasChoice {
-				candidate = reviewCandidateLabel(group.Candidates, choice.CandidateID)
+			if hasSelectedChoice {
+				candidate = reviewCandidateLabel(group.Candidates, selectedChoice.CandidateID)
 			}
 			detail.CanonicalSummaryRows = append(detail.CanonicalSummaryRows, ReviewCanonicalSummaryRow{
 				Label:     field.Label(),
-				Value:     choice.Value,
+				Value:     selectedChoice.Value,
 				Candidate: candidate,
-				Selected:  hasChoice,
+				Selected:  hasSelectedChoice,
+				Defaulted: defaulted,
 			})
 		}
 		for _, candidate := range group.Candidates {
+			value := review.CandidateValue(candidate, field)
+			checked := hasSelectedChoice && selectedChoice.CandidateID == candidate.ID
+			consensus := hasDefaultChoice && value == defaultChoice.Value
 			row.Cells = append(row.Cells, ReviewChoiceCell{
-				CandidateID: candidate.ID,
-				Value:       review.CandidateValue(candidate, field),
-				Checked:     hasChoice && choice.CandidateID == candidate.ID,
-				Provenance:  candidate.Provenance,
+				CandidateID:       candidate.ID,
+				Value:             value,
+				Checked:           checked,
+				Consensus:         consensus,
+				SelectedConsensus: checked && consensus,
+				Provenance:        candidate.Provenance,
 			})
 		}
 		if detail.IsDuplicate {
 			detail.Rows = append(detail.Rows, row)
 		}
-		if detail.IsSingleton && len(group.Candidates) == 1 {
+		if detail.IsSingleton && len(group.Candidates) > 0 {
 			detail.SingleCandidateRows = append(detail.SingleCandidateRows, ReviewSingleCandidateRow{
 				Label: field.Label(),
 				Value: review.CandidateValue(group.Candidates[0], field),
 			})
 		}
-		if hasChoice {
+		if hasDraftChoice {
 			detail.Preview = append(detail.Preview, ReviewPreviewRow{
 				Label:     field.Label(),
-				Value:     choice.Value,
-				Candidate: reviewCandidateLabel(group.Candidates, choice.CandidateID),
+				Value:     draftChoice.Value,
+				Candidate: reviewCandidateLabel(group.Candidates, draftChoice.CandidateID),
 			})
 		}
 	}
 	return detail
 }
 
+func reviewChoiceForField(group review.Group, field review.Field) (review.DraftChoice, bool) {
+	if choice, ok := group.DraftChoices[field]; ok {
+		return choice, true
+	}
+	if choice, ok := group.DefaultChoices[field]; ok {
+		return choice, true
+	}
+	return review.DraftChoice{}, false
+}
+
 func reviewCandidateLabel(candidates []review.Candidate, id int64) string {
 	for _, candidate := range candidates {
 		if candidate.ID == id {
+			if candidate.IsCanonicalSnapshot() {
+				return "Live canonical snapshot"
+			}
 			if candidate.ExternalID != "" {
 				return fmt.Sprintf("Candidate %d (%s)", candidate.Position, candidate.ExternalID)
 			}
@@ -1358,4 +1402,13 @@ func reviewCandidateLabel(candidates []review.Candidate, id int64) string {
 		}
 	}
 	return "Unknown candidate"
+}
+
+func reviewGroupHasCanonicalSnapshot(group review.Group) bool {
+	for _, candidate := range group.Candidates {
+		if candidate.IsCanonicalSnapshot() {
+			return true
+		}
+	}
+	return false
 }

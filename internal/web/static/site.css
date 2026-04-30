@@ -528,8 +528,24 @@ a:focus-visible {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 0.35rem 0.5rem;
   min-height: 4rem;
+  padding: 0.65rem;
+  border-radius: 8px;
   color: var(--text);
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.choice-cell.consensus {
+  background: var(--surface-soft);
+}
+
+.choice-cell.selected-choice {
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.choice-cell.selected-consensus {
+  background: rgba(47, 111, 94, 0.11);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .choice-cell input {

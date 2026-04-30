@@ -12,7 +12,7 @@ Sheffield Live is a single Go monolith. It serves server-rendered HTML from one 
 - `cmd/ingest` runs manual ingestion and optional review staging
 - `internal/domain` defines shared venue, event, and origin types
 - `internal/ingest` fetches source pages, runs source-specific extraction and parsing, and stages review groups from ingest reports
-- `internal/review` defines review group and draft-choice types
+- `internal/review` defines review group, candidate, default-choice, and draft-choice types
 - `internal/store` provides the seed-store implementation and catalog interface
 - `internal/store/sqlite` opens SQLite, runs migrations, bootstraps seed data, and implements persistence
 - `internal/web` routes requests and renders pages
@@ -61,6 +61,7 @@ Public records live in SQLite and are served from canonical `venues` and `events
 - `Event` stores slug, name, venue slug, a required UTC start time, an optional UTC end time, genre, status, description, source name, source URL, last checked time, and origin
 
 Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
+Review persistence also stores canonical snapshot rows alongside staged candidates and keeps majority defaults separate from reviewer-edited draft choices.
 Authoritative review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema.
 
 The admin UI exposes read-only review history, import history, and per-run snapshot metadata when the backing store implements those read paths. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
@@ -74,10 +75,13 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - `review_groups.staging_key` has a unique index so staged reruns reuse the same group when the content key matches
 - `import_run_review_groups` records every persisted import-run to review-group link with link time
 - review groups may also persist an authoritative source tuple when every staged candidate agrees on one owned-venue source event identity
-- duplicate groups always stay in review; singleton new listings may either auto-promote or stay in review
+- duplicate groups may persist an attached live canonical snapshot row and separate majority defaults
+- duplicate groups may stay in review or auto-resolve into closed history when they are exact canonical matches or unanimous staged duplicates
+- singleton new listings may either auto-promote or stay in review
 - singleton auto-promotion can happen through authoritative owned-source identity or through configured non-authoritative slug-absent publish
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
 - authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
+- authoritative identity takes precedence over canonical slug attachment when they disagree
 - authoritative review groups may also persist secondary-source `genre` and `description` rows keyed by secondary source plus candidate venue, name, and start time
 - non-authoritative singleton auto-promotion is insert-only, does not create authoritative `event_source_links`, and does not create `event_secondary_source_info` rows
 - successful non-authoritative singleton auto-promotion resolves matching stale open singleton groups by `staging_key` and links the current import run to those groups
@@ -87,7 +91,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - the published event uses live origin
 - canonical `events.end_at` may be `NULL` when the authoritative end time is unknown
 - the live slug is deterministic and derived from name, venue, and UTC time
-- slug conflicts are handled with upsert semantics
+- canonical-backed duplicate resolution can update a matched live event in place and rejects slug collisions with other event IDs
 - venue coverage semantics are data-backed; most venues are full-venue coverage, while The Lescar is marked program-only with a UI note even when Jazz at The Lescar singletons auto-publish
 
 ## Visibility

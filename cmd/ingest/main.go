@@ -274,7 +274,7 @@ func conflictOnTrackedValues[T comparable](canonical, alias []T) bool {
 }
 
 type reviewStageStore interface {
-	StageReviewGroup(ctx context.Context, input review.GroupInput) (int64, bool, error)
+	StageReviewGroup(ctx context.Context, input review.GroupInput) (review.StageGroupResult, error)
 	PromoteSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput) (string, bool, error)
 }
 
@@ -301,15 +301,17 @@ type batchManualIngestResult struct {
 }
 
 type reviewStageReport struct {
-	Enabled              bool                            `json:"enabled"`
-	GroupsCreated        int                             `json:"groups_created"`
-	GroupsReused         int                             `json:"groups_reused"`
-	CandidateCount       int                             `json:"candidate_count"`
-	ReviewCandidateCount int                             `json:"review_candidate_count"`
-	AutoPromotedCount    int                             `json:"auto_promoted_count"`
-	Groups               []reviewStageGroupReport        `json:"groups"`
-	AutoPromoted         []reviewStageAutoPromotedReport `json:"auto_promoted"`
-	Errors               []string                        `json:"errors"`
+	Enabled                    bool                                   `json:"enabled"`
+	GroupsCreated              int                                    `json:"groups_created"`
+	GroupsReused               int                                    `json:"groups_reused"`
+	CandidateCount             int                                    `json:"candidate_count"`
+	ReviewCandidateCount       int                                    `json:"review_candidate_count"`
+	AutoPromotedCount          int                                    `json:"auto_promoted_count"`
+	DuplicateAutoResolvedCount int                                    `json:"duplicate_auto_resolved_count"`
+	Groups                     []reviewStageGroupReport               `json:"groups"`
+	AutoPromoted               []reviewStageAutoPromotedReport        `json:"auto_promoted"`
+	DuplicateAutoResolved      []reviewStageDuplicateAutoResolvedReport `json:"duplicate_auto_resolved"`
+	Errors                     []string                               `json:"errors"`
 }
 
 type reviewStageGroupReport struct {
@@ -325,6 +327,14 @@ type reviewStageAutoPromotedReport struct {
 	EventSlug string `json:"event_slug"`
 	SourceURL string `json:"source_url"`
 	Result    string `json:"result"`
+}
+
+type reviewStageDuplicateAutoResolvedReport struct {
+	Title              string `json:"title"`
+	Result             string `json:"result"`
+	ReviewGroupID      int64  `json:"review_group_id"`
+	CandidateCount     int    `json:"candidate_count"`
+	CanonicalEventSlug string `json:"canonical_event_slug,omitempty"`
 }
 
 func reviewStageForReport(ctx context.Context, st reviewStageStore, report ingest.Report, runErr error) (reviewStageReport, error) {
@@ -443,25 +453,37 @@ func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, repo
 		}
 
 		stage.ReviewCandidateCount += len(group.Candidates)
-		groupID, created, err := st.StageReviewGroup(ctx, group)
+		result, err := st.StageReviewGroup(ctx, group)
 		if err != nil {
 			message := fmt.Sprintf("stage review group %q: %v", group.Title, err)
 			stage.Errors = append(stage.Errors, message)
 			return stage, errors.New(message)
 		}
-		result := "reused"
-		if created {
+		if result.AutoResolved {
+			stage.DuplicateAutoResolvedCount++
+			stage.DuplicateAutoResolved = append(stage.DuplicateAutoResolved, reviewStageDuplicateAutoResolvedReport{
+				Title:              group.Title,
+				Result:             result.AutoResolvedResult,
+				ReviewGroupID:      result.ID,
+				CandidateCount:     len(group.Candidates),
+				CanonicalEventSlug: result.CanonicalEventSlug,
+			})
+			continue
+		}
+
+		reportResult := "reused"
+		if result.Created {
 			stage.GroupsCreated++
-			result = "created"
+			reportResult = "created"
 		} else {
 			stage.GroupsReused++
 		}
 		stage.Groups = append(stage.Groups, reviewStageGroupReport{
-			ID:             groupID,
+			ID:             result.ID,
 			Title:          group.Title,
 			CandidateCount: len(group.Candidates),
 			SourceURL:      group.SourceURL,
-			Result:         result,
+			Result:         reportResult,
 		})
 	}
 	return stage, nil
@@ -469,10 +491,11 @@ func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, repo
 
 func emptyReviewStageReport() reviewStageReport {
 	return reviewStageReport{
-		Enabled:      true,
-		Groups:       []reviewStageGroupReport{},
-		AutoPromoted: []reviewStageAutoPromotedReport{},
-		Errors:       []string{},
+		Enabled:               true,
+		Groups:                []reviewStageGroupReport{},
+		AutoPromoted:          []reviewStageAutoPromotedReport{},
+		DuplicateAutoResolved: []reviewStageDuplicateAutoResolvedReport{},
+		Errors:                []string{},
 	}
 }
 

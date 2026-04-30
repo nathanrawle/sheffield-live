@@ -60,7 +60,7 @@
     <div class="review-summary-row">
       <div class="review-summary-label">{{.Label}}</div>
       <div class="review-summary-value">{{if .Selected}}{{blankValue .Value}}{{else}}Not selected yet{{end}}</div>
-      <div class="review-summary-candidate">{{if .Selected}}{{.Candidate}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">{{if .Selected}}{{.Candidate}}{{if .Defaulted}} <small>default</small>{{end}}{{else}}&mdash;{{end}}</div>
     </div>
     {{end}}
   </div>
@@ -85,14 +85,14 @@
       <table class="review-matrix">
         <thead>
           <tr>
-            <th scope="col">Field</th>
-            {{range .ReviewDetail.Group.Candidates}}
-            <th scope="col">
-              <span>Candidate {{.Position}}</span>
-              {{with .ExternalID}}<small>{{.}}</small>{{end}}
-              <small>{{.SourceName}}</small>
-              {{with .SourceURL}}<small><a href="{{.}}">{{.}}</a></small>{{end}}
-            </th>
+      <th scope="col">Field</th>
+      {{range .ReviewDetail.Group.Candidates}}
+      <th scope="col">
+        <span>{{candidateDisplayLabel .}}</span>
+        {{with .ExternalID}}<small>{{.}}</small>{{end}}
+        <small>{{.SourceName}}</small>
+        {{with .SourceURL}}<small><a href="{{.}}">{{.}}</a></small>{{end}}
+      </th>
             {{end}}
           </tr>
         </thead>
@@ -103,7 +103,7 @@
             <th scope="row">{{.Label}}</th>
             {{range .Cells}}
             <td>
-              <label class="choice-cell">
+              <label class="{{choiceCellClass .}}">
                 <input type="radio" name="choice_{{$field}}" value="{{.CandidateID}}" {{if .Checked}}checked{{end}}>
                 <span>{{blankValue .Value}}</span>
                 {{with .Provenance}}<small>{{.}}</small>{{end}}
@@ -132,7 +132,7 @@
           <th scope="col">Field</th>
           {{range .ReviewDetail.Group.Candidates}}
           <th scope="col">
-            <span>Candidate {{.Position}}</span>
+            <span>{{candidateDisplayLabel .}}</span>
             {{with .ExternalID}}<small>{{.}}</small>{{end}}
             <small>{{.SourceName}}</small>
             {{with .SourceURL}}<small><a href="{{.}}">{{.}}</a></small>{{end}}
@@ -146,8 +146,10 @@
           <th scope="row">{{.Label}}</th>
           {{range .Cells}}
           <td>
+            <div class="{{choiceCellClass .}}">
             <span>{{blankValue .Value}}</span>
             {{with .Provenance}}<small>{{.}}</small>{{end}}
+            </div>
           </td>
           {{end}}
         </tr>

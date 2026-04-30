@@ -24,6 +24,7 @@ Manual ingest supports live ingest, snapshot replay, and fixture-based offline r
 Live ingest currently supports `sidney-and-matilda`, `yellow-arch`, `cafe-no-9`, `jazz-at-the-lescar`, `the-greystones`, `leadmill`, and `corporation`.
 Replay auto-detects the stored source from page snapshot metadata and reuses that source's ingest path.
 Review staging is idempotent by durable staging key, so reruns reuse existing review groups instead of duplicating them, and each staged or reused group persists a link to the current import run.
+Duplicate review groups can include a live canonical snapshot column, persist majority defaults separately from manual draft choices, and auto-resolve in narrow duplicate cases without leaving an open review.
 Venue coverage is stored as data. Most venues use full-venue coverage; The Lescar is marked program-only and shows a coverage note in venue and event detail pages.
 
 Docs:

@@ -29,10 +29,10 @@ Each record shows provenance and freshness. Live browsing should make the source
 
 ## Review policy
 
-Admin review exists for curated publication control. Duplicate reviews expose field-level choices and a canonical draft summary. Singleton new listings can be accepted or rejected when they are not auto-promoted first.
+Admin review exists for curated publication control. Duplicate reviews expose field-level choices, a canonical draft summary, persisted majority defaults, and may include a live canonical snapshot row for comparison. Singleton new listings can be accepted or rejected when they are not auto-promoted first.
 
 Resolving a duplicate review or accepting a singleton review publishes exactly one canonical public event. Rejecting a review does not publish anything.
-Eligible singleton imports may also auto-publish before review in two cases: authoritative owned-source identity for owned venue sources, or non-authoritative slug-absent publish for configured singleton sources. Duplicate groups still require review.
+Eligible singleton imports may also auto-publish before review in two cases: authoritative owned-source identity for owned venue sources, or non-authoritative slug-absent publish for configured singleton sources. Duplicate staging now has two extra closed-history paths: exact canonical duplicate auto-resolution against an existing live event, and unanimous staged-duplicate auto-resolution when every staged candidate agrees on the canonical fields.
 
 The canonical event policy is:
 
@@ -52,6 +52,11 @@ Non-authoritative singleton auto-promotion is intentionally narrower than author
 - it does not create authoritative source links
 - it does not create secondary-source info rows
 - Jazz at The Lescar remains a non-authoritative, program-only source even when its eligible singletons auto-publish
+
+Canonical-backed duplicate resolution follows two precedence rules:
+
+- authoritative source identity wins over canonical slug match when they disagree
+- non-authoritative canonical-backed duplicate resolution updates the matched live event in place rather than publishing a second event
 
 Reviews are held or rejected when the source is not good enough to publish:
 
