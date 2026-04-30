@@ -82,6 +82,12 @@ Run:
 go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
+Or let the command derive a default user agent from git config:
+
+```bash
+go run ./cmd/ingest
+```
+
 Defaults:
 
 - `-source` defaults to `sidney-and-matilda`
@@ -93,13 +99,15 @@ Validation:
 
 - `-limit` applies to live ingest and replay, and must be between `1` and `50`
 - `-timeout` must be positive
-- live ingest requires a non-empty `-http-user-agent` or `-user-agent`
 - replay does not require a user agent
 
 Live ingest:
 
 - primary flag: `-http-user-agent`
 - alias: `-user-agent`
+- `-contact` overrides the contact detail used in the default user agent
+- `-contact none|null|false` suppresses contact info in the default user agent even when git `user.email` is set
+- when `-http-user-agent` is omitted, the command uses `sheffield-live ingest/1.0` and appends `(contact: <email>)` when it can derive an email from local or global git `user.email`
 - supports `sidney-and-matilda`, `yellow-arch`, `cafe-no-9`, `jazz-at-the-lescar`, `the-greystones`, `leadmill`, and `corporation`
 - `-all-sources` runs every registered source sequentially in registry order and emits one aggregated JSON report
 - fetches the selected source page

@@ -30,6 +30,12 @@ Sidney & Matilda is the default source:
 go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
+If local or global git config already has `user.email`, you can omit the flag and let the command derive a default user agent:
+
+```bash
+go run ./cmd/ingest
+```
+
 Yellow Arch uses the same command with an explicit source:
 
 ```bash
@@ -55,6 +61,7 @@ go run ./cmd/ingest -source the-greystones -http-user-agent "sheffield-live manu
 ```
 
 Sidney & Matilda and Leadmill snapshot the source page plus linked ICS payloads. Yellow Arch, Cafe No. 9, and Jazz at The Lescar snapshot only the source page and parse candidates directly from that page. The Greystones and Corporation snapshot the source page plus linked detail pages. `-limit` caps linked ICS or linked detail-page fetches and parsed source-page candidates for direct source-page parsers. All commands print a JSON report.
+Use `-contact you@example.com` to override the contact detail in the derived default user agent, or `-contact none` to suppress contact info entirely.
 
 ## Stage review groups after ingest
 
