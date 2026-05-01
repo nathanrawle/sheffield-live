@@ -164,6 +164,7 @@ func (s *Store) promoteAuthoritativeSingletonReviewGroupIfMissing(ctx context.Co
 	if err != nil {
 		return "", false, nil
 	}
+	event.PublicationState = domain.PublicationStateReviewed
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -192,18 +193,11 @@ func (s *Store) promoteAuthoritativeSingletonReviewGroupIfMissing(ctx context.Co
 }
 
 func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput, now time.Time) (string, bool, error) {
-	expectedVenueSlug := nonAuthoritativeSingletonVenueSlug(s.sourceMetadata, input)
-	if expectedVenueSlug == "" {
-		return "", false, nil
-	}
-
 	event, err := singletonResolvedEventFromGroupInput(input, now)
 	if err != nil {
 		return "", false, nil
 	}
-	if event.VenueSlug != expectedVenueSlug {
-		return "", false, nil
-	}
+	event.PublicationState = domain.PublicationStateProvisional
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -213,13 +207,30 @@ func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context
 		_ = tx.Rollback()
 	}()
 
-	if _, ok, err := loadEventRecordBySlugTx(ctx, tx, event.Slug); err != nil {
+	record, found, ambiguous, err := uniqueLiveEventMatchForEventTx(ctx, tx, event)
+	if err != nil {
 		return "", false, err
-	} else if ok {
+	}
+	if ambiguous {
 		return "", false, nil
 	}
+	if found {
+		if supportingEventConflict(record.Event, event) {
+			return "", false, nil
+		}
+		if err := updateSupportingMatchedEventTx(ctx, tx, record, event); err != nil {
+			return "", false, err
+		}
+		if err := resolveMatchingOpenNonAuthoritativeSingletonReviewGroupsTx(ctx, tx, input, now); err != nil {
+			return "", false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return "", false, err
+		}
+		return record.Event.Slug, true, nil
+	}
 
-	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, expectedVenueSlug)
+	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
 	if err != nil {
 		return "", false, err
 	}
@@ -421,21 +432,35 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 
 func canonicalMatchForGroupInputTx(ctx context.Context, q queryer, input review.GroupInput) (*eventRecord, error) {
 	matched := make(map[int64]eventRecord)
+	if authoritative, ok := reviewGroupInputAuthoritativeSource(input); ok {
+		sourceID, found, err := loadSourceIDByNameURLTx(ctx, q, authoritative.SourceName, authoritative.SourceURL)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			record, ok, err := loadEventRecordBySourceLinkTx(ctx, q, sourceID, authoritative.SourceEventKey)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				matched[record.ID] = record
+			}
+		}
+	}
+
 	derivedAny := false
 	for _, candidate := range input.Candidates {
-		slug, ok := derivedCandidateLiveSlug(candidate)
-		if !ok {
-			continue
-		}
-		derivedAny = true
-		record, ok, err := loadLiveEventRecordBySlugTx(ctx, q, slug)
+		records, ok, err := candidateLiveEventIdentityMatchesTx(ctx, q, candidate)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue
 		}
-		matched[record.ID] = record
+		derivedAny = true
+		for _, record := range records {
+			matched[record.ID] = record
+		}
 	}
 	if !derivedAny || len(matched) != 1 {
 		return nil, nil
@@ -463,6 +488,34 @@ func derivedCandidateLiveSlug(candidate review.CandidateInput) (string, bool) {
 		return "", false
 	}
 	return slug, true
+}
+
+func candidateLiveEventIdentityMatchesTx(ctx context.Context, q queryer, candidate review.CandidateInput) ([]eventRecord, bool, error) {
+	slug, ok := derivedCandidateLiveSlug(candidate)
+	if !ok {
+		return nil, false, nil
+	}
+
+	start, err := parseRFC3339UTC(strings.TrimSpace(candidate.StartAt))
+	if err != nil {
+		return nil, false, nil
+	}
+	records, err := matchLiveEventsByIdentityTx(ctx, q, slug, candidate.Name, candidate.VenueSlug, start)
+	if err != nil {
+		return nil, false, err
+	}
+	return records, true, nil
+}
+
+func reviewGroupInputAuthoritativeSource(input review.GroupInput) (reviewGroupAuthoritativeLink, bool) {
+	if strings.TrimSpace(input.AuthoritativeSourceName) == "" || strings.TrimSpace(input.AuthoritativeSourceURL) == "" || strings.TrimSpace(input.AuthoritativeSourceEventKey) == "" {
+		return reviewGroupAuthoritativeLink{}, false
+	}
+	return reviewGroupAuthoritativeLink{
+		SourceName:     strings.TrimSpace(input.AuthoritativeSourceName),
+		SourceURL:      strings.TrimSpace(input.AuthoritativeSourceURL),
+		SourceEventKey: strings.TrimSpace(input.AuthoritativeSourceEventKey),
+	}, true
 }
 
 func formatOptionalTime(value time.Time) string {
@@ -584,6 +637,9 @@ func maybeAutoResolveDuplicateReviewGroupTx(ctx context.Context, tx interface {
 		if err := persistResolvedChoiceSetTx(ctx, tx, groupID, chooseAllFieldsFromCandidate(canonical, now), now); err != nil {
 			return false, "", "", err
 		}
+		if err := markEventReviewedTx(ctx, tx, canonical.CanonicalEventID); err != nil {
+			return false, "", "", err
+		}
 		if err := markReviewGroupResolvedTx(ctx, tx, groupID, now); err != nil {
 			return false, "", "", err
 		}
@@ -690,6 +746,18 @@ func markReviewGroupResolvedTx(ctx context.Context, tx execer, groupID int64, no
 		SET status = ?, updated_at = ?
 		WHERE id = ?
 	`, review.StatusResolved, formatRFC3339UTC(now), groupID)
+	return err
+}
+
+func markEventReviewedTx(ctx context.Context, tx execer, eventID int64) error {
+	if eventID <= 0 {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+		UPDATE events
+		SET publication_state = ?
+		WHERE id = ?
+	`, string(domain.PublicationStateReviewed), eventID)
 	return err
 }
 
@@ -812,13 +880,9 @@ func authoritativeSingletonSourceEventKey(sourceMetadata ingest.SourceMetadataLo
 	}
 
 	sourceName := strings.TrimSpace(input.SourceName)
-	if sourceMetadata.NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName) != "" {
-		return ""
-	}
-
 	ownedVenueSlug := strings.TrimSpace(sourceMetadata.OwnedVenueSlugForReviewStageSourceName(sourceName))
 	if ownedVenueSlug == "" {
-		return sourceEventKey
+		return ""
 	}
 	if strings.TrimSpace(input.Candidates[0].VenueSlug) != ownedVenueSlug {
 		return ""
@@ -838,6 +902,105 @@ func nonAuthoritativeSingletonVenueSlug(sourceMetadata ingest.SourceMetadataLook
 		return ""
 	}
 	return expectedVenueSlug
+}
+
+func uniqueLiveEventMatchForEventTx(ctx context.Context, q queryer, event domain.Event) (eventRecord, bool, bool, error) {
+	result, err := matchLiveEventsByIdentityTx(ctx, q, event.Slug, event.Name, event.VenueSlug, event.Start)
+	if err != nil {
+		return eventRecord{}, false, false, err
+	}
+	switch len(result) {
+	case 0:
+		return eventRecord{}, false, false, nil
+	case 1:
+		return result[0], true, false, nil
+	default:
+		return eventRecord{}, false, true, nil
+	}
+}
+
+func supportingEventConflict(existing, incoming domain.Event) bool {
+	if strings.TrimSpace(existing.Name) != strings.TrimSpace(incoming.Name) {
+		return true
+	}
+	if strings.TrimSpace(existing.VenueSlug) != strings.TrimSpace(incoming.VenueSlug) {
+		return true
+	}
+	if !existing.Start.UTC().Equal(incoming.Start.UTC()) {
+		return true
+	}
+	if existing.HasEnd() && incoming.HasEnd() && !existing.End.UTC().Equal(incoming.End.UTC()) {
+		return true
+	}
+	if strings.TrimSpace(existing.Status) != "" && strings.TrimSpace(incoming.Status) != "" && strings.TrimSpace(existing.Status) != strings.TrimSpace(incoming.Status) {
+		return true
+	}
+	if strings.TrimSpace(existing.Genre) != "" && strings.TrimSpace(incoming.Genre) != "" && strings.TrimSpace(existing.Genre) != strings.TrimSpace(incoming.Genre) {
+		return true
+	}
+	if strings.TrimSpace(existing.Description) != "" && strings.TrimSpace(incoming.Description) != "" && strings.TrimSpace(existing.Description) != strings.TrimSpace(incoming.Description) {
+		return true
+	}
+	return false
+}
+
+func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, existing eventRecord, incoming domain.Event) error {
+	updated := existing.Event
+	if !updated.HasEnd() && incoming.HasEnd() {
+		updated.End = incoming.End
+	}
+	if strings.TrimSpace(updated.Status) == "" && strings.TrimSpace(incoming.Status) != "" {
+		updated.Status = incoming.Status
+	}
+	if strings.TrimSpace(updated.Genre) == "" && strings.TrimSpace(incoming.Genre) != "" {
+		updated.Genre = incoming.Genre
+	}
+	if strings.TrimSpace(updated.Description) == "" && strings.TrimSpace(incoming.Description) != "" {
+		updated.Description = incoming.Description
+	}
+	updated.LastChecked = incoming.LastChecked.UTC()
+
+	_, err := tx.ExecContext(ctx, `
+		UPDATE events
+		SET end_at = ?,
+			genre = ?,
+			status = ?,
+			description = ?,
+			last_checked_at = ?
+		WHERE id = ?
+	`, nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, formatRFC3339UTC(updated.LastChecked), existing.ID)
+	return err
+}
+
+func matchLiveEventsByIdentityTx(ctx context.Context, q queryer, slug, name, venueSlug string, start time.Time) ([]eventRecord, error) {
+	matched := make(map[int64]eventRecord)
+
+	if strings.TrimSpace(slug) != "" {
+		record, ok, err := loadLiveEventRecordBySlugTx(ctx, q, slug)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			matched[record.ID] = record
+		}
+	}
+
+	records, err := loadLiveEventRecordsByFingerprintTx(ctx, q, name, venueSlug, start)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		matched[record.ID] = record
+	}
+
+	out := make([]eventRecord, 0, len(matched))
+	for _, record := range matched {
+		out = append(out, record)
+	}
+	return out, nil
 }
 
 func resolveMatchingOpenReviewGroupsTx(ctx context.Context, tx execer, input review.GroupInput, now time.Time) error {
@@ -920,6 +1083,7 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 	execer
 	queryer
 }, event domain.Event, sourceEventKey string, now time.Time) (eventRecord, bool, error) {
+	event.PublicationState = domain.PublicationStateReviewed
 	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
 	if err != nil {
 		return eventRecord{}, false, err
@@ -956,6 +1120,21 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 			return eventRecord{}, false, err
 		}
 		return eventRecord{ID: legacy.ID, Event: updated}, true, nil
+	}
+
+	if matched, found, ambiguous, err := uniqueLiveEventMatchForEventTx(ctx, tx, event); err != nil {
+		return eventRecord{}, false, err
+	} else if ambiguous {
+		return eventRecord{}, false, nil
+	} else if found {
+		updated, err := updateEventAuthoritativelyTx(ctx, tx, matched, event, venueID, sourceID)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if err := ensureEventSourceLinkTx(ctx, tx, matched.ID, sourceID, sourceEventKey, now); err != nil {
+			return eventRecord{}, false, err
+		}
+		return eventRecord{ID: matched.ID, Event: updated}, true, nil
 	}
 
 	eventID, err := insertEventTx(ctx, tx, event, venueID, sourceID)
@@ -1010,7 +1189,7 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 		updated.Status = authoritative.Status
 	}
 	if updated.Description == "" {
-	updated.Description = authoritative.Description
+		updated.Description = authoritative.Description
 	}
 	updated.SourceName = authoritative.SourceName
 	updated.SourceURL = authoritative.SourceURL
@@ -1067,18 +1246,9 @@ func ensureEventSourceLinkTx(ctx context.Context, tx execer, eventID, sourceID i
 }
 
 func authoritativeLinkedEventIDTx(ctx context.Context, q queryer, authoritative reviewGroupAuthoritativeLink) (int64, bool, error) {
-	var sourceID int64
-	err := q.QueryRowContext(ctx, `
-		SELECT id
-		FROM sources
-		WHERE name = ? AND url = ?
-		LIMIT 1
-	`, authoritative.SourceName, authoritative.SourceURL).Scan(&sourceID)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return 0, false, nil
-	case err != nil:
-		return 0, false, err
+	sourceID, ok, err := loadSourceIDByNameURLTx(ctx, q, authoritative.SourceName, authoritative.SourceURL)
+	if err != nil || !ok {
+		return 0, ok, err
 	}
 
 	var eventID int64
@@ -1096,6 +1266,23 @@ func authoritativeLinkedEventIDTx(ctx context.Context, q queryer, authoritative 
 	default:
 		return eventID, true, nil
 	}
+}
+
+func loadSourceIDByNameURLTx(ctx context.Context, q queryer, sourceName, sourceURL string) (int64, bool, error) {
+	var sourceID int64
+	err := q.QueryRowContext(ctx, `
+		SELECT id
+		FROM sources
+		WHERE name = ? AND url = ?
+		LIMIT 1
+	`, sourceName, sourceURL).Scan(&sourceID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, err
+	}
+	return sourceID, true, nil
 }
 
 func loadEventRecordBySourceLinkTx(ctx context.Context, q queryer, sourceID int64, sourceEventKey string) (eventRecord, bool, error) {
@@ -1172,6 +1359,90 @@ func loadLiveEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (e
 		WHERE e.slug = ? AND e.origin = ?
 		LIMIT 1
 	`, slug, string(domain.OriginLive))
+}
+
+func loadLiveEventRecordsByFingerprintTx(ctx context.Context, q queryer, name, venueSlug string, start time.Time) ([]eventRecord, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT
+			e.id,
+			e.slug,
+			e.name,
+			v.slug,
+			e.start_at,
+			e.end_at,
+			e.genre,
+			e.status,
+			e.description,
+			s.name,
+			s.url,
+			e.last_checked_at,
+			e.origin,
+			e.publication_state
+		FROM events e
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE e.name = ?
+		  AND v.slug = ?
+		  AND e.start_at = ?
+		  AND e.origin = ?
+	`, strings.TrimSpace(name), strings.TrimSpace(venueSlug), formatRFC3339UTC(start), string(domain.OriginLive))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []eventRecord
+	for rows.Next() {
+		var record eventRecord
+		var origin string
+		var publicationState string
+		var startText string
+		var endText sql.NullString
+		var lastCheckedText string
+		if err := rows.Scan(
+			&record.ID,
+			&record.Event.Slug,
+			&record.Event.Name,
+			&record.Event.VenueSlug,
+			&startText,
+			&endText,
+			&record.Event.Genre,
+			&record.Event.Status,
+			&record.Event.Description,
+			&record.Event.SourceName,
+			&record.Event.SourceURL,
+			&lastCheckedText,
+			&origin,
+			&publicationState,
+		); err != nil {
+			return nil, err
+		}
+		startAt, err := parseRFC3339UTC(startText)
+		if err != nil {
+			return nil, fmt.Errorf("parse event %q start time: %w", record.Event.Slug, err)
+		}
+		endAt, err := parseNullableRFC3339UTC(endText)
+		if err != nil {
+			return nil, fmt.Errorf("parse event %q end time: %w", record.Event.Slug, err)
+		}
+		lastChecked, err := parseRFC3339UTC(lastCheckedText)
+		if err != nil {
+			return nil, fmt.Errorf("parse event %q last checked time: %w", record.Event.Slug, err)
+		}
+		record.Event.Start = startAt
+		record.Event.End = endAt
+		record.Event.LastChecked = lastChecked
+		record.Event.Origin = domain.Origin(origin)
+		record.Event.PublicationState = normalizedPublicationState(domain.PublicationState(publicationState))
+		if err := record.Event.ValidateCanonical(); err != nil {
+			return nil, fmt.Errorf("event %q %w", record.Event.Slug, err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) (eventRecord, bool, error) {
@@ -2392,18 +2663,19 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 	}
 
 	event := domain.Event{
-		Slug:        slug,
-		Name:        name,
-		VenueSlug:   venueSlug,
-		Start:       start,
-		End:         end,
-		Genre:       genre,
-		Status:      status,
-		Description: description,
-		SourceName:  sourceName,
-		SourceURL:   sourceURL,
-		LastChecked: publishedAt.UTC(),
-		Origin:      domain.OriginLive,
+		Slug:             slug,
+		Name:             name,
+		VenueSlug:        venueSlug,
+		Start:            start,
+		End:              end,
+		Genre:            genre,
+		Status:           status,
+		Description:      description,
+		SourceName:       sourceName,
+		SourceURL:        sourceURL,
+		LastChecked:      publishedAt.UTC(),
+		Origin:           domain.OriginLive,
+		PublicationState: domain.PublicationStateReviewed,
 	}
 	if err := event.ValidateCanonical(); err != nil {
 		return domain.Event{}, fmt.Errorf("review event %w", err)

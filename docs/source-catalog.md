@@ -10,7 +10,7 @@
    - `review_stage_source_name`
 3. Set ownership policy fields for either:
    - authoritative owned-venue behavior, or
-   - non-authoritative singleton behavior
+   - compatibility metadata for legacy non-authoritative singleton behavior
 4. Choose one `mode`.
 5. Fill the matching runtime block with existing family names.
 6. Add or update ingest tests that prove the selected family works for the new source.
@@ -28,6 +28,8 @@ If the source fits an existing family, no Go code should be required.
 Add a new family only when the source cannot be expressed by an existing family without adding a mini DSL or source-key branching back into the runtime.
 
 ## Compatibility Notes
+
+First-seen singleton auto-publish is now runtime behavior rather than catalog gating. Any singleton may auto-publish provisionally when it is the first matching live event seen. `owned_venue_slug` still defines authoritative overwrite rights. `non_authoritative_singleton_venue_slug` remains as compatibility metadata and should not be used as the primary way to reason about singleton publication behavior.
 
 In v1, these fields are replay-sensitive and review-sensitive:
 

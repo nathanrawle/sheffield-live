@@ -359,7 +359,7 @@ func TestCreateReviewGroupsFromReportKeepsOffsiteLeadmillSingletonInReview(t *te
 	if got, want := stage.ReviewCandidateCount, 1; got != want {
 		t.Fatalf("review candidate count = %d, want %d", got, want)
 	}
-	if got, want := len(st.promotedInputs), 0; got != want {
+	if got, want := len(st.promotedInputs), 1; got != want {
 		t.Fatalf("promoted inputs = %d, want %d", got, want)
 	}
 	if got, want := len(st.inputs), 1; got != want {
@@ -450,7 +450,7 @@ func TestCreateReviewGroupsFromReportKeepsWrongVenueJazzAtTheLescarSingletonInRe
 	if got, want := stage.ReviewCandidateCount, 1; got != want {
 		t.Fatalf("review candidate count = %d, want %d", got, want)
 	}
-	if got, want := len(st.promotedInputs), 0; got != want {
+	if got, want := len(st.promotedInputs), 1; got != want {
 		t.Fatalf("promoted inputs = %d, want %d", got, want)
 	}
 	if got, want := len(st.inputs), 1; got != want {

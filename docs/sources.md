@@ -65,13 +65,10 @@ Snapshot payloads are stored as JSON envelopes that contain the response body in
 `cmd/ingest` can stage review groups from a successful ingest report.
 
 Review staging always creates duplicate clusters, and it creates singleton review groups only when a singleton is not auto-promoted first. Duplicate review groups support field-level canonical choices, a canonical draft summary, persisted majority defaults, and optional live canonical snapshot context. Singleton review groups support accept or reject.
-Singletons may auto-promote in two paths:
-
-- authoritative owned-source identity for registry-owned venue sources
-- non-authoritative slug-absent publish for configured singleton sources such as The Greystones and Jazz at The Lescar
+Singletons may auto-promote from any source when they are the first matching live record the application has seen. Source authority controls later overwrite rights rather than initial publish eligibility.
 
 Review staging uses a durable key, so source metadata changes alone do not create a new group, closed groups are not reopened, and reruns link the group to the current import run through the persisted `import_run_review_groups` relation.
-When every candidate in a staged group agrees on one owned-venue source identity from a registry-owned venue source, the group persists that authoritative source name, URL, and event key for later resolution. Duplicate staging also derives the current live slug from `name + venue_slug + start_at` and can attach one live canonical snapshot row when all staged slug matches point to the same `events.origin = 'live'` row. Open-group restaging refreshes that snapshot and recomputes persisted defaults while preserving manual draft choices. Non-authoritative singleton auto-promotion does not mint authoritative event identities, does not create `event_source_links`, and does not create `event_secondary_source_info` rows. Jazz at The Lescar remains non-authoritative and program-only even when its eligible singletons auto-publish.
+When every candidate in a staged group agrees on one owned-venue source identity from a registry-owned venue source, the group persists that authoritative source name, URL, and event key for later resolution. Duplicate staging also derives the current live slug from `name + venue_slug + start_at` and can attach one live canonical snapshot row when all staged slug matches point to the same `events.origin = 'live'` row. Open-group restaging refreshes that snapshot and recomputes persisted defaults while preserving manual draft choices. Supporting singleton auto-promotion does not mint authoritative event identities and does not create `event_source_links` or `event_secondary_source_info` rows. Internally, first-seen supporting publishes are stored as `provisional` until a review or authoritative update confirms them.
 Exact canonical duplicates and unanimous staged duplicates are stored as closed review history rows through duplicate auto-resolution rather than remaining in the open queue.
 
 Replay auto-detects the source from stored page snapshot metadata, reconstructs the same catalog-selected extraction path from stored snapshots, validates the snapshot envelope version and SHA-256, and refuses missing or ambiguous snapshot matches.
@@ -102,9 +99,11 @@ When a review group resolves:
 When a singleton auto-promotes without review:
 
 - duplicate groups still require review
-- authoritative auto-promotion can insert a new event or update an existing linked event through owned-source identity
-- non-authoritative auto-promotion is insert-only and only succeeds when the derived live slug is absent
-- non-authoritative auto-promotion resolves matching stale open singleton groups by `staging_key` and links those groups to the current import run
+- authoritative auto-promotion can insert a new event or update an existing linked event through owned-source identity and marks the event `reviewed`
+- supporting auto-promotion creates a `provisional` live event when no existing live event matches by exact slug or exact `name + venue_slug + start_at`
+- later supporting matches may fill blank canonical fields, but conflicting populated fields stay in review rather than silently rewriting the live event
+- supporting auto-promotion resolves matching stale open singleton groups by `staging_key` and links those groups to the current import run
+- authoritative later matches can upgrade a provisional live event in place and mark it `reviewed`
 
 ## Source Strategy
 

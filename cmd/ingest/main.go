@@ -475,13 +475,7 @@ func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, cata
 	}
 
 	for _, group := range groups {
-		autoPromote := false
-		if authoritativeSingletonAutoPromoteEligible(catalog, report.Source, group) {
-			autoPromote = true
-		} else if nonAuthoritativeSingletonAutoPromoteEligible(catalog, report.Source, group) {
-			autoPromote = true
-		}
-		if autoPromote {
+		if len(group.Candidates) == 1 {
 			eventSlug, applied, err := st.PromoteSingletonReviewGroupIfMissing(ctx, group)
 			if err != nil {
 				message := fmt.Sprintf("auto-promote review group %q: %v", group.Title, err)
@@ -545,28 +539,6 @@ func emptyReviewStageReport() reviewStageReport {
 		DuplicateAutoResolved: []reviewStageDuplicateAutoResolvedReport{},
 		Errors:                []string{},
 	}
-}
-
-func authoritativeSingletonAutoPromoteEligible(catalog *ingest.Catalog, source string, group review.GroupInput) bool {
-	if len(group.Candidates) != 1 {
-		return false
-	}
-	ownedVenueSlug := strings.TrimSpace(catalog.OwnedVenueSlugForSource(source))
-	if ownedVenueSlug == "" {
-		return false
-	}
-	return strings.TrimSpace(group.Candidates[0].VenueSlug) == ownedVenueSlug
-}
-
-func nonAuthoritativeSingletonAutoPromoteEligible(catalog *ingest.Catalog, source string, group review.GroupInput) bool {
-	if len(group.Candidates) != 1 {
-		return false
-	}
-	expectedVenueSlug := strings.TrimSpace(catalog.NonAuthoritativeSingletonVenueSlugForSource(source))
-	if expectedVenueSlug == "" {
-		return false
-	}
-	return strings.TrimSpace(group.Candidates[0].VenueSlug) == expectedVenueSlug
 }
 
 type reviewFixtureReport struct {

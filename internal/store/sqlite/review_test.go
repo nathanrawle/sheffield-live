@@ -572,6 +572,80 @@ func TestStageReviewGroupCreatesNewGroupWhenStagingKeyChanges(t *testing.T) {
 	}
 }
 
+func TestStageReviewGroupCanonicalExactMatchPromotesProvisionalEventToReviewed(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	sourceID, err := st.EnsureSource(ctx, "Fixture ICS", "https://example.test/provisional")
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	var venueID int64
+	if err := db.QueryRow(`SELECT id FROM venues WHERE slug = ?`, "yellow-arch").Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue id: %v", err)
+	}
+
+	start := "2026-05-10T18:30:00Z"
+	end := "2026-05-10T22:00:00Z"
+	slug := "live-roots-night-yellow-arch-20260510183000"
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug, venue_id, source_id, name, start_at, end_at, genre, status, description, last_checked_at, origin, publication_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, "Roots Night", start, end, "Indie", "Listed", "First description", "2026-05-09T12:00:00Z", string(domain.OriginLive), string(domain.PublicationStateProvisional)); err != nil {
+		t.Fatalf("insert provisional event: %v", err)
+	}
+
+	stageResult, err := st.StageReviewGroup(ctx, review.GroupInput{
+		Title:      "Exact canonical match",
+		SourceName: "Fixture ICS",
+		SourceURL:  "https://example.test/provisional",
+		StagingKey: "v1:exact-canonical-match",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "candidate-a",
+			Name:        "Roots Night",
+			VenueSlug:   "yellow-arch",
+			StartAt:     start,
+			EndAt:       end,
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "First description",
+			SourceName:  "Fixture ICS",
+			SourceURL:   "https://example.test/provisional",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !stageResult.Created {
+		t.Fatal("created = false, want true")
+	}
+	if !stageResult.AutoResolved {
+		t.Fatal("auto resolved = false, want true")
+	}
+	if got, want := stageResult.AutoResolvedResult, "canonical_exact_match"; got != want {
+		t.Fatalf("auto resolved result = %q, want %q", got, want)
+	}
+
+	event, ok := st.EventBySlug(slug)
+	if !ok {
+		t.Fatalf("missing event %q", slug)
+	}
+	if got, want := event.PublicationState, domain.PublicationStateReviewed; got != want {
+		t.Fatalf("publication state = %q, want %q", got, want)
+	}
+}
+
 func TestCreateReviewGroupWithBlankStagingKeyStillCreatesNewRows(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -1818,6 +1892,9 @@ func TestPromoteSingletonReviewGroupIfMissingAllowsUnknownEndWhenCanonicalFields
 	if !event.End.IsZero() {
 		t.Fatalf("end = %v, want zero time for unknown end", event.End)
 	}
+	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
+		t.Fatalf("publication state = %q, want %q", got, want)
+	}
 }
 
 func TestPromoteSingletonReviewGroupIfMissingAllowsOwnedVenueBlankEndTime(t *testing.T) {
@@ -1935,6 +2012,9 @@ func TestPromoteSingletonReviewGroupIfMissingPublishesNonAuthoritativeSingletonW
 	if got, want := event.VenueSlug, "greystones"; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
 	}
+	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
+		t.Fatalf("publication state = %q, want %q", got, want)
+	}
 }
 
 func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenNonAuthoritativeSlugExists(t *testing.T) {
@@ -2016,6 +2096,9 @@ func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenNonAuthoritativeSlugEx
 	if event.Description != "First description" {
 		t.Fatalf("description = %q, want preserved %q", event.Description, "First description")
 	}
+	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
+		t.Fatalf("publication state = %q, want %q", got, want)
+	}
 }
 
 func TestPromoteSingletonReviewGroupIfMissingPublishesJazzAtTheLescarSingletonWhenAbsent(t *testing.T) {
@@ -2071,6 +2154,9 @@ func TestPromoteSingletonReviewGroupIfMissingPublishesJazzAtTheLescarSingletonWh
 	}
 	if !event.End.IsZero() {
 		t.Fatalf("end = %v, want zero time for unknown end", event.End)
+	}
+	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
+		t.Fatalf("publication state = %q, want %q", got, want)
 	}
 
 	var storedEnd sql.NullString
@@ -2445,17 +2531,25 @@ func TestPromoteSingletonReviewGroupIfMissingFallsBackWithoutStableSourceKey(t *
 	if err != nil {
 		t.Fatalf("promote singleton review group: %v", err)
 	}
-	if promoted {
-		t.Fatal("promoted = true, want false")
+	if !promoted {
+		t.Fatal("promoted = false, want true")
 	}
-	if eventSlug != "" {
-		t.Fatalf("event slug = %q, want empty", eventSlug)
+	if eventSlug == "" {
+		t.Fatal("event slug = empty, want published slug")
 	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
+	}
+
+	event, ok := st.EventBySlug(eventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", eventSlug)
+	}
+	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
+		t.Fatalf("publication state = %q, want %q", got, want)
 	}
 }
 
