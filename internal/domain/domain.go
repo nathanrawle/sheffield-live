@@ -7,12 +7,16 @@ import (
 
 type Origin string
 type CoverageKind string
+type PublicationState string
 
 const (
 	OriginSeed Origin = "seed"
 	OriginTest Origin = "test"
 	OriginDev  Origin = "dev"
 	OriginLive Origin = "live"
+
+	PublicationStateReviewed    PublicationState = "reviewed"
+	PublicationStateProvisional PublicationState = "provisional"
 
 	CoverageKindVenue   CoverageKind = "venue"
 	CoverageKindProgram CoverageKind = "program"
@@ -43,6 +47,7 @@ type Event struct {
 	SourceURL   string
 	LastChecked time.Time
 	Origin      Origin
+	PublicationState PublicationState
 }
 
 func (e Event) HasEnd() bool {

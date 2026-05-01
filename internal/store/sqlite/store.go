@@ -31,6 +31,7 @@ const (
 	schemaVersionV8   = 8
 	schemaVersionV9   = 9
 	schemaVersionV10  = 10
+	schemaVersionV11  = 11
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -49,6 +50,7 @@ var migrations = []struct {
 	{version: schemaVersionV8, path: "migrations/0008_venue_coverage.sql"},
 	{version: schemaVersionV9, path: "migrations/0009_events_nullable_end_at.sql"},
 	{version: schemaVersionV10, path: "migrations/0010_review_canonical_defaults.sql"},
+	{version: schemaVersionV11, path: "migrations/0011_events_publication_state.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -197,7 +199,8 @@ func (s *Store) ListEvents(ctx context.Context) ([]domain.Event, error) {
 			s.name,
 			s.url,
 			e.last_checked_at,
-			e.origin
+			e.origin,
+			e.publication_state
 		FROM events e
 		JOIN venues v ON v.id = e.venue_id
 		JOIN sources s ON s.id = e.source_id
@@ -258,7 +261,8 @@ func (s *Store) ListEventsForVenue(ctx context.Context, venueSlug string) ([]dom
 			s.name,
 			s.url,
 			e.last_checked_at,
-			e.origin
+			e.origin,
+			e.publication_state
 		FROM events e
 		JOIN venues v ON v.id = e.venue_id
 		JOIN sources s ON s.id = e.source_id
@@ -290,8 +294,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV10 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV10)
+	if version > schemaVersionV11 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV11)
 	}
 
 	for _, migration := range migrations {
@@ -410,14 +414,16 @@ func insertEvent(ctx context.Context, tx execer, event domain.Event, venueID, so
 			status,
 			description,
 			last_checked_at,
-			origin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			origin,
+			publication_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
 		formatRFC3339UTC(event.LastChecked),
-		string(event.Origin))
+		string(event.Origin),
+		string(normalizedPublicationState(event.PublicationState)))
 	return err
 }
 
@@ -456,7 +462,8 @@ func validate(ctx context.Context, q queryer) error {
 			s.name,
 			s.url,
 			e.last_checked_at,
-			e.origin
+			e.origin,
+			e.publication_state
 		FROM events e
 		JOIN venues v ON v.id = e.venue_id
 		JOIN sources s ON s.id = e.source_id
@@ -698,7 +705,8 @@ func loadEventBySlug(ctx context.Context, q queryer, slug string) (domain.Event,
 			s.name,
 			s.url,
 			e.last_checked_at,
-			e.origin
+			e.origin,
+			e.publication_state
 		FROM events e
 		JOIN venues v ON v.id = e.venue_id
 		JOIN sources s ON s.id = e.source_id
@@ -777,6 +785,7 @@ func appendUniqueString(values []string, candidate string) []string {
 func scanEvent(rows *sql.Rows) (domain.Event, error) {
 	var event domain.Event
 	var origin string
+	var publicationState string
 	var startText string
 	var endText sql.NullString
 	var lastCheckedText string
@@ -793,6 +802,7 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 		&event.SourceURL,
 		&lastCheckedText,
 		&origin,
+		&publicationState,
 	); err != nil {
 		return domain.Event{}, err
 	}
@@ -814,10 +824,22 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 	event.End = end
 	event.LastChecked = lastChecked
 	event.Origin = domain.Origin(origin)
+	event.PublicationState = normalizedPublicationState(domain.PublicationState(publicationState))
 	if err := event.ValidateCanonical(); err != nil {
 		return domain.Event{}, fmt.Errorf("event %q %w", event.Slug, err)
 	}
 	return event, nil
+}
+
+func normalizedPublicationState(state domain.PublicationState) domain.PublicationState {
+	switch state {
+	case domain.PublicationStateProvisional:
+		return domain.PublicationStateProvisional
+	case domain.PublicationStateReviewed, "":
+		return domain.PublicationStateReviewed
+	default:
+		return domain.PublicationStateReviewed
+	}
 }
 
 func formatRFC3339UTC(t time.Time) string {

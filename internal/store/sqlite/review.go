@@ -981,14 +981,16 @@ func insertEventTx(ctx context.Context, tx execer, event domain.Event, venueID, 
 			status,
 			description,
 			last_checked_at,
-			origin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			origin,
+			publication_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
 		formatRFC3339UTC(event.LastChecked),
-		string(event.Origin))
+		string(event.Origin),
+		string(normalizedPublicationState(event.PublicationState)))
 	if err != nil {
 		return 0, err
 	}
@@ -1008,12 +1010,13 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 		updated.Status = authoritative.Status
 	}
 	if updated.Description == "" {
-		updated.Description = authoritative.Description
+	updated.Description = authoritative.Description
 	}
 	updated.SourceName = authoritative.SourceName
 	updated.SourceURL = authoritative.SourceURL
 	updated.LastChecked = authoritative.LastChecked.UTC()
 	updated.Origin = authoritative.Origin
+	updated.PublicationState = normalizedPublicationState(authoritative.PublicationState)
 
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE events
@@ -1026,9 +1029,10 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 			status = ?,
 			description = ?,
 			last_checked_at = ?,
-			origin = ?
+			origin = ?,
+			publication_state = ?
 		WHERE id = ?
-	`, venueID, sourceID, updated.Name, formatRFC3339UTC(updated.Start), nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, formatRFC3339UTC(updated.LastChecked), string(updated.Origin), existing.ID); err != nil {
+	`, venueID, sourceID, updated.Name, formatRFC3339UTC(updated.Start), nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, formatRFC3339UTC(updated.LastChecked), string(updated.Origin), string(updated.PublicationState), existing.ID); err != nil {
 		return domain.Event{}, err
 	}
 	return updated, nil
@@ -1109,7 +1113,8 @@ func loadEventRecordBySourceLinkTx(ctx context.Context, q queryer, sourceID int6
 			s.name,
 			s.url,
 			e.last_checked_at,
-			e.origin
+			e.origin,
+			e.publication_state
 		FROM event_source_links l
 		JOIN events e ON e.id = l.event_id
 		JOIN venues v ON v.id = e.venue_id
@@ -1134,7 +1139,8 @@ func loadEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (event
 			s.name,
 			s.url,
 			e.last_checked_at,
-			e.origin
+			e.origin,
+			e.publication_state
 		FROM events e
 		JOIN venues v ON v.id = e.venue_id
 		JOIN sources s ON s.id = e.source_id
@@ -1158,7 +1164,8 @@ func loadLiveEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (e
 			s.name,
 			s.url,
 			e.last_checked_at,
-			e.origin
+			e.origin,
+			e.publication_state
 		FROM events e
 		JOIN venues v ON v.id = e.venue_id
 		JOIN sources s ON s.id = e.source_id
@@ -1183,6 +1190,7 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 
 	var record eventRecord
 	var origin string
+	var publicationState string
 	var startText string
 	var endText sql.NullString
 	var lastCheckedText string
@@ -1200,6 +1208,7 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 		&record.Event.SourceURL,
 		&lastCheckedText,
 		&origin,
+		&publicationState,
 	); err != nil {
 		return eventRecord{}, false, err
 	}
@@ -1219,6 +1228,7 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 	record.Event.End = end
 	record.Event.LastChecked = lastChecked
 	record.Event.Origin = domain.Origin(origin)
+	record.Event.PublicationState = normalizedPublicationState(domain.PublicationState(publicationState))
 	if err := record.Event.ValidateCanonical(); err != nil {
 		return eventRecord{}, false, fmt.Errorf("event %q %w", record.Event.Slug, err)
 	}
@@ -2462,8 +2472,9 @@ func upsertEventTx(ctx context.Context, tx interface {
 			status,
 			description,
 			last_checked_at,
-			origin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			origin,
+			publication_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(slug) DO UPDATE SET
 			venue_id = excluded.venue_id,
 			source_id = excluded.source_id,
@@ -2474,13 +2485,15 @@ func upsertEventTx(ctx context.Context, tx interface {
 			status = excluded.status,
 			description = excluded.description,
 			last_checked_at = excluded.last_checked_at,
-			origin = excluded.origin
+			origin = excluded.origin,
+			publication_state = excluded.publication_state
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
 		formatRFC3339UTC(event.LastChecked),
-		string(event.Origin))
+		string(event.Origin),
+		string(normalizedPublicationState(event.PublicationState)))
 	return err
 }
 
@@ -2519,7 +2532,8 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 			status = ?,
 			description = ?,
 			last_checked_at = ?,
-			origin = ?
+			origin = ?,
+			publication_state = ?
 		WHERE id = ?
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
@@ -2527,6 +2541,7 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 		event.Genre, event.Status, event.Description,
 		formatRFC3339UTC(event.LastChecked),
 		string(event.Origin),
+		string(normalizedPublicationState(event.PublicationState)),
 		eventID)
 	return err
 }

@@ -40,8 +40,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 
 	db := mustRawDB(t, path)
 
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV10 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV10)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
 	}
 	if got := mustCount(t, db, "venues"); got != 7 {
 		t.Fatalf("venues rows = %d, want 7", got)
@@ -64,8 +64,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT version, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version, &appliedAt); err != nil {
 		t.Fatalf("scan migration row: %v", err)
 	}
-	if version != schemaVersionV10 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV10)
+	if version != schemaVersionV11 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV11)
 	}
 	if _, err := time.Parse(time.RFC3339, appliedAt); err != nil {
 		t.Fatalf("applied_at %q is not RFC3339: %v", appliedAt, err)
@@ -187,15 +187,15 @@ func TestOpenMigratesVersion1Database(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV10 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV10)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV10 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV10)
+	if version != schemaVersionV11 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV11)
 	}
 	if got := mustCount(t, db, "review_groups"); got != 0 {
 		t.Fatalf("review_groups rows = %d, want 0", got)
@@ -297,15 +297,15 @@ func TestOpenMigratesVersion2DatabasePreservesReviewDataAndAddsStagingKey(t *tes
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV10 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV10)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV10 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV10)
+	if version != schemaVersionV11 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV11)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
@@ -444,8 +444,8 @@ func TestOpenMigratesVersion3DatabaseAddsEventSourceLinks(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV10 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV10)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
@@ -584,8 +584,8 @@ func TestOpenMigratesVersion4DatabaseAddsReviewGroupAuthoritativeLinkColumns(t *
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV10 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV10)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
 	}
 
 	group, ok, err := st.LoadReviewGroup(context.Background(), openGroupID)
@@ -689,8 +689,8 @@ func TestOpenMigratesVersion5DatabaseAddsEventSecondarySourceInfoTable(t *testin
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV10 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV10)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
 	}
 	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
 		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)

@@ -131,6 +131,7 @@ func NewSeedStore() *Store {
 			SourceURL:   "https://leadmill.co.uk/events/live-music/",
 			LastChecked: checked,
 			Origin:      domain.OriginSeed,
+			PublicationState: domain.PublicationStateReviewed,
 		},
 		{
 			Slug:        "neepsend-afterhours",
@@ -145,6 +146,7 @@ func NewSeedStore() *Store {
 			SourceURL:   "https://www.yellowarch.com/events/",
 			LastChecked: checked,
 			Origin:      domain.OriginSeed,
+			PublicationState: domain.PublicationStateReviewed,
 		},
 		{
 			Slug:        "courtyard-wildcards",
@@ -159,6 +161,7 @@ func NewSeedStore() *Store {
 			SourceURL:   "https://www.sidneyandmatilda.com/",
 			LastChecked: checked,
 			Origin:      domain.OriginSeed,
+			PublicationState: domain.PublicationStateReviewed,
 		},
 		{
 			Slug:        "leadmill-late-room",
@@ -173,6 +176,7 @@ func NewSeedStore() *Store {
 			SourceURL:   "https://leadmill.co.uk/events/live-music/",
 			LastChecked: checked,
 			Origin:      domain.OriginSeed,
+			PublicationState: domain.PublicationStateReviewed,
 		},
 	}
 
