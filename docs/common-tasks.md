@@ -69,7 +69,7 @@ Use `-contact you@example.com` to override the contact detail in the derived def
 go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-review-groups
 ```
 
-This stages duplicate groups and any singleton groups that were not auto-promoted after a successful ingest. Eligible singletons may auto-publish first through authoritative owned-source identity or configured non-authoritative slug-absent publish. Duplicate staging can also auto-resolve an exact canonical match or a unanimous staged duplicate and records those outcomes separately in `review_stage.duplicate_auto_resolved`. Reruns reuse existing staging keys when the staged content matches, refresh open-group canonical snapshot/default state, preserve manual draft choices, and record the new import-run link in the persisted provenance table.
+This stages duplicate groups and any singleton groups that were not auto-promoted after a successful ingest. Any singleton may auto-publish first when it is the first matching live event seen; authoritative sources can also upgrade existing provisional events in place, while supporting-source conflicts stay in review. Duplicate staging can also auto-resolve an exact canonical match or a unanimous staged duplicate and records those outcomes separately in `review_stage.duplicate_auto_resolved`. Reruns reuse existing staging keys when the staged content matches, refresh open-group canonical snapshot/default state, preserve manual draft choices, and record the new import-run link in the persisted provenance table.
 
 ## Replay a stored ingest run
 

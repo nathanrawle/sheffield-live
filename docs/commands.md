@@ -144,7 +144,7 @@ Stage review groups:
 - wraps the ingest report with `review_stage`
 - creates duplicate review groups
 - creates singleton review groups only for singleton candidates that were not auto-promoted first
-- singleton candidates may auto-promote through authoritative owned-source identity or configured non-authoritative slug-absent publish
+- singleton candidates may auto-promote when they are the first matching live event seen; authoritative sources can also upgrade provisional events in place
 - duplicate groups may also auto-resolve as `canonical_exact_match` or `unanimous_duplicate`
 - reports `groups_created` and `groups_reused`
 - reports `auto_promoted_count` and `auto_promoted`
@@ -152,7 +152,7 @@ Stage review groups:
 - each staged group includes `result: created|reused`
 - each duplicate auto-resolved row includes `title`, `result`, `review_group_id`, `candidate_count`, and `canonical_event_slug` when applicable
 - each staged or reused group persists a link to the current import run
-- successful non-authoritative singleton auto-promotion is insert-only, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton groups by `staging_key` while linking the current import run
+- successful supporting singleton auto-promotion creates provisional events, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton groups by `staging_key` while linking the current import run
 - only runs after a successful ingest
 
 Offline review fixture:

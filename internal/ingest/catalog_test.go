@@ -37,6 +37,31 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	}
 }
 
+func TestLoadRepoCatalogFindsRepoFromNestedWorkingDirectory(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	repoRoot := filepath.Dir(filepath.Dir(defaultCatalogDir()))
+	nested := filepath.Join(repoRoot, "internal", "store", "sqlite")
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("chdir nested: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	}()
+
+	catalog, err := LoadRepoCatalog()
+	if err != nil {
+		t.Fatalf("load repo catalog from nested cwd: %v", err)
+	}
+	if got, want := catalog.Keys()[0], DefaultSource; got != want {
+		t.Fatalf("first catalog key = %q, want %q", got, want)
+	}
+}
+
 func TestLoadCatalogRejectsInvalidDefinitions(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -32,7 +32,7 @@ Each record shows provenance and freshness. Live browsing should make the source
 Admin review exists for curated publication control. Duplicate reviews expose field-level choices, a canonical draft summary, persisted majority defaults, and may include a live canonical snapshot row for comparison. Singleton new listings can be accepted or rejected when they are not auto-promoted first.
 
 Resolving a duplicate review or accepting a singleton review publishes exactly one canonical public event. Rejecting a review does not publish anything.
-Eligible singleton imports may also auto-publish before review in two cases: authoritative owned-source identity for owned venue sources, or non-authoritative slug-absent publish for configured singleton sources. Duplicate staging now has two extra closed-history paths: exact canonical duplicate auto-resolution against an existing live event, and unanimous staged-duplicate auto-resolution when every staged candidate agrees on the canonical fields.
+Eligible singleton imports may also auto-publish before review when they are the first matching live event seen. Supporting-source first-seen publishes are stored internally as provisional until a review or authoritative update confirms them. Duplicate staging now has two extra closed-history paths: exact canonical duplicate auto-resolution against an existing live event, and unanimous staged-duplicate auto-resolution when every staged candidate agrees on the canonical fields.
 
 The canonical event policy is:
 
@@ -46,12 +46,13 @@ The canonical event policy is:
 - retain the source link
 - treat freshness as source-check metadata rather than marketing
 
-Non-authoritative singleton auto-promotion is intentionally narrower than authoritative publish:
+Supporting singleton auto-promotion is intentionally narrower than authoritative publish:
 
-- it is insert-only
+- it creates provisional events rather than reviewed ones
 - it does not create authoritative source links
 - it does not create secondary-source info rows
-- Jazz at The Lescar remains a non-authoritative, program-only source even when its eligible singletons auto-publish
+- it may fill blank live fields on later exact matches, but conflicting populated fields stay in review
+- Jazz at The Lescar remains a non-authoritative, program-only source even when its first-seen singletons auto-publish
 
 Canonical-backed duplicate resolution follows two precedence rules:
 

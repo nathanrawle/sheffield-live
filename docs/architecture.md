@@ -82,13 +82,15 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - duplicate groups may persist an attached live canonical snapshot row and separate majority defaults
 - duplicate groups may stay in review or auto-resolve into closed history when they are exact canonical matches or unanimous staged duplicates
 - singleton new listings may either auto-promote or stay in review
-- singleton auto-promotion can happen through authoritative owned-source identity or through configured non-authoritative slug-absent publish
+- any singleton may be attempted for auto-promotion when it is the first matching live record seen
+- authoritative source identity controls overwrite rights and can upgrade a provisional event in place
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
 - authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
 - authoritative identity takes precedence over canonical slug attachment when they disagree
 - authoritative review groups may also persist secondary-source `genre` and `description` rows keyed by secondary source plus candidate venue, name, and start time
-- non-authoritative singleton auto-promotion is insert-only, does not create authoritative `event_source_links`, and does not create `event_secondary_source_info` rows
-- successful non-authoritative singleton auto-promotion resolves matching stale open singleton groups by `staging_key` and links the current import run to those groups
+- supporting singleton auto-promotion creates `provisional` live events, does not create authoritative `event_source_links`, and does not create `event_secondary_source_info` rows
+- successful supporting singleton auto-promotion resolves matching stale open singleton groups by `staging_key` and links the current import run to those groups
+- later supporting matches can fill blank live fields but conflicting populated fields stay in review
 - rejecting a review does not publish
 - the venue must already exist
 - the source row is ensured
