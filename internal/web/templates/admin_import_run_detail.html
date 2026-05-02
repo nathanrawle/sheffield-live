@@ -2,7 +2,7 @@
   <p class="eyebrow">Admin</p>
   <h1>Import run #{{.ImportRunDetail.ID}}</h1>
   {{if or .HasImportHistory .HasReviewStorage}}
-  <p class="lede">{{if .HasImportHistory}}<a href="/admin/import-runs">Back to import history</a>{{end}}{{if and .HasImportHistory .HasReviewStorage}} · {{end}}{{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}</p>
+  <p class="lede">{{if .HasImportHistory}}<a href="/admin/import-runs">Back to import history</a>{{end}}{{if and .HasImportHistory .HasReviewStorage}} · {{end}}{{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}{{if or .HasImportHistory .HasReviewStorage}} · {{end}}<a href="/admin/venues">Provisional venues</a></p>
   {{end}}
 </section>
 

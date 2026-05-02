@@ -1,0 +1,78 @@
+<section class="page-head">
+  <p class="eyebrow">Admin</p>
+  <h1>{{blankValue .Venue.Name}}</h1>
+  <p class="lede">
+    {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if and .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
+    {{if or .HasReviewStorage .HasImportHistory}} · {{end}}
+    <a href="/admin/venues">Back to provisional venues</a>
+  </p>
+</section>
+
+<section class="section-block">
+  <h2>Stored venue fields</h2>
+  <dl class="import-run-summary">
+    <div>
+      <dt>Name</dt>
+      <dd>{{blankValue .Venue.Name}}</dd>
+    </div>
+    <div>
+      <dt>Slug</dt>
+      <dd>{{blankValue .Venue.Slug}}</dd>
+    </div>
+    <div>
+      <dt>Address</dt>
+      <dd>{{blankValue .Venue.Address}}</dd>
+    </div>
+    <div>
+      <dt>Neighbourhood</dt>
+      <dd>{{blankValue .Venue.Neighbourhood}}</dd>
+    </div>
+    <div>
+      <dt>Description</dt>
+      <dd>{{blankValue .Venue.Description}}</dd>
+    </div>
+    <div>
+      <dt>Website</dt>
+      <dd>{{blankValue .Venue.Website}}</dd>
+    </div>
+    <div>
+      <dt>Validation state</dt>
+      <dd>{{blankValue (printf "%s" .Venue.ValidationState)}}</dd>
+    </div>
+    <div>
+      <dt>Coverage kind</dt>
+      <dd>{{blankValue (printf "%s" .Venue.CoverageKind)}}</dd>
+    </div>
+    <div>
+      <dt>Coverage note</dt>
+      <dd>{{blankValue .Venue.CoverageNote}}</dd>
+    </div>
+    <div>
+      <dt>Origin</dt>
+      <dd>{{originText .Venue.Origin}}</dd>
+    </div>
+  </dl>
+</section>
+
+<section class="section-block">
+  <div class="section-head">
+    <h2>Upcoming events</h2>
+    <p class="review-group-meta">{{len .VenueEvents}} upcoming linked events</p>
+  </div>
+  {{if .VenueEvents}}
+  <div class="event-list compact">
+    {{range .VenueEvents}}
+    <a class="event-card" href="/events/{{.Slug}}">
+      <span class="event-date">{{dateLong .Start}} {{timeShort .Start}}</span>
+      <span class="event-title">{{.Name}}</span>
+      <span class="event-meta">{{if .SourceName}}{{.SourceName}}{{end}}{{if and .SourceName .Origin}} · {{end}}{{if .Origin}}{{originText .Origin}}{{end}}</span>
+      {{with .Description}}<span class="event-meta">{{.}}</span>{{end}}
+    </a>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty-state">No upcoming linked events for this provisional venue.</p>
+  {{end}}
+</section>

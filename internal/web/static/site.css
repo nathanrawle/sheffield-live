@@ -419,6 +419,10 @@ a:focus-visible {
   min-width: 720px;
 }
 
+.provisional-venue-table {
+  min-width: 920px;
+}
+
 .import-run-table th,
 .import-run-table td {
   padding: 0.75rem;

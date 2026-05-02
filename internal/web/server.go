@@ -103,6 +103,7 @@ type PageData struct {
 	ReviewGroups             []review.GroupSummary
 	ReviewHistoryRows        []ReviewHistoryRow
 	ReviewDetail             ReviewDetail
+	ProvisionalVenues        []ProvisionalVenueRow
 	ImportRunRows            []ImportRunRow
 	ImportRunDetail          ImportRunDetail
 	LatestImport             *ingest.ImportRunSummary
@@ -132,6 +133,12 @@ type ReviewDetail struct {
 	Rows                 []ReviewFieldRow
 	Preview              []ReviewPreviewRow
 	SingleCandidateRows  []ReviewSingleCandidateRow
+}
+
+type ProvisionalVenueRow struct {
+	Venue              domain.Venue
+	UpcomingEventCount int
+	NextEvent          *domain.Event
 }
 
 type ReviewHistoryRow struct {
@@ -302,6 +309,9 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			}
 			return slug
 		},
+		"originText": func(origin domain.Origin) string {
+			return string(origin)
+		},
 		"year":        func(t time.Time) string { return t.In(localLocation).Format("2006") },
 		"joinStrings": func(values []string, sep string) string { return strings.Join(values, sep) },
 	}
@@ -319,6 +329,8 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"templates/venue_detail.html",
 		"templates/admin_review.html",
 		"templates/admin_review_history.html",
+		"templates/admin_venues.html",
+		"templates/admin_venue_detail.html",
 		"templates/admin_import_runs.html",
 		"templates/admin_import_run_detail.html",
 		"templates/admin_review_detail.html",
@@ -374,10 +386,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminReview(w, r)
 	case cleaned == "/admin/review/history":
 		s.handleAdminReviewHistory(w, r)
+	case cleaned == "/admin/venues":
+		s.handleAdminVenues(w, r)
 	case r.URL.Path == "/admin/import-runs":
 		s.handleAdminImportRuns(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/import-runs/"):
 		s.handleAdminImportRunDetail(w, r)
+	case strings.HasPrefix(cleaned, "/admin/venues/"):
+		s.handleAdminVenueDetail(w, r, strings.TrimPrefix(cleaned, "/admin/venues/"))
 	case strings.HasPrefix(cleaned, "/admin/review/"):
 		s.handleAdminReviewDetail(w, r, strings.TrimPrefix(cleaned, "/admin/review/"))
 	case strings.HasPrefix(cleaned, "/events/"):
@@ -439,6 +455,44 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, "templates/admin_review.html", data)
 }
 
+func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
+	if s.catalog == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	venues, err := s.catalog.ListVenues(r.Context())
+	if err != nil {
+		http.Error(w, "load venues", http.StatusInternalServerError)
+		return
+	}
+	events, err := s.catalog.ListEvents(r.Context())
+	if err != nil {
+		http.Error(w, "load events", http.StatusInternalServerError)
+		return
+	}
+	now := s.now()
+	data := PageData{
+		SiteName:           "Sheffield Live",
+		PageTitle:          "Provisional venues",
+		MetaDescription:    "Read-only queue of provisional venue rows awaiting review.",
+		Now:                now,
+		HasImportHistory:   s.importRunStore != nil,
+		HasImportRunDetail: s.replayStore != nil,
+		HasReviewStorage:   s.reviewStore != nil,
+		ProvisionalVenues: buildProvisionalVenueRows(
+			venues,
+			events,
+			now,
+			s.localLocation,
+		),
+	}
+	s.renderPage(w, "templates/admin_venues.html", data)
+}
+
 func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request) {
 	if s.reviewStore == nil {
 		http.NotFound(w, r)
@@ -465,6 +519,56 @@ func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request
 		HasReviewStorage:   s.reviewStore != nil,
 	}
 	s.renderPage(w, "templates/admin_review_history.html", data)
+}
+
+func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, slug string) {
+	if s.catalog == nil {
+		http.NotFound(w, r)
+		return
+	}
+	slug = strings.TrimSpace(slug)
+	if slug == "" || strings.Contains(slug, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "load venue", http.StatusInternalServerError)
+		return
+	}
+	if !ok || venue.ValidationState != domain.ValidationStateProvisional {
+		http.NotFound(w, r)
+		return
+	}
+
+	events, err := s.catalog.ListEventsForVenue(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "load venue events", http.StatusInternalServerError)
+		return
+	}
+	pageTitle := strings.TrimSpace(venue.Name)
+	if pageTitle == "" {
+		pageTitle = strings.TrimSpace(venue.Slug)
+	}
+	if pageTitle == "" {
+		pageTitle = "Provisional venue"
+	}
+	data := PageData{
+		SiteName:         "Sheffield Live",
+		PageTitle:        pageTitle,
+		MetaDescription:  venue.Description,
+		Now:              s.now(),
+		Venue:            venue,
+		VenueEvents:      sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
+		HasImportHistory: s.importRunStore != nil,
+		HasReviewStorage: s.reviewStore != nil,
+	}
+	s.renderPage(w, "templates/admin_venue_detail.html", data)
 }
 
 func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
@@ -1241,6 +1345,60 @@ func reviewGroupStatusSummary(groups []review.GroupSummary) string {
 		parts = append(parts, fmt.Sprintf("%d %s", counts[status], status))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func buildProvisionalVenueRows(venues []domain.Venue, events []domain.Event, now time.Time, loc *time.Location) []ProvisionalVenueRow {
+	provisional := make([]domain.Venue, 0, len(venues))
+	for _, venue := range venues {
+		if venue.ValidationState == domain.ValidationStateProvisional {
+			provisional = append(provisional, venue)
+		}
+	}
+
+	upcoming := sortEventsForDisplay(upcomingEvents(events, now, loc))
+	eventsByVenue := make(map[string][]domain.Event, len(provisional))
+	for _, event := range upcoming {
+		eventsByVenue[event.VenueSlug] = append(eventsByVenue[event.VenueSlug], event)
+	}
+
+	rows := make([]ProvisionalVenueRow, 0, len(provisional))
+	for _, venue := range provisional {
+		linkedEvents := eventsByVenue[venue.Slug]
+		row := ProvisionalVenueRow{
+			Venue:              venue,
+			UpcomingEventCount: len(linkedEvents),
+		}
+		if len(linkedEvents) > 0 {
+			next := linkedEvents[0]
+			row.NextEvent = &next
+		}
+		rows = append(rows, row)
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		iHasNext := rows[i].NextEvent != nil
+		jHasNext := rows[j].NextEvent != nil
+		switch {
+		case iHasNext && jHasNext:
+			if rows[i].NextEvent.Start.Equal(rows[j].NextEvent.Start) {
+				if rows[i].Venue.Name == rows[j].Venue.Name {
+					return rows[i].Venue.Slug < rows[j].Venue.Slug
+				}
+				return rows[i].Venue.Name < rows[j].Venue.Name
+			}
+			return rows[i].NextEvent.Start.Before(rows[j].NextEvent.Start)
+		case iHasNext:
+			return true
+		case jHasNext:
+			return false
+		default:
+			if rows[i].Venue.Name == rows[j].Venue.Name {
+				return rows[i].Venue.Slug < rows[j].Venue.Slug
+			}
+			return rows[i].Venue.Name < rows[j].Venue.Name
+		}
+	})
+	return rows
 }
 
 func reviewStatusSortRank(status string) int {
