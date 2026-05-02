@@ -241,30 +241,34 @@ func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.
 		StagingKey: "v1:stage-reuse",
 		Candidates: []review.CandidateInput{
 			{
-				ExternalID:  "candidate-a",
-				Name:        "Candidate A",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:a.ics",
-				Provenance:  "fixture UID candidate-a",
+				ExternalID:       "candidate-a",
+				Name:             "Candidate A",
+				VenueSlug:        "leadmill",
+				VenueText:        "Leadmill",
+				VenueLocationRaw: "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
+				StartAt:          "2026-05-01T19:00:00Z",
+				EndAt:            "2026-05-01T22:00:00Z",
+				Genre:            "Indie",
+				Status:           "Listed",
+				Description:      "First description",
+				SourceName:       "Fixture ICS",
+				SourceURL:        "file:a.ics",
+				Provenance:       "fixture UID candidate-a",
 			},
 			{
-				ExternalID:  "candidate-b",
-				Name:        "Candidate B",
-				VenueSlug:   "yellow-arch",
-				StartAt:     "2026-05-02T19:30:00Z",
-				EndAt:       "2026-05-02T22:30:00Z",
-				Genre:       "Jazz",
-				Status:      "Listed",
-				Description: "Second description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:b.ics",
-				Provenance:  "fixture UID candidate-b",
+				ExternalID:       "candidate-b",
+				Name:             "Candidate B",
+				VenueSlug:        "yellow-arch",
+				VenueText:        "Yellow Arch",
+				VenueLocationRaw: "Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX",
+				StartAt:          "2026-05-02T19:30:00Z",
+				EndAt:            "2026-05-02T22:30:00Z",
+				Genre:            "Jazz",
+				Status:           "Listed",
+				Description:      "Second description",
+				SourceName:       "Fixture ICS",
+				SourceURL:        "file:b.ics",
+				Provenance:       "fixture UID candidate-b",
 			},
 		},
 	}
@@ -296,11 +300,38 @@ func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.
 	changed.Title = "Stage reuse changed"
 	changed.SourceName = "Changed source name"
 	changed.SourceURL = "file:stage-reuse-changed.ics"
-	changed.Candidates = append([]review.CandidateInput(nil), input.Candidates...)
-	changed.Candidates[0].SourceName = "Changed candidate source A"
-	changed.Candidates[0].SourceURL = "file:changed-a.ics"
-	changed.Candidates[1].SourceName = "Changed candidate source B"
-	changed.Candidates[1].SourceURL = "file:changed-b.ics"
+	changed.Candidates = []review.CandidateInput{
+		{
+			ExternalID:       "candidate-b",
+			Name:             "Candidate B",
+			VenueSlug:        "yellow-arch",
+			VenueText:        "Yellow Arch refreshed",
+			VenueLocationRaw: "Yellow Arch refreshed, 30-36 Burton Road, Neepsend, S3 8BX",
+			StartAt:          "2026-05-02T19:30:00Z",
+			EndAt:            "2026-05-02T22:30:00Z",
+			Genre:            "Jazz",
+			Status:           "Listed",
+			Description:      "Second description",
+			SourceName:       "Changed candidate source B",
+			SourceURL:        "file:changed-b.ics",
+			Provenance:       "fixture UID candidate-b",
+		},
+		{
+			ExternalID:       "candidate-a",
+			Name:             "Candidate A",
+			VenueSlug:        "leadmill",
+			VenueText:        "Leadmill refreshed",
+			VenueLocationRaw: "The Leadmill refreshed, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
+			StartAt:          "2026-05-01T19:00:00Z",
+			EndAt:            "2026-05-01T22:00:00Z",
+			Genre:            "Indie",
+			Status:           "Listed",
+			Description:      "First description",
+			SourceName:       "Changed candidate source A",
+			SourceURL:        "file:changed-a.ics",
+			Provenance:       "fixture UID candidate-a",
+		},
+	}
 
 	reusedResult, err := st.StageReviewGroup(ctx, changed)
 	if err != nil {
@@ -338,6 +369,24 @@ func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.
 	}
 	if reused.Candidates[1].SourceURL != input.Candidates[1].SourceURL {
 		t.Fatalf("candidate 1 source url = %q, want %q", reused.Candidates[1].SourceURL, input.Candidates[1].SourceURL)
+	}
+	if reused.Candidates[0].ID != group.Candidates[0].ID || reused.Candidates[0].Position != group.Candidates[0].Position {
+		t.Fatalf("candidate 0 identity changed: got id %d position %d, want id %d position %d", reused.Candidates[0].ID, reused.Candidates[0].Position, group.Candidates[0].ID, group.Candidates[0].Position)
+	}
+	if reused.Candidates[1].ID != group.Candidates[1].ID || reused.Candidates[1].Position != group.Candidates[1].Position {
+		t.Fatalf("candidate 1 identity changed: got id %d position %d, want id %d position %d", reused.Candidates[1].ID, reused.Candidates[1].Position, group.Candidates[1].ID, group.Candidates[1].Position)
+	}
+	if reused.Candidates[0].VenueText != "Leadmill refreshed" {
+		t.Fatalf("candidate 0 venue text = %q, want %q", reused.Candidates[0].VenueText, "Leadmill refreshed")
+	}
+	if reused.Candidates[0].VenueLocationRaw != "The Leadmill refreshed, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE" {
+		t.Fatalf("candidate 0 venue location raw = %q, want %q", reused.Candidates[0].VenueLocationRaw, "The Leadmill refreshed, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE")
+	}
+	if reused.Candidates[1].VenueText != "Yellow Arch refreshed" {
+		t.Fatalf("candidate 1 venue text = %q, want %q", reused.Candidates[1].VenueText, "Yellow Arch refreshed")
+	}
+	if reused.Candidates[1].VenueLocationRaw != "Yellow Arch refreshed, 30-36 Burton Road, Neepsend, S3 8BX" {
+		t.Fatalf("candidate 1 venue location raw = %q, want %q", reused.Candidates[1].VenueLocationRaw, "Yellow Arch refreshed, 30-36 Burton Road, Neepsend, S3 8BX")
 	}
 	assertDraftChoice(t, reused, review.FieldName, group.Candidates[1].ID, "Candidate B")
 	assertDraftChoice(t, reused, review.FieldVenueSlug, group.Candidates[0].ID, "leadmill")

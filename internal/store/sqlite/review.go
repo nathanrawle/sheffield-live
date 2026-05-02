@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -128,6 +130,9 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 			return review.StageGroupResult{}, err
 		}
 		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, group.ID, input, now); err != nil {
+			return review.StageGroupResult{}, err
+		}
+		if err := refreshStagedReviewCandidateVenueEvidenceTx(ctx, tx, group.ID, input.Candidates); err != nil {
 			return review.StageGroupResult{}, err
 		}
 	}
@@ -341,6 +346,53 @@ func replaceReviewCandidatesTx(ctx context.Context, tx execer, groupID int64, ca
 	return nil
 }
 
+func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, groupID int64, incoming []review.CandidateInput) error {
+	existing, err := loadReviewCandidates(ctx, tx, groupID)
+	if err != nil {
+		return err
+	}
+
+	incomingByFingerprint := make(map[string][]review.CandidateInput)
+	for _, candidate := range incoming {
+		if candidate.CanonicalEventID != 0 {
+			continue
+		}
+		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.VenueSlug, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
+		incomingByFingerprint[fingerprint] = append(incomingByFingerprint[fingerprint], candidate)
+	}
+
+	existingByFingerprint := make(map[string][]review.Candidate)
+	for _, candidate := range existing {
+		if candidate.CanonicalEventID != 0 {
+			continue
+		}
+		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.VenueSlug, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
+		existingByFingerprint[fingerprint] = append(existingByFingerprint[fingerprint], candidate)
+	}
+
+	for fingerprint, incomingBucket := range incomingByFingerprint {
+		existingBucket := existingByFingerprint[fingerprint]
+		if len(existingBucket) != len(incomingBucket) || len(existingBucket) != 1 {
+			continue
+		}
+		incomingCandidate := incomingBucket[0]
+		existingCandidate := existingBucket[0]
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE review_candidates
+			SET venue_text = ?,
+				venue_location_raw = ?
+			WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
+		`, strings.TrimSpace(incomingCandidate.VenueText), incomingCandidate.VenueLocationRaw, existingCandidate.ID, groupID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func insertReviewCandidatesTx(ctx context.Context, tx execer, groupID int64, candidates []review.CandidateInput, defaultSourceName, defaultSourceURL string) error {
 	for i, candidate := range candidates {
 		if err := insertReviewCandidate(ctx, tx, groupID, i+1, candidate, defaultSourceName, defaultSourceURL); err != nil {
@@ -432,6 +484,19 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 		return nil, err
 	}
 	return record, nil
+}
+
+func stagedReviewCandidateFingerprint(values ...string) string {
+	sum := sha256.New()
+	writeStagedReviewCandidateFingerprintPart(sum, "review-stage-candidate:v1")
+	for _, value := range values {
+		writeStagedReviewCandidateFingerprintPart(sum, value)
+	}
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+func writeStagedReviewCandidateFingerprintPart(sum interface{ Write([]byte) (int, error) }, value string) {
+	_, _ = fmt.Fprintf(sum, "%d:%s\x00", len(value), value)
 }
 
 func canonicalMatchForGroupInputTx(ctx context.Context, q queryer, input review.GroupInput) (*eventRecord, error) {

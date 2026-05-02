@@ -221,6 +221,109 @@ func TestOpenMigratesVersion11DatabaseAddsVenueValidationState(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesVersion12DatabaseAddsReviewCandidateVenueEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	db := mustRawDB(t, path)
+	for _, migration := range migrations[:len(migrations)-1] {
+		migrationSQL, err := readMigration(migration.path)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", migration.path, err)
+		}
+		if _, err := db.Exec(migrationSQL); err != nil {
+			t.Fatalf("apply migration %s: %v", migration.path, err)
+		}
+	}
+	groupRes, err := db.Exec(`
+		INSERT INTO review_groups (
+			title,
+			source_name,
+			source_url,
+			status,
+			notes,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "Venue evidence migration", "Fixture ICS", "file:migration.ics", review.StatusOpen, "Preserved notes", formatRFC3339UTC(time.Date(2026, time.April, 23, 9, 0, 0, 0, time.UTC)), formatRFC3339UTC(time.Date(2026, time.April, 23, 10, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("insert review group: %v", err)
+	}
+	groupID, err := groupRes.LastInsertId()
+	if err != nil {
+		t.Fatalf("review group id: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO review_candidates (
+			group_id,
+			position,
+			external_id,
+			name,
+			venue_slug,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			source_name,
+			source_url,
+			provenance
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, groupID, 1, "candidate-a", "Candidate A", "leadmill", "2026-05-01T19:00:00Z", "2026-05-01T22:00:00Z", "Indie", "Listed", "Description", "Fixture ICS", "file:candidate-a.ics", "fixture UID candidate-a"); err != nil {
+		t.Fatalf("insert review candidate: %v", err)
+	}
+	for _, migration := range migrations[:len(migrations)-1] {
+		if _, err := db.Exec(`
+			INSERT INTO schema_migrations (version, applied_at)
+			VALUES (?, ?)
+		`, migration.version, formatRFC3339UTC(time.Date(2026, time.April, 23, 11+migration.version, 0, 0, 0, time.UTC))); err != nil {
+			t.Fatalf("insert v%d migration row: %v", migration.version, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db = mustRawDB(t, path)
+	defer db.Close()
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
+	}
+
+	group, ok, err := st.LoadReviewGroup(context.Background(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if len(group.Candidates) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(group.Candidates))
+	}
+	if group.Candidates[0].VenueText != "" {
+		t.Fatalf("candidate venue text = %q, want empty", group.Candidates[0].VenueText)
+	}
+	if group.Candidates[0].VenueLocationRaw != "" {
+		t.Fatalf("candidate venue location raw = %q, want empty", group.Candidates[0].VenueLocationRaw)
+	}
+	var venueText string
+	var venueLocationRaw string
+	if err := db.QueryRow(`SELECT venue_text, venue_location_raw FROM review_candidates WHERE group_id = ?`, groupID).Scan(&venueText, &venueLocationRaw); err != nil {
+		t.Fatalf("scan review candidate venue evidence: %v", err)
+	}
+	if venueText != "" {
+		t.Fatalf("stored venue text = %q, want empty", venueText)
+	}
+	if venueLocationRaw != "" {
+		t.Fatalf("stored venue location raw = %q, want empty", venueLocationRaw)
+	}
+}
+
 func TestOpenMigratesVersion1Database(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
