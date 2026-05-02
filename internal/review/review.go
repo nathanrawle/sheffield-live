@@ -86,6 +86,8 @@ type Candidate struct {
 	ExternalID       string
 	Name             string
 	VenueSlug        string
+	VenueText        string `json:"-"`
+	VenueLocationRaw string `json:"-"`
 	StartAt          string
 	EndAt            string
 	Genre            string
@@ -114,6 +116,8 @@ type CandidateInput struct {
 	ExternalID       string
 	Name             string
 	VenueSlug        string
+	VenueText        string `json:"-"`
+	VenueLocationRaw string `json:"-"`
 	StartAt          string
 	EndAt            string
 	Genre            string

@@ -390,11 +390,12 @@ func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *te
 				URL: "https://leadmill.co.uk/listings/?ical=1",
 				Candidates: []EventCandidate{
 					{
-						Summary:  "One",
-						Location: "Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX",
-						URL:      "https://leadmill.co.uk/event/one/",
-						StartAt:  "2026-05-01T19:00:00Z",
-						EndAt:    "2026-05-01T22:00:00Z",
+						Summary:     "One",
+						Location:    "Yellow Arch",
+						LocationRaw: "Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX",
+						URL:         "https://leadmill.co.uk/event/one/",
+						StartAt:     "2026-05-01T19:00:00Z",
+						EndAt:       "2026-05-01T22:00:00Z",
 					},
 				},
 			},
@@ -410,6 +411,12 @@ func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *te
 	}
 	if got, want := groups[0].Candidates[0].VenueSlug, "yellow-arch"; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+	if got, want := groups[0].Candidates[0].VenueText, "Yellow Arch"; got != want {
+		t.Fatalf("venue text = %q, want %q", got, want)
+	}
+	if got, want := groups[0].Candidates[0].VenueLocationRaw, "Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX"; got != want {
+		t.Fatalf("venue location raw = %q, want %q", got, want)
 	}
 	if got := groups[0].AuthoritativeSourceEventKey; got != "" {
 		t.Fatalf("authoritative source event key = %q, want empty", got)

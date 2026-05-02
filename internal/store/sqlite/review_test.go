@@ -31,23 +31,25 @@ func TestReviewGroupDraftRoundTripDoesNotPublishEvents(t *testing.T) {
 	defer db.Close()
 	eventCount := mustCount(t, db, "events")
 
-	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
+	input := review.GroupInput{
 		Title:      "Fixture review",
 		SourceName: "Fixture ICS",
 		SourceURL:  "file:testdata/sidney.ics",
 		Candidates: []review.CandidateInput{
 			{
-				ExternalID:  "candidate-a",
-				Name:        "Candidate A",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:a.ics",
-				Provenance:  "fixture UID candidate-a",
+				ExternalID:       "candidate-a",
+				Name:             "Candidate A",
+				VenueSlug:        "leadmill",
+				VenueText:        "Leadmill",
+				VenueLocationRaw: "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
+				StartAt:          "2026-05-01T19:00:00Z",
+				EndAt:            "2026-05-01T22:00:00Z",
+				Genre:            "Indie",
+				Status:           "Listed",
+				Description:      "First description",
+				SourceName:       "Fixture ICS",
+				SourceURL:        "file:a.ics",
+				Provenance:       "fixture UID candidate-a",
 			},
 			{
 				ExternalID:  "candidate-b",
@@ -63,7 +65,11 @@ func TestReviewGroupDraftRoundTripDoesNotPublishEvents(t *testing.T) {
 				Provenance:  "fixture UID candidate-b",
 			},
 		},
-	})
+	}
+	if input.Candidates[0].VenueText != "Leadmill" {
+		t.Fatalf("fixture venue text = %q, want %q", input.Candidates[0].VenueText, "Leadmill")
+	}
+	groupID, err := st.CreateReviewGroup(ctx, input)
 	if err != nil {
 		t.Fatalf("create review group: %v", err)
 	}
@@ -115,32 +121,64 @@ func TestReviewGroupDraftRoundTripDoesNotPublishEvents(t *testing.T) {
 
 func TestCreateReviewGroupDefaultsBlankCandidateSourceFieldsAndPreservesProvenance(t *testing.T) {
 	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := Open(path)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
+	db := mustRawDB(t, path)
+	defer db.Close()
 
-	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
-		Title:      "Source defaults",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:defaults.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "candidate-a",
-				Name:        "Candidate A",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First description",
-				Provenance:  "fixture UID candidate-a",
-			},
-		},
-	})
+	tx, err := st.db.BeginTx(ctx, nil)
 	if err != nil {
-		t.Fatalf("create review group: %v", err)
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	now := time.Now().UTC()
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO review_groups (
+			title,
+			source_name,
+			source_url,
+			authoritative_source_name,
+			authoritative_source_url,
+			authoritative_source_event_key,
+			staging_key,
+			status,
+			notes,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "Source defaults", "Fixture ICS", "file:defaults.ics", nullableReviewText(""), nullableReviewText(""), nullableReviewText(""), stagingKeyValue(""), review.StatusOpen, "", formatRFC3339UTC(now), formatRFC3339UTC(now))
+	if err != nil {
+		t.Fatalf("insert review group: %v", err)
+	}
+	groupID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("review group last insert id: %v", err)
+	}
+
+	if err := insertReviewCandidate(ctx, tx, groupID, 1, review.CandidateInput{
+		ExternalID:       "candidate-a",
+		Name:             "Candidate A",
+		VenueSlug:        "leadmill",
+		VenueText:        "Leadmill",
+		VenueLocationRaw: "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
+		StartAt:          "2026-05-01T19:00:00Z",
+		EndAt:            "2026-05-01T22:00:00Z",
+		Genre:            "Indie",
+		Status:           "Listed",
+		Description:      "First description",
+		Provenance:       "fixture UID candidate-a",
+	}, "Fixture ICS", "file:defaults.ics"); err != nil {
+		t.Fatalf("insert review candidate: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit transaction: %v", err)
 	}
 
 	group, ok, err := st.LoadReviewGroup(ctx, groupID)
@@ -168,6 +206,23 @@ func TestCreateReviewGroupDefaultsBlankCandidateSourceFieldsAndPreservesProvenan
 	}
 	if candidate.Provenance != "fixture UID candidate-a" {
 		t.Fatalf("candidate provenance = %q, want %q", candidate.Provenance, "fixture UID candidate-a")
+	}
+	if candidate.VenueText != "Leadmill" {
+		t.Fatalf("candidate venue text = %q, want %q", candidate.VenueText, "Leadmill")
+	}
+	if candidate.VenueLocationRaw != "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE" {
+		t.Fatalf("candidate venue location raw = %q, want %q", candidate.VenueLocationRaw, "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE")
+	}
+	var venueText string
+	var venueLocationRaw string
+	if err := db.QueryRow(`SELECT venue_text, venue_location_raw FROM review_candidates WHERE group_id = ? ORDER BY id LIMIT 1`, groupID).Scan(&venueText, &venueLocationRaw); err != nil {
+		t.Fatalf("scan review candidate venue evidence: %v", err)
+	}
+	if venueText != "Leadmill" {
+		t.Fatalf("stored venue text = %q, want %q", venueText, "Leadmill")
+	}
+	if venueLocationRaw != "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE" {
+		t.Fatalf("stored venue location raw = %q, want %q", venueLocationRaw, "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE")
 	}
 }
 

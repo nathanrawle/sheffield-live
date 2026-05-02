@@ -11,6 +11,7 @@ type EventCandidate struct {
 	Summary     string `json:"summary"`
 	Description string `json:"description,omitempty"`
 	Location    string `json:"location,omitempty"`
+	LocationRaw string `json:"-"`
 	URL         string `json:"url,omitempty"`
 	Status      string `json:"status,omitempty"`
 	StartAt     string `json:"start_at"`
@@ -176,6 +177,7 @@ func parseEvent(properties []icsProperty) (EventCandidate, ParseSkip) {
 		Summary:     summary,
 		Description: cleanICSValue(firstValue(properties, "DESCRIPTION")),
 		Location:    cleanICSValue(firstValue(properties, "LOCATION")),
+		LocationRaw: firstValue(properties, "LOCATION"),
 		URL:         cleanICSValue(firstValue(properties, "URL")),
 		Status:      status,
 		StartAt:     formatTime(startAt),

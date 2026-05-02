@@ -388,6 +388,8 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 		ExternalID:       "",
 		Name:             record.Event.Name,
 		VenueSlug:        record.Event.VenueSlug,
+		VenueText:        "",
+		VenueLocationRaw: "",
 		StartAt:          formatRFC3339UTC(record.Event.Start),
 		EndAt:            formatOptionalTime(record.Event.End),
 		Genre:            record.Event.Genre,
@@ -410,6 +412,8 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 				external_id = ?,
 				name = ?,
 				venue_slug = ?,
+				venue_text = ?,
+				venue_location_raw = ?,
 				start_at = ?,
 				end_at = ?,
 				genre = ?,
@@ -419,7 +423,7 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 				source_url = ?,
 				provenance = ?
 			WHERE id = ? AND group_id = ?
-		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.SourceName, candidate.SourceURL, candidate.Provenance, existing.ID, groupID); err != nil {
+		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.VenueText, candidate.VenueLocationRaw, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.SourceName, candidate.SourceURL, candidate.Provenance, existing.ID, groupID); err != nil {
 			return nil, err
 		}
 		return record, nil
@@ -2042,6 +2046,8 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 			external_id,
 			name,
 			venue_slug,
+			venue_text,
+			venue_location_raw,
 			start_at,
 			end_at,
 			genre,
@@ -2050,9 +2056,11 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 			source_name,
 			source_url,
 			provenance
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, groupID, position, nullableCanonicalEventID(input.CanonicalEventID), strings.TrimSpace(input.ExternalID), input.Name,
 		strings.TrimSpace(input.VenueSlug),
+		strings.TrimSpace(input.VenueText),
+		input.VenueLocationRaw,
 		strings.TrimSpace(input.StartAt),
 		strings.TrimSpace(input.EndAt),
 		strings.TrimSpace(input.Genre),
@@ -2850,6 +2858,8 @@ func loadReviewCandidates(ctx context.Context, q queryer, groupID int64) ([]revi
 			external_id,
 			name,
 			venue_slug,
+			venue_text,
+			venue_location_raw,
 			start_at,
 			end_at,
 			genre,
@@ -2891,6 +2901,8 @@ func loadReviewCandidate(ctx context.Context, q queryer, groupID, candidateID in
 			external_id,
 			name,
 			venue_slug,
+			venue_text,
+			venue_location_raw,
 			start_at,
 			end_at,
 			genre,
@@ -2934,6 +2946,8 @@ func loadCanonicalSnapshotCandidate(ctx context.Context, q queryer, groupID int6
 			external_id,
 			name,
 			venue_slug,
+			venue_text,
+			venue_location_raw,
 			start_at,
 			end_at,
 			genre,
@@ -2977,6 +2991,8 @@ func scanReviewCandidate(rows *sql.Rows) (review.Candidate, error) {
 		&candidate.ExternalID,
 		&candidate.Name,
 		&candidate.VenueSlug,
+		&candidate.VenueText,
+		&candidate.VenueLocationRaw,
 		&candidate.StartAt,
 		&candidate.EndAt,
 		&candidate.Genre,
