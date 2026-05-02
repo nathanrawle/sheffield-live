@@ -1481,82 +1481,64 @@ func TestResolveReviewGroupUsesAuthoritativeSourceLinkIdentity(t *testing.T) {
 
 func TestResolveReviewGroupRollsBackWhenVenueResolutionFails(t *testing.T) {
 	ctx := context.Background()
-	cases := []struct {
-		name      string
-		venueSlug string
-		venueText string
-		venueRaw  string
-	}{
-		{
-			name:      "ambiguous",
-			venueSlug: "leadmill",
-			venueText: "Sidney & Matilda",
-			venueRaw:  "Sidney & Matilda, 46 Sidney Street, Sheffield",
-		},
-		{
-			name:      "no-match",
-			venueSlug: "imaginary-hall",
-			venueText: "Imaginary Hall",
-			venueRaw:  "Imaginary Hall, 1 Void Street, Sheffield",
-		},
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeVenueCount := mustCount(t, db, "venues")
+	beforeEventCount := mustCount(t, db, "events")
+
+	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Failed venue resolution")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	candidateID := group.Candidates[0].ID
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
+		WHERE id = ?
+	`, "imaginary-hall", "Sidney & Matilda", "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE", candidateID); err != nil {
+		t.Fatalf("rewrite review candidate venue evidence: %v", err)
 	}
 
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "sheffield-live.db")
-			st, err := Open(path)
-			if err != nil {
-				t.Fatalf("open store: %v", err)
-			}
-			defer st.Close()
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err == nil {
+		t.Fatal("expected venue resolution failure")
+	}
 
-			db := mustRawDB(t, path)
-			defer db.Close()
-			beforeEventCount := mustCount(t, db, "events")
+	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
+		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	}
+	if got := mustCount(t, db, "review_draft_choices"); got != 0 {
+		t.Fatalf("review_draft_choices rows = %d, want 0", got)
+	}
+	if _, ok := st.VenueBySlug("imaginary-hall"); ok {
+		t.Fatal("unexpected provisional venue created for ambiguous evidence")
+	}
 
-			groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Failed venue resolution")
-			group, ok, err := st.LoadReviewGroup(ctx, groupID)
-			if err != nil {
-				t.Fatalf("load review group: %v", err)
-			}
-			if !ok {
-				t.Fatal("review group not found")
-			}
-			candidateID := group.Candidates[0].ID
-			if _, err := db.Exec(`
-				UPDATE review_candidates
-				SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
-				WHERE id = ?
-			`, tc.venueSlug, tc.venueText, tc.venueRaw, candidateID); err != nil {
-				t.Fatalf("rewrite review candidate venue evidence: %v", err)
-			}
-
-			if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err == nil {
-				t.Fatal("expected venue resolution failure")
-			}
-
-			if got := mustCount(t, db, "events"); got != beforeEventCount {
-				t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-			}
-			if got := mustCount(t, db, "review_draft_choices"); got != 0 {
-				t.Fatalf("review_draft_choices rows = %d, want 0", got)
-			}
-
-			final, ok, err := st.LoadReviewGroup(ctx, groupID)
-			if err != nil {
-				t.Fatalf("reload review group after failed resolve: %v", err)
-			}
-			if !ok {
-				t.Fatal("review group not found after failed resolve")
-			}
-			if final.Status != review.StatusOpen {
-				t.Fatalf("status = %q, want %q", final.Status, review.StatusOpen)
-			}
-			if len(final.DraftChoices) != 0 {
-				t.Fatalf("draft choices = %d, want 0", len(final.DraftChoices))
-			}
-		})
+	final, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group after failed resolve: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after failed resolve")
+	}
+	if final.Status != review.StatusOpen {
+		t.Fatalf("status = %q, want %q", final.Status, review.StatusOpen)
+	}
+	if len(final.DraftChoices) != 0 {
+		t.Fatalf("draft choices = %d, want 0", len(final.DraftChoices))
 	}
 }
 
@@ -1904,7 +1886,7 @@ func TestResolveReviewGroupIsAtomic(t *testing.T) {
 	}
 }
 
-func TestResolveReviewGroupRollsBackWhenVenueIsMissing(t *testing.T) {
+func TestResolveReviewGroupCreatesProvisionalVenueWhenVenueIsMissing(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -1920,9 +1902,10 @@ func TestResolveReviewGroupRollsBackWhenVenueIsMissing(t *testing.T) {
 
 	db := mustRawDB(t, path)
 	defer db.Close()
+	beforeVenueCount := mustCount(t, db, "venues")
 	beforeEventCount := mustCount(t, db, "events")
 
-	groupID := mustCreatePublishableReviewGroup(t, st, "Missing venue")
+	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Missing venue")
 	group, ok, err := st.LoadReviewGroup(ctx, groupID)
 	if err != nil {
 		t.Fatalf("load review group: %v", err)
@@ -1930,40 +1913,63 @@ func TestResolveReviewGroupRollsBackWhenVenueIsMissing(t *testing.T) {
 	if !ok {
 		t.Fatal("review group not found")
 	}
-	if err := st.SaveReviewDraftChoices(ctx, groupID, []review.DraftChoiceInput{
-		{Field: review.FieldName, CandidateID: group.Candidates[1].ID},
-	}); err != nil {
-		t.Fatalf("save review draft choices: %v", err)
-	}
 	if _, err := db.Exec(`
 		UPDATE review_candidates
-		SET venue_slug = ?
+		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
 		WHERE id = ?
-	`, "missing-venue", group.Candidates[0].ID); err != nil {
-		t.Fatalf("blank venue slug: %v", err)
+	`, "imaginary-hall", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Sheffield", group.Candidates[0].ID); err != nil {
+		t.Fatalf("rewrite venue evidence: %v", err)
 	}
 
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err == nil {
-		t.Fatal("expected missing venue to reject resolve")
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	venue, ok := st.VenueBySlug("imaginary-hall")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if venue.Name != "Imaginary Hall" {
+		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
+	}
+	if venue.Address != "Imaginary Hall, 1 Void Street, Sheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "Imaginary Hall, 1 Void Street, Sheffield")
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
+	}
+	if venue.Origin != domain.OriginLive {
+		t.Fatalf("venue origin = %q, want %q", venue.Origin, domain.OriginLive)
+	}
+
+	event, ok := st.EventBySlug("live-solo-show-imaginary-hall-20260503190000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	if event.VenueSlug != "imaginary-hall" {
+		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "imaginary-hall")
 	}
 
 	after, ok, err := st.LoadReviewGroup(ctx, groupID)
 	if err != nil {
-		t.Fatalf("load review group after failed resolve: %v", err)
+		t.Fatalf("load review group after resolve: %v", err)
 	}
 	if !ok {
-		t.Fatal("review group not found after failed resolve")
+		t.Fatal("review group not found after resolve")
 	}
-	if after.Status != review.StatusOpen {
-		t.Fatalf("status = %q, want %q", after.Status, review.StatusOpen)
+	if after.Status != review.StatusResolved {
+		t.Fatalf("status = %q, want %q", after.Status, review.StatusResolved)
 	}
-	assertDraftChoice(t, after, review.FieldName, group.Candidates[1].ID, "London Show")
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	assertDraftChoice(t, after, review.FieldVenueSlug, group.Candidates[0].ID, "imaginary-hall")
+	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
+		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
 	}
 }
 
-func TestResolveReviewGroupAuthoritativePathRollsBackWhenVenueIsMissing(t *testing.T) {
+func TestResolveReviewGroupAuthoritativePathCreatesProvisionalVenueWhenVenueIsMissing(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -1984,17 +1990,40 @@ func TestResolveReviewGroupAuthoritativePathRollsBackWhenVenueIsMissing(t *testi
 
 	db := mustRawDB(t, path)
 	defer db.Close()
+	beforeVenueCount := mustCount(t, db, "venues")
 	if _, err := db.Exec(`
 		UPDATE review_candidates
-		SET venue_slug = ?
+		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
 		WHERE group_id = ?
-	`, "missing-venue", groupID); err != nil {
+	`, "imaginary-hall", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Sheffield", groupID); err != nil {
 		t.Fatalf("set missing venue: %v", err)
 	}
 	beforeEventCount := mustCount(t, db, "events")
 
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err == nil {
-		t.Fatal("expected missing venue to reject authoritative resolve")
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve authoritative review group: %v", err)
+	}
+
+	venue, ok := st.VenueBySlug("imaginary-hall")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
+	}
+
+	event, ok := st.EventBySlug("live-utc-show-imaginary-hall-20260501190000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	if event.VenueSlug != "imaginary-hall" {
+		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "imaginary-hall")
+	}
+	if event.SourceName != "Sidney & Matilda manual ingest" {
+		t.Fatalf("event source name = %q, want %q", event.SourceName, "Sidney & Matilda manual ingest")
+	}
+	if event.SourceURL != "https://calendar.example.test/live.ics" {
+		t.Fatalf("event source url = %q, want %q", event.SourceURL, "https://calendar.example.test/live.ics")
 	}
 
 	after, ok, err := st.LoadReviewGroup(ctx, groupID)
@@ -2002,19 +2031,23 @@ func TestResolveReviewGroupAuthoritativePathRollsBackWhenVenueIsMissing(t *testi
 		t.Fatalf("reload review group: %v", err)
 	}
 	if !ok {
-		t.Fatal("review group not found after failed resolve")
+		t.Fatal("review group not found after resolve")
 	}
-	if after.Status != review.StatusOpen {
-		t.Fatalf("status = %q, want %q", after.Status, review.StatusOpen)
+	if after.Status != review.StatusResolved {
+		t.Fatalf("status = %q, want %q", after.Status, review.StatusResolved)
 	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	assertDraftChoice(t, after, review.FieldVenueSlug, group.Candidates[0].ID, "imaginary-hall")
+	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
+		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
 	}
-	if got := mustCount(t, db, "event_source_links"); got != 0 {
-		t.Fatalf("event_source_links rows = %d, want 0", got)
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
 	}
-	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
-		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
+	if got := mustCount(t, db, "event_source_links"); got != 1 {
+		t.Fatalf("event_source_links rows = %d, want 1", got)
+	}
+	if got := mustCount(t, db, "event_secondary_source_info"); got != 2 {
+		t.Fatalf("event_secondary_source_info rows = %d, want 2", got)
 	}
 }
 
