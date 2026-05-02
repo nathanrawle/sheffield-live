@@ -304,6 +304,27 @@ func TestSQLiteAdminVenuesEmptyState(t *testing.T) {
 	assertContains(t, body, `href="/admin/review"`)
 }
 
+func TestAdminVenuePagesMissingWithoutAdminStores(t *testing.T) {
+	server, err := NewServer(testServerDeps(store.NewSeedStore()))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	tests := []string{
+		"/admin/venues",
+		"/admin/venues/imaginary-hall",
+	}
+	for _, path := range tests {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want %d", path, rr.Code, http.StatusNotFound)
+		}
+		assertContains(t, rr.Body.String(), "404 page not found")
+	}
+}
+
 func TestSQLiteAdminVenuesListOnlyProvisionalVenues(t *testing.T) {
 	st, server, path := mustAdminVenuesServer(t)
 	defer st.Close()
@@ -347,6 +368,20 @@ func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T
 	assertNotContains(t, body, "Past Show")
 }
 
+func TestSQLiteAdminVenueDetailValidatedSlugReturnsNotFound(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/venues/validated-room", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+	assertContains(t, rr.Body.String(), "404 page not found")
+}
+
 func TestSQLiteAdminVenueDetailUnknownSlugReturnsNotFound(t *testing.T) {
 	st, server, path := mustAdminVenuesServer(t)
 	defer st.Close()
@@ -359,6 +394,26 @@ func TestSQLiteAdminVenueDetailUnknownSlugReturnsNotFound(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
 	}
 	assertContains(t, rr.Body.String(), "404 page not found")
+}
+
+func TestSQLiteAdminVenuePagesRejectPost(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	tests := []string{
+		"/admin/venues",
+		"/admin/venues/imaginary-hall",
+	}
+	for _, path := range tests {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s status = %d, want %d; body %q", path, rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
+		}
+		assertContains(t, rr.Body.String(), "method not allowed")
+	}
 }
 
 func TestAdminPagesLinkToProvisionalVenues(t *testing.T) {
@@ -378,6 +433,19 @@ func TestAdminPagesLinkToProvisionalVenues(t *testing.T) {
 
 	importRunDetailBody := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
 	assertContains(t, importRunDetailBody, `href="/admin/venues"`)
+}
+
+func TestAdminImportRunDetailReplayOnlyShowsProvisionalVenuesLink(t *testing.T) {
+	server, err := NewServer(testServerDeps(replayOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/import-runs/1")
+	assertContains(t, body, "Import run #1")
+	assertContains(t, body, `href="/admin/venues"`)
+	assertNotContains(t, body, `href="/admin/review"`)
+	assertNotContains(t, body, `href="/admin/import-runs"`)
 }
 
 func TestSQLiteAdminImportRunDetailInvalidAndMissingIDs(t *testing.T) {
@@ -962,6 +1030,7 @@ func TestSQLiteAdminReviewHistoryListsClosedGroupsNewestFirst(t *testing.T) {
 	body := renderPath(t, server, "/admin/review/history")
 	assertContains(t, body, "Review history")
 	assertContains(t, body, `href="/admin/review"`)
+	assertContains(t, body, `href="/admin/venues"`)
 	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(rejectedID)+`"`)
 	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(resolvedID)+`"`)
 	assertContains(t, body, "rejected")
@@ -2655,6 +2724,10 @@ type importHistoryWithDetailNoReviewStoreStub struct {
 	importHistoryOnlyStoreStub
 }
 
+type replayOnlyStoreStub struct {
+	readOnlyStoreStub
+}
+
 type failingReadyChecker struct{}
 
 func (failingReadyChecker) Ready(context.Context) error {
@@ -2679,6 +2752,15 @@ func (importHistoryWithDetailNoReviewStoreStub) ListReviewGroupsForImportRun(con
 			CandidateCount: 1,
 			UpdatedAt:      time.Date(2026, time.April, 20, 10, 1, 0, 0, time.UTC),
 		},
+	}, nil
+}
+
+func (replayOnlyStoreStub) LoadImportRun(context.Context, int64) (ingest.ReplayRun, error) {
+	return ingest.ReplayRun{
+		ID:        1,
+		StartedAt: time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
+		Status:    "succeeded",
+		Notes:     "fixture",
 	}, nil
 }
 
