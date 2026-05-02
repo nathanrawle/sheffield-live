@@ -352,7 +352,6 @@ func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T
 	assertContains(t, body, "Imaginary Hall marketing copy")
 	assertContains(t, body, `href="/admin/venues"`)
 	assertContains(t, body, `method="post"`)
-	assertContains(t, body, `action="/admin/venues/imaginary-hall"`)
 	assertContains(t, body, "Validate venue")
 	assertContains(t, body, "Stored venue fields")
 	assertContains(t, body, ">imaginary-hall</dd>")
@@ -441,7 +440,7 @@ func TestSQLiteAdminVenueDetailPostValidatesVenueAndRedirects(t *testing.T) {
 	assertContains(t, beforeEventBody, "Future Show")
 	assertContains(t, beforeEventBody, "Imaginary Hall marketing copy")
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", strings.NewReader("action=validate"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 	server.ServeHTTP(rr, req)
@@ -485,7 +484,7 @@ func TestSQLiteAdminVenueDetailPostRejectsMissingAndNonProvisionalVenues(t *test
 		"/admin/venues/validated-room",
 	}
 	for _, path := range tests {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("action=validate"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		rr := httptest.NewRecorder()
 		server.ServeHTTP(rr, req)

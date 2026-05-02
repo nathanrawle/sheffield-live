@@ -324,6 +324,68 @@ func TestOpenMigratesVersion12DatabaseAddsReviewCandidateVenueEvidence(t *testin
 	}
 }
 
+func TestValidateVenueMarksProvisionalVenueValidated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	if _, err := db.Exec(`
+		INSERT INTO venues (
+			slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "provisional-room", "Provisional Room", "1 Test Street, Sheffield", "Centre", "Fixture provisional venue", "https://example.test/provisional-room", string(domain.ValidationStateProvisional), string(domain.CoverageKindVenue), "", string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert provisional venue: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	if err := st.ValidateVenue(context.Background(), "provisional-room"); err != nil {
+		t.Fatalf("validate venue: %v", err)
+	}
+
+	venue, ok, err := st.LoadVenueBySlug(context.Background(), "provisional-room")
+	if err != nil {
+		t.Fatalf("load venue: %v", err)
+	}
+	if !ok {
+		t.Fatal("validated venue not found")
+	}
+	if venue.ValidationState != domain.ValidationStateValidated {
+		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateValidated)
+	}
+}
+
+func TestValidateVenueRejectsMissingAndNonProvisionalVenues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if err := st.ValidateVenue(context.Background(), "missing-room"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("validate missing venue error = %v, want not found", err)
+	}
+	if err := st.ValidateVenue(context.Background(), "leadmill"); err == nil || !strings.Contains(err.Error(), "not provisional") {
+		t.Fatalf("validate validated venue error = %v, want not provisional", err)
+	}
+}
+
 func TestOpenMigratesVersion1Database(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 

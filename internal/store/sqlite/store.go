@@ -224,6 +224,43 @@ func (s *Store) LoadVenueBySlug(ctx context.Context, slug string) (domain.Venue,
 	return loadVenueBySlug(ctx, s.db, slug)
 }
 
+func (s *Store) ValidateVenue(ctx context.Context, slug string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return errors.New("venue slug is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	venue, ok, err := loadVenueBySlug(ctx, tx, slug)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("venue %q not found", slug)
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		return fmt.Errorf("venue %q is not provisional", slug)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE venues
+		SET validation_state = ?
+		WHERE slug = ?
+	`, string(domain.ValidationStateValidated), slug); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) EventBySlug(slug string) (domain.Event, bool) {
 	event, ok, _ := s.LoadEventBySlug(context.Background(), slug)
 	return event, ok

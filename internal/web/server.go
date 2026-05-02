@@ -54,6 +54,10 @@ type ReviewStore interface {
 	UpdateReviewGroupStatus(ctx context.Context, groupID int64, status string) error
 }
 
+type VenueAdminStore interface {
+	ValidateVenue(ctx context.Context, slug string) error
+}
+
 const adminReviewHistoryLimit = 50
 
 type ImportRunReviewGroupStore interface {
@@ -112,6 +116,7 @@ type PageData struct {
 	HasImportRunReviewGroups bool
 	HasReviewStorage         bool
 	HasVenueAdmin            bool
+	HasVenueValidation       bool
 	Flash                    string
 }
 
@@ -374,6 +379,13 @@ func (s *Server) hasVenueAdmin() bool {
 	return s.reviewStore != nil || s.importRunStore != nil || s.replayStore != nil
 }
 
+func (s *Server) venueAdminStore() VenueAdminStore {
+	if store, ok := s.catalog.(VenueAdminStore); ok {
+		return store
+	}
+	return nil
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cleaned := path.Clean(r.URL.Path)
 	switch {
@@ -448,6 +460,7 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
 		HasVenueAdmin:      s.hasVenueAdmin(),
+		HasVenueValidation: s.venueAdminStore() != nil,
 		Flash:              flash,
 	}
 	if s.importRunStore != nil {
@@ -481,6 +494,10 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.now()
+	flash := ""
+	if r.URL.Query().Get("validated") == "1" {
+		flash = "Venue validated."
+	}
 	data := PageData{
 		SiteName:           "Sheffield Live",
 		PageTitle:          "Provisional venues",
@@ -490,6 +507,8 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
 		HasVenueAdmin:      s.hasVenueAdmin(),
+		HasVenueValidation: s.venueAdminStore() != nil,
+		Flash:              flash,
 		ProvisionalVenues: buildProvisionalVenueRows(
 			venues,
 			events,
@@ -525,6 +544,7 @@ func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
 		HasVenueAdmin:      s.hasVenueAdmin(),
+		HasVenueValidation: s.venueAdminStore() != nil,
 	}
 	s.renderPage(w, "templates/admin_review_history.html", data)
 }
@@ -539,7 +559,12 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		s.postAdminVenueDecision(w, r, slug)
+		return
+	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -567,15 +592,16 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 		pageTitle = "Provisional venue"
 	}
 	data := PageData{
-		SiteName:         "Sheffield Live",
-		PageTitle:        pageTitle,
-		MetaDescription:  venue.Description,
-		Now:              s.now(),
-		Venue:            venue,
-		VenueEvents:      sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
-		HasImportHistory: s.importRunStore != nil,
-		HasReviewStorage: s.reviewStore != nil,
-		HasVenueAdmin:    s.hasVenueAdmin(),
+		SiteName:           "Sheffield Live",
+		PageTitle:          pageTitle,
+		MetaDescription:    venue.Description,
+		Now:                s.now(),
+		Venue:              venue,
+		VenueEvents:        sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
+		HasImportHistory:   s.importRunStore != nil,
+		HasReviewStorage:   s.reviewStore != nil,
+		HasVenueAdmin:      s.hasVenueAdmin(),
+		HasVenueValidation: s.venueAdminStore() != nil,
 	}
 	s.renderPage(w, "templates/admin_venue_detail.html", data)
 }
@@ -609,6 +635,7 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		HasImportRunReviewGroups: s.importRunReviewGroupStore != nil,
 		HasReviewStorage:         s.reviewStore != nil,
 		HasVenueAdmin:            s.hasVenueAdmin(),
+		HasVenueValidation:       s.venueAdminStore() != nil,
 	}
 	s.renderPage(w, "templates/admin_import_runs.html", data)
 }
@@ -657,8 +684,45 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
 		HasVenueAdmin:      s.hasVenueAdmin(),
+		HasVenueValidation: s.venueAdminStore() != nil,
 	}
 	s.renderPage(w, "templates/admin_import_run_detail.html", data)
+}
+
+func (s *Server) postAdminVenueDecision(w http.ResponseWriter, r *http.Request, slug string) {
+	adminStore := s.venueAdminStore()
+	if adminStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	action := strings.TrimSpace(r.FormValue("action"))
+	if action != "validate" {
+		http.Error(w, "invalid venue action", http.StatusBadRequest)
+		return
+	}
+	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "load venue", http.StatusInternalServerError)
+		return
+	}
+	if !ok || venue.ValidationState != domain.ValidationStateProvisional {
+		http.NotFound(w, r)
+		return
+	}
+	if err := adminStore.ValidateVenue(r.Context(), slug); err != nil {
+		lower := strings.ToLower(err.Error())
+		if strings.Contains(lower, "not found") || strings.Contains(lower, "not provisional") {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "validate venue", http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/admin/venues?validated=1", http.StatusSeeOther)
 }
 
 func (s *Server) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request, rawGroupID string) {
@@ -871,6 +935,7 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
 		HasVenueAdmin:      s.hasVenueAdmin(),
+		HasVenueValidation: s.venueAdminStore() != nil,
 		Flash:              flash,
 	}
 	data.ReviewDetail = buildReviewDetail(group)

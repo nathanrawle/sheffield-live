@@ -38,14 +38,15 @@ Routes:
 - `GET /admin/review/{groupID}` review detail
 - `GET /admin/import-runs` read-only import history
 - `GET /admin/import-runs/{id}` read-only import run snapshot metadata
-- `GET /admin/venues` read-only provisional venue queue
-- `GET /admin/venues/{slug}` read-only provisional venue detail
+- `GET /admin/venues` provisional venue queue
+- `GET /admin/venues/{slug}` provisional venue detail
+- `POST /admin/venues/{slug}` validate a provisional venue
 - `POST /admin/review/{groupID}` review actions
 - `GET /healthz` plain-text health check
 - `GET /readyz` plain-text readiness check backed by a cheap store probe
 - `GET /static/site.css` embedded stylesheet
 
-The provisional venue queue is read-only. It lists provisional venue rows created during manual review resolution, and detail pages show stored venue fields plus upcoming linked events.
+The provisional venue queue lists provisional venue rows created during manual review resolution. Detail pages show stored venue fields plus upcoming linked events and support a validate action that flips the venue to `validated` and redirects back to the queue.
 
 `/events` query parameters:
 

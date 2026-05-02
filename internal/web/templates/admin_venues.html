@@ -11,6 +11,12 @@
   {{end}}
 </section>
 
+{{with .Flash}}
+<section class="section-block">
+  <p class="notice">{{.}}</p>
+</section>
+{{end}}
+
 <section class="section-block">
   {{if .ProvisionalVenues}}
   <div class="import-run-table-wrap">

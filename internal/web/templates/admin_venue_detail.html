@@ -10,6 +10,15 @@
   </p>
 </section>
 
+{{if .HasVenueValidation}}
+<section class="section-block">
+  <form method="post" class="review-actions">
+    <input type="hidden" name="action" value="validate">
+    <button type="submit">Validate venue</button>
+  </form>
+</section>
+{{end}}
+
 <section class="section-block">
   <h2>Stored venue fields</h2>
   <dl class="import-run-summary">
