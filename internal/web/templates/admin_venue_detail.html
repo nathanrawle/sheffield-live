@@ -10,6 +10,12 @@
   </p>
 </section>
 
+{{with .Flash}}
+<section class="section-block">
+  <p class="notice">{{.}}</p>
+</section>
+{{end}}
+
 {{if .HasVenueValidation}}
 <section class="section-block">
   <form method="post" class="review-actions">
@@ -18,6 +24,47 @@
   </form>
 </section>
 {{end}}
+
+<section class="section-block">
+  <h2>Edit provisional venue</h2>
+  <form method="post" class="venue-edit-form">
+    <input type="hidden" name="action" value="save">
+    <label>
+      Name
+      <input type="text" name="name" value="{{.Venue.Name}}">
+    </label>
+    <label>
+      Address
+      <input type="text" name="address" value="{{.Venue.Address}}">
+    </label>
+    <label>
+      Neighbourhood
+      <input type="text" name="neighbourhood" value="{{.Venue.Neighbourhood}}">
+    </label>
+    <label>
+      Website
+      <input type="text" name="website" value="{{.Venue.Website}}">
+    </label>
+    <label>
+      Coverage kind
+      <select name="coverage_kind">
+        <option value="venue" {{if eq (printf "%s" .Venue.CoverageKind) "venue"}}selected{{end}}>venue</option>
+        <option value="program" {{if eq (printf "%s" .Venue.CoverageKind) "program"}}selected{{end}}>program</option>
+      </select>
+    </label>
+    <label>
+      Coverage note
+      <textarea name="coverage_note" rows="3">{{.Venue.CoverageNote}}</textarea>
+    </label>
+    <label class="venue-edit-form-full">
+      Description
+      <textarea name="description" rows="5">{{.Venue.Description}}</textarea>
+    </label>
+    <div class="venue-edit-form-actions">
+      <button type="submit" class="primary-button">Save venue fields</button>
+    </div>
+  </form>
+</section>
 
 <section class="section-block">
   <h2>Stored venue fields</h2>

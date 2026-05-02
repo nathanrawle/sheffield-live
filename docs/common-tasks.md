@@ -114,7 +114,7 @@ Open `/admin/review` in the browser.
 - singleton auto-promotion is unchanged and does not yet create provisional venue rows
 - rejecting does not publish
 - open `/admin/venues` to inspect provisional venue rows created during manual review resolution
-- open `/admin/venues/{slug}` to inspect one provisional venue's stored fields and upcoming linked events
-- use the validate action on `/admin/venues/{slug}` to mark one provisional venue validated and remove it from the queue
-- the provisional venue queue does not yet support venue field edits or merge actions
+- open `/admin/venues/{slug}` to edit one provisional venue's fields and inspect its upcoming linked events
+- save the provisional venue fields in place, then use the separate validate action to mark the venue validated and remove it from the queue
+- the provisional venue queue still does not support venue merge actions
 - open `/admin/review/history` for the 50 newest resolved and rejected groups

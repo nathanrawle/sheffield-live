@@ -68,7 +68,7 @@ Raw ingest snapshots, import runs, and review records are stored separately from
 Review persistence also stores canonical snapshot rows alongside staged candidates, persists venue evidence (`venue_text`, `venue_location_raw`), and keeps majority defaults separate from reviewer-edited draft choices.
 Authoritative review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema.
 
-The admin UI exposes read-only review history, import history, provisional venue queue/detail pages, and per-run snapshot metadata when the backing store implements those read paths. The provisional venue queue lists only provisional venues, and detail pages show stored venue fields plus upcoming linked events plus a narrow validate action that flips the venue to `validated`. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
+The admin UI exposes read-only review history, import history, provisional venue queue/detail pages, and per-run snapshot metadata when the backing store implements those read paths. The provisional venue queue lists only provisional venues, and detail pages let admins edit the stored provisional venue fields, inspect upcoming linked events, and trigger a separate validate action that flips the venue to `validated`. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
 When the backing store also exposes secondary-source event info, the public event detail page can render alternate `genre` and `description` values grouped by secondary source without altering the canonical event record.
 
 ## Data Lifecycle
@@ -90,7 +90,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
 - manual review resolution first canonicalizes the selected venue to an existing venue when deterministic evidence matching yields one unique live venue
 - when manual review resolution finds no unique existing venue match, it inserts a `provisional` live venue in the same transaction and publishes the event against that venue
-- admins can later flip a provisional venue to `validated` from the provisional venue detail page without changing linked public events
+- admins can later edit a provisional venue in place and flip it to `validated` from the provisional venue detail page without changing linked public events
 - ambiguous venue evidence fails closed and rolls back the review resolution transaction
 - authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
 - authoritative identity takes precedence over canonical slug attachment when they disagree

@@ -40,13 +40,13 @@ Routes:
 - `GET /admin/import-runs/{id}` read-only import run snapshot metadata
 - `GET /admin/venues` provisional venue queue
 - `GET /admin/venues/{slug}` provisional venue detail
-- `POST /admin/venues/{slug}` validate a provisional venue
+- `POST /admin/venues/{slug}` save provisional venue field edits or validate the venue
 - `POST /admin/review/{groupID}` review actions
 - `GET /healthz` plain-text health check
 - `GET /readyz` plain-text readiness check backed by a cheap store probe
 - `GET /static/site.css` embedded stylesheet
 
-The provisional venue queue lists provisional venue rows created during manual review resolution. Detail pages show stored venue fields plus upcoming linked events and support a validate action that flips the venue to `validated` and redirects back to the queue.
+The provisional venue queue lists provisional venue rows created during manual review resolution. Detail pages show editable venue fields plus upcoming linked events and support two POST actions on the same route: save field edits in place or validate the venue and return to the queue.
 
 `/events` query parameters:
 

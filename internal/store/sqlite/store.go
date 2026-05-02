@@ -261,6 +261,66 @@ func (s *Store) ValidateVenue(ctx context.Context, slug string) error {
 	return tx.Commit()
 }
 
+func (s *Store) UpdateProvisionalVenue(ctx context.Context, input seedstore.VenueUpdateInput) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	input.Slug = strings.TrimSpace(input.Slug)
+	if input.Slug == "" {
+		return errors.New("venue slug is required")
+	}
+	switch input.CoverageKind {
+	case "", domain.CoverageKindVenue:
+		input.CoverageKind = domain.CoverageKindVenue
+	case domain.CoverageKindProgram:
+	default:
+		return fmt.Errorf("invalid coverage kind")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	venue, ok, err := loadVenueBySlug(ctx, tx, input.Slug)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("venue %q not found", input.Slug)
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		return fmt.Errorf("venue %q is not provisional", input.Slug)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE venues
+		SET
+			name = ?,
+			address = ?,
+			neighbourhood = ?,
+			description = ?,
+			website = ?,
+			coverage_kind = ?,
+			coverage_note = ?
+		WHERE slug = ?
+	`,
+		strings.TrimSpace(input.Name),
+		strings.TrimSpace(input.Address),
+		strings.TrimSpace(input.Neighbourhood),
+		strings.TrimSpace(input.Description),
+		strings.TrimSpace(input.Website),
+		string(input.CoverageKind),
+		strings.TrimSpace(input.CoverageNote),
+		input.Slug,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) EventBySlug(slug string) (domain.Event, bool) {
 	event, ok, _ := s.LoadEventBySlug(context.Background(), slug)
 	return event, ok

@@ -386,6 +386,111 @@ func TestValidateVenueRejectsMissingAndNonProvisionalVenues(t *testing.T) {
 	}
 }
 
+func TestUpdateProvisionalVenuePersistsEditedFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	if _, err := db.Exec(`
+		INSERT INTO venues (
+			slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "provisional-room", "Provisional Room", "1 Test Street, Sheffield", "Centre", "Fixture provisional venue", "https://example.test/provisional-room", string(domain.ValidationStateProvisional), string(domain.CoverageKindVenue), "", string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert provisional venue: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	err = st.UpdateProvisionalVenue(context.Background(), seedstore.VenueUpdateInput{
+		Slug:          "provisional-room",
+		Name:          "Updated Room",
+		Address:       "99 Updated Street, Sheffield",
+		Neighbourhood: "Kelham",
+		Description:   "Updated fixture description.",
+		Website:       "https://example.test/updated-room",
+		CoverageKind:  domain.CoverageKindProgram,
+		CoverageNote:  "Programme-only for now.",
+	})
+	if err != nil {
+		t.Fatalf("update provisional venue: %v", err)
+	}
+
+	venue, ok, err := st.LoadVenueBySlug(context.Background(), "provisional-room")
+	if err != nil {
+		t.Fatalf("load venue: %v", err)
+	}
+	if !ok {
+		t.Fatal("updated venue not found")
+	}
+	if venue.Name != "Updated Room" {
+		t.Fatalf("venue name = %q, want %q", venue.Name, "Updated Room")
+	}
+	if venue.Address != "99 Updated Street, Sheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "99 Updated Street, Sheffield")
+	}
+	if venue.Neighbourhood != "Kelham" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Kelham")
+	}
+	if venue.Description != "Updated fixture description." {
+		t.Fatalf("venue description = %q, want %q", venue.Description, "Updated fixture description.")
+	}
+	if venue.Website != "https://example.test/updated-room" {
+		t.Fatalf("venue website = %q, want %q", venue.Website, "https://example.test/updated-room")
+	}
+	if venue.CoverageKind != domain.CoverageKindProgram {
+		t.Fatalf("venue coverage kind = %q, want %q", venue.CoverageKind, domain.CoverageKindProgram)
+	}
+	if venue.CoverageNote != "Programme-only for now." {
+		t.Fatalf("venue coverage note = %q, want %q", venue.CoverageNote, "Programme-only for now.")
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
+	}
+}
+
+func TestUpdateProvisionalVenueRejectsMissingNonProvisionalAndInvalidCoverageKind(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if err := st.UpdateProvisionalVenue(context.Background(), seedstore.VenueUpdateInput{
+		Slug:         "missing-room",
+		CoverageKind: domain.CoverageKindVenue,
+	}); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("update missing venue error = %v, want not found", err)
+	}
+	if err := st.UpdateProvisionalVenue(context.Background(), seedstore.VenueUpdateInput{
+		Slug:         "leadmill",
+		CoverageKind: domain.CoverageKindVenue,
+	}); err == nil || !strings.Contains(err.Error(), "not provisional") {
+		t.Fatalf("update validated venue error = %v, want not provisional", err)
+	}
+	if err := st.UpdateProvisionalVenue(context.Background(), seedstore.VenueUpdateInput{
+		Slug:         "leadmill",
+		CoverageKind: domain.CoverageKind("sideways"),
+	}); err == nil || !strings.Contains(err.Error(), "invalid coverage kind") {
+		t.Fatalf("update invalid coverage kind error = %v, want invalid coverage kind", err)
+	}
+}
+
 func TestOpenMigratesVersion1Database(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 

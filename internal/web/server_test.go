@@ -351,6 +351,13 @@ func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T
 	body := renderPath(t, server, "/admin/venues/imaginary-hall")
 	assertContains(t, body, "Imaginary Hall marketing copy")
 	assertContains(t, body, `href="/admin/venues"`)
+	assertContains(t, body, `name="action" value="save"`)
+	assertContains(t, body, `name="name" value="Imaginary Hall marketing copy"`)
+	assertContains(t, body, `name="address" value="1 Void Street, Sheffield"`)
+	assertContains(t, body, `name="neighbourhood" value="City Centre"`)
+	assertContains(t, body, `name="website" value="https://example.test/imaginary-hall"`)
+	assertContains(t, body, `name="coverage_kind"`)
+	assertContains(t, body, `name="coverage_note"`)
 	assertContains(t, body, `method="post"`)
 	assertContains(t, body, "Validate venue")
 	assertContains(t, body, "Stored venue fields")
@@ -474,6 +481,71 @@ func TestSQLiteAdminVenueDetailPostValidatesVenueAndRedirects(t *testing.T) {
 	assertContains(t, afterEventBody, "Imaginary Hall marketing copy")
 }
 
+func TestSQLiteAdminVenueDetailPostSavesEditedFields(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	form := strings.NewReader(url.Values{
+		"action":        {"save"},
+		"name":          {"Imaginary Hall"},
+		"address":       {"99 Updated Street, Sheffield"},
+		"neighbourhood": {"Kelham"},
+		"description":   {"Updated venue description."},
+		"website":       {"https://example.test/imaginary-hall-updated"},
+		"coverage_kind": {"program"},
+		"coverage_note": {"Programme-only while listings settle."},
+	}.Encode())
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/venues/imaginary-hall?saved=1" {
+		t.Fatalf("Location = %q, want %q", location, "/admin/venues/imaginary-hall?saved=1")
+	}
+
+	venue, ok, err := st.LoadVenueBySlug(contextForTesting(), "imaginary-hall")
+	if err != nil {
+		t.Fatalf("load venue: %v", err)
+	}
+	if !ok {
+		t.Fatal("saved venue not found")
+	}
+	if venue.Name != "Imaginary Hall" {
+		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
+	}
+	if venue.Address != "99 Updated Street, Sheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "99 Updated Street, Sheffield")
+	}
+	if venue.Neighbourhood != "Kelham" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Kelham")
+	}
+	if venue.Description != "Updated venue description." {
+		t.Fatalf("venue description = %q, want %q", venue.Description, "Updated venue description.")
+	}
+	if venue.Website != "https://example.test/imaginary-hall-updated" {
+		t.Fatalf("venue website = %q, want %q", venue.Website, "https://example.test/imaginary-hall-updated")
+	}
+	if venue.CoverageKind != domain.CoverageKindProgram {
+		t.Fatalf("venue coverage kind = %q, want %q", venue.CoverageKind, domain.CoverageKindProgram)
+	}
+	if venue.CoverageNote != "Programme-only while listings settle." {
+		t.Fatalf("venue coverage note = %q, want %q", venue.CoverageNote, "Programme-only while listings settle.")
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
+	}
+
+	body := renderPath(t, server, "/admin/venues/imaginary-hall?saved=1")
+	assertContains(t, body, "Venue saved.")
+	assertContains(t, body, `name="name" value="Imaginary Hall"`)
+	assertContains(t, body, "99 Updated Street, Sheffield")
+	assertContains(t, body, "Programme-only while listings settle.")
+}
+
 func TestSQLiteAdminVenueDetailPostRejectsMissingAndNonProvisionalVenues(t *testing.T) {
 	st, server, path := mustAdminVenuesServer(t)
 	defer st.Close()
@@ -493,6 +565,21 @@ func TestSQLiteAdminVenueDetailPostRejectsMissingAndNonProvisionalVenues(t *test
 		}
 		assertContains(t, rr.Body.String(), "404 page not found")
 	}
+}
+
+func TestSQLiteAdminVenueDetailPostRejectsInvalidCoverageKind(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", strings.NewReader("action=save&coverage_kind=sideways"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "invalid coverage kind")
 }
 
 func TestAdminPagesLinkToProvisionalVenues(t *testing.T) {

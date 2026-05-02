@@ -56,6 +56,7 @@ type ReviewStore interface {
 
 type VenueAdminStore interface {
 	ValidateVenue(ctx context.Context, slug string) error
+	UpdateProvisionalVenue(ctx context.Context, input store.VenueUpdateInput) error
 }
 
 const adminReviewHistoryLimit = 50
@@ -591,6 +592,10 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 	if pageTitle == "" {
 		pageTitle = "Provisional venue"
 	}
+	flash := ""
+	if r.URL.Query().Get("saved") == "1" {
+		flash = "Venue saved."
+	}
 	data := PageData{
 		SiteName:           "Sheffield Live",
 		PageTitle:          pageTitle,
@@ -602,6 +607,7 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 		HasReviewStorage:   s.reviewStore != nil,
 		HasVenueAdmin:      s.hasVenueAdmin(),
 		HasVenueValidation: s.venueAdminStore() != nil,
+		Flash:              flash,
 	}
 	s.renderPage(w, "templates/admin_venue_detail.html", data)
 }
@@ -700,10 +706,6 @@ func (s *Server) postAdminVenueDecision(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	action := strings.TrimSpace(r.FormValue("action"))
-	if action != "validate" {
-		http.Error(w, "invalid venue action", http.StatusBadRequest)
-		return
-	}
 	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), slug)
 	if err != nil {
 		http.Error(w, "load venue", http.StatusInternalServerError)
@@ -713,16 +715,61 @@ func (s *Server) postAdminVenueDecision(w http.ResponseWriter, r *http.Request, 
 		http.NotFound(w, r)
 		return
 	}
-	if err := adminStore.ValidateVenue(r.Context(), slug); err != nil {
-		lower := strings.ToLower(err.Error())
-		if strings.Contains(lower, "not found") || strings.Contains(lower, "not provisional") {
-			http.NotFound(w, r)
+	switch action {
+	case "validate":
+		if err := adminStore.ValidateVenue(r.Context(), slug); err != nil {
+			lower := strings.ToLower(err.Error())
+			if strings.Contains(lower, "not found") || strings.Contains(lower, "not provisional") {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, "validate venue", http.StatusBadRequest)
 			return
 		}
-		http.Error(w, "validate venue", http.StatusBadRequest)
-		return
+		http.Redirect(w, r, "/admin/venues?validated=1", http.StatusSeeOther)
+	case "save":
+		input, err := provisionalVenueUpdateFromForm(slug, r.Form)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := adminStore.UpdateProvisionalVenue(r.Context(), input); err != nil {
+			lower := strings.ToLower(err.Error())
+			if strings.Contains(lower, "not found") || strings.Contains(lower, "not provisional") {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/admin/venues/%s?saved=1", slug), http.StatusSeeOther)
+	default:
+		http.Error(w, "invalid venue action", http.StatusBadRequest)
 	}
-	http.Redirect(w, r, "/admin/venues?validated=1", http.StatusSeeOther)
+}
+
+func provisionalVenueUpdateFromForm(slug string, form url.Values) (store.VenueUpdateInput, error) {
+	input := store.VenueUpdateInput{
+		Slug:          strings.TrimSpace(slug),
+		Name:          strings.TrimSpace(form.Get("name")),
+		Address:       strings.TrimSpace(form.Get("address")),
+		Neighbourhood: strings.TrimSpace(form.Get("neighbourhood")),
+		Description:   strings.TrimSpace(form.Get("description")),
+		Website:       strings.TrimSpace(form.Get("website")),
+		CoverageNote:  strings.TrimSpace(form.Get("coverage_note")),
+	}
+	switch strings.TrimSpace(form.Get("coverage_kind")) {
+	case "", string(domain.CoverageKindVenue):
+		input.CoverageKind = domain.CoverageKindVenue
+	case string(domain.CoverageKindProgram):
+		input.CoverageKind = domain.CoverageKindProgram
+	default:
+		return store.VenueUpdateInput{}, fmt.Errorf("invalid coverage kind")
+	}
+	if input.Slug == "" {
+		return store.VenueUpdateInput{}, fmt.Errorf("venue slug is required")
+	}
+	return input, nil
 }
 
 func (s *Server) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request, rawGroupID string) {
