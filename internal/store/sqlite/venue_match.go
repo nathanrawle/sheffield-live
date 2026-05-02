@@ -194,14 +194,14 @@ func provisionalVenueFromCandidate(candidate review.Candidate) (domain.Venue, er
 }
 
 func provisionalVenueSlug(candidate review.Candidate) string {
-	if slug := strings.TrimSpace(candidate.VenueSlug); slug != "" {
-		return slug
-	}
 	if slug := normalizedVenueKey(candidate.VenueText); slug != "" {
 		return slug
 	}
 	if probes := venueLocationSlugProbes(candidate.VenueLocationRaw); len(probes) > 0 {
 		return probes[0]
+	}
+	if slug := strings.TrimSpace(candidate.VenueSlug); slug != "" {
+		return slug
 	}
 	return ""
 }
