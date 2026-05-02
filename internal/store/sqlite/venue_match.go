@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"sheffield-live/internal/domain"
@@ -134,6 +135,27 @@ func loadReviewGroupSharedVenue(ctx context.Context, q queryer, matcher venueMat
 	return matcher.matchSharedVenue(candidates), nil
 }
 
+func resolveReviewVenueTx(ctx context.Context, tx execer, matcher venueMatcher, candidate review.Candidate) (string, error) {
+	match := matcher.matchCandidate(candidate)
+	switch match.status {
+	case venueMatchResolved:
+		return match.slug, nil
+	case venueMatchAmbiguous:
+		return "", fmt.Errorf("venue %q not found", candidate.VenueSlug)
+	case venueMatchNoMatch:
+		venue, err := provisionalVenueFromCandidate(candidate)
+		if err != nil {
+			return "", err
+		}
+		if _, err := insertVenue(ctx, tx, venue); err != nil {
+			return "", err
+		}
+		return venue.Slug, nil
+	default:
+		return "", fmt.Errorf("venue %q not found", candidate.VenueSlug)
+	}
+}
+
 func normalizedVenueKey(value string) string {
 	return strings.TrimSpace(ingest.VenueSlugFromText(value))
 }
@@ -155,4 +177,69 @@ func venueLocationSlugProbes(value string) []string {
 		}
 	}
 	return probes
+}
+
+func provisionalVenueFromCandidate(candidate review.Candidate) (domain.Venue, error) {
+	slug := provisionalVenueSlug(candidate)
+	if slug == "" {
+		return domain.Venue{}, fmt.Errorf("review venue slug is required")
+	}
+	return domain.Venue{
+		Slug:            slug,
+		Name:            provisionalVenueName(candidate, slug),
+		Address:         strings.TrimSpace(candidate.VenueLocationRaw),
+		ValidationState: domain.ValidationStateProvisional,
+		Origin:          domain.OriginLive,
+	}, nil
+}
+
+func provisionalVenueSlug(candidate review.Candidate) string {
+	if slug := strings.TrimSpace(candidate.VenueSlug); slug != "" {
+		return slug
+	}
+	if slug := normalizedVenueKey(candidate.VenueText); slug != "" {
+		return slug
+	}
+	if probes := venueLocationSlugProbes(candidate.VenueLocationRaw); len(probes) > 0 {
+		return probes[0]
+	}
+	return ""
+}
+
+func provisionalVenueName(candidate review.Candidate, slug string) string {
+	if name := strings.TrimSpace(candidate.VenueText); name != "" {
+		return name
+	}
+	if raw := strings.TrimSpace(candidate.VenueLocationRaw); raw != "" {
+		if head, _, ok := strings.Cut(raw, ","); ok {
+			if head = strings.TrimSpace(head); head != "" {
+				return head
+			}
+		}
+		return raw
+	}
+	if name := displayNameFromSlug(slug); name != "" {
+		return name
+	}
+	return slug
+}
+
+func displayNameFromSlug(slug string) string {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return ""
+	}
+	parts := strings.FieldsFunc(slug, func(r rune) bool {
+		return r == '-' || r == '_' || r == ' '
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + strings.ToLower(part[1:])
+	}
+	return strings.Join(parts, " ")
 }

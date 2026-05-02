@@ -2056,14 +2056,12 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	}
 
 	if venueCandidate, ok := selectedCandidates[review.FieldVenueSlug]; ok {
-		match := matcher.matchCandidate(venueCandidate)
-		switch match.status {
-		case venueMatchResolved:
-			venueCandidate.VenueSlug = match.slug
-			selectedCandidates[review.FieldVenueSlug] = venueCandidate
-		case venueMatchNoMatch, venueMatchAmbiguous:
-			return fmt.Errorf("venue %q not found", venueCandidate.VenueSlug)
+		resolvedSlug, err := resolveReviewVenueTx(ctx, tx, matcher, venueCandidate)
+		if err != nil {
+			return err
 		}
+		venueCandidate.VenueSlug = resolvedSlug
+		selectedCandidates[review.FieldVenueSlug] = venueCandidate
 	}
 
 	for _, choice := range choices {
