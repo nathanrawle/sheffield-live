@@ -119,6 +119,85 @@ func TestReviewGroupDraftRoundTripDoesNotPublishEvents(t *testing.T) {
 	}
 }
 
+func TestReviewGroupSharedVenueSummaryUsesResolvedIdentity(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	input := review.GroupInput{
+		Title:      "Shared venue summary",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:shared-venue.ics",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID: "candidate-a",
+				Name:       "Candidate A",
+				VenueSlug:  "leadmill-temp-a",
+				VenueText:  "The Leadmill",
+				StartAt:    "2026-05-01T19:00:00Z",
+				SourceName: "Fixture ICS",
+				SourceURL:  "file:a.ics",
+				Provenance: "fixture UID candidate-a",
+			},
+			{
+				ExternalID:       "candidate-b",
+				Name:             "Candidate B",
+				VenueSlug:        "leadmill-temp-b",
+				VenueLocationRaw: "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
+				StartAt:          "2026-05-01T19:00:00Z",
+				SourceName:       "Fixture ICS",
+				SourceURL:        "file:b.ics",
+				Provenance:       "fixture UID candidate-b",
+			},
+		},
+	}
+
+	groupID, err := st.CreateReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if got, want := group.SharedVenueSlug, "leadmill"; got != want {
+		t.Fatalf("shared venue slug = %q, want %q", got, want)
+	}
+	if got, want := group.SharedVenueName, "The Leadmill"; got != want {
+		t.Fatalf("shared venue name = %q, want %q", got, want)
+	}
+
+	summaries, err := st.ListOpenReviewGroups(ctx)
+	if err != nil {
+		t.Fatalf("list open review groups: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("open review groups = %d, want 1", len(summaries))
+	}
+	if got, want := summaries[0].ID, groupID; got != want {
+		t.Fatalf("summary id = %d, want %d", got, want)
+	}
+	if got, want := summaries[0].SharedVenueSlug, "leadmill"; got != want {
+		t.Fatalf("summary shared venue slug = %q, want %q", got, want)
+	}
+	if got, want := summaries[0].SharedVenueName, "The Leadmill"; got != want {
+		t.Fatalf("summary shared venue name = %q, want %q", got, want)
+	}
+}
+
 func TestCreateReviewGroupDefaultsBlankCandidateSourceFieldsAndPreservesProvenance(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")

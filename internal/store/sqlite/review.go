@@ -1666,6 +1666,23 @@ func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	matcher, err := loadVenueMatcher(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+	for i := range groups {
+		sharedVenue, err := loadReviewGroupSharedVenue(ctx, s.db, matcher, groups[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if sharedVenue.status == venueMatchResolved {
+			groups[i].SharedVenueSlug = sharedVenue.slug
+			groups[i].SharedVenueName = sharedVenue.name
+		} else {
+			groups[i].SharedVenueSlug = ""
+			groups[i].SharedVenueName = ""
+		}
+	}
 	return groups, nil
 }
 
@@ -1742,6 +1759,23 @@ func (s *Store) ListClosedReviewGroups(ctx context.Context, limit int) ([]review
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	matcher, err := loadVenueMatcher(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+	for i := range groups {
+		sharedVenue, err := loadReviewGroupSharedVenue(ctx, s.db, matcher, groups[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if sharedVenue.status == venueMatchResolved {
+			groups[i].SharedVenueSlug = sharedVenue.slug
+			groups[i].SharedVenueName = sharedVenue.name
+		} else {
+			groups[i].SharedVenueSlug = ""
+			groups[i].SharedVenueName = ""
+		}
 	}
 	return groups, nil
 }
@@ -1822,6 +1856,23 @@ func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID in
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	matcher, err := loadVenueMatcher(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+	for i := range groups {
+		sharedVenue, err := loadReviewGroupSharedVenue(ctx, s.db, matcher, groups[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if sharedVenue.status == venueMatchResolved {
+			groups[i].SharedVenueSlug = sharedVenue.slug
+			groups[i].SharedVenueName = sharedVenue.name
+		} else {
+			groups[i].SharedVenueSlug = ""
+			groups[i].SharedVenueName = ""
+		}
+	}
 	return groups, nil
 }
 
@@ -1852,6 +1903,18 @@ func (s *Store) LoadReviewGroup(ctx context.Context, id int64) (review.Group, bo
 	group.Candidates = candidates
 	group.DraftChoices = choices
 	group.DefaultChoices = defaults
+	matcher, err := loadVenueMatcher(ctx, s.db)
+	if err != nil {
+		return review.Group{}, false, err
+	}
+	sharedVenue := matcher.matchSharedVenue(candidates)
+	if sharedVenue.status == venueMatchResolved {
+		group.SharedVenueSlug = sharedVenue.slug
+		group.SharedVenueName = sharedVenue.name
+	} else {
+		group.SharedVenueSlug = ""
+		group.SharedVenueName = ""
+	}
 	return group, true, nil
 }
 
