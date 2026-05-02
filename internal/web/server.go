@@ -111,6 +111,7 @@ type PageData struct {
 	HasImportRunDetail       bool
 	HasImportRunReviewGroups bool
 	HasReviewStorage         bool
+	HasVenueAdmin            bool
 	Flash                    string
 }
 
@@ -369,6 +370,10 @@ func (s *Server) SetClockForTesting(clock func() time.Time) {
 	s.clock = clock
 }
 
+func (s *Server) hasVenueAdmin() bool {
+	return s.reviewStore != nil || s.importRunStore != nil || s.replayStore != nil
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cleaned := path.Clean(r.URL.Path)
 	switch {
@@ -442,6 +447,7 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		HasImportHistory:   s.importRunStore != nil,
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
+		HasVenueAdmin:      s.hasVenueAdmin(),
 		Flash:              flash,
 	}
 	if s.importRunStore != nil {
@@ -456,7 +462,7 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
-	if s.catalog == nil {
+	if s.catalog == nil || !s.hasVenueAdmin() {
 		http.NotFound(w, r)
 		return
 	}
@@ -483,6 +489,7 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 		HasImportHistory:   s.importRunStore != nil,
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
+		HasVenueAdmin:      s.hasVenueAdmin(),
 		ProvisionalVenues: buildProvisionalVenueRows(
 			venues,
 			events,
@@ -517,12 +524,13 @@ func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request
 		HasImportHistory:   s.importRunStore != nil,
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
+		HasVenueAdmin:      s.hasVenueAdmin(),
 	}
 	s.renderPage(w, "templates/admin_review_history.html", data)
 }
 
 func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, slug string) {
-	if s.catalog == nil {
+	if s.catalog == nil || !s.hasVenueAdmin() {
 		http.NotFound(w, r)
 		return
 	}
@@ -567,6 +575,7 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 		VenueEvents:      sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
 		HasImportHistory: s.importRunStore != nil,
 		HasReviewStorage: s.reviewStore != nil,
+		HasVenueAdmin:    s.hasVenueAdmin(),
 	}
 	s.renderPage(w, "templates/admin_venue_detail.html", data)
 }
@@ -599,6 +608,7 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		HasImportRunDetail:       s.replayStore != nil,
 		HasImportRunReviewGroups: s.importRunReviewGroupStore != nil,
 		HasReviewStorage:         s.reviewStore != nil,
+		HasVenueAdmin:            s.hasVenueAdmin(),
 	}
 	s.renderPage(w, "templates/admin_import_runs.html", data)
 }
@@ -646,6 +656,7 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 		HasImportHistory:   s.importRunStore != nil,
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
+		HasVenueAdmin:      s.hasVenueAdmin(),
 	}
 	s.renderPage(w, "templates/admin_import_run_detail.html", data)
 }
@@ -859,6 +870,7 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		HasImportHistory:   s.importRunStore != nil,
 		HasImportRunDetail: s.replayStore != nil,
 		HasReviewStorage:   s.reviewStore != nil,
+		HasVenueAdmin:      s.hasVenueAdmin(),
 		Flash:              flash,
 	}
 	data.ReviewDetail = buildReviewDetail(group)

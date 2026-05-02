@@ -113,5 +113,7 @@ Open `/admin/review` in the browser.
 - ambiguous venue evidence fails closed and leaves the group unresolved
 - singleton auto-promotion is unchanged and does not yet create provisional venue rows
 - rejecting does not publish
-- there are no admin venue pages yet
+- open `/admin/venues` to inspect provisional venue rows created during manual review resolution
+- open `/admin/venues/{slug}` to inspect one provisional venue's stored fields and upcoming linked events
+- the provisional venue queue is read-only and does not yet support venue approval or merge actions
 - open `/admin/review/history` for the 50 newest resolved and rejected groups

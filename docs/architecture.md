@@ -42,6 +42,8 @@ The source catalog path is fixed to the repository `config/sources` directory in
 - `/admin/review/{groupID}`
 - `/admin/import-runs`
 - `/admin/import-runs/{id}`
+- `/admin/venues`
+- `/admin/venues/{slug}`
 - `/healthz`
 - `/readyz`
 - `/static/site.css`
@@ -66,9 +68,8 @@ Raw ingest snapshots, import runs, and review records are stored separately from
 Review persistence also stores canonical snapshot rows alongside staged candidates, persists venue evidence (`venue_text`, `venue_location_raw`), and keeps majority defaults separate from reviewer-edited draft choices.
 Authoritative review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema.
 
-The admin UI exposes read-only review history, import history, and per-run snapshot metadata when the backing store implements those read paths. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
+The admin UI exposes read-only review history, import history, provisional venue queue/detail pages, and per-run snapshot metadata when the backing store implements those read paths. The provisional venue queue lists only provisional venues, and detail pages show stored venue fields plus upcoming linked events. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
 When the backing store also exposes secondary-source event info, the public event detail page can render alternate `genre` and `description` values grouped by secondary source without altering the canonical event record.
-There are no admin venue-management pages yet. Provisional venues only appear through the existing public venue pages and direct store inspection.
 
 ## Data Lifecycle
 

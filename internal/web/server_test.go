@@ -416,6 +416,23 @@ func TestSQLiteAdminVenuePagesRejectPost(t *testing.T) {
 	}
 }
 
+func TestAdminVenuePagesRequireAdminSurface(t *testing.T) {
+	server, err := NewServer(testServerDeps(readOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	for _, path := range []string{"/admin/venues", "/admin/venues/imaginary-hall"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want %d; body %q", path, rr.Code, http.StatusNotFound, rr.Body.String())
+		}
+		assertContains(t, rr.Body.String(), "404 page not found")
+	}
+}
+
 func TestAdminPagesLinkToProvisionalVenues(t *testing.T) {
 	st, server, runID, _, path := mustImportRunDetailServer(t, false)
 	defer st.Close()
@@ -433,6 +450,16 @@ func TestAdminPagesLinkToProvisionalVenues(t *testing.T) {
 
 	importRunDetailBody := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
 	assertContains(t, importRunDetailBody, `href="/admin/venues"`)
+}
+
+func TestAdminReviewHistoryLinksToProvisionalVenues(t *testing.T) {
+	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review/history")
+	assertContains(t, body, `href="/admin/venues"`)
 }
 
 func TestAdminImportRunDetailReplayOnlyShowsProvisionalVenuesLink(t *testing.T) {
