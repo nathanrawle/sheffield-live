@@ -2026,6 +2026,10 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		return err
 	}
 	group.Candidates = candidates
+	matcher, err := loadVenueMatcher(ctx, tx)
+	if err != nil {
+		return err
+	}
 
 	seen := make(map[review.Field]struct{}, len(choices))
 	selectedCandidates := make(map[review.Field]review.Candidate, len(choices))
@@ -2049,6 +2053,21 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 			return fmt.Errorf("review candidate %d not found in group %d", choice.CandidateID, groupID)
 		}
 		selectedCandidates[choice.Field] = candidate
+	}
+
+	if venueCandidate, ok := selectedCandidates[review.FieldVenueSlug]; ok {
+		match := matcher.matchCandidate(venueCandidate)
+		switch match.status {
+		case venueMatchResolved:
+			venueCandidate.VenueSlug = match.slug
+			selectedCandidates[review.FieldVenueSlug] = venueCandidate
+		case venueMatchNoMatch, venueMatchAmbiguous:
+			return fmt.Errorf("venue %q not found", venueCandidate.VenueSlug)
+		}
+	}
+
+	for _, choice := range choices {
+		candidate := selectedCandidates[choice.Field]
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO review_draft_choices (
 				group_id,

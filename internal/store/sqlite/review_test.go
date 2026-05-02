@@ -1292,10 +1292,10 @@ func TestResolveReviewGroupPublishesSingletonEventWithSourceFallback(t *testing.
 	candidateID := group.Candidates[0].ID
 	if _, err := db.Exec(`
 		UPDATE review_candidates
-		SET source_name = '', source_url = ''
+		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?, source_name = '', source_url = ''
 		WHERE id = ?
-	`, candidateID); err != nil {
-		t.Fatalf("blank candidate source fields: %v", err)
+	`, "leadmill-temp", "Sidney & Matilda", "Rivelin Works, 46 Sidney Street, Sheffield", candidateID); err != nil {
+		t.Fatalf("rewrite singleton review candidate venue evidence: %v", err)
 	}
 
 	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
@@ -1313,9 +1313,20 @@ func TestResolveReviewGroupPublishesSingletonEventWithSourceFallback(t *testing.
 	if event.SourceURL != "file:sidney.ics" {
 		t.Fatalf("source url = %q, want %q", event.SourceURL, "file:sidney.ics")
 	}
+	if event.VenueSlug != "sidney-and-matilda" {
+		t.Fatalf("venue slug = %q, want %q", event.VenueSlug, "sidney-and-matilda")
+	}
 	if event.Origin != domain.OriginLive {
 		t.Fatalf("origin = %q, want %q", event.Origin, domain.OriginLive)
 	}
+	final, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group after resolve: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after resolve")
+	}
+	assertDraftChoice(t, final, review.FieldVenueSlug, candidateID, "sidney-and-matilda")
 	if got := mustCount(t, db, "events"); got != beforeCount+1 {
 		t.Fatalf("events rows = %d, want %d", got, beforeCount+1)
 	}
@@ -1366,9 +1377,17 @@ func TestResolveReviewGroupUsesAuthoritativeSourceLinkIdentity(t *testing.T) {
 	if !ok {
 		t.Fatal("review group not found")
 	}
+	candidateID := group.Candidates[0].ID
 
 	db := mustRawDB(t, path)
 	defer db.Close()
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
+		WHERE id = ?
+	`, "leadmill-temp", "Sidney & Matilda", "Rivelin Works, 46 Sidney Street, Sheffield", candidateID); err != nil {
+		t.Fatalf("rewrite authoritative review candidate venue evidence: %v", err)
+	}
 
 	var venueID int64
 	if err := db.QueryRow(`SELECT id FROM venues WHERE slug = ?`, "sidney-and-matilda").Scan(&venueID); err != nil {
@@ -1441,11 +1460,103 @@ func TestResolveReviewGroupUsesAuthoritativeSourceLinkIdentity(t *testing.T) {
 	if event.SourceURL != "https://calendar.example.test/live.ics" {
 		t.Fatalf("source url = %q, want %q", event.SourceURL, "https://calendar.example.test/live.ics")
 	}
+	if event.VenueSlug != "sidney-and-matilda" {
+		t.Fatalf("venue slug = %q, want %q", event.VenueSlug, "sidney-and-matilda")
+	}
+	final, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group after resolve: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after resolve")
+	}
+	assertDraftChoice(t, final, review.FieldVenueSlug, candidateID, "sidney-and-matilda")
 	if event.Genre != "Old genre" {
 		t.Fatalf("genre = %q, want preserved %q", event.Genre, "Old genre")
 	}
 	if event.Description != "Old description" {
 		t.Fatalf("description = %q, want preserved %q", event.Description, "Old description")
+	}
+}
+
+func TestResolveReviewGroupRollsBackWhenVenueResolutionFails(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name      string
+		venueSlug string
+		venueText string
+		venueRaw  string
+	}{
+		{
+			name:      "ambiguous",
+			venueSlug: "leadmill",
+			venueText: "Sidney & Matilda",
+			venueRaw:  "Sidney & Matilda, 46 Sidney Street, Sheffield",
+		},
+		{
+			name:      "no-match",
+			venueSlug: "imaginary-hall",
+			venueText: "Imaginary Hall",
+			venueRaw:  "Imaginary Hall, 1 Void Street, Sheffield",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "sheffield-live.db")
+			st, err := Open(path)
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			defer st.Close()
+
+			db := mustRawDB(t, path)
+			defer db.Close()
+			beforeEventCount := mustCount(t, db, "events")
+
+			groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Failed venue resolution")
+			group, ok, err := st.LoadReviewGroup(ctx, groupID)
+			if err != nil {
+				t.Fatalf("load review group: %v", err)
+			}
+			if !ok {
+				t.Fatal("review group not found")
+			}
+			candidateID := group.Candidates[0].ID
+			if _, err := db.Exec(`
+				UPDATE review_candidates
+				SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
+				WHERE id = ?
+			`, tc.venueSlug, tc.venueText, tc.venueRaw, candidateID); err != nil {
+				t.Fatalf("rewrite review candidate venue evidence: %v", err)
+			}
+
+			if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err == nil {
+				t.Fatal("expected venue resolution failure")
+			}
+
+			if got := mustCount(t, db, "events"); got != beforeEventCount {
+				t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+			}
+			if got := mustCount(t, db, "review_draft_choices"); got != 0 {
+				t.Fatalf("review_draft_choices rows = %d, want 0", got)
+			}
+
+			final, ok, err := st.LoadReviewGroup(ctx, groupID)
+			if err != nil {
+				t.Fatalf("reload review group after failed resolve: %v", err)
+			}
+			if !ok {
+				t.Fatal("review group not found after failed resolve")
+			}
+			if final.Status != review.StatusOpen {
+				t.Fatalf("status = %q, want %q", final.Status, review.StatusOpen)
+			}
+			if len(final.DraftChoices) != 0 {
+				t.Fatalf("draft choices = %d, want 0", len(final.DraftChoices))
+			}
+		})
 	}
 }
 
@@ -3125,6 +3236,14 @@ func TestResolveReviewGroupUpsertsSlugConflict(t *testing.T) {
 	if !ok {
 		t.Fatal("review group not found")
 	}
+	candidateID := group.Candidates[0].ID
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
+		WHERE id = ?
+	`, "leadmill-temp", "Sidney & Matilda", "Rivelin Works, 46 Sidney Street, Sheffield", candidateID); err != nil {
+		t.Fatalf("rewrite duplicate review candidate venue evidence: %v", err)
+	}
 
 	var venueID int64
 	if err := db.QueryRow(`
@@ -3183,6 +3302,14 @@ func TestResolveReviewGroupUpsertsSlugConflict(t *testing.T) {
 	if event.Origin != domain.OriginLive {
 		t.Fatalf("origin = %q, want %q", event.Origin, domain.OriginLive)
 	}
+	final, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group after resolve: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after resolve")
+	}
+	assertDraftChoice(t, final, review.FieldVenueSlug, candidateID, "sidney-and-matilda")
 }
 
 func TestUpdateReviewGroupStatusRejectsInvalidStatus(t *testing.T) {
