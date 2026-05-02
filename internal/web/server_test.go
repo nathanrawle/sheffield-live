@@ -294,6 +294,92 @@ func TestSQLiteAdminImportRunDetailRendersReviewGroupsForRun(t *testing.T) {
 	assertNotContains(t, body, bodyText)
 }
 
+func TestSQLiteAdminVenuesEmptyState(t *testing.T) {
+	st, server, _ := mustAdminVenuesServer(t)
+	defer st.Close()
+
+	body := renderPath(t, server, "/admin/venues")
+	assertContains(t, body, "Provisional venues")
+	assertContains(t, body, "No provisional venues are queued right now.")
+	assertContains(t, body, `href="/admin/review"`)
+}
+
+func TestSQLiteAdminVenuesListOnlyProvisionalVenues(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	body := renderPath(t, server, "/admin/venues")
+	assertContains(t, body, "Provisional venues")
+	assertContains(t, body, "Imaginary Hall marketing copy")
+	assertContains(t, body, "Quiet Room")
+	assertContains(t, body, `href="/admin/venues/imaginary-hall"`)
+	assertContains(t, body, `href="/admin/venues/quiet-room"`)
+	assertContains(t, body, `href="/events/imaginary-hall-future-show"`)
+	assertContains(t, body, "Future Show")
+	assertContains(t, body, ">1</td>")
+	assertNotContains(t, body, `href="/admin/venues/validated-room"`)
+	assertNotContains(t, body, "Validated Room")
+}
+
+func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	body := renderPath(t, server, "/admin/venues/imaginary-hall")
+	assertContains(t, body, "Imaginary Hall marketing copy")
+	assertContains(t, body, `href="/admin/venues"`)
+	assertContains(t, body, "Stored venue fields")
+	assertContains(t, body, ">imaginary-hall</dd>")
+	assertContains(t, body, "1 Void Street, Sheffield")
+	assertContains(t, body, "City Centre")
+	assertContains(t, body, "Pop-up room for test fixtures.")
+	assertContains(t, body, "https://example.test/imaginary-hall")
+	assertContains(t, body, ">provisional</dd>")
+	assertContains(t, body, ">venue</dd>")
+	assertContains(t, body, ">live</dd>")
+	assertContains(t, body, "1 upcoming linked events")
+	assertContains(t, body, `href="/events/imaginary-hall-future-show"`)
+	assertContains(t, body, "Future Show")
+	assertContains(t, body, "Fixture ICS")
+	assertContains(t, body, "Upcoming linked event description.")
+	assertNotContains(t, body, "Past Show")
+}
+
+func TestSQLiteAdminVenueDetailUnknownSlugReturnsNotFound(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/venues/missing-room", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+	assertContains(t, rr.Body.String(), "404 page not found")
+}
+
+func TestAdminPagesLinkToProvisionalVenues(t *testing.T) {
+	st, server, runID, _, path := mustImportRunDetailServer(t, false)
+	defer st.Close()
+
+	groupID := mustCreateWebReviewGroupForImportRun(t, st, path, "Fixture review group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 2)
+
+	reviewBody := renderPath(t, server, "/admin/review")
+	assertContains(t, reviewBody, `href="/admin/venues"`)
+
+	reviewDetailBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertContains(t, reviewDetailBody, `href="/admin/venues"`)
+
+	importRunsBody := renderPath(t, server, "/admin/import-runs")
+	assertContains(t, importRunsBody, `href="/admin/venues"`)
+
+	importRunDetailBody := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
+	assertContains(t, importRunDetailBody, `href="/admin/venues"`)
+}
+
 func TestSQLiteAdminImportRunDetailInvalidAndMissingIDs(t *testing.T) {
 	st, server, _, _, _ := mustImportRunDetailServer(t, false)
 	defer st.Close()
@@ -2049,6 +2135,26 @@ func mustReviewServerWithSingletonGroup(t *testing.T) (*sqlitestore.Store, *Serv
 	return st, server, groupID, path
 }
 
+func mustAdminVenuesServer(t *testing.T) (*sqlitestore.Store, *Server, string) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("new server: %v", err)
+	}
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 19, 10, 0)
+	})
+	return st, server, path
+}
+
 func mustRawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 
@@ -2129,6 +2235,43 @@ func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store
 	}
 
 	return st, server, runID, bodyText, path
+}
+
+func seedAdminVenueFixtures(t *testing.T, path string) {
+	t.Helper()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	mustInsertAdminVenue(t, db, domain.Venue{
+		Slug:            "imaginary-hall",
+		Name:            "Imaginary Hall marketing copy",
+		Address:         "1 Void Street, Sheffield",
+		Neighbourhood:   "City Centre",
+		Description:     "Pop-up room for test fixtures.",
+		Website:         "https://example.test/imaginary-hall",
+		ValidationState: domain.ValidationStateProvisional,
+		CoverageKind:    domain.CoverageKindVenue,
+		Origin:          domain.OriginLive,
+	})
+	mustInsertAdminVenue(t, db, domain.Venue{
+		Slug:            "quiet-room",
+		Name:            "Quiet Room",
+		ValidationState: domain.ValidationStateProvisional,
+		Origin:          domain.OriginLive,
+	})
+	mustInsertAdminVenue(t, db, domain.Venue{
+		Slug:            "validated-room",
+		Name:            "Validated Room",
+		Address:         "10 Verified Street, Sheffield",
+		ValidationState: domain.ValidationStateValidated,
+		Origin:          domain.OriginLive,
+	})
+
+	sourceID := mustInsertAdminSource(t, db, "Fixture ICS", "https://example.test/fixture")
+	mustInsertAdminEvent(t, db, sourceID, "imaginary-hall-future-show", "imaginary-hall", "Future Show", fixtureLocalTime(2026, time.April, 20, 19, 30), fixtureLocalTime(2026, time.April, 20, 22, 0), "Upcoming linked event description.")
+	mustInsertAdminEvent(t, db, sourceID, "imaginary-hall-past-show", "imaginary-hall", "Past Show", fixtureLocalTime(2026, time.April, 18, 19, 0), fixtureLocalTime(2026, time.April, 18, 21, 0), "Past linked event description.")
+	mustInsertAdminEvent(t, db, sourceID, "validated-room-future-show", "validated-room", "Validated Venue Show", fixtureLocalTime(2026, time.April, 21, 20, 0), fixtureLocalTime(2026, time.April, 21, 22, 0), "Validated venue event.")
 }
 
 func mustWebSnapshotPayload(t *testing.T, result ingest.FetchResult) string {
@@ -2355,6 +2498,54 @@ func mustCreateWebPublishableReviewGroupForImportRun(t *testing.T, st *sqlitesto
 		t.Fatalf("create publishable review group: %v", err)
 	}
 	return groupID
+}
+
+func mustInsertAdminVenue(t *testing.T, db *sql.DB, venue domain.Venue) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+		INSERT INTO venues (slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, venue.Slug, venue.Name, venue.Address, venue.Neighbourhood, venue.Description, venue.Website, string(venue.ValidationState), string(venue.CoverageKind), venue.CoverageNote, string(venue.Origin)); err != nil {
+		t.Fatalf("insert venue %q: %v", venue.Slug, err)
+	}
+}
+
+func mustInsertAdminSource(t *testing.T, db *sql.DB, name, sourceURL string) int64 {
+	t.Helper()
+
+	res, err := db.Exec(`
+		INSERT INTO sources (name, url)
+		VALUES (?, ?)
+	`, name, sourceURL)
+	if err != nil {
+		t.Fatalf("insert source %q: %v", name, err)
+	}
+	sourceID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("source last insert id: %v", err)
+	}
+	return sourceID
+}
+
+func mustInsertAdminEvent(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, name string, startAt, endAt time.Time, description string) {
+	t.Helper()
+
+	var venueID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+	`, venueSlug).Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue id for %q: %v", venueSlug, err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug, venue_id, source_id, name, start_at, end_at, genre, status, description, last_checked_at, origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, name, startAt.Format(time.RFC3339), endAt.Format(time.RFC3339), "Indie", "Listed", description, fixtureLocalTime(2026, time.April, 19, 9, 0).Format(time.RFC3339), string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert event %q: %v", slug, err)
+	}
 }
 
 type readOnlyStoreStub struct{}
