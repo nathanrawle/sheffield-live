@@ -351,6 +351,9 @@ func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T
 	body := renderPath(t, server, "/admin/venues/imaginary-hall")
 	assertContains(t, body, "Imaginary Hall marketing copy")
 	assertContains(t, body, `href="/admin/venues"`)
+	assertContains(t, body, `method="post"`)
+	assertContains(t, body, `action="/admin/venues/imaginary-hall"`)
+	assertContains(t, body, "Validate venue")
 	assertContains(t, body, "Stored venue fields")
 	assertContains(t, body, ">imaginary-hall</dd>")
 	assertContains(t, body, "1 Void Street, Sheffield")
@@ -396,24 +399,18 @@ func TestSQLiteAdminVenueDetailUnknownSlugReturnsNotFound(t *testing.T) {
 	assertContains(t, rr.Body.String(), "404 page not found")
 }
 
-func TestSQLiteAdminVenuePagesRejectPost(t *testing.T) {
+func TestSQLiteAdminVenueListRejectsPost(t *testing.T) {
 	st, server, path := mustAdminVenuesServer(t)
 	defer st.Close()
 	seedAdminVenueFixtures(t, path)
 
-	tests := []string{
-		"/admin/venues",
-		"/admin/venues/imaginary-hall",
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues", strings.NewReader(""))
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
 	}
-	for _, path := range tests {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
-		rr := httptest.NewRecorder()
-		server.ServeHTTP(rr, req)
-		if rr.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("%s status = %d, want %d; body %q", path, rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
-		}
-		assertContains(t, rr.Body.String(), "method not allowed")
-	}
+	assertContains(t, rr.Body.String(), "method not allowed")
 }
 
 func TestAdminVenuePagesRequireAdminSurface(t *testing.T) {
@@ -424,6 +421,72 @@ func TestAdminVenuePagesRequireAdminSurface(t *testing.T) {
 
 	for _, path := range []string{"/admin/venues", "/admin/venues/imaginary-hall"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want %d; body %q", path, rr.Code, http.StatusNotFound, rr.Body.String())
+		}
+		assertContains(t, rr.Body.String(), "404 page not found")
+	}
+}
+
+func TestSQLiteAdminVenueDetailPostValidatesVenueAndRedirects(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	beforeVenueBody := renderPath(t, server, "/venues/imaginary-hall")
+	assertContains(t, beforeVenueBody, "Imaginary Hall marketing copy")
+	beforeEventBody := renderPath(t, server, "/events/imaginary-hall-future-show")
+	assertContains(t, beforeEventBody, "Future Show")
+	assertContains(t, beforeEventBody, "Imaginary Hall marketing copy")
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	location := rr.Header().Get("Location")
+	if location != "/admin/venues?validated=1" {
+		t.Fatalf("Location = %q, want %q", location, "/admin/venues?validated=1")
+	}
+
+	queueBody := renderPath(t, server, location)
+	assertContains(t, queueBody, "Venue validated.")
+	assertNotContains(t, queueBody, "Imaginary Hall marketing copy")
+	assertNotContains(t, queueBody, `href="/admin/venues/imaginary-hall"`)
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	var validationState string
+	if err := db.QueryRow(`SELECT validation_state FROM venues WHERE slug = ?`, "imaginary-hall").Scan(&validationState); err != nil {
+		t.Fatalf("lookup validation state: %v", err)
+	}
+	if got, want := validationState, string(domain.ValidationStateValidated); got != want {
+		t.Fatalf("validation_state = %q, want %q", got, want)
+	}
+
+	afterVenueBody := renderPath(t, server, "/venues/imaginary-hall")
+	assertContains(t, afterVenueBody, "Imaginary Hall marketing copy")
+	afterEventBody := renderPath(t, server, "/events/imaginary-hall-future-show")
+	assertContains(t, afterEventBody, "Future Show")
+	assertContains(t, afterEventBody, "Imaginary Hall marketing copy")
+}
+
+func TestSQLiteAdminVenueDetailPostRejectsMissingAndNonProvisionalVenues(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	tests := []string{
+		"/admin/venues/missing-room",
+		"/admin/venues/validated-room",
+	}
+	for _, path := range tests {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		rr := httptest.NewRecorder()
 		server.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNotFound {
