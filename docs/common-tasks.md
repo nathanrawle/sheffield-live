@@ -106,7 +106,12 @@ Open `/admin/review` in the browser.
 - duplicate groups use field choices and a canonical draft summary
 - open duplicate groups preselect persisted majority defaults when no manual draft choice exists
 - duplicate groups may include a `Live canonical snapshot` comparison column
+- shared venue labels in review summaries come from deterministic matching over stored venue slug, venue text, and raw location evidence
 - singleton groups use accept/reject when they were not auto-promoted during staging
 - resolving or accepting publishes one canonical public event
+- manual resolution reuses an existing venue when the selected evidence yields one unique match, otherwise it creates a provisional venue in the same transaction
+- ambiguous venue evidence fails closed and leaves the group unresolved
+- singleton auto-promotion is unchanged and does not yet create provisional venue rows
 - rejecting does not publish
+- there are no admin venue pages yet
 - open `/admin/review/history` for the 50 newest resolved and rejected groups

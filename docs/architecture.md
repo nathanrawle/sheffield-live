@@ -59,15 +59,16 @@ The source catalog path is fixed to the repository `config/sources` directory in
 
 Public records live in SQLite and are served from canonical `venues` and `events` rows.
 
-- `Venue` stores slug, name, address, neighbourhood, description, website, coverage kind, coverage note, and origin
+- `Venue` stores slug, name, address, neighbourhood, description, website, validation state, coverage kind, coverage note, and origin
 - `Event` stores slug, name, venue slug, a required UTC start time, an optional UTC end time, genre, status, description, source name, source URL, last checked time, and origin
 
 Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
-Review persistence also stores canonical snapshot rows alongside staged candidates and keeps majority defaults separate from reviewer-edited draft choices.
+Review persistence also stores canonical snapshot rows alongside staged candidates, persists venue evidence (`venue_text`, `venue_location_raw`), and keeps majority defaults separate from reviewer-edited draft choices.
 Authoritative review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema.
 
 The admin UI exposes read-only review history, import history, and per-run snapshot metadata when the backing store implements those read paths. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
 When the backing store also exposes secondary-source event info, the public event detail page can render alternate `genre` and `description` values grouped by secondary source without altering the canonical event record.
+There are no admin venue-management pages yet. Provisional venues only appear through the existing public venue pages and direct store inspection.
 
 ## Data Lifecycle
 
@@ -79,20 +80,24 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - `review_groups.staging_key` has a unique index so staged reruns reuse the same group when the content key matches
 - `import_run_review_groups` records every persisted import-run to review-group link with link time
 - review groups may also persist an authoritative source tuple when every staged candidate agrees on one owned-venue source event identity
+- review group summaries derive shared venue context from deterministic matching over candidate venue slug, venue text, and raw location evidence
 - duplicate groups may persist an attached live canonical snapshot row and separate majority defaults
 - duplicate groups may stay in review or auto-resolve into closed history when they are exact canonical matches or unanimous staged duplicates
 - singleton new listings may either auto-promote or stay in review
 - any singleton may be attempted for auto-promotion when it is the first matching live record seen
 - authoritative source identity controls overwrite rights and can upgrade a provisional event in place
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
+- manual review resolution first canonicalizes the selected venue to an existing venue when deterministic evidence matching yields one unique live venue
+- when manual review resolution finds no unique existing venue match, it inserts a `provisional` live venue in the same transaction and publishes the event against that venue
+- ambiguous venue evidence fails closed and rolls back the review resolution transaction
 - authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
 - authoritative identity takes precedence over canonical slug attachment when they disagree
 - authoritative review groups may also persist secondary-source `genre` and `description` rows keyed by secondary source plus candidate venue, name, and start time
 - supporting singleton auto-promotion creates `provisional` live events, does not create authoritative `event_source_links`, and does not create `event_secondary_source_info` rows
+- singleton auto-promotion does not currently create provisional venue rows
 - successful supporting singleton auto-promotion resolves matching stale open singleton groups by `staging_key` and links the current import run to those groups
 - later supporting matches can fill blank live fields but conflicting populated fields stay in review
 - rejecting a review does not publish
-- the venue must already exist
 - the source row is ensured
 - the published event uses live origin
 - canonical `events.end_at` may be `NULL` when the authoritative end time is unknown

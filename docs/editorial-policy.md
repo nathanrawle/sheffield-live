@@ -29,7 +29,7 @@ Each record shows provenance and freshness. Live browsing should make the source
 
 ## Review policy
 
-Admin review exists for curated publication control. Duplicate reviews expose field-level choices, a canonical draft summary, persisted majority defaults, and may include a live canonical snapshot row for comparison. Singleton new listings can be accepted or rejected when they are not auto-promoted first.
+Admin review exists for curated publication control. Duplicate reviews expose field-level choices, a canonical draft summary, persisted majority defaults, and may include a live canonical snapshot row for comparison. Review candidates also retain venue evidence from ingest (`venue_text` and `venue_location_raw`), and review summaries derive shared-venue context from deterministic venue matching over that evidence. Singleton new listings can be accepted or rejected when they are not auto-promoted first.
 
 Resolving a duplicate review or accepting a singleton review publishes exactly one canonical public event. Rejecting a review does not publish anything.
 Eligible singleton imports may also auto-publish before review when they are the first matching live event seen. Supporting-source first-seen publishes are stored internally as provisional until a review or authoritative update confirms them. Duplicate staging now has two extra closed-history paths: exact canonical duplicate auto-resolution against an existing live event, and unanimous staged-duplicate auto-resolution when every staged candidate agrees on the canonical fields.
@@ -51,6 +51,7 @@ Supporting singleton auto-promotion is intentionally narrower than authoritative
 - it creates provisional events rather than reviewed ones
 - it does not create authoritative source links
 - it does not create secondary-source info rows
+- it does not yet create provisional venue rows
 - it may fill blank live fields on later exact matches, but conflicting populated fields stay in review
 - Jazz at The Lescar remains a non-authoritative, program-only source even when its first-seen singletons auto-publish
 
@@ -58,6 +59,12 @@ Canonical-backed duplicate resolution follows two precedence rules:
 
 - authoritative source identity wins over canonical slug match when they disagree
 - non-authoritative canonical-backed duplicate resolution updates the matched live event in place rather than publishing a second event
+
+Manual venue resolution follows three rules:
+
+- when the selected venue evidence uniquely matches an existing venue, review resolution canonicalizes to that venue
+- when the selected venue evidence matches no existing venue, review resolution creates a provisional venue row and publishes against it in the same transaction
+- when the selected venue evidence is ambiguous, review resolution fails closed rather than guessing
 
 Reviews are held or rejected when the source is not good enough to publish:
 

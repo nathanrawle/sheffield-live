@@ -65,10 +65,11 @@ Snapshot payloads are stored as JSON envelopes that contain the response body in
 `cmd/ingest` can stage review groups from a successful ingest report.
 
 Review staging always creates duplicate clusters, and it creates singleton review groups only when a singleton is not auto-promoted first. Duplicate review groups support field-level canonical choices, a canonical draft summary, persisted majority defaults, and optional live canonical snapshot context. Singleton review groups support accept or reject.
+Each persisted review candidate keeps the staged venue slug plus the raw venue evidence used to interpret it: `venue_text` and `venue_location_raw`.
 Singletons may auto-promote from any source when they are the first matching live record the application has seen. Source authority controls later overwrite rights rather than initial publish eligibility.
 
 Review staging uses a durable key, so source metadata changes alone do not create a new group, closed groups are not reopened, and reruns link the group to the current import run through the persisted `import_run_review_groups` relation.
-When every candidate in a staged group agrees on one owned-venue source identity from a registry-owned venue source, the group persists that authoritative source name, URL, and event key for later resolution. Duplicate staging also derives the current live slug from `name + venue_slug + start_at` and can attach one live canonical snapshot row when all staged slug matches point to the same `events.origin = 'live'` row. Open-group restaging refreshes that snapshot and recomputes persisted defaults while preserving manual draft choices. Supporting singleton auto-promotion does not mint authoritative event identities and does not create `event_source_links` or `event_secondary_source_info` rows. Internally, first-seen supporting publishes are stored as `provisional` until a review or authoritative update confirms them.
+When every candidate in a staged group agrees on one owned-venue source identity from a registry-owned venue source, the group persists that authoritative source name, URL, and event key for later resolution. Duplicate staging also derives the current live slug from `name + venue_slug + start_at`, derives shared-venue summary fields through deterministic venue matching over candidate venue evidence, and can attach one live canonical snapshot row when all staged slug matches point to the same `events.origin = 'live'` row. Open-group restaging refreshes that snapshot and recomputes persisted defaults while preserving manual draft choices. Supporting singleton auto-promotion does not mint authoritative event identities, does not create provisional venue rows, and does not create `event_source_links` or `event_secondary_source_info` rows. Internally, first-seen supporting publishes are stored as `provisional` until a review or authoritative update confirms them.
 Exact canonical duplicates and unanimous staged duplicates are stored as closed review history rows through duplicate auto-resolution rather than remaining in the open queue.
 
 Replay auto-detects the source from stored page snapshot metadata, reconstructs the same catalog-selected extraction path from stored snapshots, validates the snapshot envelope version and SHA-256, and refuses missing or ambiguous snapshot matches.
@@ -85,7 +86,10 @@ When a review group resolves:
 - authoritative groups pin source name and source URL from the persisted authoritative tuple
 - non-authoritative groups let source name and source URL fall back to the review-group source only when the selected field is blank
 - canonical end times may be omitted; unknown canonical ends publish as `events.end_at = NULL`
-- the venue must already exist
+- venue matching first attempts to canonicalize the selected venue to one existing venue using staged venue slug, `venue_text`, and `venue_location_raw`
+- when that match is unique, the published event uses the existing venue slug
+- when there is no existing match, resolution inserts a `provisional` live venue row in the same transaction and publishes the event against it
+- when venue evidence is ambiguous, resolution fails closed and the transaction rolls back
 - the source row is ensured transactionally
 - authoritative groups resolve through `event_source_links` identity before any slug-based publish path
 - if authoritative identity and canonical slug match point at different live events, authoritative identity wins

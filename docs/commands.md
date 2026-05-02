@@ -43,6 +43,8 @@ Routes:
 - `GET /readyz` plain-text readiness check backed by a cheap store probe
 - `GET /static/site.css` embedded stylesheet
 
+There are no admin venue-management routes yet.
+
 `/events` query parameters:
 
 - `window=all|today|tonight|week|weekend`
@@ -61,9 +63,13 @@ Review behavior:
 - duplicate groups use field-by-field draft choices, a canonical draft summary, and persisted majority defaults
 - open duplicate reviews preselect those persisted defaults when no manual draft exists
 - duplicate reviews may include a `Live canonical snapshot` matrix column sourced from an existing live event
+- review summaries derive shared venue labels from deterministic matching over stored candidate venue slug, venue text, and raw location evidence
 - the review queue shows a read-only link to the latest successful import when the store provides import history
 - `action=save` stores draft choices for duplicate groups
 - `action=resolved` confirms a duplicate and resolves it, publishing one canonical public event
+- manual review resolution canonicalizes the selected venue to an existing venue when the evidence yields one unique match
+- when no unique existing venue match exists, manual review resolution creates a provisional venue row and publishes against it in the same transaction
+- ambiguous venue evidence fails closed and leaves the group open
 - canonical-backed duplicate resolution can update the matched live event in place
 - when authoritative source identity and canonical slug match point at different live events, authoritative identity wins
 - singleton groups use accept/reject actions when they were staged instead of auto-promoted
@@ -144,7 +150,9 @@ Stage review groups:
 - wraps the ingest report with `review_stage`
 - creates duplicate review groups
 - creates singleton review groups only for singleton candidates that were not auto-promoted first
+- persists review-candidate venue evidence as `venue_text` and `venue_location_raw`
 - singleton candidates may auto-promote when they are the first matching live event seen; authoritative sources can also upgrade provisional events in place
+- singleton auto-promotion does not create provisional venue rows
 - duplicate groups may also auto-resolve as `canonical_exact_match` or `unanimous_duplicate`
 - reports `groups_created` and `groups_reused`
 - reports `auto_promoted_count` and `auto_promoted`
