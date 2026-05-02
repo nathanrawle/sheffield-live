@@ -855,7 +855,7 @@ func normalizedValidationState(state domain.ValidationState) domain.ValidationSt
 	case domain.ValidationStateValidated, "":
 		return domain.ValidationStateValidated
 	default:
-		return domain.ValidationStateValidated
+		return domain.ValidationStateProvisional
 	}
 }
 
