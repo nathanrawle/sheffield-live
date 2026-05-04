@@ -163,6 +163,32 @@ func TestProvisionalVenueSlugPrefersLocationHeadOverFullVenueText(t *testing.T) 
 	}
 }
 
+func TestVenueLocationSlugProbesUseFirstNewlineDelimitedAddressPart(t *testing.T) {
+	probes := venueLocationSlugProbes("Imaginary Hall\n1 Void Street\nSheffield\nS1 2JA")
+
+	if len(probes) != 2 {
+		t.Fatalf("len(probes) = %d, want 2", len(probes))
+	}
+	if got, want := probes[0], "imaginary-hall"; got != want {
+		t.Fatalf("probes[0] = %q, want %q", got, want)
+	}
+	if got, want := probes[1], "imaginary-hall-1-void-street-sheffield-s1-2ja"; got != want {
+		t.Fatalf("probes[1] = %q, want %q", got, want)
+	}
+}
+
+func TestProvisionalVenueSlugPrefersNewlineDelimitedLocationHead(t *testing.T) {
+	candidate := review.Candidate{
+		VenueSlug:        "imaginary-hall-1-void-street-sheffield-s1-2ja",
+		VenueText:        "Imaginary Hall\n1 Void Street\nSheffield\nS1 2JA",
+		VenueLocationRaw: "Imaginary Hall\n1 Void Street\nSheffield\nS1 2JA",
+	}
+
+	if got, want := provisionalVenueSlug(candidate), "imaginary-hall"; got != want {
+		t.Fatalf("provisional venue slug = %q, want %q", got, want)
+	}
+}
+
 func TestProvisionalVenueFromCandidateFormatsAddress(t *testing.T) {
 	tests := []struct {
 		name              string

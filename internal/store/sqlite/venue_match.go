@@ -236,8 +236,8 @@ func venueLocationSlugProbes(value string) []string {
 		return nil
 	}
 	probes := make([]string, 0, 2)
-	if head, _, ok := strings.Cut(value, ","); ok {
-		if probe := normalizedVenueKey(head); probe != "" {
+	if parts := normalizedVenueAddressParts(value); len(parts) > 0 {
+		if probe := normalizedVenueKey(parts[0]); probe != "" {
 			probes = append(probes, probe)
 		}
 	}
