@@ -108,8 +108,132 @@ func TestRunManualYellowArchParsesListingsFromSourcePage(t *testing.T) {
 	if got, want := report.Calendars[0].Candidates[0].Location, "Yellow Arch Studios"; got != want {
 		t.Fatalf("location = %q, want %q", got, want)
 	}
+	if got, want := report.Calendars[0].Candidates[0].Description, "Doors 7pm. Live from the courtyard bar."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
 	if got, want := store.finishedNotes, "links=0 candidates=2 skips=1 errors=0"; got != want {
 		t.Fatalf("finished notes = %q, want %q", got, want)
+	}
+}
+
+func TestRunManualYellowArchPrefersDetailPageDescriptions(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 5, 4, 22, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.yellowarch.com/events/": {
+				URL:         "https://www.yellowarch.com/events/",
+				FinalURL:    "https://www.yellowarch.com/events/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: []byte(`
+					<script type="application/ld+json">
+					  [{
+					    "@context":"https://schema.org",
+					    "@type":"Event",
+					    "name":"Jazz Hot Six",
+					    "url":"/event/jazz-hot-six-14/",
+					    "description":"Martin Winning - ClarinetEmily Chaplais - Violin",
+					    "startDate":"2026-05-05T19:00",
+					    "endDate":"2026-05-05T22:00",
+					    "location":{"name":"Yellow Arch Studios"}
+					  }]
+					</script>
+				`),
+				CapturedAt: time.Date(2026, 5, 4, 22, 1, 0, 0, time.UTC),
+			},
+			"https://www.yellowarch.com/event/jazz-hot-six-14/": {
+				URL:         "https://www.yellowarch.com/event/jazz-hot-six-14/",
+				FinalURL:    "https://www.yellowarch.com/event/jazz-hot-six-14/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: []byte(`
+					<html>
+					  <head><link rel="canonical" href="/event/jazz-hot-six-14/"></head>
+					  <body>
+					    <h1>Jazz Hot Six</h1>
+					    <div class="event-single__content">
+					      <p>Martin Winning - Clarinet<br />Emily Chaplais - Violin</p>
+					      <div class="event-single__venue-address-wrapper">Yellow Arch Studios</div>
+					    </div>
+					  </body>
+					</html>
+				`),
+				CapturedAt: time.Date(2026, 5, 4, 22, 2, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: yellowArchSource, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := len(store.snapshots), 2; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Links, 0; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Snapshots, 2; got != want {
+		t.Fatalf("report snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Description, "Martin Winning - Clarinet\nEmily Chaplais - Violin"; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
+
+func TestRunManualYellowArchFallsBackWhenDetailDescriptionIsEmpty(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 5, 4, 22, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.yellowarch.com/events/": {
+				URL:         "https://www.yellowarch.com/events/",
+				FinalURL:    "https://www.yellowarch.com/events/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: []byte(`
+					<script type="application/ld+json">
+					  [{
+					    "@context":"https://schema.org",
+					    "@type":"Event",
+					    "name":"Jazz Hot Six",
+					    "url":"/event/jazz-hot-six-14/",
+					    "description":"Source page description.",
+					    "startDate":"2026-05-05T19:00",
+					    "endDate":"2026-05-05T22:00",
+					    "location":{"name":"Yellow Arch Studios"}
+					  }]
+					</script>
+				`),
+				CapturedAt: time.Date(2026, 5, 4, 22, 1, 0, 0, time.UTC),
+			},
+			"https://www.yellowarch.com/event/jazz-hot-six-14/": {
+				URL:         "https://www.yellowarch.com/event/jazz-hot-six-14/",
+				FinalURL:    "https://www.yellowarch.com/event/jazz-hot-six-14/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        []byte(`<div class="event-single__content"><p>Better description.</p></div>`),
+				CapturedAt:  time.Date(2026, 5, 4, 22, 2, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: yellowArchSource, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := len(store.snapshots), 2; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Description, "Source page description."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
 	}
 }
 

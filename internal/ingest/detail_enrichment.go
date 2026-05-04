@@ -30,6 +30,7 @@ var (
 	cafe9EventInfoPattern         = regexp.MustCompile(`(?is)<h[1-6]\b[^>]*>\s*Event\s+information\s*</h[1-6]>(.*?)(?:<h[1-6]\b|<footer\b|</main>|</body>|</html>)`)
 	htmlCanonicalLinkPattern      = regexp.MustCompile(`(?is)<link\b[^>]*rel\s*=\s*["']canonical["'][^>]*href\s*=\s*["']([^"']+)["'][^>]*>`)
 	htmlCanonicalHrefPattern      = regexp.MustCompile(`(?is)<link\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*rel\s*=\s*["']canonical["'][^>]*>`)
+	yellowArchContentPattern      = regexp.MustCompile(`(?is)<div\b[^>]*class\s*=\s*["'][^"']*\bevent-single__content\b[^"']*["'][^>]*>(.*?)<div\b[^>]*class\s*=\s*["'][^"']*\bevent-single__venue-address-wrapper\b`)
 	sidneyDetailTextPattern       = regexp.MustCompile(`(?is)<body\b[^>]*>(.*?)</body>`)
 	sidneyContentContainerPattern = regexp.MustCompile(`(?is)<div\b[^>]*class\s*=\s*["'][^"']*\beventitem-column-content\b[^"']*["'][^>]*>(.*?)<div\b[^>]*class\s*=\s*["'][^"']*\beventitem-content-footer\b`)
 	sidneyHTMLContentPattern      = regexp.MustCompile(`(?is)<div\b[^>]*class\s*=\s*["'][^"']*\bsqs-html-content\b[^"']*["'][^>]*>(.*?)</div>`)
@@ -37,7 +38,7 @@ var (
 
 func sourceSupportsDetailDescriptionEnrichment(cfg sourceConfig) bool {
 	switch cfg.Key {
-	case CafeNo9Source, DefaultSource:
+	case CafeNo9Source, DefaultSource, YellowArchSource:
 		return true
 	default:
 		return false
@@ -128,7 +129,7 @@ func replayDetailDescriptionsForSource(decoded []decodedReplaySnapshot, cfg sour
 
 func detailLinksForSource(cfg sourceConfig, pageURL string, body []byte, candidates []EventCandidate, limit int) []string {
 	switch cfg.Key {
-	case CafeNo9Source:
+	case CafeNo9Source, YellowArchSource:
 		return detailLinksFromCandidateURLs(candidates, limit)
 	case DefaultSource:
 		links, err := ExtractSidneyAndMatildaEventDetailLinks(pageURL, body, limit)
@@ -215,6 +216,8 @@ func parseDetailDescriptionForSource(cfg sourceConfig, pageURL string, body []by
 		return ParseCafeNo9DetailPage(pageURL, body)
 	case DefaultSource:
 		return ParseSidneyAndMatildaDetailPage(pageURL, body)
+	case YellowArchSource:
+		return ParseYellowArchDetailPage(pageURL, body)
 	default:
 		return eventDetailDescription{}
 	}
@@ -233,6 +236,23 @@ func ParseCafeNo9DetailPage(pageURL string, raw []byte) eventDetailDescription {
 		return detail
 	}
 	detail.Description = htmlParagraphText(match[1])
+	return detail
+}
+
+func ParseYellowArchDetailPage(pageURL string, raw []byte) eventDetailDescription {
+	detail := eventDetailDescription{
+		URL:     strings.TrimSpace(pageURL),
+		Summary: firstHTMLHeadingText(raw),
+	}
+	if canonicalURL := firstCanonicalLink(pageURL, raw); canonicalURL != "" {
+		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, canonicalURL)
+	}
+
+	matches := yellowArchContentPattern.FindAllSubmatch(raw, -1)
+	if len(matches) != 1 || len(matches[0]) < 2 {
+		return detail
+	}
+	detail.Description = htmlParagraphText(matches[0][1])
 	return detail
 }
 

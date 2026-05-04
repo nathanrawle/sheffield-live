@@ -177,6 +177,91 @@ func TestReplayImportRunRebuildsYellowArchReportFromSourcePageSnapshot(t *testin
 	if got, want := report.Calendars[0].Candidates[0].Location, "Yellow Arch Studios"; got != want {
 		t.Fatalf("location = %q, want %q", got, want)
 	}
+	if got, want := report.Calendars[0].Candidates[0].Description, "Doors 7pm. Live from the courtyard bar."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+	if got, want := report.Totals.Snapshots, 1; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+}
+
+func TestReplayImportRunEnrichesYellowArchDescriptionsFromDetailSnapshots(t *testing.T) {
+	finishedAt := time.Date(2026, 5, 4, 22, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         178,
+			StartedAt:  time.Date(2026, 5, 4, 22, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=0 candidates=1 skips=0 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         311,
+					SourceName: "Yellow Arch listings",
+					SourceURL:  "https://www.yellowarch.com/events/",
+					CapturedAt: time.Date(2026, 5, 4, 22, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:        "https://www.yellowarch.com/events/",
+						FinalURL:   "https://www.yellowarch.com/events/",
+						Status:     "200 OK",
+						StatusCode: 200,
+						Body: []byte(`
+							<script type="application/ld+json">
+							  [{
+							    "@context":"https://schema.org",
+							    "@type":"Event",
+							    "name":"Jazz Hot Six",
+							    "url":"/event/jazz-hot-six-14/",
+							    "description":"Martin Winning - ClarinetEmily Chaplais - Violin",
+							    "startDate":"2026-05-05T19:00",
+							    "endDate":"2026-05-05T22:00",
+							    "location":{"name":"Yellow Arch Studios"}
+							  }]
+							</script>
+						`),
+						CapturedAt: time.Date(2026, 5, 4, 22, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         312,
+					SourceName: "Yellow Arch listings event details",
+					SourceURL:  "https://www.yellowarch.com/event/jazz-hot-six-14/",
+					CapturedAt: time.Date(2026, 5, 4, 22, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:        "https://www.yellowarch.com/event/jazz-hot-six-14/",
+						FinalURL:   "https://www.yellowarch.com/event/jazz-hot-six-14/",
+						Status:     "200 OK",
+						StatusCode: 200,
+						Body: []byte(`
+							<html>
+							  <head><link rel="canonical" href="/event/jazz-hot-six-14/"></head>
+							  <body>
+							    <h1>Jazz Hot Six</h1>
+							    <div class="event-single__content">
+							      <p>Martin Winning - Clarinet<br />Emily Chaplais - Violin</p>
+							      <div class="event-single__venue-address-wrapper">Yellow Arch Studios</div>
+							    </div>
+							  </body>
+							</html>
+						`),
+						CapturedAt: time.Date(2026, 5, 4, 22, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 178, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Calendars[0].Candidates[0].Description, "Martin Winning - Clarinet\nEmily Chaplais - Violin"; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+	if got, want := report.Totals.Snapshots, 2; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
 }
 
 func TestReplayImportRunRebuildsCafeNo9ReportFromSourcePageSnapshot(t *testing.T) {

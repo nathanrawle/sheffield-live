@@ -127,7 +127,7 @@ Live ingest:
 - Jazz at The Lescar snapshots the source page and parses repeated listing blocks into review candidates without authoritative source event IDs
 - The Greystones snapshots the events hub, discovers linked month pages, snapshots those pages, and parses repeated month-page listing rows into review candidates
 - Leadmill snapshots the source page and fetched ICS payloads, then keeps only `Live` listings with Sheffield locations
-- Yellow Arch snapshots only the source page and parses embedded JSON-LD event data from that page
+- Yellow Arch snapshots the source page, parses embedded JSON-LD event data from that page, then snapshots candidate detail pages for description enrichment
 - Corporation snapshots the source page, discovers linked event detail pages, snapshots those pages, and parses candidates from the detail-page HTML
 - parses candidates, skips, and errors
 - writes `sources`, `import_runs`, and `snapshots`
@@ -146,7 +146,7 @@ Replay:
 - reconstructs source-specific extraction from stored source page snapshots
 - Sidney & Matilda replays source-page extraction to ICS links and matching ICS snapshots by URL and final URL
 - Leadmill replays source-page extraction to the linked official iCal feed and reapplies the same `Live` plus Sheffield filter from stored ICS snapshots
-- Yellow Arch replays candidate parsing directly from the stored source page snapshot
+- Yellow Arch replays candidate parsing from the stored source page snapshot and replays stored detail-page snapshots for description enrichment without network access
 - Sidney & Matilda and Cafe No. 9 replay stored detail-page snapshots for description enrichment without network access
 
 Stage review groups:
