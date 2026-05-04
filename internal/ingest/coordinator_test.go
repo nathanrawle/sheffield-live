@@ -188,7 +188,7 @@ func TestRunManualCafeNo9PrefersDetailPageDescriptions(t *testing.T) {
 			},
 			"https://www.wegottickets.com/event/700004": {
 				URL:         "https://www.wegottickets.com/event/700004",
-				FinalURL:    "https://www.wegottickets.com/event/700004",
+				FinalURL:    "https://wegottickets.com/f/15737/",
 				Status:      "200 OK",
 				StatusCode:  200,
 				ContentType: "text/html",

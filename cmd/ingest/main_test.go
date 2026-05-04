@@ -823,6 +823,137 @@ func TestParseIngestArgsRejectsAllSourcesFixtureCombination(t *testing.T) {
 	}
 }
 
+func TestParseIngestArgsRejectsRepairDescriptionConflicts(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "stage review groups", args: []string{"-repair-descriptions", "-stage-review-groups"}},
+		{name: "all sources", args: []string{"-repair-descriptions", "-all-sources"}},
+		{name: "fixture", args: []string{"-repair-descriptions", "-review-ics-fixture", "fixture.ics"}},
+		{name: "unsupported source", args: []string{"-repair-descriptions", "-source", ingest.LeadmillSource}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseIngestArgs(tc.args); err == nil {
+				t.Fatal("expected repair description flag conflict")
+			}
+		})
+	}
+}
+
+func TestRunWithArgsRepairDescriptionsUpdatesOnlyDescriptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	seedSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(context.Background(), review.GroupInput{
+		Title:      "Cafe No. 9 singleton",
+		SourceName: "Cafe No. 9 manual ingest",
+		SourceURL:  "https://www.wegottickets.com/Cafe9",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "repair-cafe-1",
+			Name:        "Repair Cafe Show",
+			VenueSlug:   "cafe-no-9",
+			StartAt:     "2026-05-10T18:30:00Z",
+			Status:      "Listed",
+			Description: "",
+			SourceName:  "Cafe No. 9 manual ingest",
+			SourceURL:   "https://www.wegottickets.com/Cafe9",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	if !promoted {
+		t.Fatal("seed promoted = false, want true")
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		if opts.Source != ingest.CafeNo9Source {
+			t.Fatalf("source = %q, want %q", opts.Source, ingest.CafeNo9Source)
+		}
+		return ingest.Report{
+			Source:      ingest.CafeNo9Source,
+			SourceURL:   "https://www.wegottickets.com/Cafe9",
+			ImportRunID: 42,
+			Status:      "succeeded",
+			Calendars: []ingest.CalendarReport{{
+				URL: "https://www.wegottickets.com/Cafe9",
+				Candidates: []ingest.EventCandidate{{
+					UID:         "repair-cafe-1",
+					Summary:     "Repair Cafe Show",
+					Description: "Repaired Cafe No. 9 description with real detail.",
+					Location:    "Cafe No. 9",
+					URL:         "https://www.wegottickets.com/event/repair-cafe-1",
+					Status:      "Listed",
+					StartAt:     "2026-05-10T18:30:00Z",
+				}},
+			}},
+			Totals: ingest.ReportTotals{Candidates: 1},
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{
+		"-db", path,
+		"-source", ingest.CafeNo9Source,
+		"-repair-descriptions",
+		"-http-user-agent", "agent",
+	}, &stdout, io.Discard); err != nil {
+		t.Fatalf("repair descriptions run: %v", err)
+	}
+
+	var got descriptionRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode repair output: %v", err)
+	}
+	if got.DescriptionRepair.Repaired != 1 {
+		t.Fatalf("repaired = %d, want 1", got.DescriptionRepair.Repaired)
+	}
+	if len(got.DescriptionRepair.RepairedSlugs) != 1 || got.DescriptionRepair.RepairedSlugs[0] != seedSlug {
+		t.Fatalf("repaired slugs = %#v, want [%q]", got.DescriptionRepair.RepairedSlugs, seedSlug)
+	}
+
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+	event, ok := st.EventBySlug(seedSlug)
+	if !ok {
+		t.Fatalf("missing seeded event %q", seedSlug)
+	}
+	if event.Description != "Repaired Cafe No. 9 description with real detail." {
+		t.Fatalf("description = %q, want repaired description", event.Description)
+	}
+	if event.Name != "Repair Cafe Show" || event.VenueSlug != "cafe-no-9" {
+		t.Fatalf("event identity changed: %#v", event)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got := countRows(t, db, "review_groups"); got != 0 {
+		t.Fatalf("review groups = %d, want 0", got)
+	}
+}
+
 func TestRunWithArgsReviewICSFixtureCreatesReviewGroupWithoutUserAgent(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sheffield-live.db")
 	fixturePath := filepath.Join("..", "..", "internal", "ingest", "testdata", "sidney.ics")

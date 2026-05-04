@@ -273,7 +273,7 @@ func TestReplayImportRunEnrichesCafeNo9DescriptionsFromDetailSnapshots(t *testin
 					CapturedAt: time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
 					Payload: mustReplaySnapshotPayload(t, FetchResult{
 						URL:        "https://www.wegottickets.com/event/700004",
-						FinalURL:   "https://www.wegottickets.com/event/700004",
+						FinalURL:   "https://wegottickets.com/f/15737/",
 						Status:     "200 OK",
 						StatusCode: 200,
 						Body:       readFixture(t, "cafe9_detail.html"),

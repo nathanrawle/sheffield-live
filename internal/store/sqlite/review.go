@@ -975,6 +975,140 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 	return err
 }
 
+type DescriptionRepairReport struct {
+	Repaired       int      `json:"description_repaired"`
+	Unchanged      int      `json:"description_unchanged"`
+	Skipped        int      `json:"description_skipped"`
+	RepairedSlugs  []string `json:"repaired_event_slugs"`
+	UnchangedSlugs []string `json:"unchanged_event_slugs"`
+	SkippedTitles  []string `json:"skipped_titles"`
+}
+
+func (s *Store) RepairEventDescriptionsFromReport(ctx context.Context, catalog *ingest.Catalog, report ingest.Report) (DescriptionRepairReport, error) {
+	repair := DescriptionRepairReport{
+		RepairedSlugs:  []string{},
+		UnchangedSlugs: []string{},
+		SkippedTitles:  []string{},
+	}
+	if s == nil || s.db == nil {
+		return repair, errors.New("sqlite store is not open")
+	}
+	if catalog == nil {
+		return repair, errors.New("catalog is nil")
+	}
+	if !strings.EqualFold(strings.TrimSpace(report.Status), "succeeded") {
+		return repair, nil
+	}
+
+	groups := ingest.ReviewGroupsFromReportWithCatalog(catalog, report)
+	for _, group := range groups {
+		if strings.TrimSpace(group.AuthoritativeSourceName) == "" ||
+			strings.TrimSpace(group.AuthoritativeSourceURL) == "" ||
+			strings.TrimSpace(group.AuthoritativeSourceEventKey) == "" ||
+			len(group.Candidates) != 1 {
+			repair.Skipped++
+			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(group.Title))
+			continue
+		}
+
+		event, err := singletonResolvedEventFromGroupInput(group, time.Now().UTC())
+		if err != nil {
+			repair.Skipped++
+			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(group.Title))
+			continue
+		}
+		result, err := s.repairAuthoritativeEventDescription(ctx, event, group.AuthoritativeSourceEventKey)
+		if err != nil {
+			return repair, err
+		}
+		switch result.Status {
+		case descriptionRepairRepaired:
+			repair.Repaired++
+			repair.RepairedSlugs = append(repair.RepairedSlugs, result.EventSlug)
+		case descriptionRepairUnchanged:
+			repair.Unchanged++
+			repair.UnchangedSlugs = append(repair.UnchangedSlugs, result.EventSlug)
+		default:
+			repair.Skipped++
+			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(group.Title))
+		}
+	}
+	return repair, nil
+}
+
+type descriptionRepairStatus string
+
+const (
+	descriptionRepairRepaired  descriptionRepairStatus = "repaired"
+	descriptionRepairUnchanged descriptionRepairStatus = "unchanged"
+	descriptionRepairSkipped   descriptionRepairStatus = "skipped"
+)
+
+type descriptionRepairResult struct {
+	Status    descriptionRepairStatus
+	EventSlug string
+}
+
+func (s *Store) repairAuthoritativeEventDescription(ctx context.Context, incoming domain.Event, sourceEventKey string) (descriptionRepairResult, error) {
+	incoming.Description = strings.TrimSpace(incoming.Description)
+	if !shouldReplaceDescription("", incoming.Description) {
+		return descriptionRepairResult{Status: descriptionRepairSkipped}, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return descriptionRepairResult{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	record, found, err := findExistingAuthoritativeEventForDescriptionRepairTx(ctx, tx, incoming, sourceEventKey)
+	if err != nil {
+		return descriptionRepairResult{}, err
+	}
+	if !found {
+		return descriptionRepairResult{Status: descriptionRepairSkipped}, nil
+	}
+	if !shouldReplaceDescription(record.Event.Description, incoming.Description) {
+		return descriptionRepairResult{Status: descriptionRepairUnchanged, EventSlug: record.Event.Slug}, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE events
+		SET description = ?
+		WHERE id = ?
+	`, incoming.Description, record.ID); err != nil {
+		return descriptionRepairResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return descriptionRepairResult{}, err
+	}
+	return descriptionRepairResult{Status: descriptionRepairRepaired, EventSlug: record.Event.Slug}, nil
+}
+
+func findExistingAuthoritativeEventForDescriptionRepairTx(ctx context.Context, tx queryer, incoming domain.Event, sourceEventKey string) (eventRecord, bool, error) {
+	if sourceID, ok, err := loadSourceIDByNameURLTx(ctx, tx, incoming.SourceName, incoming.SourceURL); err != nil {
+		return eventRecord{}, false, err
+	} else if ok {
+		if linked, ok, err := loadEventRecordBySourceLinkTx(ctx, tx, sourceID, sourceEventKey); err != nil {
+			return eventRecord{}, false, err
+		} else if ok {
+			return linked, true, nil
+		}
+	}
+	if legacy, ok, err := loadEventRecordBySlugTx(ctx, tx, incoming.Slug); err != nil {
+		return eventRecord{}, false, err
+	} else if ok {
+		return legacy, true, nil
+	}
+	if matched, found, ambiguous, err := uniqueLiveEventMatchForEventTx(ctx, tx, incoming); err != nil {
+		return eventRecord{}, false, err
+	} else if found && !ambiguous {
+		return matched, true, nil
+	}
+	return eventRecord{}, false, nil
+}
+
 func matchLiveEventsByIdentityTx(ctx context.Context, q queryer, slug, name, venueSlug string, start time.Time) ([]eventRecord, error) {
 	matched := make(map[int64]eventRecord)
 
@@ -1188,7 +1322,7 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 	if authoritative.Status != "" {
 		updated.Status = authoritative.Status
 	}
-	if updated.Description == "" {
+	if shouldReplaceDescription(updated.Description, authoritative.Description) {
 		updated.Description = authoritative.Description
 	}
 	updated.SourceName = authoritative.SourceName
@@ -1215,6 +1349,50 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 		return domain.Event{}, err
 	}
 	return updated, nil
+}
+
+func shouldReplaceDescription(existing, incoming string) bool {
+	incoming = strings.TrimSpace(incoming)
+	if incoming == "" || !descriptionIsClean(incoming) {
+		return false
+	}
+	existing = strings.TrimSpace(existing)
+	return existing == "" || descriptionIsGeneratedMarkup(existing)
+}
+
+func descriptionIsClean(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	switch {
+	case strings.Contains(lower, "#block-"):
+		return false
+	case strings.Contains(lower, "--tweak-"):
+		return false
+	case strings.Contains(lower, "@media screen"):
+		return false
+	case strings.Contains(lower, "<script") || strings.Contains(lower, "<style"):
+		return false
+	case strings.EqualFold(value, "buy tickets"):
+		return false
+	case strings.EqualFold(value, "basement buy tickets"):
+		return false
+	case len([]rune(value)) < 40 && !strings.ContainsAny(value, ".!?"):
+		return false
+	default:
+		return true
+	}
+}
+
+func descriptionIsGeneratedMarkup(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return strings.Contains(lower, "#block-") ||
+		strings.Contains(lower, "--tweak-") ||
+		strings.Contains(lower, "@media screen") ||
+		strings.Contains(lower, "<script") ||
+		strings.Contains(lower, "<style")
 }
 
 func ensureEventSourceLinkTx(ctx context.Context, tx execer, eventID, sourceID int64, sourceEventKey string, now time.Time) error {

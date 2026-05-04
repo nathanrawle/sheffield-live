@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 
 type eventDetailDescription struct {
 	URL         string
+	URLAliases  []string
 	Summary     string
 	StartAt     string
 	Description string
@@ -28,6 +30,8 @@ var (
 	htmlParagraphBreakPattern     = regexp.MustCompile(`(?is)<br\s*/?>\s*<br\s*/?>|</p\s*>|</(?:div|section|article|main)\s*>`)
 	htmlLineBreakPattern          = regexp.MustCompile(`(?i)<br\s*/?>|</(?:li|h[1-6])\s*>`)
 	cafe9EventInfoPattern         = regexp.MustCompile(`(?is)<h[1-6]\b[^>]*>\s*Event\s+information\s*</h[1-6]>(.*?)(?:<h[1-6]\b|<footer\b|</main>|</body>|</html>)`)
+	htmlCanonicalLinkPattern      = regexp.MustCompile(`(?is)<link\b[^>]*rel\s*=\s*["']canonical["'][^>]*href\s*=\s*["']([^"']+)["'][^>]*>`)
+	htmlCanonicalHrefPattern      = regexp.MustCompile(`(?is)<link\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*rel\s*=\s*["']canonical["'][^>]*>`)
 	sidneyDetailTextPattern       = regexp.MustCompile(`(?is)<body\b[^>]*>(.*?)</body>`)
 	sidneyContentContainerPattern = regexp.MustCompile(`(?is)<div\b[^>]*class\s*=\s*["'][^"']*\beventitem-column-content\b[^"']*["'][^>]*>(.*?)<div\b[^>]*class\s*=\s*["'][^"']*\beventitem-content-footer\b`)
 	sidneyHTMLContentPattern      = regexp.MustCompile(`(?is)<div\b[^>]*class\s*=\s*["'][^"']*\bsqs-html-content\b[^"']*["'][^>]*>(.*?)</div>`)
@@ -80,6 +84,7 @@ func liveDetailDescriptionsForCandidates(ctx context.Context, st Store, fetcher 
 			continue
 		}
 		detail := parseDetailDescriptionForSource(cfg, firstNonEmpty(fetchResult.FinalURL, fetchResult.URL), fetchResult.Body)
+		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, fetchResult.URL, fetchResult.FinalURL, detail.URL)
 		if strings.TrimSpace(detail.Description) == "" {
 			continue
 		}
@@ -114,6 +119,7 @@ func replayDetailDescriptionsForSource(decoded []decodedReplaySnapshot, cfg sour
 			continue
 		}
 		detail := parseDetailDescriptionForSource(cfg, firstNonEmpty(snapshot.envelope.Metadata.FinalURL, snapshot.envelope.Metadata.URL), snapshot.body)
+		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, snapshot.envelope.Metadata.URL, snapshot.envelope.Metadata.FinalURL, detail.URL)
 		if strings.TrimSpace(detail.Description) == "" {
 			continue
 		}
@@ -174,7 +180,11 @@ func mergeDetailDescriptionsWithPreference(candidates []EventCandidate, details 
 		if description == "" {
 			continue
 		}
-		if key := detailURLKey(detail.URL); key != "" {
+		for _, alias := range appendDetailURLAliases(detail.URLAliases, detail.URL) {
+			key := detailURLKey(alias)
+			if key == "" {
+				continue
+			}
 			byURL[key] = description
 		}
 		if key := detailSummaryStartKey(detail.Summary, detail.StartAt); key != "" {
@@ -216,6 +226,9 @@ func ParseCafeNo9DetailPage(pageURL string, raw []byte) eventDetailDescription {
 	detail := eventDetailDescription{
 		URL:     strings.TrimSpace(pageURL),
 		Summary: firstHTMLHeadingText(raw),
+	}
+	if canonicalURL := firstCanonicalLink(raw); canonicalURL != "" {
+		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, canonicalURL)
 	}
 	match := cafe9EventInfoPattern.FindSubmatch(raw)
 	if len(match) < 2 {
@@ -280,6 +293,15 @@ func ParseSidneyAndMatildaDetailPage(pageURL string, raw []byte) eventDetailDesc
 		URL:     strings.TrimSpace(pageURL),
 		Summary: firstHTMLHeadingText(raw),
 	}
+	if canonicalURL := firstCanonicalLink(raw); canonicalURL != "" {
+		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, canonicalURL)
+	}
+	if structured := parseSidneyAndMatildaStructuredDetail(raw); strings.TrimSpace(structured.Description) != "" {
+		structured.URL = firstNonEmpty(detail.URL, structured.URL)
+		structured.URLAliases = appendDetailURLAliases(detail.URLAliases, structured.URLAliases...)
+		structured.Summary = firstNonEmpty(structured.Summary, detail.Summary)
+		return structured
+	}
 	lines := htmlLines(raw)
 	detail.StartAt = sidneyDetailStartAt(lines)
 	detail.Description = sidneyDetailDescription(raw)
@@ -341,7 +363,7 @@ func sidneyDetailContent(raw []byte) []byte {
 	if match := sidneyHTMLContentPattern.FindSubmatch(body); len(match) >= 2 {
 		return match[1]
 	}
-	return body
+	return nil
 }
 
 func sidneyIsIgnorableDescriptionParagraph(paragraph string) bool {
@@ -392,6 +414,84 @@ func firstHTMLHeadingText(raw []byte) string {
 		return ""
 	}
 	return htmlCleanText(string(match[1]))
+}
+
+func firstCanonicalLink(raw []byte) string {
+	match := htmlCanonicalLinkPattern.FindSubmatch(raw)
+	if len(match) < 2 {
+		match = htmlCanonicalHrefPattern.FindSubmatch(raw)
+	}
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(html.UnescapeString(string(match[1])))
+}
+
+func parseSidneyAndMatildaStructuredDetail(raw []byte) eventDetailDescription {
+	matches := yellowArchJSONLDPattern.FindAllSubmatch(raw, -1)
+	for _, match := range matches {
+		nodes, found, err := parseYellowArchJSONLDScript(match[1])
+		if err != nil || !found {
+			continue
+		}
+		for _, node := range nodes {
+			name := yellowArchJSONString(node["name"])
+			description := cleanStructuredDescription(yellowArchJSONString(node["description"]))
+			if !descriptionLooksClean(description) {
+				continue
+			}
+			startAt := ""
+			if startText := yellowArchJSONString(node["startDate"]); startText != "" {
+				if parsed, err := parseYellowArchDateTime(startText); err == nil {
+					startAt = formatTime(parsed)
+				}
+			}
+			rawURL := yellowArchJSONString(node["url"])
+			return eventDetailDescription{
+				URL:         rawURL,
+				URLAliases:  appendDetailURLAliases(nil, rawURL),
+				Summary:     strings.TrimSuffix(name, " — Sidney&Matilda"),
+				StartAt:     startAt,
+				Description: description,
+			}
+		}
+	}
+
+	// Squarespace sometimes exposes only its static context rather than useful JSON-LD.
+	if description := sidneyDescriptionFromStaticContext(raw); descriptionLooksClean(description) {
+		return eventDetailDescription{Description: description}
+	}
+	return eventDetailDescription{}
+}
+
+func sidneyDescriptionFromStaticContext(raw []byte) string {
+	const marker = `Static.SQUARESPACE_CONTEXT = `
+	text := string(raw)
+	idx := strings.Index(text, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := text[idx+len(marker):]
+	end := strings.Index(rest, ";</script>")
+	if end < 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(rest[:end]), &payload); err != nil {
+		return ""
+	}
+	item, _ := payload["item"].(map[string]any)
+	return cleanStructuredDescription(yellowArchJSONString(item["body"]))
+}
+
+func cleanStructuredDescription(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	paragraphs := htmlParagraphs([]byte(value))
+	if len(paragraphs) == 0 {
+		return htmlCleanText(value)
+	}
+	return strings.Join(paragraphs, "\n\n")
 }
 
 func htmlLines(raw []byte) []string {
@@ -470,6 +570,27 @@ func detailURLKey(value string) string {
 	return strings.TrimRight(parsed.String(), "/")
 }
 
+func appendDetailURLAliases(dst []string, values ...string) []string {
+	seen := make(map[string]struct{}, len(dst)+len(values))
+	out := make([]string, 0, len(dst)+len(values))
+	for _, value := range append(dst, values...) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := detailURLKey(value)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func detailSummaryStartKey(summary, startAt string) string {
 	summary = cafe9WhitespacePattern.ReplaceAllString(strings.ToLower(strings.TrimSpace(summary)), " ")
 	startAt = strings.TrimSpace(startAt)
@@ -477,4 +598,30 @@ func detailSummaryStartKey(summary, startAt string) string {
 		return ""
 	}
 	return summary + "\x00" + startAt
+}
+
+func descriptionLooksClean(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	switch {
+	case strings.Contains(lower, "#block-"):
+		return false
+	case strings.Contains(lower, "--tweak-"):
+		return false
+	case strings.Contains(lower, "@media screen"):
+		return false
+	case strings.Contains(lower, "<script") || strings.Contains(lower, "<style"):
+		return false
+	case strings.EqualFold(value, "buy tickets"):
+		return false
+	case strings.EqualFold(value, "basement buy tickets"):
+		return false
+	case len([]rune(value)) < 40 && !strings.ContainsAny(value, ".!?"):
+		return false
+	default:
+		return true
+	}
 }

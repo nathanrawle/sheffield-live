@@ -93,6 +93,28 @@ func TestParseSidneyAndMatildaDetailPageExtractsDescription(t *testing.T) {
 	}
 }
 
+func TestParseSidneyAndMatildaDetailPageDoesNotFallBackToWholeBody(t *testing.T) {
+	raw := []byte(`
+		<html>
+			<body>
+				<h1>Liam C</h1>
+				<style>
+					#block-d4b153a9777175667262 { --tweak-text-block-radius: 0px; }
+					@media screen and (max-width: 767px) { #block-d4b153a9777175667262 { } }
+				</style>
+				<div>Previous Previous May 6 Flock House Party</div>
+				<div>Next Next May 7 S&amp;M Presents: Nick Diver</div>
+			</body>
+		</html>
+	`)
+
+	detail := ParseSidneyAndMatildaDetailPage("https://www.sidneyandmatilda.com/events/liam-c", raw)
+
+	if detail.Description != "" {
+		t.Fatalf("description = %q, want empty", detail.Description)
+	}
+}
+
 func readFixture(t *testing.T, name string) []byte {
 	t.Helper()
 

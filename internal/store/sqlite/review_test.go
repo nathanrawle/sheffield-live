@@ -2663,6 +2663,91 @@ func TestPromoteSingletonReviewGroupIfMissingUpdatesLinkedEventInPlace(t *testin
 	}
 }
 
+func TestShouldReplaceDescriptionPolicy(t *testing.T) {
+	cases := []struct {
+		name     string
+		existing string
+		incoming string
+		want     bool
+	}{
+		{name: "blank existing clean incoming", existing: "", incoming: "A clean event description with useful details.", want: true},
+		{name: "generated existing clean incoming", existing: "#block-d4b153a9777175667262 { --tweak-text-block-radius: 0px; } @media screen {}", incoming: "A clean event description with useful details.", want: true},
+		{name: "clean existing clean incoming", existing: "Existing clean description.", incoming: "New clean description.", want: false},
+		{name: "blank incoming", existing: "", incoming: "", want: false},
+		{name: "generated incoming", existing: "", incoming: "#block-d4b153a9777175667262 { --tweak-text-block-radius: 0px; }", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldReplaceDescription(tc.existing, tc.incoming); got != tc.want {
+				t.Fatalf("shouldReplaceDescription(%q, %q) = %v, want %v", tc.existing, tc.incoming, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRepairEventDescriptionsFromReportUpdatesOnlyEligibleDescriptions(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	blankSlug := mustPromoteCafeNo9Event(t, st, "blank-eligible", "Blank Eligible", "2026-05-10T18:30:00Z", "")
+	generatedSlug := mustPromoteCafeNo9Event(t, st, "generated-eligible", "Generated Eligible", "2026-05-11T18:30:00Z", "#block-d4b153a9777175667262 { --tweak-text-block-radius: 0px; } @media screen {}")
+	cleanSlug := mustPromoteCafeNo9Event(t, st, "clean-preserved", "Clean Preserved", "2026-05-12T18:30:00Z", "Existing clean description.")
+	beforeGroups := mustCount(t, db, "review_groups")
+	beforeEvents := mustCount(t, db, "events")
+
+	repair, err := st.RepairEventDescriptionsFromReport(ctx, mustReviewCatalog(t), ingest.Report{
+		Source:    ingest.CafeNo9Source,
+		SourceURL: "https://www.wegottickets.com/Cafe9",
+		Status:    "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{
+				cafeNo9RepairCandidate("blank-eligible", "Blank Eligible", "2026-05-10T18:30:00Z", "Replacement description for the blank event."),
+				cafeNo9RepairCandidate("generated-eligible", "Generated Eligible", "2026-05-11T18:30:00Z", "Replacement description for generated markup."),
+				cafeNo9RepairCandidate("clean-preserved", "Clean Preserved", "2026-05-12T18:30:00Z", "Incoming description should not replace clean existing text."),
+				cafeNo9RepairCandidate("new-skipped", "New Skipped", "2026-05-13T18:30:00Z", "No existing event should be created by repair."),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("repair descriptions: %v", err)
+	}
+
+	if repair.Repaired != 2 {
+		t.Fatalf("repaired = %d, want 2", repair.Repaired)
+	}
+	if repair.Unchanged != 1 {
+		t.Fatalf("unchanged = %d, want 1", repair.Unchanged)
+	}
+	if repair.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", repair.Skipped)
+	}
+	if got := mustCount(t, db, "review_groups"); got != beforeGroups {
+		t.Fatalf("review groups = %d, want unchanged %d", got, beforeGroups)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEvents {
+		t.Fatalf("events = %d, want unchanged %d", got, beforeEvents)
+	}
+
+	assertEventDescription(t, st, blankSlug, "Replacement description for the blank event.")
+	assertEventDescription(t, st, generatedSlug, "Replacement description for generated markup.")
+	assertEventDescription(t, st, cleanSlug, "Existing clean description.")
+}
+
 func TestPromoteSingletonReviewGroupIfMissingClearsExistingEndWhenOwnedVenueImportOmitsEnd(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -3048,6 +3133,67 @@ func assertDraftChoice(t *testing.T, group review.Group, field review.Field, can
 	}
 	if choice.UpdatedAt.IsZero() {
 		t.Fatalf("%s updated_at is zero", field)
+	}
+}
+
+func mustReviewCatalog(t *testing.T) *ingest.Catalog {
+	t.Helper()
+
+	catalog, err := ingest.LoadRepoCatalog()
+	if err != nil {
+		t.Fatalf("load repo catalog: %v", err)
+	}
+	return catalog
+}
+
+func mustPromoteCafeNo9Event(t *testing.T, st *Store, externalID, name, startAt, description string) string {
+	t.Helper()
+
+	slug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(context.Background(), review.GroupInput{
+		Title:      "Cafe No. 9 singleton",
+		SourceName: "Cafe No. 9 manual ingest",
+		SourceURL:  "https://www.wegottickets.com/Cafe9",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  externalID,
+			Name:        name,
+			VenueSlug:   "cafe-no-9",
+			StartAt:     startAt,
+			Status:      "Listed",
+			Description: description,
+			SourceName:  "Cafe No. 9 manual ingest",
+			SourceURL:   "https://www.wegottickets.com/Cafe9",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote Cafe No. 9 event: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	return slug
+}
+
+func cafeNo9RepairCandidate(uid, summary, startAt, description string) ingest.EventCandidate {
+	return ingest.EventCandidate{
+		UID:         uid,
+		Summary:     summary,
+		Description: description,
+		Location:    "Cafe No. 9",
+		URL:         "https://www.wegottickets.com/event/" + uid,
+		Status:      "Listed",
+		StartAt:     startAt,
+	}
+}
+
+func assertEventDescription(t *testing.T, st *Store, slug, want string) {
+	t.Helper()
+
+	event, ok := st.EventBySlug(slug)
+	if !ok {
+		t.Fatalf("missing event %q", slug)
+	}
+	if event.Description != want {
+		t.Fatalf("%s description = %q, want %q", slug, event.Description, want)
 	}
 }
 
