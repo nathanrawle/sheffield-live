@@ -910,6 +910,79 @@ func TestStageReviewGroupUnanimousDuplicateAutoResolvesWithNewProvisionalVenue(t
 	}
 }
 
+func TestStageReviewGroupUnanimousDuplicateAutoResolvesWhenExplicitVenueSlugConflictsWithEvidence(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeVenueCount := mustCount(t, db, "venues")
+	beforeEventCount := mustCount(t, db, "events")
+
+	result, err := st.StageReviewGroup(ctx, review.GroupInput{
+		Title:      "Unanimous duplicate conflicting venue evidence",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:unanimous-conflicting-venue.ics",
+		StagingKey: "v1:unanimous-conflicting-venue",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:       "candidate-a",
+				Name:             "Known venue show",
+				VenueSlug:        "leadmill",
+				VenueText:        "Sidney & Matilda",
+				VenueLocationRaw: "Rivelin Works, 46 Sidney Street, Sheffield",
+				StartAt:          "2026-05-10T18:30:00Z",
+				EndAt:            "2026-05-10T22:00:00Z",
+				Status:           "Listed",
+				Description:      "Duplicate one",
+			},
+			{
+				ExternalID:       "candidate-b",
+				Name:             "Known venue show",
+				VenueSlug:        "leadmill",
+				VenueText:        "Sidney & Matilda",
+				VenueLocationRaw: "Rivelin Works, 46 Sidney Street, Sheffield",
+				StartAt:          "2026-05-10T18:30:00Z",
+				EndAt:            "2026-05-10T22:00:00Z",
+				Status:           "Listed",
+				Description:      "Duplicate one",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !result.Created {
+		t.Fatal("created = false, want true")
+	}
+	if !result.AutoResolved {
+		t.Fatal("auto resolved = false, want true")
+	}
+	if got, want := result.AutoResolvedResult, "unanimous_duplicate"; got != want {
+		t.Fatalf("auto resolved result = %q, want %q", got, want)
+	}
+
+	event, ok := st.EventBySlug("live-known-venue-show-leadmill-20260510183000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	if event.VenueSlug != "leadmill" {
+		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "leadmill")
+	}
+	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
+		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
+	}
+}
+
 func TestStageReviewGroupCreatesProvisionalVenueImmediatelyWhenVenueIsMissing(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -983,6 +1056,75 @@ func TestStageReviewGroupCreatesProvisionalVenueImmediatelyWhenVenueIsMissing(t 
 	}
 	if got, want := group.Candidates[0].VenueSlug, "imagniary-hal-temp"; got != want {
 		t.Fatalf("staged venue slug = %q, want preserved %q", got, want)
+	}
+}
+
+func TestStageReviewGroupGenericICSLocationVariantsReuseProvisionalVenueSlug(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeVenueCount := mustCount(t, db, "venues")
+
+	first := review.GroupInput{
+		Title:      "Generic ICS provisional venue one",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:generic-provisional-one.ics",
+		StagingKey: "v1:generic-provisional-one",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "candidate-a",
+			Name:             "Generic hall show",
+			VenueSlug:        "imaginary-hall-1-void-street-sheffield",
+			VenueText:        "Imaginary Hall, 1 Void Street, Sheffield",
+			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "First generic location variant.",
+		}},
+	}
+	if _, err := st.StageReviewGroup(ctx, first); err != nil {
+		t.Fatalf("stage first review group: %v", err)
+	}
+	if _, ok := st.VenueBySlug("imaginary-hall"); !ok {
+		t.Fatal("normalized provisional venue not found after first stage")
+	}
+	if _, ok := st.VenueBySlug("imaginary-hall-1-void-street-sheffield"); ok {
+		t.Fatal("full-location provisional venue slug was inserted")
+	}
+
+	second := review.GroupInput{
+		Title:      "Generic ICS provisional venue two",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:generic-provisional-two.ics",
+		StagingKey: "v1:generic-provisional-two",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "candidate-b",
+			Name:             "Generic hall late show",
+			VenueSlug:        "imaginary-hall-1-void-street-sheffield-s1-2ja",
+			VenueText:        "Imaginary Hall, 1 Void Street, Sheffield, S1 2JA",
+			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield, S1 2JA",
+			StartAt:          "2026-05-11T18:30:00Z",
+			EndAt:            "2026-05-11T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Second generic location variant.",
+		}},
+	}
+	if _, err := st.StageReviewGroup(ctx, second); err != nil {
+		t.Fatalf("stage second review group: %v", err)
+	}
+	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
+		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
+	}
+	if _, ok := st.VenueBySlug("imaginary-hall-1-void-street-sheffield-s1-2ja"); ok {
+		t.Fatal("postcode variant provisional venue slug was inserted")
 	}
 }
 
@@ -2353,6 +2495,61 @@ func TestResolveReviewGroupCreatesProvisionalVenueWhenVenueIsMissing(t *testing.
 	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
 		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
 	}
+}
+
+func TestResolveReviewGroupUsesExplicitVenueSlugWhenVenueEvidenceConflicts(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Conflicting venue evidence")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
+		WHERE id = ?
+	`, "leadmill", "Sidney & Matilda", "Rivelin Works, 46 Sidney Street, Sheffield", group.Candidates[0].ID); err != nil {
+		t.Fatalf("rewrite venue evidence: %v", err)
+	}
+
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	event, ok := st.EventBySlug("live-solo-show-leadmill-20260503190000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	if event.VenueSlug != "leadmill" {
+		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "leadmill")
+	}
+
+	after, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group after resolve: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after resolve")
+	}
+	assertDraftChoice(t, after, review.FieldVenueSlug, group.Candidates[0].ID, "leadmill")
 }
 
 func TestResolveReviewGroupCreatesProvisionalVenueFromNormalizedHumanEvidence(t *testing.T) {

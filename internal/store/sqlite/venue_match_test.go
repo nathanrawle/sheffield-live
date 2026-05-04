@@ -26,6 +26,41 @@ func TestVenueMatchDirectSlugMatch(t *testing.T) {
 	assertVenueMatch(t, match, venueMatchResolved, "leadmill", "The Leadmill")
 }
 
+func TestVenueMatchExplicitSlugWinsOverAmbiguousEvidence(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if _, err := st.db.Exec(`
+		INSERT INTO venues (
+			slug,
+			name,
+			address,
+			neighbourhood,
+			description,
+			website,
+			origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "sidney-and-matilda-duplicate", "Sidney & Matilda Duplicate", "Rivelin Works, 46 Sidney Street, Sheffield", "Cultural Industries Quarter", "Duplicate venue", "", string(domain.OriginTest)); err != nil {
+		t.Fatalf("insert duplicate venue: %v", err)
+	}
+
+	matcher, err := loadVenueMatcher(ctx, st.db)
+	if err != nil {
+		t.Fatalf("load venue matcher: %v", err)
+	}
+
+	match := matcher.matchCandidate(review.Candidate{
+		VenueSlug:        "leadmill",
+		VenueText:        "Sidney & Matilda",
+		VenueLocationRaw: "Rivelin Works, 46 Sidney Street, Sheffield",
+	})
+	assertVenueMatch(t, match, venueMatchResolved, "leadmill", "The Leadmill")
+}
+
 func TestVenueMatchNameBasedMatch(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
@@ -113,6 +148,18 @@ func TestVenueMatchNoMatchResult(t *testing.T) {
 	})
 	if match.status != venueMatchNoMatch {
 		t.Fatalf("match status = %v, want no match", match.status)
+	}
+}
+
+func TestProvisionalVenueSlugPrefersLocationHeadOverFullVenueText(t *testing.T) {
+	candidate := review.Candidate{
+		VenueSlug:        "imaginary-hall-1-void-street-sheffield-s1-2ja",
+		VenueText:        "Imaginary Hall, 1 Void Street, Sheffield, S1 2JA",
+		VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield, S1 2JA",
+	}
+
+	if got, want := provisionalVenueSlug(candidate), "imaginary-hall"; got != want {
+		t.Fatalf("provisional venue slug = %q, want %q", got, want)
 	}
 }
 

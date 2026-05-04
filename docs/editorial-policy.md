@@ -62,8 +62,10 @@ Canonical-backed duplicate resolution follows two precedence rules:
 
 Venue matching and provisional venue creation follow these rules:
 
+- when a selected staged `venue_slug` already names one existing venue, that exact slug wins even if `venue_text` or `venue_location_raw` point somewhere else
 - when the selected venue evidence uniquely matches an existing venue, review resolution canonicalizes to that venue
 - staging or non-authoritative singleton auto-promotion can create a provisional venue row immediately when venue evidence is uniquely new
+- new provisional venue slugs prefer the location-head venue name over the full generic ICS `LOCATION` string
 - when the selected venue evidence matches no existing venue, review resolution creates a provisional venue row and publishes against it in the same transaction if an earlier flow did not already do so
 - when the selected venue evidence is ambiguous, review resolution fails closed rather than guessing
 

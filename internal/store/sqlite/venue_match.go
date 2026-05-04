@@ -59,6 +59,10 @@ func (m venueMatcher) add(index map[string][]domain.Venue, key string, venue dom
 }
 
 func (m venueMatcher) matchCandidate(candidate review.Candidate) venueMatchResult {
+	if match := resolvedVenueSlugMatch(m.bySlug[strings.TrimSpace(candidate.VenueSlug)]); match.status == venueMatchResolved {
+		return match
+	}
+
 	var selected *domain.Venue
 	ambiguous := false
 
@@ -95,6 +99,17 @@ func (m venueMatcher) matchCandidate(candidate review.Candidate) venueMatchResul
 		return venueMatchResult{status: venueMatchNoMatch}
 	default:
 		return venueMatchResult{status: venueMatchResolved, slug: selected.Slug, name: selected.Name}
+	}
+}
+
+func resolvedVenueSlugMatch(matches []domain.Venue) venueMatchResult {
+	if len(matches) != 1 {
+		return venueMatchResult{status: venueMatchNoMatch}
+	}
+	return venueMatchResult{
+		status: venueMatchResolved,
+		slug:   matches[0].Slug,
+		name:   matches[0].Name,
 	}
 }
 
@@ -328,16 +343,24 @@ func normalizedAddressNameKey(value string) string {
 }
 
 func provisionalVenueSlug(candidate review.Candidate) string {
-	if slug := normalizedVenueKey(candidate.VenueText); slug != "" {
+	if slug := venueLocationHeadSlug(candidate.VenueLocationRaw); slug != "" {
 		return slug
-	}
-	if probes := venueLocationSlugProbes(candidate.VenueLocationRaw); len(probes) > 0 {
-		return probes[0]
 	}
 	if slug := strings.TrimSpace(candidate.VenueSlug); slug != "" {
 		return slug
 	}
+	if slug := venueLocationHeadSlug(candidate.VenueText); slug != "" {
+		return slug
+	}
 	return ""
+}
+
+func venueLocationHeadSlug(value string) string {
+	probes := venueLocationSlugProbes(value)
+	if len(probes) == 0 {
+		return ""
+	}
+	return probes[0]
 }
 
 func provisionalVenueName(candidate review.Candidate, slug string) string {

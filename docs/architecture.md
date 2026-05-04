@@ -87,6 +87,8 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - singleton new listings may either auto-promote or stay in review
 - any singleton may be attempted for auto-promotion when it is the first matching live record seen
 - provisional venue creation derives address and neighbourhood from source-derived venue evidence, dropping duplicate venue-name address lines and recognizing Sheffield district names in the address
+- exact staged `venue_slug` matches take precedence over conflicting venue-text or raw-location heuristics during canonical venue resolution
+- new provisional venue slugs prefer the location-head venue name over the full generic ICS `LOCATION` string
 - authoritative source identity controls overwrite rights and can upgrade a provisional event in place
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
 - manual review resolution first canonicalizes the selected venue to an existing venue when deterministic evidence matching yields one unique live venue
