@@ -24,8 +24,8 @@ Every ingest run fetches the source page and stores a raw source-page snapshot.
 
 After that, parsing depends on the source mode:
 
-- Sidney & Matilda extracts ICS export links from the source page, fetches each ICS feed, stores raw ICS snapshots, and parses candidates, skips, and parse errors from ICS.
-- Cafe No. 9 parses music listings directly from the WeGotTickets organiser page snapshot and filters out offsite and non-music rows.
+- Sidney & Matilda extracts ICS export links and event detail links from the source page, fetches each ICS feed and detail page, stores raw snapshots, and parses candidates, skips, and parse errors from ICS. ICS remains authoritative for event identity and times; detail pages can enrich blank descriptions from clean schema.org `Event` JSON-LD or bounded `.eventitem-column-content .sqs-html-content` content only.
+- Cafe No. 9 parses music listings directly from the WeGotTickets organiser page snapshots, follows pagination, filters out offsite and non-music rows, and enriches descriptions from each event detail page's `Event information` section.
 - Jazz at The Lescar parses repeated source-page listing blocks into review candidates using the page-level default music time plus the footer year hint.
 - The Greystones extracts linked month pages from the events hub, stores those month-page snapshots, and parses repeated listing rows from each month page into review candidates.
 - Leadmill extracts the official iCal feed from the source page, fetches that ICS payload, stores the raw ICS snapshot, and keeps only `Live` listings with Sheffield locations.
@@ -42,13 +42,13 @@ The runtime no longer branches on source key directly. Each catalog entry select
 
 Template-fit families:
 
-- Sidney & Matilda uses a configured ICS-link extractor plus the generic ICS parser
+- Sidney & Matilda uses a configured ICS-link extractor, detail-link extractor, generic ICS parser, and conservative detail-page description parser
 - Yellow Arch uses a configured JSON-LD source-page parser
 
 Custom adapter families:
 
 - Leadmill uses a custom ICS parser family
-- Cafe No. 9 uses custom source-page parser and pagination families
+- Cafe No. 9 uses custom source-page parser, pagination, and detail-page description parser families
 - Jazz at The Lescar uses a custom source-page parser family
 - The Greystones uses custom month-link and month-page families
 - Corporation uses custom detail-link and detail-page families
