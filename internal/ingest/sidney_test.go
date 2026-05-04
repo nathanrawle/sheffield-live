@@ -57,6 +57,42 @@ func TestExtractSidneyAndMatildaICSLinksAcceptsFormatICALAndLegacyLabel(t *testi
 	}
 }
 
+func TestExtractSidneyAndMatildaEventDetailLinks(t *testing.T) {
+	body := []byte(`
+		<a href="/events/leo-middea-brazil">Leo Middea</a>
+		<a href="/events/leo-middea-brazil?format=ical">ICS</a>
+		<a href="https://tickets.example.test/leo">BUY TICKETS</a>
+		<a href="/events/w-i-t-c-h">View Event →</a>
+	`)
+
+	got, err := ExtractSidneyAndMatildaEventDetailLinks("https://www.sidneyandmatilda.com/events/", body, 20)
+	if err != nil {
+		t.Fatalf("extract detail links: %v", err)
+	}
+
+	want := []string{
+		"https://www.sidneyandmatilda.com/events/leo-middea-brazil",
+		"https://www.sidneyandmatilda.com/events/w-i-t-c-h",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("links = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseSidneyAndMatildaDetailPageExtractsDescription(t *testing.T) {
+	detail := ParseSidneyAndMatildaDetailPage("https://www.sidneyandmatilda.com/events/leo-middea-brazil", readFixture(t, "sidney_detail.html"))
+
+	if got, want := detail.Summary, "Leo Middea (Brazil)"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+	if got, want := detail.StartAt, "2026-05-04T18:30:00Z"; got != want {
+		t.Fatalf("start at = %q, want %q", got, want)
+	}
+	if got, want := detail.Description, "Leo Middea returns to Sheffield in 2026.\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
+
 func readFixture(t *testing.T, name string) []byte {
 	t.Helper()
 

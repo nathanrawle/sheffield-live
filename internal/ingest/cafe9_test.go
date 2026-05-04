@@ -200,3 +200,17 @@ func TestParseCafeNo9PageSkipsMissingStartTime(t *testing.T) {
 		t.Fatalf("skip reason = %q, want %q", got, want)
 	}
 }
+
+func TestParseCafeNo9DetailPageExtractsEventInformation(t *testing.T) {
+	detail := ParseCafeNo9DetailPage("https://www.wegottickets.com/event/681615", readFixture(t, "cafe9_detail.html"))
+
+	if got, want := detail.URL, "https://www.wegottickets.com/event/681615"; got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+	if got, want := detail.Summary, "An evening with The Leisure Society at Cafe No9"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+	if got, want := detail.Description, "The Leisure Society were founded by Nick Hemming.\nExpect oustanding songwriting and production craft."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
