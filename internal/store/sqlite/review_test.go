@@ -384,7 +384,7 @@ func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.
 		{
 			ExternalID:       "candidate-b",
 			Name:             "Candidate B",
-			VenueSlug:        "yellow-arch",
+			VenueSlug:        "yellow-arch-restaged",
 			VenueText:        "Yellow Arch refreshed",
 			VenueLocationRaw: "Yellow Arch refreshed, 30-36 Burton Road, Neepsend, S3 8BX",
 			StartAt:          "2026-05-02T19:30:00Z",
@@ -399,7 +399,7 @@ func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.
 		{
 			ExternalID:       "candidate-a",
 			Name:             "Candidate A",
-			VenueSlug:        "leadmill",
+			VenueSlug:        "leadmill-restaged",
 			VenueText:        "Leadmill refreshed",
 			VenueLocationRaw: "The Leadmill refreshed, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
 			StartAt:          "2026-05-01T19:00:00Z",
@@ -459,11 +459,17 @@ func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.
 	if reused.Candidates[0].VenueText != "Leadmill refreshed" {
 		t.Fatalf("candidate 0 venue text = %q, want %q", reused.Candidates[0].VenueText, "Leadmill refreshed")
 	}
+	if reused.Candidates[0].VenueSlug != "leadmill" {
+		t.Fatalf("candidate 0 venue slug = %q, want %q", reused.Candidates[0].VenueSlug, "leadmill")
+	}
 	if reused.Candidates[0].VenueLocationRaw != "The Leadmill refreshed, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE" {
 		t.Fatalf("candidate 0 venue location raw = %q, want %q", reused.Candidates[0].VenueLocationRaw, "The Leadmill refreshed, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE")
 	}
 	if reused.Candidates[1].VenueText != "Yellow Arch refreshed" {
 		t.Fatalf("candidate 1 venue text = %q, want %q", reused.Candidates[1].VenueText, "Yellow Arch refreshed")
+	}
+	if reused.Candidates[1].VenueSlug != "yellow-arch" {
+		t.Fatalf("candidate 1 venue slug = %q, want %q", reused.Candidates[1].VenueSlug, "yellow-arch")
 	}
 	if reused.Candidates[1].VenueLocationRaw != "Yellow Arch refreshed, 30-36 Burton Road, Neepsend, S3 8BX" {
 		t.Fatalf("candidate 1 venue location raw = %q, want %q", reused.Candidates[1].VenueLocationRaw, "Yellow Arch refreshed, 30-36 Burton Road, Neepsend, S3 8BX")
@@ -1298,6 +1304,180 @@ func TestStageReviewGroupRestagingDoesNotDuplicateOrOverwriteProvisionalVenue(t 
 	}
 	if got, want := group.Candidates[0].VenueLocationRaw, "Imaginary Hall refreshed, 1 Void Street, Sheffield"; got != want {
 		t.Fatalf("candidate venue location raw = %q, want %q", got, want)
+	}
+}
+
+func TestStageReviewGroupRestagingLegacyBlankVenueEvidenceBackfillsProvisionalVenue(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	input := review.GroupInput{
+		Title:      "Legacy blank venue evidence",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:legacy-blank-venue.ics",
+		StagingKey: "v1:legacy-blank-venue",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "candidate-a",
+			Name:             "Unknown venue show",
+			VenueSlug:        "",
+			VenueText:        "",
+			VenueLocationRaw: "",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Should backfill venue evidence on restage.",
+		}},
+	}
+
+	result, err := st.StageReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if result.Created != true {
+		t.Fatal("created = false, want true")
+	}
+	if _, ok := st.VenueBySlug("imaginary-hall"); ok {
+		t.Fatal("unexpected provisional venue created before restage evidence")
+	}
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeVenueCount := mustCount(t, db, "venues")
+
+	restaged := input
+	restaged.Candidates = []review.CandidateInput{{
+		ExternalID:       "candidate-a",
+		Name:             "Unknown venue show",
+		VenueSlug:        "imaginary-hall-1-void-street-sheffield",
+		VenueText:        "Imaginary Hall, 1 Void Street, Sheffield",
+		VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
+		StartAt:          "2026-05-10T18:30:00Z",
+		EndAt:            "2026-05-10T22:00:00Z",
+		Status:           "Listed",
+		Description:      "Should backfill venue evidence on restage.",
+	}}
+
+	reused, err := st.StageReviewGroup(ctx, restaged)
+	if err != nil {
+		t.Fatalf("restage review group: %v", err)
+	}
+	if reused.Created {
+		t.Fatal("created = true, want false")
+	}
+
+	venue, ok := st.VenueBySlug("imaginary-hall")
+	if !ok {
+		t.Fatal("provisional venue not found after restage")
+	}
+	if venue.Name != "Imaginary Hall" {
+		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
+	}
+	if venue.Address != "1 Void Street,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nSheffield")
+	}
+	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
+		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, result.ID)
+	if err != nil {
+		t.Fatalf("load review group after restage: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after restage")
+	}
+	if got, want := group.Candidates[0].VenueText, "Imaginary Hall, 1 Void Street, Sheffield"; got != want {
+		t.Fatalf("candidate venue text = %q, want %q", got, want)
+	}
+	if got, want := group.Candidates[0].VenueLocationRaw, "Imaginary Hall, 1 Void Street, Sheffield"; got != want {
+		t.Fatalf("candidate venue location raw = %q, want %q", got, want)
+	}
+	if got, want := group.Candidates[0].VenueSlug, ""; got != want {
+		t.Fatalf("candidate venue slug = %q, want preserved %q", got, want)
+	}
+
+	reusedAgain, err := st.StageReviewGroup(ctx, restaged)
+	if err != nil {
+		t.Fatalf("restage review group again: %v", err)
+	}
+	if reusedAgain.Created {
+		t.Fatal("created = true on second restage, want false")
+	}
+	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
+		t.Fatalf("venues rows after second restage = %d, want %d", got, beforeVenueCount+1)
+	}
+}
+
+func TestStageReviewGroupRestagingLegacyBlankVenueEvidenceRespectsIncomingExactVenueSlug(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	input := review.GroupInput{
+		Title:      "Legacy blank venue evidence exact slug",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:legacy-blank-venue-exact-slug.ics",
+		StagingKey: "v1:legacy-blank-venue-exact-slug",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "candidate-a",
+			Name:             "Unknown venue show",
+			VenueSlug:        "",
+			VenueText:        "",
+			VenueLocationRaw: "",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Should keep exact slug precedence on restage.",
+		}},
+	}
+
+	result, err := st.StageReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !result.Created {
+		t.Fatal("created = false, want true")
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeVenueCount := mustCount(t, db, "venues")
+
+	restaged := input
+	restaged.Candidates = []review.CandidateInput{{
+		ExternalID:       "candidate-a",
+		Name:             "Unknown venue show",
+		VenueSlug:        "leadmill",
+		VenueText:        "Imaginary Hall",
+		VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
+		StartAt:          "2026-05-10T18:30:00Z",
+		EndAt:            "2026-05-10T22:00:00Z",
+		Status:           "Listed",
+		Description:      "Should keep exact slug precedence on restage.",
+	}}
+
+	reused, err := st.StageReviewGroup(ctx, restaged)
+	if err != nil {
+		t.Fatalf("restage review group: %v", err)
+	}
+	if reused.Created {
+		t.Fatal("created = true, want false")
+	}
+	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
+		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
+	}
+	if _, ok := st.VenueBySlug("imaginary-hall"); ok {
+		t.Fatal("unexpected provisional venue created from conflicting raw evidence")
 	}
 }
 

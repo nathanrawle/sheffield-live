@@ -94,6 +94,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
 - manual review resolution first canonicalizes the selected venue to an existing venue when deterministic evidence matching yields one unique live venue
 - newly created staged groups can create a `provisional` live venue row immediately when staged venue evidence is uniquely new
+- reused open review groups can backfill a missing provisional venue row only when previously blank stored venue evidence is refreshed with usable raw venue evidence
 - non-authoritative singleton auto-promotion can create a `provisional` live venue row immediately when singleton venue evidence is uniquely new
 - when manual review resolution finds no unique existing venue match, it inserts a `provisional` live venue in the same transaction and publishes the event against that venue if an earlier flow has not already created it
 - admins can later edit a provisional venue in place and flip it to `validated` from the provisional venue detail page without changing linked public events

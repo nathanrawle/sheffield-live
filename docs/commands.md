@@ -72,6 +72,7 @@ Review behavior:
 - `action=resolved` confirms a duplicate and resolves it, publishing one canonical public event
 - manual review resolution canonicalizes the selected venue to an existing venue when the evidence yields one unique match
 - new-group staging and non-authoritative singleton auto-promotion can create provisional venue rows immediately when venue evidence is uniquely new
+- open-group restaging can backfill a provisional venue row only when a previously evidence-less candidate is refreshed with usable raw venue evidence
 - when no unique existing venue match exists at manual review resolution time, resolution creates a provisional venue row and publishes against it in the same transaction if one does not already exist
 - ambiguous venue evidence fails closed and leaves the group open
 - canonical-backed duplicate resolution can update the matched live event in place

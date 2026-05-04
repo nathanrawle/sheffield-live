@@ -135,7 +135,11 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, group.ID, input, now); err != nil {
 			return review.StageGroupResult{}, err
 		}
-		if err := refreshStagedReviewCandidateVenueEvidenceTx(ctx, tx, group.ID, input.Candidates); err != nil {
+		backfillCandidates, err := refreshStagedReviewCandidateVenueEvidenceTx(ctx, tx, group.ID, input.Candidates)
+		if err != nil {
+			return review.StageGroupResult{}, err
+		}
+		if err := ensureProvisionalVenuesForReviewCandidatesTx(ctx, tx, backfillCandidates); err != nil {
 			return review.StageGroupResult{}, err
 		}
 	}
@@ -285,15 +289,29 @@ func ensureProvisionalVenuesForCandidateInputsTx(ctx context.Context, tx interfa
 	execer
 	queryer
 }, inputs []review.CandidateInput) error {
-	matcher, err := loadVenueMatcher(ctx, tx)
-	if err != nil {
-		return err
-	}
+	candidates := make([]review.Candidate, 0, len(inputs))
 	for _, input := range inputs {
 		if input.CanonicalEventID != 0 {
 			continue
 		}
-		if _, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, reviewCandidateFromInput(input)); err != nil {
+		candidates = append(candidates, reviewCandidateFromInput(input))
+	}
+	return ensureProvisionalVenuesForReviewCandidatesTx(ctx, tx, candidates)
+}
+
+func ensureProvisionalVenuesForReviewCandidatesTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, candidates []review.Candidate) error {
+	matcher, err := loadVenueMatcher(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		if candidate.CanonicalEventID != 0 {
+			continue
+		}
+		if _, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, candidate); err != nil {
 			return err
 		}
 	}
@@ -390,18 +408,19 @@ func replaceReviewCandidatesTx(ctx context.Context, tx execer, groupID int64, ca
 func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, groupID int64, incoming []review.CandidateInput) error {
+}, groupID int64, incoming []review.CandidateInput) ([]review.Candidate, error) {
 	existing, err := loadReviewCandidates(ctx, tx, groupID)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var backfillCandidates []review.Candidate
 
 	incomingByFingerprint := make(map[string][]review.CandidateInput)
 	for _, candidate := range incoming {
 		if candidate.CanonicalEventID != 0 {
 			continue
 		}
-		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.VenueSlug, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
+		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
 		incomingByFingerprint[fingerprint] = append(incomingByFingerprint[fingerprint], candidate)
 	}
 
@@ -410,7 +429,7 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 		if candidate.CanonicalEventID != 0 {
 			continue
 		}
-		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.VenueSlug, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
+		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
 		existingByFingerprint[fingerprint] = append(existingByFingerprint[fingerprint], candidate)
 	}
 
@@ -421,17 +440,35 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 		}
 		incomingCandidate := incomingBucket[0]
 		existingCandidate := existingBucket[0]
+		incomingVenueText := strings.TrimSpace(incomingCandidate.VenueText)
+		incomingVenueLocationRaw := strings.TrimSpace(incomingCandidate.VenueLocationRaw)
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE review_candidates
 			SET venue_text = ?,
 				venue_location_raw = ?
 			WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
-		`, strings.TrimSpace(incomingCandidate.VenueText), incomingCandidate.VenueLocationRaw, existingCandidate.ID, groupID); err != nil {
-			return err
+		`, incomingVenueText, incomingVenueLocationRaw, existingCandidate.ID, groupID); err != nil {
+			return nil, err
+		}
+		if reviewCandidateNeedsProvisionalVenueBackfill(existingCandidate, incomingVenueText, incomingVenueLocationRaw) {
+			existingCandidate.VenueSlug = strings.TrimSpace(incomingCandidate.VenueSlug)
+			existingCandidate.VenueText = incomingVenueText
+			existingCandidate.VenueLocationRaw = incomingVenueLocationRaw
+			backfillCandidates = append(backfillCandidates, existingCandidate)
 		}
 	}
 
-	return nil
+	return backfillCandidates, nil
+}
+
+func reviewCandidateNeedsProvisionalVenueBackfill(existing review.Candidate, incomingVenueText, incomingVenueLocationRaw string) bool {
+	if existing.CanonicalEventID != 0 {
+		return false
+	}
+	if strings.TrimSpace(existing.VenueText) != "" || strings.TrimSpace(existing.VenueLocationRaw) != "" {
+		return false
+	}
+	return incomingVenueLocationRaw != ""
 }
 
 func insertReviewCandidatesTx(ctx context.Context, tx execer, groupID int64, candidates []review.CandidateInput, defaultSourceName, defaultSourceURL string) error {
