@@ -130,6 +130,7 @@ func parseICSProperty(line string) (icsProperty, bool) {
 func parseEvent(properties []icsProperty) (EventCandidate, ParseSkip) {
 	uid := cleanICSValue(firstValue(properties, "UID"))
 	summary := cleanICSValue(firstValue(properties, "SUMMARY"))
+	location := cleanICSValue(firstValue(properties, "LOCATION"))
 	skip := ParseSkip{UID: uid, Summary: summary}
 
 	if summary == "" {
@@ -176,8 +177,8 @@ func parseEvent(properties []icsProperty) (EventCandidate, ParseSkip) {
 		UID:         uid,
 		Summary:     summary,
 		Description: cleanICSValue(firstValue(properties, "DESCRIPTION")),
-		Location:    cleanICSValue(firstValue(properties, "LOCATION")),
-		LocationRaw: firstValue(properties, "LOCATION"),
+		Location:    location,
+		LocationRaw: location,
 		URL:         cleanICSValue(firstValue(properties, "URL")),
 		Status:      status,
 		StartAt:     formatTime(startAt),

@@ -101,3 +101,29 @@ func TestLeadmillVenueTextUsesFirstLocationSegment(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLeadmillICSUnescapesLocationEvidence(t *testing.T) {
+	result := ParseLeadmillICS([]byte("BEGIN:VCALENDAR\n" +
+		"BEGIN:VEVENT\n" +
+		"UID:memorial-hall\n" +
+		"SUMMARY:Memorial Hall Show\n" +
+		"LOCATION:Memorial Hall\\, Barkers Pool\\, Sheffield\\, S1 2JA\n" +
+		"CATEGORIES:Live\n" +
+		"DTSTART:20260501T190000Z\n" +
+		"END:VEVENT\n" +
+		"END:VCALENDAR\n"))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	candidate := result.Candidates[0]
+	if got, want := candidate.Location, "Memorial Hall"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+	if got, want := candidate.LocationRaw, "Memorial Hall, Barkers Pool, Sheffield, S1 2JA"; got != want {
+		t.Fatalf("location raw = %q, want %q", got, want)
+	}
+}

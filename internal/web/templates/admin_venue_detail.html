@@ -35,7 +35,7 @@
     </label>
     <label>
       Address
-      <input type="text" name="address" value="{{.Venue.Address}}">
+      <textarea name="address" rows="4">{{.Venue.Address}}</textarea>
     </label>
     <label>
       Neighbourhood
@@ -79,7 +79,7 @@
     </div>
     <div>
       <dt>Address</dt>
-      <dd>{{blankValue .Venue.Address}}</dd>
+      <dd class="address-text">{{blankValue (multilineAddress .Venue.Address)}}</dd>
     </div>
     <div>
       <dt>Neighbourhood</dt>

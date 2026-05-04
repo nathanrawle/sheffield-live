@@ -154,7 +154,7 @@ Stage review groups:
 - wraps the ingest report with `review_stage`
 - creates duplicate review groups
 - creates singleton review groups only for singleton candidates that were not auto-promoted first
-- persists review-candidate venue evidence as `venue_text` and `venue_location_raw`
+- persists review-candidate venue evidence as `venue_text` and `venue_location_raw`; ICS-derived `venue_location_raw` is decoded to human-readable text before storage
 - singleton candidates may auto-promote when they are the first matching live event seen; authoritative sources can also upgrade provisional events in place
 - singleton auto-promotion can create a provisional venue row immediately for a uniquely new venue
 - duplicate groups may also auto-resolve as `canonical_exact_match` or `unanimous_duplicate`

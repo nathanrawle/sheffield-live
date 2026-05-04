@@ -9,7 +9,7 @@
   <section class="detail-grid single">
     <div class="detail-card">
       <h2>Address</h2>
-      <p>{{.Venue.Address}}</p>
+      <p class="address-text">{{multilineAddress .Venue.Address}}</p>
       <p>{{.Venue.Neighbourhood}}</p>
       <p><a href="{{.Venue.Website}}">Website</a></p>
     </div>

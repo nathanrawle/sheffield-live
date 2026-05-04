@@ -958,8 +958,8 @@ func TestStageReviewGroupCreatesProvisionalVenueImmediatelyWhenVenueIsMissing(t 
 	if venue.Name != "Imaginary Hall" {
 		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
 	}
-	if venue.Address != "Imaginary Hall, 1 Void Street, Sheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "Imaginary Hall, 1 Void Street, Sheffield")
+	if venue.Address != "Imaginary Hall,\n1 Void Street,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "Imaginary Hall,\n1 Void Street,\nSheffield")
 	}
 	if venue.ValidationState != domain.ValidationStateProvisional {
 		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
@@ -2312,8 +2312,8 @@ func TestResolveReviewGroupCreatesProvisionalVenueWhenVenueIsMissing(t *testing.
 	if venue.Name != "Imaginary Hall" {
 		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
 	}
-	if venue.Address != "Imaginary Hall, 1 Void Street, Sheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "Imaginary Hall, 1 Void Street, Sheffield")
+	if venue.Address != "Imaginary Hall,\n1 Void Street,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "Imaginary Hall,\n1 Void Street,\nSheffield")
 	}
 	if venue.ValidationState != domain.ValidationStateProvisional {
 		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
@@ -2395,8 +2395,8 @@ func TestResolveReviewGroupCreatesProvisionalVenueFromNormalizedHumanEvidence(t 
 	if venue.Name != "Imaginary Hall" {
 		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
 	}
-	if venue.Address != "Imaginary Hall, 1 Void Street, Sheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "Imaginary Hall, 1 Void Street, Sheffield")
+	if venue.Address != "Imaginary Hall,\n1 Void Street,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "Imaginary Hall,\n1 Void Street,\nSheffield")
 	}
 	if _, ok := st.VenueBySlug("imagniary-hal-temp"); ok {
 		t.Fatal("stale provisional venue slug was inserted")

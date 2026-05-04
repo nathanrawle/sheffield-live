@@ -338,6 +338,10 @@ a:focus-visible {
   margin-bottom: 0;
 }
 
+.address-text {
+  white-space: pre-line;
+}
+
 .review-list {
   display: grid;
   gap: 0.75rem;

@@ -391,7 +391,7 @@ func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T
 	assertContains(t, body, `href="/admin/venues"`)
 	assertContains(t, body, `name="action" value="save"`)
 	assertContains(t, body, `name="name" value="Imaginary Hall marketing copy"`)
-	assertContains(t, body, `name="address" value="1 Void Street, Sheffield"`)
+	assertContains(t, body, `<textarea name="address" rows="4">1 Void Street, Sheffield</textarea>`)
 	assertContains(t, body, `name="neighbourhood" value="City Centre"`)
 	assertContains(t, body, `name="website" value="https://example.test/imaginary-hall"`)
 	assertContains(t, body, `name="coverage_kind"`)
@@ -400,7 +400,7 @@ func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T
 	assertContains(t, body, "Validate venue")
 	assertContains(t, body, "Stored venue fields")
 	assertContains(t, body, ">imaginary-hall</dd>")
-	assertContains(t, body, "1 Void Street, Sheffield")
+	assertContains(t, body, "1 Void Street,\nSheffield")
 	assertContains(t, body, "City Centre")
 	assertContains(t, body, "Pop-up room for test fixtures.")
 	assertContains(t, body, "https://example.test/imaginary-hall")
@@ -582,6 +582,14 @@ func TestSQLiteAdminVenueDetailPostSavesEditedFields(t *testing.T) {
 	assertContains(t, body, `name="name" value="Imaginary Hall"`)
 	assertContains(t, body, "99 Updated Street, Sheffield")
 	assertContains(t, body, "Programme-only while listings settle.")
+}
+
+func TestFormatMultilineAddress(t *testing.T) {
+	got := formatMultilineAddress(`Memorial Hall\, Barkers Pool\, Sheffield\, S1 2JA`)
+	want := "Memorial Hall,\nBarkers Pool,\nSheffield,\nS1 2JA"
+	if got != want {
+		t.Fatalf("formatMultilineAddress() = %q, want %q", got, want)
+	}
 }
 
 func TestSQLiteAdminVenueDetailPostRejectsMissingAndNonProvisionalVenues(t *testing.T) {

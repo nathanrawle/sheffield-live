@@ -116,6 +116,20 @@ func TestVenueMatchNoMatchResult(t *testing.T) {
 	}
 }
 
+func TestProvisionalVenueFromCandidateFormatsAddress(t *testing.T) {
+	venue, err := provisionalVenueFromCandidate(review.Candidate{
+		VenueText:        "Memorial Hall",
+		VenueLocationRaw: "Memorial Hall, Barkers Pool, Sheffield, S1 2JA",
+	})
+	if err != nil {
+		t.Fatalf("provisional venue: %v", err)
+	}
+
+	if got, want := venue.Address, "Memorial Hall,\nBarkers Pool,\nSheffield,\nS1 2JA"; got != want {
+		t.Fatalf("venue address = %q, want %q", got, want)
+	}
+}
+
 func assertVenueMatch(t *testing.T, match venueMatchResult, wantStatus venueMatchStatus, wantSlug, wantName string) {
 	t.Helper()
 

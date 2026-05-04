@@ -18,7 +18,7 @@
     <div class="detail-card">
       <h2>Where</h2>
       <p><a href="/venues/{{.Venue.Slug}}">{{.Venue.Name}}</a></p>
-      <p>{{.Venue.Address}}</p>
+      <p class="address-text">{{multilineAddress .Venue.Address}}</p>
       <p>{{.Venue.Neighbourhood}}</p>
     </div>
   </section>

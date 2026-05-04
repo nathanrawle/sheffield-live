@@ -241,10 +241,32 @@ func provisionalVenueFromCandidate(candidate review.Candidate) (domain.Venue, er
 	return domain.Venue{
 		Slug:            slug,
 		Name:            provisionalVenueName(candidate, slug),
-		Address:         strings.TrimSpace(candidate.VenueLocationRaw),
+		Address:         formatProvisionalVenueAddress(candidate.VenueLocationRaw),
 		ValidationState: domain.ValidationStateProvisional,
 		Origin:          domain.OriginLive,
 	}, nil
+}
+
+func formatProvisionalVenueAddress(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	lines := strings.Split(value, "\n")
+	parts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		for _, part := range strings.Split(line, ",") {
+			part = strings.Join(strings.Fields(strings.TrimSpace(part)), " ")
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ",\n")
 }
 
 func provisionalVenueSlug(candidate review.Candidate) string {

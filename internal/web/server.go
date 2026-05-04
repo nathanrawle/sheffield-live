@@ -269,6 +269,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			}
 			return value
 		},
+		"multilineAddress": formatMultilineAddress,
 		"candidateDisplayLabel": func(candidate review.Candidate) string {
 			if candidate.IsCanonicalSnapshot() {
 				return "Live canonical snapshot"
@@ -370,6 +371,37 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		pages:                     pages,
 		fileServer:                http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
 	}, nil
+}
+
+func formatMultilineAddress(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	replacer := strings.NewReplacer(
+		`\n`, "\n",
+		`\N`, "\n",
+		`\,`, ",",
+		`\;`, ";",
+		`\\`, `\`,
+	)
+	value = replacer.Replace(value)
+
+	lines := strings.Split(value, "\n")
+	parts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		for _, part := range strings.Split(line, ",") {
+			part = strings.Join(strings.Fields(strings.TrimSpace(part)), " ")
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ",\n")
 }
 
 func (s *Server) SetClockForTesting(clock func() time.Time) {
