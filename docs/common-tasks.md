@@ -60,7 +60,7 @@ The Greystones also uses the same pattern:
 go run ./cmd/ingest -source the-greystones -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
-Sidney & Matilda and Leadmill snapshot the source page plus linked ICS payloads. Yellow Arch, Cafe No. 9, and Jazz at The Lescar snapshot only the source page and parse candidates directly from that page. The Greystones and Corporation snapshot the source page plus linked detail pages. `-limit` caps linked ICS or linked detail-page fetches and parsed source-page candidates for direct source-page parsers. All commands print a JSON report.
+Sidney & Matilda snapshots the source page, linked ICS payloads, and linked event detail pages; ICS remains authoritative for identity and times, while detail pages enrich blank descriptions. Cafe No. 9 snapshots the WeGotTickets organiser pages plus event detail pages and enriches descriptions from detail-page event information. Leadmill snapshots the source page plus linked ICS payloads. Yellow Arch and Jazz at The Lescar snapshot only the source page and parse candidates directly from that page. The Greystones and Corporation snapshot the source page plus linked detail pages. `-limit` caps linked ICS or linked detail-page fetches and parsed source-page candidates for direct source-page parsers. All commands print a JSON report.
 Use `-contact you@example.com` to override the contact detail in the derived default user agent, or `-contact none` to suppress contact info entirely.
 
 ## Stage review groups after ingest
@@ -80,6 +80,16 @@ go run ./cmd/ingest -import-run-id 42 -limit 20 -stage-review-groups
 
 This rebuilds the report from stored snapshots without using the network. Reruns are safe and reuse existing groups when the staged content matches, eligible singletons may auto-promote instead of creating a review group, and eligible duplicate groups may auto-resolve into closed review history. Omit `-stage-review-groups` if you only want the replay report.
 Replay auto-detects whether the stored run used linked ICS extraction or direct source-page parsing.
+
+## Repair existing descriptions only
+
+```bash
+go run ./cmd/ingest -source cafe-no-9 -repair-descriptions
+go run ./cmd/ingest -source sidney-and-matilda -repair-descriptions
+go run ./cmd/ingest -import-run-id 42 -repair-descriptions
+```
+
+This updates only eligible existing event descriptions from live ingest or replayed snapshots. It does not stage review groups, auto-promote events, create new events, or mutate non-description event fields. Use this for owned authoritative sources when an earlier ingest left descriptions blank or filled with generated markup/CSS.
 
 ## Create an offline review group from a local ICS file
 

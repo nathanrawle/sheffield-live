@@ -1878,11 +1878,11 @@ func TestResolveReviewGroupUsesAuthoritativeSourceLinkIdentity(t *testing.T) {
 		t.Fatal("review group not found after resolve")
 	}
 	assertDraftChoice(t, final, review.FieldVenueSlug, candidateID, "sidney-and-matilda")
-	if event.Genre != "Old genre" {
-		t.Fatalf("genre = %q, want preserved %q", event.Genre, "Old genre")
+	if event.Genre != "Indie" {
+		t.Fatalf("genre = %q, want %q", event.Genre, "Indie")
 	}
-	if event.Description != "Old description" {
-		t.Fatalf("description = %q, want preserved %q", event.Description, "Old description")
+	if event.Description != "First line" {
+		t.Fatalf("description = %q, want %q", event.Description, "First line")
 	}
 }
 
@@ -3742,14 +3742,372 @@ func TestPromoteSingletonReviewGroupIfMissingUpdatesLinkedEventInPlace(t *testin
 	if event.Status != "Sold out" {
 		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
 	}
-	if event.Genre != "Electronic" {
-		t.Fatalf("genre = %q, want preserved %q", event.Genre, "Electronic")
+	if event.Genre != "Ambient" {
+		t.Fatalf("genre = %q, want %q", event.Genre, "Ambient")
 	}
-	if event.Description != "First description" {
-		t.Fatalf("description = %q, want preserved %q", event.Description, "First description")
+	if event.Description != "Updated description" {
+		t.Fatalf("description = %q, want %q", event.Description, "Updated description")
 	}
 	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
 		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
+	}
+}
+
+func TestPromoteSingletonReviewGroupIfMissingPreservesCleanDescriptionWhenAuthoritativeUpdateHasWeakCTA(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeEventCount := mustCount(t, db, "events")
+
+	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:      "First apply",
+		SourceName: "Yellow Arch manual ingest",
+		SourceURL:  "https://www.yellowarch.com/events/",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "yellow-arch-cta",
+			Name:        "Late Junction",
+			VenueSlug:   "yellow-arch",
+			StartAt:     "2026-05-10T18:30:00Z",
+			EndAt:       "2026-05-10T22:00:00Z",
+			Genre:       "Electronic",
+			Status:      "Listed",
+			Description: "Existing clean description.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("first promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("first promoted = false, want true")
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
+	}
+
+	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:      "Second apply",
+		SourceName: "Yellow Arch manual ingest",
+		SourceURL:  "https://www.yellowarch.com/events/",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "yellow-arch-cta",
+			Name:        "Late Junction Renamed",
+			VenueSlug:   "yellow-arch",
+			StartAt:     "2026-05-10T19:00:00Z",
+			EndAt:       "2026-05-10T23:00:00Z",
+			Genre:       "Ambient",
+			Status:      "Sold out",
+			Description: "Read more",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("second promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("second promoted = false, want true")
+	}
+	if secondSlug != firstSlug {
+		t.Fatalf("second slug = %q, want %q", secondSlug, firstSlug)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount+1)
+	}
+
+	event, ok := st.EventBySlug(firstSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", firstSlug)
+	}
+	if event.Name != "Late Junction Renamed" {
+		t.Fatalf("name = %q, want %q", event.Name, "Late Junction Renamed")
+	}
+	if !event.Start.Equal(time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)) {
+		t.Fatalf("start = %s, want updated start", event.Start.Format(time.RFC3339))
+	}
+	if !event.End.Equal(time.Date(2026, time.May, 10, 23, 0, 0, 0, time.UTC)) {
+		t.Fatalf("end = %s, want updated end", event.End.Format(time.RFC3339))
+	}
+	if event.Status != "Sold out" {
+		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
+	}
+	if event.Genre != "Ambient" {
+		t.Fatalf("genre = %q, want %q", event.Genre, "Ambient")
+	}
+	if event.Description != "Existing clean description." {
+		t.Fatalf("description = %q, want %q", event.Description, "Existing clean description.")
+	}
+}
+
+func TestShouldReplaceDescriptionPolicy(t *testing.T) {
+	cases := []struct {
+		name     string
+		existing string
+		incoming string
+		want     bool
+	}{
+		{name: "blank existing clean incoming", existing: "", incoming: "A clean event description with useful details.", want: true},
+		{name: "generated existing clean incoming", existing: "#block-d4b153a9777175667262 { --tweak-text-block-radius: 0px; } @media screen {}", incoming: "A clean event description with useful details.", want: true},
+		{name: "clean existing clean incoming", existing: "Existing clean description.", incoming: "New clean description.", want: false},
+		{name: "blank incoming", existing: "", incoming: "", want: false},
+		{name: "generated incoming", existing: "", incoming: "#block-d4b153a9777175667262 { --tweak-text-block-radius: 0px; }", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldReplaceDescription(tc.existing, tc.incoming); got != tc.want {
+				t.Fatalf("shouldReplaceDescription(%q, %q) = %v, want %v", tc.existing, tc.incoming, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuthoritativeDescriptionUsablePolicy(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "blank", value: "   ", want: false},
+		{name: "first line", value: "First line", want: true},
+		{name: "generated block", value: "#block-d4b153a9777175667262 { --tweak-text-block-radius: 0px; }", want: false},
+		{name: "generated media query", value: "@media screen {}", want: false},
+		{name: "generated script", value: "<script>alert('x')</script>", want: false},
+		{name: "buy tickets", value: "buy tickets", want: false},
+		{name: "basement buy tickets", value: "basement buy tickets", want: false},
+		{name: "tickets", value: "tickets", want: false},
+		{name: "book tickets", value: "book tickets", want: false},
+		{name: "read more", value: "read more", want: false},
+		{name: "find out more", value: "find out more", want: false},
+		{name: "more info", value: "more info", want: false},
+		{name: "event details", value: "event details", want: false},
+		{name: "click here", value: "click here", want: false},
+		{name: "back to events", value: "back to events", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := authoritativeDescriptionUsable(tc.value); got != tc.want {
+				t.Fatalf("authoritativeDescriptionUsable(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRepairEventDescriptionsFromReportUpdatesOnlyEligibleDescriptions(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	blankSlug := mustPromoteCafeNo9Event(t, st, "blank-eligible", "Blank Eligible", "2026-05-10T18:30:00Z", "")
+	generatedSlug := mustPromoteCafeNo9Event(t, st, "generated-eligible", "Generated Eligible", "2026-05-11T18:30:00Z", "#block-d4b153a9777175667262 { --tweak-text-block-radius: 0px; } @media screen {}")
+	cleanSlug := mustPromoteCafeNo9Event(t, st, "clean-preserved", "Clean Preserved", "2026-05-12T18:30:00Z", "Existing clean description.")
+	beforeGroups := mustCount(t, db, "review_groups")
+	beforeEvents := mustCount(t, db, "events")
+
+	repair, err := st.RepairEventDescriptionsFromReport(ctx, mustReviewCatalog(t), ingest.Report{
+		Source:    ingest.CafeNo9Source,
+		SourceURL: "https://www.wegottickets.com/Cafe9",
+		Status:    "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{
+				cafeNo9RepairCandidate("blank-eligible", "Blank Eligible", "2026-05-10T18:30:00Z", "Replacement description for the blank event."),
+				cafeNo9RepairCandidate("generated-eligible", "Generated Eligible", "2026-05-11T18:30:00Z", "Replacement description for generated markup."),
+				cafeNo9RepairCandidate("clean-preserved", "Clean Preserved", "2026-05-12T18:30:00Z", "Incoming description should not replace clean existing text."),
+				cafeNo9RepairCandidate("new-skipped", "New Skipped", "2026-05-13T18:30:00Z", "No existing event should be created by repair."),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("repair descriptions: %v", err)
+	}
+
+	if repair.Repaired != 2 {
+		t.Fatalf("repaired = %d, want 2", repair.Repaired)
+	}
+	if repair.Unchanged != 1 {
+		t.Fatalf("unchanged = %d, want 1", repair.Unchanged)
+	}
+	if repair.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", repair.Skipped)
+	}
+	if got := mustCount(t, db, "review_groups"); got != beforeGroups {
+		t.Fatalf("review groups = %d, want unchanged %d", got, beforeGroups)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEvents {
+		t.Fatalf("events = %d, want unchanged %d", got, beforeEvents)
+	}
+
+	assertEventDescription(t, st, blankSlug, "Replacement description for the blank event.")
+	assertEventDescription(t, st, generatedSlug, "Replacement description for generated markup.")
+	assertEventDescription(t, st, cleanSlug, "Existing clean description.")
+}
+
+func TestRepairEventDescriptionsFromReportSkipsSameSlugUnderDifferentSource(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		uid     = "cross-source-slug"
+		name    = "Cross Source Slug"
+		startAt = "2026-05-14T18:30:00Z"
+	)
+	_ = mustEnsureSourceID(t, st, "Cafe No. 9 manual ingest", cafeNo9RepairSourceURL(uid))
+	otherSourceID := mustEnsureSourceID(t, st, "Different manual ingest", "https://different.example.test/events")
+	slug := mustLiveEventSlug(t, name, "cafe-no-9", startAt)
+	mustInsertRepairLegacyEvent(t, db, otherSourceID, slug, "cafe-no-9", name, startAt, "")
+
+	repair, err := st.RepairEventDescriptionsFromReport(ctx, mustReviewCatalog(t), ingest.Report{
+		Source:    ingest.CafeNo9Source,
+		SourceURL: "https://www.wegottickets.com/Cafe9",
+		Status:    "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{
+				cafeNo9RepairCandidate(uid, name, startAt, "Replacement description for the cross-source slug case."),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("repair descriptions: %v", err)
+	}
+
+	if repair.Repaired != 0 || repair.Unchanged != 0 || repair.Skipped != 1 {
+		t.Fatalf("repair counts = repaired %d unchanged %d skipped %d, want 0 0 1", repair.Repaired, repair.Unchanged, repair.Skipped)
+	}
+	assertEventDescription(t, st, slug, "")
+}
+
+func TestRepairEventDescriptionsFromReportSkipsSameFingerprintUnderDifferentSource(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		uid     = "cross-source-fingerprint"
+		name    = "Cross Source Fingerprint"
+		startAt = "2026-05-15T18:30:00Z"
+	)
+	_ = mustEnsureSourceID(t, st, "Cafe No. 9 manual ingest", cafeNo9RepairSourceURL(uid))
+	otherSourceID := mustEnsureSourceID(t, st, "Different manual ingest", "https://different.example.test/events")
+	mustInsertRepairLegacyEvent(t, db, otherSourceID, "legacy-cross-source-fingerprint", "cafe-no-9", name, startAt, "")
+
+	repair, err := st.RepairEventDescriptionsFromReport(ctx, mustReviewCatalog(t), ingest.Report{
+		Source:    ingest.CafeNo9Source,
+		SourceURL: "https://www.wegottickets.com/Cafe9",
+		Status:    "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{
+				cafeNo9RepairCandidate(uid, name, startAt, "Replacement description for the cross-source fingerprint case."),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("repair descriptions: %v", err)
+	}
+
+	if repair.Repaired != 0 || repair.Unchanged != 0 || repair.Skipped != 1 {
+		t.Fatalf("repair counts = repaired %d unchanged %d skipped %d, want 0 0 1", repair.Repaired, repair.Unchanged, repair.Skipped)
+	}
+	assertEventDescription(t, st, "legacy-cross-source-fingerprint", "")
+}
+
+func TestRepairEventDescriptionsFromReportRepairsSameSourceLegacyEventWithoutLink(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		uid     = "same-source-legacy"
+		name    = "Same Source Legacy"
+		startAt = "2026-05-16T18:30:00Z"
+	)
+	sourceID := mustEnsureSourceID(t, st, "Cafe No. 9 manual ingest", cafeNo9RepairSourceURL(uid))
+	slug := mustLiveEventSlug(t, name, "cafe-no-9", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, slug, "cafe-no-9", name, startAt, "")
+	beforeLinks := mustCount(t, db, "event_source_links")
+
+	repair, err := st.RepairEventDescriptionsFromReport(ctx, mustReviewCatalog(t), ingest.Report{
+		Source:    ingest.CafeNo9Source,
+		SourceURL: "https://www.wegottickets.com/Cafe9",
+		Status:    "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{
+				cafeNo9RepairCandidate(uid, name, startAt, "Replacement description for the same-source legacy event."),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("repair descriptions: %v", err)
+	}
+
+	if repair.Repaired != 1 || repair.Unchanged != 0 || repair.Skipped != 0 {
+		t.Fatalf("repair counts = repaired %d unchanged %d skipped %d, want 1 0 0", repair.Repaired, repair.Unchanged, repair.Skipped)
+	}
+	assertEventDescription(t, st, slug, "Replacement description for the same-source legacy event.")
+	if got := mustCount(t, db, "event_source_links"); got != beforeLinks {
+		t.Fatalf("event_source_links rows = %d, want unchanged %d", got, beforeLinks)
 	}
 }
 
@@ -4154,6 +4512,126 @@ func assertDraftChoice(t *testing.T, group review.Group, field review.Field, can
 	}
 	if choice.UpdatedAt.IsZero() {
 		t.Fatalf("%s updated_at is zero", field)
+	}
+}
+
+func mustReviewCatalog(t *testing.T) *ingest.Catalog {
+	t.Helper()
+
+	catalog, err := ingest.LoadRepoCatalog()
+	if err != nil {
+		t.Fatalf("load repo catalog: %v", err)
+	}
+	return catalog
+}
+
+func cafeNo9RepairSourceURL(uid string) string {
+	return "https://www.wegottickets.com/event/" + uid
+}
+
+func mustPromoteCafeNo9Event(t *testing.T, st *Store, externalID, name, startAt, description string) string {
+	t.Helper()
+
+	sourceURL := cafeNo9RepairSourceURL(externalID)
+	slug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(context.Background(), review.GroupInput{
+		Title:      "Cafe No. 9 singleton",
+		SourceName: "Cafe No. 9 manual ingest",
+		SourceURL:  sourceURL,
+		Candidates: []review.CandidateInput{{
+			ExternalID:  externalID,
+			Name:        name,
+			VenueSlug:   "cafe-no-9",
+			StartAt:     startAt,
+			Status:      "Listed",
+			Description: description,
+			SourceName:  "Cafe No. 9 manual ingest",
+			SourceURL:   sourceURL,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote Cafe No. 9 event: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	return slug
+}
+
+func cafeNo9RepairCandidate(uid, summary, startAt, description string) ingest.EventCandidate {
+	return ingest.EventCandidate{
+		UID:         uid,
+		Summary:     summary,
+		Description: description,
+		Location:    "Cafe No. 9",
+		URL:         cafeNo9RepairSourceURL(uid),
+		Status:      "Listed",
+		StartAt:     startAt,
+	}
+}
+
+func mustEnsureSourceID(t *testing.T, st *Store, sourceName, sourceURL string) int64 {
+	t.Helper()
+
+	sourceID, err := st.EnsureSource(context.Background(), sourceName, sourceURL)
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	return sourceID
+}
+
+func mustLiveEventSlug(t *testing.T, name, venueSlug, startAt string) string {
+	t.Helper()
+
+	start, err := time.Parse(time.RFC3339, startAt)
+	if err != nil {
+		t.Fatalf("parse start time: %v", err)
+	}
+	slug, err := buildLiveEventSlug(name, venueSlug, start)
+	if err != nil {
+		t.Fatalf("build live event slug: %v", err)
+	}
+	return slug
+}
+
+func mustInsertRepairLegacyEvent(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, name, startAt, description string) {
+	t.Helper()
+
+	var venueID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+	`, venueSlug).Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue id: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			last_checked_at,
+			origin
+		) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, name, startAt, "Test", "Listed", description, "2026-05-01T10:00:00Z", string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert repair legacy event: %v", err)
+	}
+}
+
+func assertEventDescription(t *testing.T, st *Store, slug, want string) {
+	t.Helper()
+
+	event, ok := st.EventBySlug(slug)
+	if !ok {
+		t.Fatalf("missing event %q", slug)
+	}
+	if event.Description != want {
+		t.Fatalf("%s description = %q, want %q", slug, event.Description, want)
 	}
 }
 

@@ -164,6 +164,205 @@ func TestRunManualCafeNo9ParsesListingsFromSourcePage(t *testing.T) {
 	}
 }
 
+func TestRunManualCafeNo9PrefersDetailPageDescriptions(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.wegottickets.com/Cafe9": {
+				URL:         "https://www.wegottickets.com/Cafe9",
+				FinalURL:    "https://www.wegottickets.com/Cafe9",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: []byte(`
+					<h2><a href="/event/700004">An evening with Gideon Conn at Cafe No. 9</a></h2>
+					<p>Short listing teaser.</p>
+					<p>0 SHEFFIELD: Cafe No. 9</p>
+					<p>P Thursday 5th November, 2026</p>
+					<p>N Door time: 7:00pm, Start time: 7:30pm</p>
+					<p>C Music - General</p>
+					<p><a href="/event/700004">Event info</a></p>
+				`),
+				CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+			},
+			"https://www.wegottickets.com/event/700004": {
+				URL:         "https://www.wegottickets.com/event/700004",
+				FinalURL:    "https://wegottickets.com/f/15737/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "cafe9_detail.html"),
+				CapturedAt:  time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: CafeNo9Source, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := len(store.snapshots), 2; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Description, "The Leisure Society were founded by Nick Hemming.\n\nExpect oustanding songwriting and production craft."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
+
+func TestRunManualCafeNo9MergesRelativeCanonicalDetailPageDescription(t *testing.T) {
+	detail := ParseCafeNo9DetailPage("https://www.wegottickets.com/event/667102", []byte(`
+		<html>
+		  <body>
+		    <link rel="canonical" href="/f/15737/">
+		    <h1>An evening with Gideon Conn at Cafe No. 9</h1>
+		    <h2>Event information</h2>
+		    <main>
+		      Gideon Conn is back at Cafe No. 9.<br>
+		      <br>
+		      Tickets available now.
+		    </main>
+		  </body>
+		</html>
+	`))
+	if got, want := detail.URLAliases, []string{"https://www.wegottickets.com/f/15737/"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("url aliases = %#v, want %#v", got, want)
+	}
+
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.wegottickets.com/Cafe9": {
+				URL:         "https://www.wegottickets.com/Cafe9",
+				FinalURL:    "https://www.wegottickets.com/Cafe9",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: []byte(`
+					<h2><a href="/event/667102">An evening with Gideon Conn at Cafe No. 9</a></h2>
+					<p>0 SHEFFIELD: Cafe No. 9</p>
+					<p>P Thursday 5th November, 2026</p>
+					<p>N Door time: 7:00pm, Start time: 7:30pm</p>
+					<p>C Music - General</p>
+					<p><a href="/event/667102">Event info</a></p>
+				`),
+				CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+			},
+			"https://www.wegottickets.com/event/667102": {
+				URL:         "https://www.wegottickets.com/event/667102",
+				FinalURL:    "https://www.wegottickets.com/f/15737/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: []byte(`
+					<html>
+					  <body>
+					    <link rel="canonical" href="/f/15737/">
+					    <h1>An evening with Gideon Conn at Cafe No. 9</h1>
+					    <h2>Event information</h2>
+					    <main>
+					      Gideon Conn is back at Cafe No. 9.<br>
+					      <br>
+					      Tickets available now.
+					    </main>
+					  </body>
+					</html>
+				`),
+				CapturedAt: time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: CafeNo9Source, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := report.Calendars[0].Candidates[0].Description, "Gideon Conn is back at Cafe No. 9.\n\nTickets available now."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
+
+func TestRunManualSidneyAndMatildaEnrichesICSDescriptionsFromDetailPages(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
+	icsBody := []byte(strings.Join([]string{
+		"BEGIN:VCALENDAR",
+		"BEGIN:VEVENT",
+		"UID:leo",
+		"SUMMARY:Leo Middea (Brazil)",
+		"LOCATION:Sidney & Matilda",
+		"URL:https://www.sidneyandmatilda.com/events/leo-middea-brazil",
+		"DTSTART:20260504T183000Z",
+		"END:VEVENT",
+		"END:VCALENDAR",
+		"",
+	}, "\n"))
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.sidneyandmatilda.com/": {
+				URL:        "https://www.sidneyandmatilda.com/",
+				FinalURL:   "https://www.sidneyandmatilda.com/events/",
+				Status:     "200 OK",
+				StatusCode: 200,
+				Body: []byte(`
+					<a href="https://calendar.example.test/live.ics">Google Calendar ICS</a>
+					<a href="https://calendar.example.test/club.ics">Google Calendar ICS</a>
+					<a href="/events/leo-middea-brazil">Leo Middea (Brazil)</a>
+				`),
+				CapturedAt: time.Date(2026, 4, 20, 12, 1, 0, 0, time.UTC),
+			},
+			"https://calendar.example.test/live.ics": {
+				URL:        "https://calendar.example.test/live.ics",
+				FinalURL:   "https://calendar.example.test/live.ics",
+				Status:     "200 OK",
+				StatusCode: 200,
+				Body:       icsBody,
+				CapturedAt: time.Date(2026, 4, 20, 12, 2, 0, 0, time.UTC),
+			},
+			"https://calendar.example.test/club.ics": {
+				URL:        "https://calendar.example.test/club.ics",
+				FinalURL:   "https://calendar.example.test/club.ics",
+				Status:     "200 OK",
+				StatusCode: 200,
+				Body:       icsBody,
+				CapturedAt: time.Date(2026, 4, 20, 12, 3, 0, 0, time.UTC),
+			},
+			"https://www.sidneyandmatilda.com/events/leo-middea-brazil": {
+				URL:        "https://www.sidneyandmatilda.com/events/leo-middea-brazil",
+				FinalURL:   "https://www.sidneyandmatilda.com/events/leo-middea-brazil",
+				Status:     "200 OK",
+				StatusCode: 200,
+				Body:       readFixture(t, "sidney_detail.html"),
+				CapturedAt: time.Date(2026, 4, 20, 12, 4, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: DefaultSource, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(store.snapshots), 4; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Snapshots, 4; got != want {
+		t.Fatalf("total snapshots = %d, want %d", got, want)
+	}
+	wantDescription := "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."
+	for i, calendar := range report.Calendars {
+		if got := calendar.Candidates[0].Description; got != wantDescription {
+			t.Fatalf("calendar %d description = %q, want %q", i, got, wantDescription)
+		}
+	}
+}
+
 func TestRunManualJazzAtTheLescarParsesListingsFromSourcePage(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}

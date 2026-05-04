@@ -324,8 +324,9 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"originText": func(origin domain.Origin) string {
 			return string(origin)
 		},
-		"year":        func(t time.Time) string { return t.In(localLocation).Format("2006") },
-		"joinStrings": func(values []string, sep string) string { return strings.Join(values, sep) },
+		"year":            func(t time.Time) string { return t.In(localLocation).Format("2006") },
+		"joinStrings":     func(values []string, sep string) string { return strings.Join(values, sep) },
+		"descriptionHTML": descriptionHTML,
 	}
 
 	layout, err := template.New("layout.html").Funcs(funcs).ParseFS(templateFS, "templates/layout.html")

@@ -121,8 +121,8 @@ Live ingest:
 - supports `sidney-and-matilda`, `yellow-arch`, `cafe-no-9`, `jazz-at-the-lescar`, `the-greystones`, `leadmill`, and `corporation`
 - `-all-sources` runs every registered source sequentially in registry order and emits one aggregated JSON report
 - fetches the selected source page
-- Sidney & Matilda snapshots the source page and fetched ICS payloads
-- Cafe No. 9 snapshots the WeGotTickets organiser page and parses music listings directly from that source-page HTML
+- Sidney & Matilda snapshots the source page, fetched ICS payloads, and linked event detail pages. ICS remains authoritative for event identity/times; detail pages enrich blank descriptions from clean schema.org `Event` JSON-LD or bounded event content only.
+- Cafe No. 9 snapshots the WeGotTickets organiser page, follows pagination, snapshots event detail pages, and enriches descriptions from the detail page `Event information` section.
 - Jazz at The Lescar snapshots the source page and parses repeated listing blocks into review candidates without authoritative source event IDs
 - The Greystones snapshots the events hub, discovers linked month pages, snapshots those pages, and parses repeated month-page listing rows into review candidates
 - Leadmill snapshots the source page and fetched ICS payloads, then keeps only `Live` listings with Sheffield locations
@@ -146,6 +146,7 @@ Replay:
 - Sidney & Matilda replays source-page extraction to ICS links and matching ICS snapshots by URL and final URL
 - Leadmill replays source-page extraction to the linked official iCal feed and reapplies the same `Live` plus Sheffield filter from stored ICS snapshots
 - Yellow Arch replays candidate parsing directly from the stored source page snapshot
+- Sidney & Matilda and Cafe No. 9 replay stored detail-page snapshots for description enrichment without network access
 
 Stage review groups:
 
@@ -167,6 +168,17 @@ Stage review groups:
 - `-stage-review-groups` can create provisional venue rows immediately for newly created staged groups when venue evidence is uniquely new, even when no event is published yet
 - successful supporting singleton auto-promotion creates provisional events, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton groups by `staging_key` while linking the current import run
 - only runs after a successful ingest
+
+Description repair:
+
+- primary flag: `-repair-descriptions`
+- live mode supports `-source sidney-and-matilda` and `-source cafe-no-9`
+- replay mode supports `-import-run-id <id> -repair-descriptions`
+- reuses the normal live or replay parser output, including stored detail-page snapshots during replay
+- updates only eligible existing `events.description` values for owned authoritative sources
+- does not stage review groups, auto-promote events, create new events, or mutate non-description event fields
+- emits `description_repair` with `description_repaired`, `description_unchanged`, `description_skipped`, and repaired event slugs
+- mutually exclusive with `-stage-review-groups`, `-all-sources`, and `-review-ics-fixture`
 
 Offline review fixture:
 

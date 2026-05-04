@@ -154,6 +154,8 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 			return finishReport(ctx, st, report, importStatusFailed)
 		}
 
+		usableICSParsed := false
+		detailCandidates := make([]EventCandidate, 0)
 		for _, link := range report.Links {
 			calendar := CalendarReport{URL: link}
 			icsSourceID, err := st.EnsureSource(ctx, cfg.CalendarSourceName, link)
@@ -192,10 +194,22 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 			}
 
 			parse := parseICSForSource(cfg, icsResult.Body)
+			if len(parse.Candidates) > 0 {
+				usableICSParsed = true
+			}
+			detailCandidates = append(detailCandidates, parse.Candidates...)
 			calendar.Candidates = parse.Candidates
 			calendar.Skips = parse.Skips
 			calendar.Errors = append(calendar.Errors, parse.Errors...)
 			report.Calendars = append(report.Calendars, calendar)
+		}
+
+		if usableICSParsed {
+			detailResult := liveDetailDescriptionsForCandidates(ctx, st, fetcher, runID, cfg, detailLinksForSource(cfg, pageURL, pageResult.Body, detailCandidates, opts.Limit))
+			report.Totals.Snapshots += detailResult.Snapshots
+			for i := range report.Calendars {
+				report.Calendars[i].Candidates = mergeDetailDescriptions(report.Calendars[i].Candidates, detailResult.Descriptions)
+			}
 		}
 	case pageProcessLinkedDetailPages:
 		report.Links = pageParse.Links
@@ -256,10 +270,12 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 		}
 	case pageProcessSourcePage:
 		report.Links = appendUniqueStringsWithLimit(report.Links, opts.Limit, pageParse.Links...)
+		detailResult := liveDetailDescriptionsForCandidates(ctx, st, fetcher, runID, cfg, detailLinksForSource(cfg, pageURL, pageResult.Body, pageParse.Parse.Candidates, opts.Limit))
+		report.Totals.Snapshots += detailResult.Snapshots
 		report.Calendars = append(report.Calendars, CalendarReport{
 			URL:        pageURL,
 			Snapshot:   report.Page,
-			Candidates: pageParse.Parse.Candidates,
+			Candidates: mergeDetailDescriptions(pageParse.Parse.Candidates, detailResult.Descriptions),
 			Skips:      pageParse.Parse.Skips,
 			Errors:     append([]string{}, pageParse.Parse.Errors...),
 		})
@@ -313,7 +329,9 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 				report.Calendars = append(report.Calendars, calendar)
 				continue
 			}
-			calendar.Candidates = linkedParse.Parse.Candidates
+			detailResult := liveDetailDescriptionsForCandidates(ctx, st, fetcher, runID, cfg, detailLinksForSource(cfg, firstNonEmpty(pageResult.FinalURL, pageResult.URL), pageResult.Body, linkedParse.Parse.Candidates, opts.Limit))
+			report.Totals.Snapshots += detailResult.Snapshots
+			calendar.Candidates = mergeDetailDescriptions(linkedParse.Parse.Candidates, detailResult.Descriptions)
 			calendar.Skips = linkedParse.Parse.Skips
 			calendar.Errors = append(calendar.Errors, linkedParse.Parse.Errors...)
 			report.Calendars = append(report.Calendars, calendar)

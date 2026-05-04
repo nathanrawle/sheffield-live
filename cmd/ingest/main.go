@@ -31,17 +31,18 @@ func run() error {
 }
 
 type ingestCommandConfig struct {
-	source            string
-	allSources        bool
-	limit             int
-	timeout           time.Duration
-	httpUserAgent     string
-	contact           string
-	dbPath            string
-	reviewICSFixture  string
-	reviewTitle       string
-	stageReviewGroups bool
-	importRunID       int64
+	source             string
+	allSources         bool
+	limit              int
+	timeout            time.Duration
+	httpUserAgent      string
+	contact            string
+	dbPath             string
+	reviewICSFixture   string
+	reviewTitle        string
+	stageReviewGroups  bool
+	repairDescriptions bool
+	importRunID        int64
 }
 
 var (
@@ -136,6 +137,9 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		report, runErr := replayImportRun(context.Background(), st, catalog, cfg.importRunID, ingest.ReplayOptions{
 			Limit: cfg.limit,
 		})
+		if cfg.repairDescriptions {
+			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
+		}
 		result = manualRunExecution{Report: report, Err: runErr}
 		if cfg.stageReviewGroups && !(runErr != nil && report.ImportRunID == 0) {
 			stageReport, stageErr := reviewStageForReport(context.Background(), st, catalog, report, runErr)
@@ -153,6 +157,13 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		fetcher, err := newHTTPFetcher(cfg.timeout, cfg.httpUserAgent)
 		if err != nil {
 			return err
+		}
+		if cfg.repairDescriptions {
+			report, runErr := runManualImport(context.Background(), st, fetcher, catalog, ingest.Options{
+				Source: cfg.source,
+				Limit:  cfg.limit,
+			})
+			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
 		}
 		result = runSingleManualSource(context.Background(), st, fetcher, catalog, cfg, cfg.source)
 	}
@@ -186,6 +197,7 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	fs.StringVar(&cfg.reviewTitle, "review-title", "", "title for a review group created from -review-ics-fixture")
 	fs.Var(&canonicalStage, "stage-review-groups", "stage ingest candidates into admin review groups")
 	fs.Var(&aliasStage, "stage-review", "stage ingest candidates into admin review groups")
+	fs.BoolVar(&cfg.repairDescriptions, "repair-descriptions", false, "repair existing event descriptions from ingest candidates without staging or promotion")
 	fs.Int64Var(&cfg.importRunID, "import-run-id", 0, "replay an existing import run from stored snapshots")
 
 	if err := fs.Parse(args); err != nil {
@@ -234,6 +246,21 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	}
 	if cfg.allSources && strings.TrimSpace(cfg.reviewICSFixture) != "" {
 		return ingestCommandConfig{}, errors.New("-all-sources and -review-ics-fixture are mutually exclusive")
+	}
+	if cfg.repairDescriptions && cfg.stageReviewGroups {
+		return ingestCommandConfig{}, errors.New("-repair-descriptions and -stage-review-groups are mutually exclusive")
+	}
+	if cfg.repairDescriptions && cfg.allSources {
+		return ingestCommandConfig{}, errors.New("-repair-descriptions and -all-sources are mutually exclusive")
+	}
+	if cfg.repairDescriptions && strings.TrimSpace(cfg.reviewICSFixture) != "" {
+		return ingestCommandConfig{}, errors.New("-repair-descriptions and -review-ics-fixture are mutually exclusive")
+	}
+	if cfg.repairDescriptions && cfg.importRunID == 0 {
+		source := strings.TrimSpace(cfg.source)
+		if source != ingest.DefaultSource && source != ingest.CafeNo9Source {
+			return ingestCommandConfig{}, errors.New("-repair-descriptions supports only -source sidney-and-matilda or -source cafe-no-9")
+		}
 	}
 	return cfg, nil
 }
@@ -329,6 +356,11 @@ type reviewStageStore interface {
 type manualIngestReport struct {
 	Report      ingest.Report     `json:"report"`
 	ReviewStage reviewStageReport `json:"review_stage"`
+}
+
+type descriptionRepairRunReport struct {
+	Report            ingest.Report                  `json:"report"`
+	DescriptionRepair sqlite.DescriptionRepairReport `json:"description_repair"`
 }
 
 type manualRunExecution struct {
@@ -433,6 +465,33 @@ func encodeManualRunResult(stdout io.Writer, stageEnabled bool, result manualRun
 		return err
 	}
 	return result.Err
+}
+
+func runDescriptionRepair(ctx context.Context, st *sqlite.Store, stdout io.Writer, catalog *ingest.Catalog, report ingest.Report, runErr error) error {
+	if runErr != nil && report.ImportRunID == 0 {
+		return runErr
+	}
+	repair := sqlite.DescriptionRepairReport{
+		RepairedSlugs:  []string{},
+		UnchangedSlugs: []string{},
+		SkippedTitles:  []string{},
+	}
+	if runErr == nil {
+		var err error
+		repair, err = st.RepairEventDescriptionsFromReport(ctx, catalog, report)
+		if err != nil {
+			return err
+		}
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(descriptionRepairRunReport{
+		Report:            report,
+		DescriptionRepair: repair,
+	}); err != nil {
+		return err
+	}
+	return runErr
 }
 
 func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer) error {

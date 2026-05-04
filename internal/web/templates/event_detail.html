@@ -3,7 +3,7 @@
     <p class="eyebrow">Event</p>
     <h1>{{.Event.Name}}</h1>
     {{with originLabel .Event.Origin}}<p class="origin-badge">{{.}}</p>{{end}}
-    <p class="lede">{{.Event.Description}}</p>
+    <div class="lede description-copy">{{descriptionHTML .Event.Description}}</div>
     <p><a class="primary-button" href="{{.Event.SourceURL}}">View official listing</a></p>
     <p class="review-group-meta">Checked from {{.Event.SourceName}} on {{dateShort .Event.LastChecked}}.</p>
   </header>

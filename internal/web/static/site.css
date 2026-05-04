@@ -134,6 +134,41 @@ a:focus-visible {
   max-width: 62ch;
   color: var(--muted);
   font-size: 1.08rem;
+  white-space: pre-line;
+}
+
+.description-copy {
+  white-space: normal;
+}
+
+.description-copy p,
+.description-copy h2,
+.description-copy h3,
+.description-copy h4,
+.description-copy h5,
+.description-copy h6 {
+  margin: 0 0 1rem;
+}
+
+.description-copy h2,
+.description-copy h3,
+.description-copy h4,
+.description-copy h5,
+.description-copy h6 {
+  color: var(--text);
+  font-size: 1.12rem;
+  line-height: 1.25;
+}
+
+.description-copy hr {
+  width: 100%;
+  margin: 1.2rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.description-copy > :last-child {
+  margin-bottom: 0;
 }
 
 .section-block {
