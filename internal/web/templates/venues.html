@@ -9,7 +9,7 @@
     {{range .Venues}}
     <a class="venue-card wide" href="/venues/{{.Slug}}">
       <span class="venue-title">{{.Name}}</span>
-      <span class="venue-meta">{{.Neighbourhood}} · {{.Address}}</span>
+      <span class="venue-meta">{{.Neighbourhood}} · {{displayAddress .Name .Address}}</span>
       {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
     </a>
     {{end}}

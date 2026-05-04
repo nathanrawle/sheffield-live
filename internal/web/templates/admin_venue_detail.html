@@ -35,7 +35,7 @@
     </label>
     <label>
       Address
-      <textarea name="address" rows="4">{{multilineAddress .Venue.Address}}</textarea>
+      <textarea name="address" rows="4">{{displayAddress .Venue.Name .Venue.Address}}</textarea>
     </label>
     <label>
       Neighbourhood
@@ -79,7 +79,7 @@
     </div>
     <div>
       <dt>Address</dt>
-      <dd class="address-text">{{blankValue (multilineAddress .Venue.Address)}}</dd>
+      <dd class="address-text">{{blankValue (displayAddress .Venue.Name .Venue.Address)}}</dd>
     </div>
     <div>
       <dt>Neighbourhood</dt>

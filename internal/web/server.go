@@ -270,6 +270,9 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			return value
 		},
 		"multilineAddress": formatMultilineAddress,
+		"displayAddress": func(name, value string) string {
+			return formatVenueAddress(name, value)
+		},
 		"candidateDisplayLabel": func(candidate review.Candidate) string {
 			if candidate.IsCanonicalSnapshot() {
 				return "Live canonical snapshot"
@@ -374,6 +377,10 @@ func NewServer(deps ServerDeps) (*Server, error) {
 }
 
 func formatMultilineAddress(value string) string {
+	return formatVenueAddress("", value)
+}
+
+func formatVenueAddress(name, value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
@@ -396,6 +403,11 @@ func formatMultilineAddress(value string) string {
 			if part != "" {
 				parts = append(parts, part)
 			}
+		}
+	}
+	if strings.TrimSpace(name) != "" && len(parts) > 0 {
+		if ingest.VenueSlugFromText(parts[0]) == ingest.VenueSlugFromText(name) {
+			parts = parts[1:]
 		}
 	}
 	if len(parts) == 0 {

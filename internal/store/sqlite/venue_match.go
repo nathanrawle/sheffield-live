@@ -238,19 +238,44 @@ func provisionalVenueFromCandidate(candidate review.Candidate) (domain.Venue, er
 	if slug == "" {
 		return domain.Venue{}, fmt.Errorf("review venue slug is required")
 	}
+	name := provisionalVenueName(candidate, slug)
 	return domain.Venue{
 		Slug:            slug,
-		Name:            provisionalVenueName(candidate, slug),
-		Address:         formatProvisionalVenueAddress(candidate.VenueLocationRaw),
+		Name:            name,
+		Address:         formatProvisionalVenueAddress(name, candidate.VenueLocationRaw),
+		Neighbourhood:   provisionalVenueNeighbourhood(candidate.VenueLocationRaw),
 		ValidationState: domain.ValidationStateProvisional,
 		Origin:          domain.OriginLive,
 	}, nil
 }
 
-func formatProvisionalVenueAddress(value string) string {
+func formatProvisionalVenueAddress(name, value string) string {
+	parts := normalizedVenueAddressParts(value)
+	if len(parts) == 0 {
+		return ""
+	}
+	if normalizedVenueKey(name) != "" && normalizedVenueKey(parts[0]) == normalizedVenueKey(name) {
+		parts = parts[1:]
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ",\n")
+}
+
+func provisionalVenueNeighbourhood(value string) string {
+	for _, part := range normalizedVenueAddressParts(value) {
+		if neighbourhood, ok := sheffieldNeighbourhoodAliases[normalizedVenueKey(part)]; ok {
+			return neighbourhood
+		}
+	}
+	return ""
+}
+
+func normalizedVenueAddressParts(value string) []string {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return ""
+		return nil
 	}
 
 	lines := strings.Split(value, "\n")
@@ -263,10 +288,17 @@ func formatProvisionalVenueAddress(value string) string {
 			}
 		}
 	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Join(parts, ",\n")
+	return parts
+}
+
+var sheffieldNeighbourhoodAliases = map[string]string{
+	"city-centre":                 "City Centre",
+	"sheffield-city-centre":       "City Centre",
+	"nether-edge":                 "Nether Edge",
+	"sharrow-vale":                "Sharrow Vale",
+	"ecclesall":                   "Ecclesall",
+	"neepsend":                    "Neepsend",
+	"cultural-industries-quarter": "Cultural Industries Quarter",
 }
 
 func provisionalVenueSlug(candidate review.Candidate) string {

@@ -935,7 +935,7 @@ func TestStageReviewGroupCreatesProvisionalVenueImmediatelyWhenVenueIsMissing(t 
 			Name:             "Unknown venue show",
 			VenueSlug:        "imagniary-hal-temp",
 			VenueText:        "Imaginary Hall",
-			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
+			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Neepsend, Sheffield",
 			StartAt:          "2026-05-10T18:30:00Z",
 			EndAt:            "2026-05-10T22:00:00Z",
 			Status:           "Listed",
@@ -958,8 +958,11 @@ func TestStageReviewGroupCreatesProvisionalVenueImmediatelyWhenVenueIsMissing(t 
 	if venue.Name != "Imaginary Hall" {
 		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
 	}
-	if venue.Address != "Imaginary Hall,\n1 Void Street,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "Imaginary Hall,\n1 Void Street,\nSheffield")
+	if venue.Address != "1 Void Street,\nNeepsend,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nNeepsend,\nSheffield")
+	}
+	if venue.Neighbourhood != "Neepsend" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
 	}
 	if venue.ValidationState != domain.ValidationStateProvisional {
 		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
@@ -2297,7 +2300,7 @@ func TestResolveReviewGroupCreatesProvisionalVenueWhenVenueIsMissing(t *testing.
 		UPDATE review_candidates
 		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
 		WHERE id = ?
-	`, "imaginary-hall", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Sheffield", group.Candidates[0].ID); err != nil {
+	`, "imaginary-hall", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Neepsend, Sheffield", group.Candidates[0].ID); err != nil {
 		t.Fatalf("rewrite venue evidence: %v", err)
 	}
 
@@ -2312,8 +2315,11 @@ func TestResolveReviewGroupCreatesProvisionalVenueWhenVenueIsMissing(t *testing.
 	if venue.Name != "Imaginary Hall" {
 		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
 	}
-	if venue.Address != "Imaginary Hall,\n1 Void Street,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "Imaginary Hall,\n1 Void Street,\nSheffield")
+	if venue.Address != "1 Void Street,\nNeepsend,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nNeepsend,\nSheffield")
+	}
+	if venue.Neighbourhood != "Neepsend" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
 	}
 	if venue.ValidationState != domain.ValidationStateProvisional {
 		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
@@ -2380,7 +2386,7 @@ func TestResolveReviewGroupCreatesProvisionalVenueFromNormalizedHumanEvidence(t 
 		UPDATE review_candidates
 		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
 		WHERE id = ?
-	`, "imagniary-hal-temp", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Sheffield", group.Candidates[0].ID); err != nil {
+	`, "imagniary-hal-temp", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Neepsend, Sheffield", group.Candidates[0].ID); err != nil {
 		t.Fatalf("rewrite venue evidence: %v", err)
 	}
 
@@ -2395,8 +2401,11 @@ func TestResolveReviewGroupCreatesProvisionalVenueFromNormalizedHumanEvidence(t 
 	if venue.Name != "Imaginary Hall" {
 		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
 	}
-	if venue.Address != "Imaginary Hall,\n1 Void Street,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "Imaginary Hall,\n1 Void Street,\nSheffield")
+	if venue.Address != "1 Void Street,\nNeepsend,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nNeepsend,\nSheffield")
+	}
+	if venue.Neighbourhood != "Neepsend" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
 	}
 	if _, ok := st.VenueBySlug("imagniary-hal-temp"); ok {
 		t.Fatal("stale provisional venue slug was inserted")
@@ -2611,7 +2620,7 @@ func TestPromoteSingletonReviewGroupIfMissingCreatesProvisionalVenueWhenVenueIsU
 			Name:             "Unknown venue show",
 			VenueSlug:        "imagniary-hal-temp",
 			VenueText:        "Imaginary Hall",
-			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
+			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Neepsend, Sheffield",
 			StartAt:          "2026-05-10T18:30:00Z",
 			EndAt:            "2026-05-10T22:00:00Z",
 			Status:           "Listed",
@@ -2641,6 +2650,12 @@ func TestPromoteSingletonReviewGroupIfMissingCreatesProvisionalVenueWhenVenueIsU
 	}
 	if venue.ValidationState != domain.ValidationStateProvisional {
 		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
+	}
+	if venue.Address != "1 Void Street,\nNeepsend,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nNeepsend,\nSheffield")
+	}
+	if venue.Neighbourhood != "Neepsend" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
 	}
 
 	event, ok := st.EventBySlug(eventSlug)

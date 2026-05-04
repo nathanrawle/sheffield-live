@@ -36,7 +36,7 @@
         <tr>
           <td><a href="/admin/venues/{{.Venue.Slug}}">{{blankValue .Venue.Name}}</a></td>
           <td>{{.Venue.Slug}}</td>
-          <td>{{blankValue .Venue.Address}}</td>
+          <td>{{blankValue (displayAddress .Venue.Name .Venue.Address)}}</td>
           <td>{{originText .Venue.Origin}}</td>
           <td>{{.UpcomingEventCount}}</td>
           <td>

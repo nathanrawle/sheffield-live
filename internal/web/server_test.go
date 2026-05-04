@@ -584,11 +584,11 @@ func TestSQLiteAdminVenueDetailPostSavesEditedFields(t *testing.T) {
 	assertContains(t, body, "Programme-only while listings settle.")
 }
 
-func TestFormatMultilineAddress(t *testing.T) {
-	got := formatMultilineAddress(`Memorial Hall\, Barkers Pool\, Sheffield\, S1 2JA`)
-	want := "Memorial Hall,\nBarkers Pool,\nSheffield,\nS1 2JA"
+func TestFormatVenueAddress(t *testing.T) {
+	got := formatVenueAddress("Memorial Hall", `Memorial Hall\, Barkers Pool\, Sheffield\, S1 2JA`)
+	want := "Barkers Pool,\nSheffield,\nS1 2JA"
 	if got != want {
-		t.Fatalf("formatMultilineAddress() = %q, want %q", got, want)
+		t.Fatalf("formatVenueAddress() = %q, want %q", got, want)
 	}
 }
 
