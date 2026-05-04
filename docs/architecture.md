@@ -89,14 +89,15 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - authoritative source identity controls overwrite rights and can upgrade a provisional event in place
 - resolving a duplicate or accepting a singleton publishes one canonical public event in the same transaction
 - manual review resolution first canonicalizes the selected venue to an existing venue when deterministic evidence matching yields one unique live venue
-- when manual review resolution finds no unique existing venue match, it inserts a `provisional` live venue in the same transaction and publishes the event against that venue
+- newly created staged groups can create a `provisional` live venue row immediately when staged venue evidence is uniquely new
+- non-authoritative singleton auto-promotion can create a `provisional` live venue row immediately when singleton venue evidence is uniquely new
+- when manual review resolution finds no unique existing venue match, it inserts a `provisional` live venue in the same transaction and publishes the event against that venue if an earlier flow has not already created it
 - admins can later edit a provisional venue in place and flip it to `validated` from the provisional venue detail page without changing linked public events
 - ambiguous venue evidence fails closed and rolls back the review resolution transaction
 - authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
 - authoritative identity takes precedence over canonical slug attachment when they disagree
 - authoritative review groups may also persist secondary-source `genre` and `description` rows keyed by secondary source plus candidate venue, name, and start time
 - supporting singleton auto-promotion creates `provisional` live events, does not create authoritative `event_source_links`, and does not create `event_secondary_source_info` rows
-- singleton auto-promotion does not currently create provisional venue rows
 - successful supporting singleton auto-promotion resolves matching stale open singleton groups by `staging_key` and links the current import run to those groups
 - later supporting matches can fill blank live fields but conflicting populated fields stay in review
 - rejecting a review does not publish

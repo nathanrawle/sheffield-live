@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/review"
 	"sheffield-live/internal/store/sqlite"
@@ -243,6 +244,69 @@ func TestCreateReviewGroupsFromReportAutoPromotesJazzAtTheLescarSingleton(t *tes
 	}
 	if got, want := event.VenueSlug, "lescar"; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+}
+
+func TestCreateReviewGroupsFromReportAutoPromotesSingletonAtNewProvisionalVenue(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	report := ingest.Report{
+		Source:      ingest.TheGreystonesSource,
+		SourceURL:   "https://www.mygreystones.co.uk/events/",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.mygreystones.co.uk/events/",
+			Candidates: []ingest.EventCandidate{{
+				UID:         "new-venue-1",
+				Summary:     "Offsite Roots Night",
+				Location:    "Imaginary Hall",
+				LocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
+				StartAt:     "2026-05-16T19:30:00Z",
+				EndAt:       "2026-05-16T22:00:00Z",
+			}},
+		}},
+	}
+
+	stage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create review groups: %v", err)
+	}
+	if got, want := stage.AutoPromotedCount, 1; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 0; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+	if got, want := len(stage.Groups), 0; got != want {
+		t.Fatalf("review groups = %d, want %d", got, want)
+	}
+
+	venue, ok := st.VenueBySlug("imaginary-hall")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if got, want := venue.ValidationState, domain.ValidationStateProvisional; got != want {
+		t.Fatalf("venue validation state = %q, want %q", got, want)
+	}
+
+	event, ok := st.EventBySlug(stage.AutoPromoted[0].EventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", stage.AutoPromoted[0].EventSlug)
+	}
+	if got, want := event.VenueSlug, "imaginary-hall"; got != want {
+		t.Fatalf("event venue slug = %q, want %q", got, want)
 	}
 }
 
@@ -1434,18 +1498,21 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 		if result.ReviewStage == nil {
 			t.Fatalf("review stage missing for source %q", result.Source)
 		}
-		if result.ReviewStage.GroupsCreated != 1 {
-			t.Fatalf("groups created for %q = %d, want 1", result.Source, result.ReviewStage.GroupsCreated)
+		if result.ReviewStage.AutoPromotedCount != 1 {
+			t.Fatalf("auto promoted count for %q = %d, want 1", result.Source, result.ReviewStage.AutoPromotedCount)
 		}
-		if result.ReviewStage.ReviewCandidateCount != 1 {
-			t.Fatalf("review candidate count for %q = %d, want 1", result.Source, result.ReviewStage.ReviewCandidateCount)
+		if result.ReviewStage.GroupsCreated != 0 {
+			t.Fatalf("groups created for %q = %d, want 0", result.Source, result.ReviewStage.GroupsCreated)
+		}
+		if result.ReviewStage.ReviewCandidateCount != 0 {
+			t.Fatalf("review candidate count for %q = %d, want 0", result.Source, result.ReviewStage.ReviewCandidateCount)
 		}
 	}
 
 	db := openRawDB(t, path)
 	defer db.Close()
-	if got, want := countRows(t, db, "review_groups"), len(ingest.RegisteredSourceKeys()); got != want {
-		t.Fatalf("review_groups rows = %d, want %d", got, want)
+	if got := countRows(t, db, "review_groups"); got != 0 {
+		t.Fatalf("review_groups rows = %d, want 0", got)
 	}
 }
 

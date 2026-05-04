@@ -502,7 +502,7 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 	data := PageData{
 		SiteName:           "Sheffield Live",
 		PageTitle:          "Provisional venues",
-		MetaDescription:    "Read-only queue of provisional venue rows awaiting review.",
+		MetaDescription:    "Queue of provisional venue rows awaiting validation.",
 		Now:                now,
 		HasImportHistory:   s.importRunStore != nil,
 		HasImportRunDetail: s.replayStore != nil,

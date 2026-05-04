@@ -92,6 +92,9 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 		if err := replaceReviewCandidatesTx(ctx, tx, groupID, input.Candidates, input.SourceName, input.SourceURL); err != nil {
 			return review.StageGroupResult{}, err
 		}
+		if err := ensureProvisionalVenuesForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
+			return review.StageGroupResult{}, err
+		}
 		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, groupID, input, now); err != nil {
 			return review.StageGroupResult{}, err
 		}
@@ -212,6 +215,25 @@ func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context
 		_ = tx.Rollback()
 	}()
 
+	matcher, err := loadVenueMatcher(ctx, tx)
+	if err != nil {
+		return "", false, err
+	}
+	venueMatch, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, reviewCandidateFromInput(input.Candidates[0]))
+	if err != nil {
+		return "", false, err
+	}
+	switch venueMatch.status {
+	case venueMatchResolved:
+		event.VenueSlug = venueMatch.slug
+		event.Slug, err = buildLiveEventSlug(event.Name, event.VenueSlug, event.Start)
+		if err != nil {
+			return "", false, err
+		}
+	case venueMatchAmbiguous, venueMatchNoMatch:
+		return "", false, nil
+	}
+
 	record, found, ambiguous, err := uniqueLiveEventMatchForEventTx(ctx, tx, event)
 	if err != nil {
 		return "", false, err
@@ -257,6 +279,25 @@ func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context
 		return "", false, err
 	}
 	return event.Slug, true, nil
+}
+
+func ensureProvisionalVenuesForCandidateInputsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, inputs []review.CandidateInput) error {
+	matcher, err := loadVenueMatcher(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, input := range inputs {
+		if input.CanonicalEventID != 0 {
+			continue
+		}
+		if _, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, reviewCandidateFromInput(input)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, stagingKey string) (int64, error) {
@@ -723,6 +764,18 @@ func maybeAutoResolveDuplicateReviewGroupTx(ctx context.Context, tx interface {
 				winner = candidate
 			}
 		}
+		matcher, err := loadVenueMatcher(ctx, tx)
+		if err != nil {
+			return false, "", "", err
+		}
+		venueMatch, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, winner)
+		if err != nil {
+			return false, "", "", err
+		}
+		if venueMatch.status != venueMatchResolved {
+			return false, "", "", nil
+		}
+		winner.VenueSlug = venueMatch.slug
 		if err := persistResolvedChoiceSetTx(ctx, tx, groupID, chooseAllFieldsFromCandidate(winner, now), now); err != nil {
 			return false, "", "", err
 		}
@@ -2056,7 +2109,7 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	}
 
 	if venueCandidate, ok := selectedCandidates[review.FieldVenueSlug]; ok {
-		resolvedSlug, err := resolveReviewVenueTx(ctx, tx, matcher, venueCandidate)
+		resolvedSlug, err := resolveReviewVenueTx(ctx, tx, &matcher, venueCandidate)
 		if err != nil {
 			return err
 		}

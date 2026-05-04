@@ -135,24 +135,78 @@ func loadReviewGroupSharedVenue(ctx context.Context, q queryer, matcher venueMat
 	return matcher.matchSharedVenue(candidates), nil
 }
 
-func resolveReviewVenueTx(ctx context.Context, tx execer, matcher venueMatcher, candidate review.Candidate) (string, error) {
+func ensureProvisionalVenueForCandidateTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, matcher *venueMatcher, candidate review.Candidate) (venueMatchResult, error) {
 	match := matcher.matchCandidate(candidate)
+	if match.status != venueMatchNoMatch {
+		return match, nil
+	}
+
+	slug := provisionalVenueSlug(candidate)
+	if slug == "" {
+		return venueMatchResult{status: venueMatchNoMatch}, nil
+	}
+	if existing, ok, err := loadVenueBySlug(ctx, tx, slug); err != nil {
+		return venueMatchResult{}, err
+	} else if ok {
+		matcher.indexVenue(existing)
+		return venueMatchResult{status: venueMatchResolved, slug: existing.Slug, name: existing.Name}, nil
+	}
+
+	venue, err := provisionalVenueFromCandidate(candidate)
+	if err != nil {
+		return venueMatchResult{}, err
+	}
+	if _, err := insertVenue(ctx, tx, venue); err != nil {
+		return venueMatchResult{}, err
+	}
+	matcher.indexVenue(venue)
+	return venueMatchResult{status: venueMatchResolved, slug: venue.Slug, name: venue.Name}, nil
+}
+
+func resolveReviewVenueTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, matcher *venueMatcher, candidate review.Candidate) (string, error) {
+	match, err := ensureProvisionalVenueForCandidateTx(ctx, tx, matcher, candidate)
+	if err != nil {
+		return "", err
+	}
 	switch match.status {
 	case venueMatchResolved:
 		return match.slug, nil
 	case venueMatchAmbiguous:
 		return "", fmt.Errorf("venue %q not found", candidate.VenueSlug)
 	case venueMatchNoMatch:
-		venue, err := provisionalVenueFromCandidate(candidate)
-		if err != nil {
-			return "", err
-		}
-		if _, err := insertVenue(ctx, tx, venue); err != nil {
-			return "", err
-		}
-		return venue.Slug, nil
+		return "", fmt.Errorf("venue %q not found", candidate.VenueSlug)
 	default:
 		return "", fmt.Errorf("venue %q not found", candidate.VenueSlug)
+	}
+}
+
+func (m *venueMatcher) indexVenue(venue domain.Venue) {
+	m.add(m.bySlug, venue.Slug, venue)
+	m.add(m.byName, normalizedVenueKey(venue.Name), venue)
+	m.add(m.byAddress, normalizedVenueKey(venue.Address), venue)
+}
+
+func reviewCandidateFromInput(input review.CandidateInput) review.Candidate {
+	return review.Candidate{
+		ExternalID:       strings.TrimSpace(input.ExternalID),
+		Name:             strings.TrimSpace(input.Name),
+		VenueSlug:        strings.TrimSpace(input.VenueSlug),
+		VenueText:        strings.TrimSpace(input.VenueText),
+		VenueLocationRaw: strings.TrimSpace(input.VenueLocationRaw),
+		StartAt:          strings.TrimSpace(input.StartAt),
+		EndAt:            strings.TrimSpace(input.EndAt),
+		Genre:            strings.TrimSpace(input.Genre),
+		Status:           strings.TrimSpace(input.Status),
+		Description:      strings.TrimSpace(input.Description),
+		SourceName:       strings.TrimSpace(input.SourceName),
+		SourceURL:        strings.TrimSpace(input.SourceURL),
+		Provenance:       strings.TrimSpace(input.Provenance),
 	}
 }
 

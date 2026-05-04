@@ -51,7 +51,7 @@ Supporting singleton auto-promotion is intentionally narrower than authoritative
 - it creates provisional events rather than reviewed ones
 - it does not create authoritative source links
 - it does not create secondary-source info rows
-- it does not yet create provisional venue rows
+- it can create provisional venue rows immediately when the venue evidence is uniquely new
 - it may fill blank live fields on later exact matches, but conflicting populated fields stay in review
 - Jazz at The Lescar remains a non-authoritative, program-only source even when its first-seen singletons auto-publish
 
@@ -60,10 +60,11 @@ Canonical-backed duplicate resolution follows two precedence rules:
 - authoritative source identity wins over canonical slug match when they disagree
 - non-authoritative canonical-backed duplicate resolution updates the matched live event in place rather than publishing a second event
 
-Manual venue resolution follows three rules:
+Venue matching and provisional venue creation follow these rules:
 
 - when the selected venue evidence uniquely matches an existing venue, review resolution canonicalizes to that venue
-- when the selected venue evidence matches no existing venue, review resolution creates a provisional venue row and publishes against it in the same transaction
+- staging or non-authoritative singleton auto-promotion can create a provisional venue row immediately when venue evidence is uniquely new
+- when the selected venue evidence matches no existing venue, review resolution creates a provisional venue row and publishes against it in the same transaction if an earlier flow did not already do so
 - when the selected venue evidence is ambiguous, review resolution fails closed rather than guessing
 
 Reviews are held or rejected when the source is not good enough to publish:

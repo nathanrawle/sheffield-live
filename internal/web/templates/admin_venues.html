@@ -1,7 +1,7 @@
 <section class="page-head">
   <p class="eyebrow">Admin</p>
   <h1>Provisional venues</h1>
-  <p class="lede">Read-only queue of provisional venue rows created during manual review resolution.</p>
+  <p class="lede">Queue of provisional venue rows created from newly detected venue evidence. Some rows may not have linked events yet.</p>
   {{if or .HasReviewStorage .HasImportHistory}}
   <p class="review-group-meta">
     {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}

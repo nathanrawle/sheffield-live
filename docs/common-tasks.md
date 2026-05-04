@@ -70,6 +70,7 @@ go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you
 ```
 
 This stages duplicate groups and any singleton groups that were not auto-promoted after a successful ingest. Any singleton may auto-publish first when it is the first matching live event seen; authoritative sources can also upgrade existing provisional events in place, while supporting-source conflicts stay in review. Duplicate staging can also auto-resolve an exact canonical match or a unanimous staged duplicate and records those outcomes separately in `review_stage.duplicate_auto_resolved`. Reruns reuse existing staging keys when the staged content matches, refresh open-group canonical snapshot/default state, preserve manual draft choices, and record the new import-run link in the persisted provenance table.
+`-stage-review-groups` can also create provisional venue rows immediately from uniquely new venue evidence, even when no event is published yet, so `/admin/venues` may show rows with `0` upcoming events.
 
 ## Replay a stored ingest run
 
@@ -109,11 +110,11 @@ Open `/admin/review` in the browser.
 - shared venue labels in review summaries come from deterministic matching over stored venue slug, venue text, and raw location evidence
 - singleton groups use accept/reject when they were not auto-promoted during staging
 - resolving or accepting publishes one canonical public event
-- manual resolution reuses an existing venue when the selected evidence yields one unique match, otherwise it creates a provisional venue in the same transaction
+- manual resolution reuses an existing venue when the selected evidence yields one unique match, otherwise it creates a provisional venue in the same transaction if staging or singleton auto-promotion did not already do so
 - ambiguous venue evidence fails closed and leaves the group unresolved
-- singleton auto-promotion is unchanged and does not yet create provisional venue rows
+- singleton auto-promotion can now create a provisional venue row immediately for a uniquely new venue
 - rejecting does not publish
-- open `/admin/venues` to inspect provisional venue rows created during manual review resolution
+- open `/admin/venues` to inspect provisional venue rows created from newly detected venue evidence
 - open `/admin/venues/{slug}` to edit one provisional venue's fields and inspect its upcoming linked events
 - save the provisional venue fields in place, then use the separate validate action to mark the venue validated and remove it from the queue
 - the provisional venue queue still does not support venue merge actions

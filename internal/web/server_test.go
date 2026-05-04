@@ -343,6 +343,44 @@ func TestSQLiteAdminVenuesListOnlyProvisionalVenues(t *testing.T) {
 	assertNotContains(t, body, "Validated Room")
 }
 
+func TestSQLiteAdminVenuesShowStagedProvisionalVenueWithoutEvents(t *testing.T) {
+	st, server, _ := mustAdminVenuesServer(t)
+	defer st.Close()
+
+	result, err := st.StageReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Staged new venue",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:staged-new-venue.ics",
+		StagingKey: "v1:staged-new-venue",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "candidate-a",
+			Name:             "Staged venue show",
+			VenueSlug:        "imagniary-hal-temp",
+			VenueText:        "Imaginary Hall",
+			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Staged without publishing an event.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !result.Created {
+		t.Fatal("created = false, want true")
+	}
+
+	body := renderPath(t, server, "/admin/venues")
+	assertContains(t, body, "Queue of provisional venue rows created from newly detected venue evidence.")
+	assertContains(t, body, `href="/admin/venues/imaginary-hall"`)
+	assertContains(t, body, "Imaginary Hall")
+	assertContains(t, body, ">0</td>")
+
+	detailBody := renderPath(t, server, "/admin/venues/imaginary-hall")
+	assertContains(t, detailBody, "No upcoming linked events for this provisional venue.")
+}
+
 func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T) {
 	st, server, path := mustAdminVenuesServer(t)
 	defer st.Close()
