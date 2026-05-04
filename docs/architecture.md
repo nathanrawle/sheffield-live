@@ -13,8 +13,8 @@ Sheffield Live is a single Go monolith. It serves server-rendered HTML from one 
 - `internal/domain` defines shared venue, event, and origin types
 - `internal/ingest` loads the source catalog, fetches source pages, dispatches to bounded parser/extractor families, and stages review groups from ingest reports
 - `internal/review` defines review group, candidate, default-choice, and draft-choice types
-- `internal/store` provides the seed-store implementation and catalog interface
-- `internal/store/sqlite` opens SQLite, runs migrations, bootstraps seed data, and implements persistence
+- `internal/store` provides the bootstrap-store implementation and catalog interface
+- `internal/store/sqlite` opens SQLite, runs migrations, bootstraps curated baseline data, and implements persistence
 - `internal/web` routes requests and renders pages
 - `internal/web/static` embeds `site.css`
 - `internal/web/templates` embeds HTML templates
@@ -115,5 +115,5 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 
 ## Visibility
 
-Seed, test, and development records are visible in the UI through their origin labels.
-Live records are not tagged.
+Test and development records are visible in the UI through their origin labels.
+Curated bootstrap and live records are not tagged.

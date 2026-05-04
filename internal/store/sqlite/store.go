@@ -34,6 +34,7 @@ const (
 	schemaVersionV11  = 11
 	schemaVersionV12  = 12
 	schemaVersionV13  = 13
+	schemaVersionV14  = 14
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -55,6 +56,7 @@ var migrations = []struct {
 	{version: schemaVersionV11, path: "migrations/0011_events_publication_state.sql"},
 	{version: schemaVersionV12, path: "migrations/0012_venue_validation_state.sql"},
 	{version: schemaVersionV13, path: "migrations/0013_review_candidate_venue_evidence.sql"},
+	{version: schemaVersionV14, path: "migrations/0014_bootstrap_origin_live.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -395,8 +397,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV13 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV13)
+	if version > schemaVersionV14 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV14)
 	}
 
 	for _, migration := range migrations {

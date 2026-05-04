@@ -254,8 +254,6 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		},
 		"originLabel": func(origin domain.Origin) string {
 			switch origin {
-			case domain.OriginSeed:
-				return "Seed data"
 			case domain.OriginTest:
 				return "Test data"
 			case domain.OriginDev:

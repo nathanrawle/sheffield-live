@@ -40,8 +40,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 
 	db := mustRawDB(t, path)
 
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
 	}
 	if got := mustCount(t, db, "venues"); got != 7 {
 		t.Fatalf("venues rows = %d, want 7", got)
@@ -64,8 +64,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT version, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version, &appliedAt); err != nil {
 		t.Fatalf("scan migration row: %v", err)
 	}
-	if version != schemaVersionV13 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV13)
+	if version != schemaVersionV14 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV14)
 	}
 	if _, err := time.Parse(time.RFC3339, appliedAt); err != nil {
 		t.Fatalf("applied_at %q is not RFC3339: %v", appliedAt, err)
@@ -165,15 +165,7 @@ func TestOpenMigratesVersion11DatabaseAddsVenueValidationState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
 	db := mustRawDB(t, path)
-	for _, migration := range migrations[:len(migrations)-1] {
-		migrationSQL, err := readMigration(migration.path)
-		if err != nil {
-			t.Fatalf("read migration %s: %v", migration.path, err)
-		}
-		if _, err := db.Exec(migrationSQL); err != nil {
-			t.Fatalf("apply migration %s: %v", migration.path, err)
-		}
-	}
+	applyMigrationsThrough(t, db, schemaVersionV11)
 	if _, err := db.Exec(`
 		INSERT INTO venues (
 			slug, name, address, neighbourhood, description, website, coverage_kind, coverage_note, origin
@@ -181,14 +173,7 @@ func TestOpenMigratesVersion11DatabaseAddsVenueValidationState(t *testing.T) {
 	`, "pre-v12-venue", "Pre-v12 Venue", "1 Old Street, Sheffield", "Centre", "Legacy venue", "https://example.test/pre-v12", "venue", "", string(domain.OriginLive)); err != nil {
 		t.Fatalf("insert legacy venue: %v", err)
 	}
-	for _, migration := range migrations[:len(migrations)-1] {
-		if _, err := db.Exec(`
-			INSERT INTO schema_migrations (version, applied_at)
-			VALUES (?, ?)
-		`, migration.version, formatRFC3339UTC(time.Date(2026, time.April, 22, 8+migration.version, 0, 0, 0, time.UTC))); err != nil {
-			t.Fatalf("insert v%d migration row: %v", migration.version, err)
-		}
-	}
+	insertMigrationRowsThrough(t, db, schemaVersionV11, time.Date(2026, time.April, 22, 8, 0, 0, 0, time.UTC))
 	if err := db.Close(); err != nil {
 		t.Fatalf("close raw db: %v", err)
 	}
@@ -225,15 +210,7 @@ func TestOpenMigratesVersion12DatabaseAddsReviewCandidateVenueEvidence(t *testin
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
 	db := mustRawDB(t, path)
-	for _, migration := range migrations[:len(migrations)-1] {
-		migrationSQL, err := readMigration(migration.path)
-		if err != nil {
-			t.Fatalf("read migration %s: %v", migration.path, err)
-		}
-		if _, err := db.Exec(migrationSQL); err != nil {
-			t.Fatalf("apply migration %s: %v", migration.path, err)
-		}
-	}
+	applyMigrationsThrough(t, db, schemaVersionV12)
 	groupRes, err := db.Exec(`
 		INSERT INTO review_groups (
 			title,
@@ -271,14 +248,7 @@ func TestOpenMigratesVersion12DatabaseAddsReviewCandidateVenueEvidence(t *testin
 	`, groupID, 1, "candidate-a", "Candidate A", "leadmill", "2026-05-01T19:00:00Z", "2026-05-01T22:00:00Z", "Indie", "Listed", "Description", "Fixture ICS", "file:candidate-a.ics", "fixture UID candidate-a"); err != nil {
 		t.Fatalf("insert review candidate: %v", err)
 	}
-	for _, migration := range migrations[:len(migrations)-1] {
-		if _, err := db.Exec(`
-			INSERT INTO schema_migrations (version, applied_at)
-			VALUES (?, ?)
-		`, migration.version, formatRFC3339UTC(time.Date(2026, time.April, 23, 11+migration.version, 0, 0, 0, time.UTC))); err != nil {
-			t.Fatalf("insert v%d migration row: %v", migration.version, err)
-		}
-	}
+	insertMigrationRowsThrough(t, db, schemaVersionV12, time.Date(2026, time.April, 23, 11, 0, 0, 0, time.UTC))
 	if err := db.Close(); err != nil {
 		t.Fatalf("close raw db: %v", err)
 	}
@@ -291,8 +261,8 @@ func TestOpenMigratesVersion12DatabaseAddsReviewCandidateVenueEvidence(t *testin
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
 	}
 
 	group, ok, err := st.LoadReviewGroup(context.Background(), groupID)
@@ -322,6 +292,46 @@ func TestOpenMigratesVersion12DatabaseAddsReviewCandidateVenueEvidence(t *testin
 	if venueLocationRaw != "" {
 		t.Fatalf("stored venue location raw = %q, want empty", venueLocationRaw)
 	}
+}
+
+func TestOpenMigratesVersion13DatabaseMarksBootstrapRecordsLive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	db := mustRawDB(t, path)
+	applyMigrationsThrough(t, db, schemaVersionV13)
+
+	if _, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Legacy source", "https://example.test/legacy"); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+	var sourceID int64
+	if err := db.QueryRow(`SELECT id FROM sources WHERE name = ? AND url = ?`, "Legacy source", "https://example.test/legacy").Scan(&sourceID); err != nil {
+		t.Fatalf("lookup source id: %v", err)
+	}
+
+	bootstrapVenueID := insertLegacyVenue(t, db, "leadmill", "The Leadmill", domain.OriginSeed)
+	unrelatedVenueID := insertLegacyVenue(t, db, "community-room", "Community Room", domain.OriginSeed)
+	insertLegacyEvent(t, db, "matinee-noise-at-the-leadmill", bootstrapVenueID, sourceID, domain.OriginSeed)
+	insertLegacyEvent(t, db, "community-room-show", unrelatedVenueID, sourceID, domain.OriginSeed)
+	insertMigrationRowsThrough(t, db, schemaVersionV13, time.Date(2026, time.April, 24, 8, 0, 0, 0, time.UTC))
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db = mustRawDB(t, path)
+	defer db.Close()
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
+	}
+	assertStoredVenueOrigin(t, db, "leadmill", domain.OriginLive)
+	assertStoredVenueOrigin(t, db, "community-room", domain.OriginSeed)
+	assertStoredEventOrigin(t, db, "matinee-noise-at-the-leadmill", domain.OriginLive)
+	assertStoredEventOrigin(t, db, "community-room-show", domain.OriginSeed)
 }
 
 func TestValidateVenueMarksProvisionalVenueValidated(t *testing.T) {
@@ -520,15 +530,15 @@ func TestOpenMigratesVersion1Database(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV13 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV13)
+	if version != schemaVersionV14 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV14)
 	}
 	if got := mustCount(t, db, "review_groups"); got != 0 {
 		t.Fatalf("review_groups rows = %d, want 0", got)
@@ -630,15 +640,15 @@ func TestOpenMigratesVersion2DatabasePreservesReviewDataAndAddsStagingKey(t *tes
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV13 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV13)
+	if version != schemaVersionV14 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV14)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
@@ -777,8 +787,8 @@ func TestOpenMigratesVersion3DatabaseAddsEventSourceLinks(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
@@ -917,8 +927,8 @@ func TestOpenMigratesVersion4DatabaseAddsReviewGroupAuthoritativeLinkColumns(t *
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
 	}
 
 	group, ok, err := st.LoadReviewGroup(context.Background(), openGroupID)
@@ -1022,8 +1032,8 @@ func TestOpenMigratesVersion5DatabaseAddsEventSecondarySourceInfoTable(t *testin
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
 	}
 	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
 		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
@@ -1440,6 +1450,93 @@ func mustInsertReviewGroupRow(t *testing.T, db *sql.DB, query string, args ...an
 		t.Fatalf("review group row id: %v", err)
 	}
 	return id
+}
+
+func insertLegacyVenue(t *testing.T, db *sql.DB, slug, name string, origin domain.Origin) int64 {
+	t.Helper()
+
+	res, err := db.Exec(`
+		INSERT INTO venues (
+			slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, slug, name, "1 Legacy Street, Sheffield", "Centre", "Legacy venue", "https://example.test/"+slug, string(domain.ValidationStateValidated), string(domain.CoverageKindVenue), "", string(origin))
+	if err != nil {
+		t.Fatalf("insert legacy venue %q: %v", slug, err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("legacy venue %q id: %v", slug, err)
+	}
+	return id
+}
+
+func insertLegacyEvent(t *testing.T, db *sql.DB, slug string, venueID, sourceID int64, origin domain.Origin) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug, venue_id, source_id, name, start_at, end_at, genre, status, description, last_checked_at, origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, "Legacy Event", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Legacy event", "2026-05-09T10:00:00Z", string(origin)); err != nil {
+		t.Fatalf("insert legacy event %q: %v", slug, err)
+	}
+}
+
+func assertStoredVenueOrigin(t *testing.T, db *sql.DB, slug string, want domain.Origin) {
+	t.Helper()
+
+	var origin string
+	if err := db.QueryRow(`SELECT origin FROM venues WHERE slug = ?`, slug).Scan(&origin); err != nil {
+		t.Fatalf("scan venue origin %q: %v", slug, err)
+	}
+	if domain.Origin(origin) != want {
+		t.Fatalf("venue %q origin = %q, want %q", slug, origin, want)
+	}
+}
+
+func assertStoredEventOrigin(t *testing.T, db *sql.DB, slug string, want domain.Origin) {
+	t.Helper()
+
+	var origin string
+	if err := db.QueryRow(`SELECT origin FROM events WHERE slug = ?`, slug).Scan(&origin); err != nil {
+		t.Fatalf("scan event origin %q: %v", slug, err)
+	}
+	if domain.Origin(origin) != want {
+		t.Fatalf("event %q origin = %q, want %q", slug, origin, want)
+	}
+}
+
+func applyMigrationsThrough(t *testing.T, db *sql.DB, maxVersion int) {
+	t.Helper()
+
+	for _, migration := range migrations {
+		if migration.version > maxVersion {
+			continue
+		}
+		migrationSQL, err := readMigration(migration.path)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", migration.path, err)
+		}
+		if _, err := db.Exec(migrationSQL); err != nil {
+			t.Fatalf("apply migration %s: %v", migration.path, err)
+		}
+	}
+}
+
+func insertMigrationRowsThrough(t *testing.T, db *sql.DB, maxVersion int, base time.Time) {
+	t.Helper()
+
+	for _, migration := range migrations {
+		if migration.version > maxVersion {
+			continue
+		}
+		if _, err := db.Exec(`
+			INSERT INTO schema_migrations (version, applied_at)
+			VALUES (?, ?)
+		`, migration.version, formatRFC3339UTC(base.Add(time.Duration(migration.version)*time.Hour))); err != nil {
+			t.Fatalf("insert v%d migration row: %v", migration.version, err)
+		}
+	}
 }
 
 func mustRawDB(t *testing.T, path string) *sql.DB {

@@ -43,20 +43,20 @@ func TestSeedStoreLookups(t *testing.T) {
 	}
 }
 
-func TestSeedStoreMarksAllFixturesSeed(t *testing.T) {
+func TestSeedStoreMarksBootstrapRecordsLive(t *testing.T) {
 	st := NewSeedStore()
 
 	for _, venue := range st.Venues() {
-		if venue.Origin != domain.OriginSeed {
-			t.Fatalf("venue %q origin = %q, want seed", venue.Slug, venue.Origin)
+		if venue.Origin != domain.OriginLive {
+			t.Fatalf("venue %q origin = %q, want live", venue.Slug, venue.Origin)
 		}
 		if venue.ValidationState != domain.ValidationStateValidated {
 			t.Fatalf("venue %q validation state = %q, want validated", venue.Slug, venue.ValidationState)
 		}
 	}
 	for _, event := range st.Events() {
-		if event.Origin != domain.OriginSeed {
-			t.Fatalf("event %q origin = %q, want seed", event.Slug, event.Origin)
+		if event.Origin != domain.OriginLive {
+			t.Fatalf("event %q origin = %q, want live", event.Slug, event.Origin)
 		}
 	}
 }

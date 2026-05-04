@@ -52,7 +52,7 @@ func NewSeedStore() *Store {
 			Website:         "https://www.cafe9sheffield.co.uk/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "corporation",
@@ -63,7 +63,7 @@ func NewSeedStore() *Store {
 			Website:         "https://www.corporation.org.uk/live/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "leadmill",
@@ -74,7 +74,7 @@ func NewSeedStore() *Store {
 			Website:         "https://leadmill.co.uk/events/live-music/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "lescar",
@@ -86,7 +86,7 @@ func NewSeedStore() *Store {
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindProgram,
 			CoverageNote:    "Current coverage follows the Jazz at The Lescar programme rather than every event at The Lescar.",
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "greystones",
@@ -97,7 +97,7 @@ func NewSeedStore() *Store {
 			Website:         "https://www.mygreystones.co.uk/events/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "yellow-arch",
@@ -108,7 +108,7 @@ func NewSeedStore() *Store {
 			Website:         "https://www.yellowarch.com/events/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "sidney-and-matilda",
@@ -119,7 +119,7 @@ func NewSeedStore() *Store {
 			Website:         "https://www.sidneyandmatilda.com/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 	}
 
@@ -137,7 +137,7 @@ func NewSeedStore() *Store {
 			SourceName:       "The Leadmill live music listings",
 			SourceURL:        "https://leadmill.co.uk/events/live-music/",
 			LastChecked:      checked,
-			Origin:           domain.OriginSeed,
+			Origin:           domain.OriginLive,
 			PublicationState: domain.PublicationStateReviewed,
 		},
 		{
@@ -152,7 +152,7 @@ func NewSeedStore() *Store {
 			SourceName:       "Yellow Arch what's on",
 			SourceURL:        "https://www.yellowarch.com/events/",
 			LastChecked:      checked,
-			Origin:           domain.OriginSeed,
+			Origin:           domain.OriginLive,
 			PublicationState: domain.PublicationStateReviewed,
 		},
 		{
@@ -167,7 +167,7 @@ func NewSeedStore() *Store {
 			SourceName:       "Sidney & Matilda listings",
 			SourceURL:        "https://www.sidneyandmatilda.com/",
 			LastChecked:      checked,
-			Origin:           domain.OriginSeed,
+			Origin:           domain.OriginLive,
 			PublicationState: domain.PublicationStateReviewed,
 		},
 		{
@@ -182,7 +182,7 @@ func NewSeedStore() *Store {
 			SourceName:       "The Leadmill live music listings",
 			SourceURL:        "https://leadmill.co.uk/events/live-music/",
 			LastChecked:      checked,
-			Origin:           domain.OriginSeed,
+			Origin:           domain.OriginLive,
 			PublicationState: domain.PublicationStateReviewed,
 		},
 	}

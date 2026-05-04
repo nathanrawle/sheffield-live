@@ -13,7 +13,7 @@ This site is a curated Sheffield live-music guide, not a scrape dump.
 - write descriptions that are factual and neutral
 - retain the source link for each public event
 - present freshness as source-check metadata, not as marketing copy
-- keep seed, test, and dev records visibly tagged; live records are not tagged
+- keep test and dev records visibly tagged; curated bootstrap and live records are not tagged
 
 ## Public browsing
 
