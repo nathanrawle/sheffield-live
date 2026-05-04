@@ -391,7 +391,7 @@ func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T
 	assertContains(t, body, `href="/admin/venues"`)
 	assertContains(t, body, `name="action" value="save"`)
 	assertContains(t, body, `name="name" value="Imaginary Hall marketing copy"`)
-	assertContains(t, body, `<textarea name="address" rows="4">1 Void Street, Sheffield</textarea>`)
+	assertContains(t, body, "<textarea name=\"address\" rows=\"4\">1 Void Street,\nSheffield</textarea>")
 	assertContains(t, body, `name="neighbourhood" value="City Centre"`)
 	assertContains(t, body, `name="website" value="https://example.test/imaginary-hall"`)
 	assertContains(t, body, `name="coverage_kind"`)
@@ -580,7 +580,7 @@ func TestSQLiteAdminVenueDetailPostSavesEditedFields(t *testing.T) {
 	body := renderPath(t, server, "/admin/venues/imaginary-hall?saved=1")
 	assertContains(t, body, "Venue saved.")
 	assertContains(t, body, `name="name" value="Imaginary Hall"`)
-	assertContains(t, body, "99 Updated Street, Sheffield")
+	assertContains(t, body, "99 Updated Street,\nSheffield")
 	assertContains(t, body, "Programme-only while listings settle.")
 }
 
