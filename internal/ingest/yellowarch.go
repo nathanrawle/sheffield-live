@@ -121,7 +121,7 @@ func yellowArchNodeHasType(value any, want string) bool {
 func yellowArchCandidateFromNode(node map[string]any) (EventCandidate, ParseSkip, error) {
 	name := yellowArchJSONString(node["name"])
 	rawURL := yellowArchJSONString(node["url"])
-	description := yellowArchJSONString(node["description"])
+	description := semanticDescriptionText(yellowArchJSONString(node["description"]))
 	startText := yellowArchJSONString(node["startDate"])
 	endText := yellowArchJSONString(node["endDate"])
 	location := yellowArchLocationName(node["location"])

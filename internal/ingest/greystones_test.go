@@ -53,8 +53,8 @@ func TestParseTheGreystonesMonthPage(t *testing.T) {
 	if first.EndAt != "" {
 		t.Fatalf("end = %q, want blank", first.EndAt)
 	}
-	if first.Description == "" {
-		t.Fatal("description = empty, want description")
+	if got, want := first.Description, "First description paragraph.\n\nSecond description paragraph."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
 	}
 
 	second := result.Candidates[1]

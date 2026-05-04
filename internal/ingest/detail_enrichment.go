@@ -27,8 +27,6 @@ type liveDetailDescriptionResult struct {
 var (
 	htmlHeadingPattern            = regexp.MustCompile(`(?is)<h[1-6]\b[^>]*>(.*?)</h[1-6]>`)
 	htmlScriptStylePattern        = regexp.MustCompile(`(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>`)
-	htmlParagraphBreakPattern     = regexp.MustCompile(`(?is)<br\s*/?>\s*<br\s*/?>|</p\s*>|</(?:div|section|article|main)\s*>`)
-	htmlLineBreakPattern          = regexp.MustCompile(`(?i)<br\s*/?>|</(?:li|h[1-6])\s*>`)
 	cafe9EventInfoPattern         = regexp.MustCompile(`(?is)<h[1-6]\b[^>]*>\s*Event\s+information\s*</h[1-6]>(.*?)(?:<h[1-6]\b|<footer\b|</main>|</body>|</html>)`)
 	htmlCanonicalLinkPattern      = regexp.MustCompile(`(?is)<link\b[^>]*rel\s*=\s*["']canonical["'][^>]*href\s*=\s*["']([^"']+)["'][^>]*>`)
 	htmlCanonicalHrefPattern      = regexp.MustCompile(`(?is)<link\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*rel\s*=\s*["']canonical["'][^>]*>`)
@@ -550,13 +548,7 @@ func parseSidneyAndMatildaStructuredDetail(raw []byte) eventDetailDescription {
 }
 
 func cleanStructuredDescription(value string) string {
-	value = strings.ReplaceAll(value, "\r\n", "\n")
-	value = strings.ReplaceAll(value, "\r", "\n")
-	paragraphs := htmlParagraphs([]byte(value))
-	if len(paragraphs) == 0 {
-		return htmlCleanText(value)
-	}
-	return strings.Join(paragraphs, "\n\n")
+	return semanticDescriptionText(value)
 }
 
 func htmlLines(raw []byte) []string {
@@ -581,32 +573,19 @@ func htmlLines(raw []byte) []string {
 }
 
 func htmlParagraphText(raw []byte) string {
-	return strings.Join(htmlParagraphs(raw), "\n\n")
+	return semanticDescriptionText(string(raw))
 }
 
 func htmlParagraphs(raw []byte) []string {
-	body := stripNonContentHTML(raw)
-	text := htmlParagraphBreakPattern.ReplaceAllString(string(body), "\n\n")
-	text = htmlLineBreakPattern.ReplaceAllString(text, "\n")
-	text = cafe9TagPattern.ReplaceAllString(text, " ")
-	text = html.UnescapeString(text)
-
+	text := semanticDescriptionText(string(raw))
 	parts := strings.Split(text, "\n\n")
 	paragraphs := make([]string, 0, len(parts))
 	for _, part := range parts {
-		lines := strings.Split(part, "\n")
-		cleanLines := make([]string, 0, len(lines))
-		for _, line := range lines {
-			line = htmlCleanText(line)
-			if line == "" {
-				continue
-			}
-			cleanLines = append(cleanLines, line)
-		}
-		if len(cleanLines) == 0 {
+		part = strings.TrimSpace(part)
+		if part == "" {
 			continue
 		}
-		paragraphs = append(paragraphs, strings.Join(cleanLines, "\n"))
+		paragraphs = append(paragraphs, part)
 	}
 	return paragraphs
 }
