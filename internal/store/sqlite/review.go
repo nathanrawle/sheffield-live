@@ -1368,7 +1368,26 @@ func authoritativeDescriptionUsable(value string) bool {
 	if descriptionIsGeneratedMarkup(value) {
 		return false
 	}
-	if strings.EqualFold(value, "buy tickets") || strings.EqualFold(value, "basement buy tickets") {
+	switch {
+	case strings.EqualFold(value, "buy tickets"):
+		return false
+	case strings.EqualFold(value, "basement buy tickets"):
+		return false
+	case strings.EqualFold(value, "tickets"):
+		return false
+	case strings.EqualFold(value, "book tickets"):
+		return false
+	case strings.EqualFold(value, "read more"):
+		return false
+	case strings.EqualFold(value, "find out more"):
+		return false
+	case strings.EqualFold(value, "more info"):
+		return false
+	case strings.EqualFold(value, "event details"):
+		return false
+	case strings.EqualFold(value, "click here"):
+		return false
+	case strings.EqualFold(value, "back to events"):
 		return false
 	}
 	return true

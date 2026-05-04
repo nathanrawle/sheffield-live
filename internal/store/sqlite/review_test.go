@@ -2663,6 +2663,101 @@ func TestPromoteSingletonReviewGroupIfMissingUpdatesLinkedEventInPlace(t *testin
 	}
 }
 
+func TestPromoteSingletonReviewGroupIfMissingPreservesCleanDescriptionWhenAuthoritativeUpdateHasWeakCTA(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeEventCount := mustCount(t, db, "events")
+
+	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:      "First apply",
+		SourceName: "Yellow Arch manual ingest",
+		SourceURL:  "https://www.yellowarch.com/events/",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "yellow-arch-cta",
+			Name:        "Late Junction",
+			VenueSlug:   "yellow-arch",
+			StartAt:     "2026-05-10T18:30:00Z",
+			EndAt:       "2026-05-10T22:00:00Z",
+			Genre:       "Electronic",
+			Status:      "Listed",
+			Description: "Existing clean description.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("first promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("first promoted = false, want true")
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
+	}
+
+	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:      "Second apply",
+		SourceName: "Yellow Arch manual ingest",
+		SourceURL:  "https://www.yellowarch.com/events/",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "yellow-arch-cta",
+			Name:        "Late Junction Renamed",
+			VenueSlug:   "yellow-arch",
+			StartAt:     "2026-05-10T19:00:00Z",
+			EndAt:       "2026-05-10T23:00:00Z",
+			Genre:       "Ambient",
+			Status:      "Sold out",
+			Description: "Read more",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("second promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("second promoted = false, want true")
+	}
+	if secondSlug != firstSlug {
+		t.Fatalf("second slug = %q, want %q", secondSlug, firstSlug)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount+1)
+	}
+
+	event, ok := st.EventBySlug(firstSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", firstSlug)
+	}
+	if event.Name != "Late Junction Renamed" {
+		t.Fatalf("name = %q, want %q", event.Name, "Late Junction Renamed")
+	}
+	if !event.Start.Equal(time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)) {
+		t.Fatalf("start = %s, want updated start", event.Start.Format(time.RFC3339))
+	}
+	if !event.End.Equal(time.Date(2026, time.May, 10, 23, 0, 0, 0, time.UTC)) {
+		t.Fatalf("end = %s, want updated end", event.End.Format(time.RFC3339))
+	}
+	if event.Status != "Sold out" {
+		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
+	}
+	if event.Genre != "Ambient" {
+		t.Fatalf("genre = %q, want %q", event.Genre, "Ambient")
+	}
+	if event.Description != "Existing clean description." {
+		t.Fatalf("description = %q, want %q", event.Description, "Existing clean description.")
+	}
+}
+
 func TestShouldReplaceDescriptionPolicy(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -2681,6 +2776,38 @@ func TestShouldReplaceDescriptionPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := shouldReplaceDescription(tc.existing, tc.incoming); got != tc.want {
 				t.Fatalf("shouldReplaceDescription(%q, %q) = %v, want %v", tc.existing, tc.incoming, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuthoritativeDescriptionUsablePolicy(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "blank", value: "   ", want: false},
+		{name: "first line", value: "First line", want: true},
+		{name: "generated block", value: "#block-d4b153a9777175667262 { --tweak-text-block-radius: 0px; }", want: false},
+		{name: "generated media query", value: "@media screen {}", want: false},
+		{name: "generated script", value: "<script>alert('x')</script>", want: false},
+		{name: "buy tickets", value: "buy tickets", want: false},
+		{name: "basement buy tickets", value: "basement buy tickets", want: false},
+		{name: "tickets", value: "tickets", want: false},
+		{name: "book tickets", value: "book tickets", want: false},
+		{name: "read more", value: "read more", want: false},
+		{name: "find out more", value: "find out more", want: false},
+		{name: "more info", value: "more info", want: false},
+		{name: "event details", value: "event details", want: false},
+		{name: "click here", value: "click here", want: false},
+		{name: "back to events", value: "back to events", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := authoritativeDescriptionUsable(tc.value); got != tc.want {
+				t.Fatalf("authoritativeDescriptionUsable(%q) = %v, want %v", tc.value, got, tc.want)
 			}
 		})
 	}
