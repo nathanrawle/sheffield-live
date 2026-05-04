@@ -158,7 +158,7 @@ func reviewStageKey(catalog *Catalog, source string, candidate EventCandidate) (
 		"fallback",
 		summary,
 		startAt,
-		reviewStageVenueSlug(catalog, source, candidate.Location),
+		reviewStageVenueSlug(catalog, source, candidate),
 	}, "\x00"), true
 }
 
@@ -166,7 +166,7 @@ func reviewStageCandidateInput(catalog *Catalog, report Report, calendar Calenda
 	return review.CandidateInput{
 		ExternalID:       strings.TrimSpace(candidate.UID),
 		Name:             strings.TrimSpace(candidate.Summary),
-		VenueSlug:        reviewStageVenueSlug(catalog, report.Source, candidate.Location),
+		VenueSlug:        reviewStageVenueSlug(catalog, report.Source, candidate),
 		VenueText:        strings.TrimSpace(candidate.Location),
 		VenueLocationRaw: candidate.LocationRaw,
 		StartAt:          strings.TrimSpace(candidate.StartAt),
@@ -249,9 +249,17 @@ func reviewStageFirstNonEmpty(values ...string) string {
 	return ""
 }
 
-func reviewStageVenueSlug(catalog *Catalog, source, value string) string {
-	if catalog == nil {
+func reviewStageVenueSlug(catalog *Catalog, source string, candidate EventCandidate) string {
+	value, derivedFromEvidence := reviewStageVenueSlugValue(candidate)
+	if derivedFromEvidence || catalog == nil {
 		return VenueSlugFromText(value)
 	}
 	return catalog.VenueSlugForSourceLocation(source, value)
+}
+
+func reviewStageVenueSlugValue(candidate EventCandidate) (string, bool) {
+	if head := VenueLocationEvidenceHead(candidate.LocationRaw); head != "" {
+		return head, true
+	}
+	return strings.TrimSpace(candidate.Location), false
 }

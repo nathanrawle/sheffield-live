@@ -106,7 +106,7 @@ func parseLeadmillEvent(properties []icsProperty) (EventCandidate, ParseSkip) {
 		return EventCandidate{}, parseSkip
 	}
 
-	venueText := leadmillVenueText(candidate.Location)
+	venueText := leadmillVenueTextFromEvidence(candidate.Location, candidate.LocationRaw)
 	if !leadmillIsSheffieldLocation(candidate.Location, venueText) {
 		skip.Reason = "filtered non-Sheffield location"
 		return EventCandidate{}, skip
@@ -178,4 +178,11 @@ func leadmillVenueText(location string) string {
 	location = strings.TrimSpace(location)
 	head, _, _ := strings.Cut(location, ",")
 	return strings.Join(strings.Fields(strings.TrimSpace(head)), " ")
+}
+
+func leadmillVenueTextFromEvidence(location, raw string) string {
+	if head := VenueLocationEvidenceHead(raw); head != "" {
+		return head
+	}
+	return leadmillVenueText(location)
 }

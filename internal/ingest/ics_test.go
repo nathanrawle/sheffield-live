@@ -58,7 +58,7 @@ func TestParseICSReportsStructuralErrors(t *testing.T) {
 	}
 }
 
-func TestParseICSUnescapesLocationRaw(t *testing.T) {
+func TestParseICSPreservesRawLocationEvidence(t *testing.T) {
 	result := ParseICS([]byte("BEGIN:VCALENDAR\n" +
 		"BEGIN:VEVENT\n" +
 		"UID:memorial-hall\n" +
@@ -78,7 +78,30 @@ func TestParseICSUnescapesLocationRaw(t *testing.T) {
 	if got, want := candidate.Location, "Memorial Hall, Barkers Pool, Sheffield, S1 2JA"; got != want {
 		t.Fatalf("location = %q, want %q", got, want)
 	}
-	if got, want := candidate.LocationRaw, "Memorial Hall, Barkers Pool, Sheffield, S1 2JA"; got != want {
+	if got, want := candidate.LocationRaw, "Memorial Hall\\, Barkers Pool\\, Sheffield\\, S1 2JA"; got != want {
+		t.Fatalf("location raw = %q, want %q", got, want)
+	}
+}
+
+func TestParseICSPreservesFoldedRawLocationEvidence(t *testing.T) {
+	result := ParseICS([]byte("BEGIN:VCALENDAR\r\n" +
+		"BEGIN:VEVENT\r\n" +
+		"UID:memorial-hall\r\n" +
+		"SUMMARY:Memorial Hall Show\r\n" +
+		"LOCATION:Memorial Hall\\, Barkers Pool\\,\r\n" +
+		" Sheffield\\, S1 2JA\r\n" +
+		"DTSTART:20260501T190000Z\r\n" +
+		"END:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	candidate := result.Candidates[0]
+	if got, want := candidate.Location, "Memorial Hall, Barkers Pool,Sheffield, S1 2JA"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+	if got, want := candidate.LocationRaw, "Memorial Hall\\, Barkers Pool\\,Sheffield\\, S1 2JA"; got != want {
 		t.Fatalf("location raw = %q, want %q", got, want)
 	}
 }

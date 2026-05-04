@@ -102,7 +102,16 @@ func TestLeadmillVenueTextUsesFirstLocationSegment(t *testing.T) {
 	}
 }
 
-func TestParseLeadmillICSUnescapesLocationEvidence(t *testing.T) {
+func TestLeadmillVenueTextFromEvidencePreservesEscapedCommas(t *testing.T) {
+	location := "Memorial Hall, Barkers Pool, Sheffield, S1 2JA"
+	raw := "Memorial Hall\\, Barkers Pool, Sheffield, S1 2JA"
+
+	if got, want := leadmillVenueTextFromEvidence(location, raw), "Memorial Hall, Barkers Pool"; got != want {
+		t.Fatalf("leadmillVenueTextFromEvidence(%q, %q) = %q, want %q", location, raw, got, want)
+	}
+}
+
+func TestParseLeadmillICSPreservesRawLocationEvidence(t *testing.T) {
 	result := ParseLeadmillICS([]byte("BEGIN:VCALENDAR\n" +
 		"BEGIN:VEVENT\n" +
 		"UID:memorial-hall\n" +
@@ -123,7 +132,7 @@ func TestParseLeadmillICSUnescapesLocationEvidence(t *testing.T) {
 	if got, want := candidate.Location, "Memorial Hall"; got != want {
 		t.Fatalf("location = %q, want %q", got, want)
 	}
-	if got, want := candidate.LocationRaw, "Memorial Hall, Barkers Pool, Sheffield, S1 2JA"; got != want {
+	if got, want := candidate.LocationRaw, "Memorial Hall\\, Barkers Pool\\, Sheffield\\, S1 2JA"; got != want {
 		t.Fatalf("location raw = %q, want %q", got, want)
 	}
 }

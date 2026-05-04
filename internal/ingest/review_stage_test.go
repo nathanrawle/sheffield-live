@@ -423,6 +423,72 @@ func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *te
 	}
 }
 
+func TestReviewGroupsFromLeadmillReportPreservesEvidenceDerivedVenueHeadSlug(t *testing.T) {
+	report := Report{
+		Source:      LeadmillSource,
+		SourceURL:   "https://leadmill.co.uk/live/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://leadmill.co.uk/listings/?ical=1",
+				Candidates: []EventCandidate{
+					{
+						Summary:     "One",
+						Location:    "Memorial Hall, Barkers Pool",
+						LocationRaw: "Memorial Hall\\, Barkers Pool, Sheffield, S1 2JA",
+						URL:         "https://leadmill.co.uk/event/one/",
+						StartAt:     "2026-05-01T19:00:00Z",
+						EndAt:       "2026-05-01T22:00:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	groups := ReviewGroupsFromReport(report)
+	if got, want := len(groups), 1; got != want {
+		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got, want := groups[0].Candidates[0].VenueSlug, "memorial-hall-barkers-pool"; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+}
+
+func TestReviewGroupsFromReportUsesEscapedRawVenueHeadForSlug(t *testing.T) {
+	report := Report{
+		Source:      DefaultSource,
+		SourceURL:   "https://example.test/calendar.ics",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://example.test/calendar.ics",
+				Candidates: []EventCandidate{
+					{
+						Summary:     "One",
+						Location:    "Memorial Hall, Barkers Pool, Sheffield, S1 2JA",
+						LocationRaw: "Memorial Hall\\, Barkers Pool, Sheffield, S1 2JA",
+						StartAt:     "2026-05-01T19:00:00Z",
+						EndAt:       "2026-05-01T22:00:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	groups := ReviewGroupsFromReport(report)
+	if got, want := len(groups), 1; got != want {
+		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got, want := groups[0].Candidates[0].VenueSlug, "memorial-hall-barkers-pool"; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+	if got, want := groups[0].Candidates[0].VenueLocationRaw, "Memorial Hall\\, Barkers Pool, Sheffield, S1 2JA"; got != want {
+		t.Fatalf("venue location raw = %q, want %q", got, want)
+	}
+}
+
 func TestReviewGroupsFromReportSkipsAuthoritativeGroupMetadataWhenCandidatesDisagree(t *testing.T) {
 	report := Report{
 		Source:      DefaultSource,
