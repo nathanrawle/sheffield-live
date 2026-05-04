@@ -211,6 +211,80 @@ func TestRunManualCafeNo9PrefersDetailPageDescriptions(t *testing.T) {
 	}
 }
 
+func TestRunManualCafeNo9MergesRelativeCanonicalDetailPageDescription(t *testing.T) {
+	detail := ParseCafeNo9DetailPage("https://www.wegottickets.com/event/667102", []byte(`
+		<html>
+		  <body>
+		    <link rel="canonical" href="/f/15737/">
+		    <h1>An evening with Gideon Conn at Cafe No. 9</h1>
+		    <h2>Event information</h2>
+		    <main>
+		      Gideon Conn is back at Cafe No. 9.<br>
+		      <br>
+		      Tickets available now.
+		    </main>
+		  </body>
+		</html>
+	`))
+	if got, want := detail.URLAliases, []string{"https://www.wegottickets.com/f/15737/"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("url aliases = %#v, want %#v", got, want)
+	}
+
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://www.wegottickets.com/Cafe9": {
+				URL:         "https://www.wegottickets.com/Cafe9",
+				FinalURL:    "https://www.wegottickets.com/Cafe9",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: []byte(`
+					<h2><a href="/event/667102">An evening with Gideon Conn at Cafe No. 9</a></h2>
+					<p>0 SHEFFIELD: Cafe No. 9</p>
+					<p>P Thursday 5th November, 2026</p>
+					<p>N Door time: 7:00pm, Start time: 7:30pm</p>
+					<p>C Music - General</p>
+					<p><a href="/event/667102">Event info</a></p>
+				`),
+				CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+			},
+			"https://www.wegottickets.com/event/667102": {
+				URL:         "https://www.wegottickets.com/event/667102",
+				FinalURL:    "https://www.wegottickets.com/f/15737/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: []byte(`
+					<html>
+					  <body>
+					    <link rel="canonical" href="/f/15737/">
+					    <h1>An evening with Gideon Conn at Cafe No. 9</h1>
+					    <h2>Event information</h2>
+					    <main>
+					      Gideon Conn is back at Cafe No. 9.<br>
+					      <br>
+					      Tickets available now.
+					    </main>
+					  </body>
+					</html>
+				`),
+				CapturedAt: time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: CafeNo9Source, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := report.Calendars[0].Candidates[0].Description, "Gideon Conn is back at Cafe No. 9.\n\nTickets available now."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
+
 func TestRunManualSidneyAndMatildaEnrichesICSDescriptionsFromDetailPages(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}

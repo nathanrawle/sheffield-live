@@ -93,6 +93,124 @@ func TestParseSidneyAndMatildaDetailPageExtractsDescription(t *testing.T) {
 	}
 }
 
+func TestParseSidneyAndMatildaDetailPageResolvesCanonicalAliasFromStructuredJSONLD(t *testing.T) {
+	detail := ParseSidneyAndMatildaDetailPage("https://www.sidneyandmatilda.com/events/leo-middea-brazil", []byte(`
+		<!doctype html>
+		<html>
+		  <body>
+		    <link rel="canonical" href="/f/15737/">
+		    <script type="application/ld+json">
+		      {
+		        "@context": "https://schema.org",
+		        "@type": "Event",
+		        "name": "Leo Middea (Brazil)",
+		        "description": "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop.",
+		        "startDate": "2026-05-04T18:30:00Z",
+		        "url": "https://www.sidneyandmatilda.com/events/leo-middea-brazil"
+		      }
+		    </script>
+		  </body>
+		</html>
+	`))
+
+	if got, want := detail.Summary, "Leo Middea (Brazil)"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+	if got, want := detail.Description, "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+	if got, want := detail.StartAt, "2026-05-04T18:30:00Z"; got != want {
+		t.Fatalf("start at = %q, want %q", got, want)
+	}
+	if got, want := detail.URLAliases, []string{"https://www.sidneyandmatilda.com/f/15737/", "https://www.sidneyandmatilda.com/events/leo-middea-brazil"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("url aliases = %#v, want %#v", got, want)
+	}
+}
+
+func TestSidneyJSONLDHasSchemaContext(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{
+			name: "https string",
+			raw:  `{"@context":"https://schema.org","@type":"Event"}`,
+			want: true,
+		},
+		{
+			name: "http string with slash",
+			raw:  `{"@context":"http://schema.org/","@type":"Event"}`,
+			want: true,
+		},
+		{
+			name: "array contains schema org",
+			raw:  `{"@context":["https://example.test","https://schema.org/"],"@type":"Event"}`,
+			want: true,
+		},
+		{
+			name: "vocab map",
+			raw:  `{"@context":{"@vocab":"https://schema.org"},"@type":"Event"}`,
+			want: true,
+		},
+		{
+			name: "non schema",
+			raw:  `{"@context":"https://example.test","@type":"Event"}`,
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sidneyJSONLDHasSchemaContext([]byte(tc.raw)); got != tc.want {
+				t.Fatalf("sidneyJSONLDHasSchemaContext() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseSidneyAndMatildaDetailPageIgnoresCleanEventWithNonSchemaContext(t *testing.T) {
+	detail := ParseSidneyAndMatildaDetailPage("https://www.sidneyandmatilda.com/events/leo-middea-brazil", []byte(`
+		<!doctype html>
+		<html>
+		  <body>
+		    <script type="application/ld+json">
+		      {
+		        "@context": "https://example.test",
+		        "@type": "Event",
+		        "name": "Leo Middea (Brazil)",
+		        "description": "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop.",
+		        "startDate": "2026-05-04T18:30:00Z",
+		        "url": "https://www.sidneyandmatilda.com/events/leo-middea-brazil"
+		      }
+		    </script>
+		  </body>
+		</html>
+	`))
+
+	if detail.Description != "" {
+		t.Fatalf("description = %q, want empty", detail.Description)
+	}
+}
+
+func TestParseSidneyAndMatildaDetailPageIgnoresStaticSquarespaceContext(t *testing.T) {
+	detail := ParseSidneyAndMatildaDetailPage("https://www.sidneyandmatilda.com/events/liam-c", []byte(`
+		<!doctype html>
+		<html>
+		  <body>
+		    <script>
+		      Static.SQUARESPACE_CONTEXT = {"item":{"body":"<p>static context should not leak</p>"}};
+		    </script>
+		  </body>
+		</html>
+	`))
+
+	if detail.Description != "" {
+		t.Fatalf("description = %q, want empty", detail.Description)
+	}
+}
+
 func TestParseSidneyAndMatildaDetailPageDoesNotFallBackToWholeBody(t *testing.T) {
 	raw := []byte(`
 		<html>

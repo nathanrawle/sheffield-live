@@ -227,7 +227,7 @@ func ParseCafeNo9DetailPage(pageURL string, raw []byte) eventDetailDescription {
 		URL:     strings.TrimSpace(pageURL),
 		Summary: firstHTMLHeadingText(raw),
 	}
-	if canonicalURL := firstCanonicalLink(raw); canonicalURL != "" {
+	if canonicalURL := firstCanonicalLink(pageURL, raw); canonicalURL != "" {
 		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, canonicalURL)
 	}
 	match := cafe9EventInfoPattern.FindSubmatch(raw)
@@ -293,7 +293,7 @@ func ParseSidneyAndMatildaDetailPage(pageURL string, raw []byte) eventDetailDesc
 		URL:     strings.TrimSpace(pageURL),
 		Summary: firstHTMLHeadingText(raw),
 	}
-	if canonicalURL := firstCanonicalLink(raw); canonicalURL != "" {
+	if canonicalURL := firstCanonicalLink(pageURL, raw); canonicalURL != "" {
 		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, canonicalURL)
 	}
 	if structured := parseSidneyAndMatildaStructuredDetail(raw); strings.TrimSpace(structured.Description) != "" {
@@ -306,6 +306,87 @@ func ParseSidneyAndMatildaDetailPage(pageURL string, raw []byte) eventDetailDesc
 	detail.StartAt = sidneyDetailStartAt(lines)
 	detail.Description = sidneyDetailDescription(raw)
 	return detail
+}
+
+func parseSidneyAndMatildaJSONLDScript(raw []byte) ([]map[string]any, bool, error) {
+	if !sidneyJSONLDHasSchemaContext(raw) {
+		return nil, false, nil
+	}
+	return parseYellowArchJSONLDScript(raw)
+}
+
+func sidneyJSONLDHasSchemaContext(raw []byte) bool {
+	text := strings.TrimSpace(html.UnescapeString(string(raw)))
+	if text == "" {
+		return false
+	}
+
+	var payload any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		return false
+	}
+	return sidneyJSONLDContainsSchemaContext(payload)
+}
+
+func sidneyJSONLDContainsSchemaContext(value any) bool {
+	switch typed := value.(type) {
+	case []any:
+		for _, item := range typed {
+			if sidneyJSONLDContainsSchemaContext(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		if context, ok := typed["@context"]; ok && sidneyJSONLDContextValueHasSchema(context) {
+			return true
+		}
+		for key, item := range typed {
+			if key == "@context" {
+				continue
+			}
+			if sidneyJSONLDContainsSchemaContext(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sidneyJSONLDContextValueHasSchema(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return sidneyIsSchemaOrgContext(typed)
+	case []any:
+		for _, item := range typed {
+			if sidneyJSONLDContextValueHasSchema(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		if vocab, ok := typed["@vocab"]; ok && sidneyJSONLDContextValueHasSchema(vocab) {
+			return true
+		}
+	}
+	return false
+}
+
+func sidneyIsSchemaOrgContext(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	if !strings.EqualFold(parsed.Host, "schema.org") {
+		return false
+	}
+	return strings.Trim(parsed.Path, "/") == ""
 }
 
 func sidneyDetailStartAt(lines []string) string {
@@ -416,7 +497,7 @@ func firstHTMLHeadingText(raw []byte) string {
 	return htmlCleanText(string(match[1]))
 }
 
-func firstCanonicalLink(raw []byte) string {
+func firstCanonicalLink(pageURL string, raw []byte) string {
 	match := htmlCanonicalLinkPattern.FindSubmatch(raw)
 	if len(match) < 2 {
 		match = htmlCanonicalHrefPattern.FindSubmatch(raw)
@@ -424,13 +505,22 @@ func firstCanonicalLink(raw []byte) string {
 	if len(match) < 2 {
 		return ""
 	}
-	return strings.TrimSpace(html.UnescapeString(string(match[1])))
+	canonicalURL := strings.TrimSpace(html.UnescapeString(string(match[1])))
+	if canonicalURL == "" {
+		return ""
+	}
+	if baseURL, err := url.Parse(strings.TrimSpace(pageURL)); err == nil {
+		if resolved, err := resolveURL(baseURL, canonicalURL); err == nil {
+			return resolved
+		}
+	}
+	return canonicalURL
 }
 
 func parseSidneyAndMatildaStructuredDetail(raw []byte) eventDetailDescription {
 	matches := yellowArchJSONLDPattern.FindAllSubmatch(raw, -1)
 	for _, match := range matches {
-		nodes, found, err := parseYellowArchJSONLDScript(match[1])
+		nodes, found, err := parseSidneyAndMatildaJSONLDScript(match[1])
 		if err != nil || !found {
 			continue
 		}
@@ -456,32 +546,7 @@ func parseSidneyAndMatildaStructuredDetail(raw []byte) eventDetailDescription {
 			}
 		}
 	}
-
-	// Squarespace sometimes exposes only its static context rather than useful JSON-LD.
-	if description := sidneyDescriptionFromStaticContext(raw); descriptionLooksClean(description) {
-		return eventDetailDescription{Description: description}
-	}
 	return eventDetailDescription{}
-}
-
-func sidneyDescriptionFromStaticContext(raw []byte) string {
-	const marker = `Static.SQUARESPACE_CONTEXT = `
-	text := string(raw)
-	idx := strings.Index(text, marker)
-	if idx < 0 {
-		return ""
-	}
-	rest := text[idx+len(marker):]
-	end := strings.Index(rest, ";</script>")
-	if end < 0 {
-		return ""
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(rest[:end]), &payload); err != nil {
-		return ""
-	}
-	item, _ := payload["item"].(map[string]any)
-	return cleanStructuredDescription(yellowArchJSONString(item["body"]))
 }
 
 func cleanStructuredDescription(value string) string {

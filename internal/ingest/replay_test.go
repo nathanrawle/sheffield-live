@@ -297,6 +297,80 @@ func TestReplayImportRunEnrichesCafeNo9DescriptionsFromDetailSnapshots(t *testin
 	}
 }
 
+func TestReplayImportRunMergesCafeNo9RelativeCanonicalDetailPageDescription(t *testing.T) {
+	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         288,
+			StartedAt:  time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=0 candidates=1 skips=0 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         471,
+					SourceName: "Cafe No. 9 listings",
+					SourceURL:  "https://www.wegottickets.com/Cafe9",
+					CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.wegottickets.com/Cafe9",
+						FinalURL:    "https://www.wegottickets.com/Cafe9",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body: []byte(`
+							<h2><a href="/event/667102">An evening with Gideon Conn at Cafe No. 9</a></h2>
+							<p>0 SHEFFIELD: Cafe No. 9</p>
+							<p>P Thursday 5th November, 2026</p>
+							<p>N Door time: 7:00pm, Start time: 7:30pm</p>
+							<p>C Music - General</p>
+							<p><a href="/event/667102">Event info</a></p>
+						`),
+						CapturedAt: time.Date(2026, 4, 23, 19, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         472,
+					SourceName: "Cafe No. 9 listings event details",
+					SourceURL:  "https://www.wegottickets.com/event/667102",
+					CapturedAt: time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://www.wegottickets.com/event/667102",
+						FinalURL:    "https://www.wegottickets.com/f/15737/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body: []byte(`
+							<html>
+							  <body>
+							    <link rel="canonical" href="/f/15737/">
+							    <h1>An evening with Gideon Conn at Cafe No. 9</h1>
+							    <h2>Event information</h2>
+							    <main>
+							      Gideon Conn is back at Cafe No. 9.<br>
+							      <br>
+							      Tickets available now.
+							    </main>
+							  </body>
+							</html>
+						`),
+						CapturedAt: time.Date(2026, 4, 23, 19, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 288, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Calendars[0].Candidates[0].Description, "Gideon Conn is back at Cafe No. 9.\n\nTickets available now."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
+
 func TestReplayImportRunEnrichesSidneyDescriptionsFromDetailSnapshots(t *testing.T) {
 	finishedAt := time.Date(2026, 4, 20, 12, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{
