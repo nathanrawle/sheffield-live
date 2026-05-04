@@ -88,7 +88,7 @@ func TestParseSidneyAndMatildaDetailPageExtractsDescription(t *testing.T) {
 	if got, want := detail.StartAt, "2026-05-04T18:30:00Z"; got != want {
 		t.Fatalf("start at = %q, want %q", got, want)
 	}
-	if got, want := detail.Description, "Leo Middea returns to Sheffield in 2026.\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."; got != want {
+	if got, want := detail.Description, "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."; got != want {
 		t.Fatalf("description = %q, want %q", got, want)
 	}
 }

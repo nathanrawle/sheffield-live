@@ -210,7 +210,7 @@ func TestParseCafeNo9DetailPageExtractsEventInformation(t *testing.T) {
 	if got, want := detail.Summary, "An evening with The Leisure Society at Cafe No9"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
-	if got, want := detail.Description, "The Leisure Society were founded by Nick Hemming.\nExpect oustanding songwriting and production craft."; got != want {
+	if got, want := detail.Description, "The Leisure Society were founded by Nick Hemming.\n\nExpect oustanding songwriting and production craft."; got != want {
 		t.Fatalf("description = %q, want %q", got, want)
 	}
 }

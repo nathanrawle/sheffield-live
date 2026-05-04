@@ -164,7 +164,7 @@ func TestRunManualCafeNo9ParsesListingsFromSourcePage(t *testing.T) {
 	}
 }
 
-func TestRunManualCafeNo9EnrichesEmptyDescriptionsFromDetailPages(t *testing.T) {
+func TestRunManualCafeNo9PrefersDetailPageDescriptions(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
 	fetcher := fakeFetcher{
@@ -177,6 +177,7 @@ func TestRunManualCafeNo9EnrichesEmptyDescriptionsFromDetailPages(t *testing.T) 
 				ContentType: "text/html",
 				Body: []byte(`
 					<h2><a href="/event/700004">An evening with Gideon Conn at Cafe No. 9</a></h2>
+					<p>Short listing teaser.</p>
 					<p>0 SHEFFIELD: Cafe No. 9</p>
 					<p>P Thursday 5th November, 2026</p>
 					<p>N Door time: 7:00pm, Start time: 7:30pm</p>
@@ -205,7 +206,7 @@ func TestRunManualCafeNo9EnrichesEmptyDescriptionsFromDetailPages(t *testing.T) 
 	if got, want := len(store.snapshots), 2; got != want {
 		t.Fatalf("snapshots = %d, want %d", got, want)
 	}
-	if got, want := report.Calendars[0].Candidates[0].Description, "The Leisure Society were founded by Nick Hemming.\nExpect oustanding songwriting and production craft."; got != want {
+	if got, want := report.Calendars[0].Candidates[0].Description, "The Leisure Society were founded by Nick Hemming.\n\nExpect oustanding songwriting and production craft."; got != want {
 		t.Fatalf("description = %q, want %q", got, want)
 	}
 }
@@ -264,7 +265,7 @@ func TestRunManualSidneyAndMatildaEnrichesICSDescriptionsFromDetailPages(t *test
 	if got, want := len(store.snapshots), 3; got != want {
 		t.Fatalf("snapshots = %d, want %d", got, want)
 	}
-	if got, want := report.Calendars[0].Candidates[0].Description, "Leo Middea returns to Sheffield in 2026.\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."; got != want {
+	if got, want := report.Calendars[0].Candidates[0].Description, "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."; got != want {
 		t.Fatalf("description = %q, want %q", got, want)
 	}
 }

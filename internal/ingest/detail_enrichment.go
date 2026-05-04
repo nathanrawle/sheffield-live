@@ -23,9 +23,14 @@ type liveDetailDescriptionResult struct {
 }
 
 var (
-	htmlHeadingPattern      = regexp.MustCompile(`(?is)<h[1-6]\b[^>]*>(.*?)</h[1-6]>`)
-	cafe9EventInfoPattern   = regexp.MustCompile(`(?is)<h[1-6]\b[^>]*>\s*Event\s+information\s*</h[1-6]>(.*?)(?:<h[1-6]\b|<footer\b|</main>|</body>|</html>)`)
-	sidneyDetailTextPattern = regexp.MustCompile(`(?is)<body\b[^>]*>(.*?)</body>`)
+	htmlHeadingPattern            = regexp.MustCompile(`(?is)<h[1-6]\b[^>]*>(.*?)</h[1-6]>`)
+	htmlScriptStylePattern        = regexp.MustCompile(`(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>`)
+	htmlParagraphBreakPattern     = regexp.MustCompile(`(?is)<br\s*/?>\s*<br\s*/?>|</p\s*>|</(?:div|section|article|main)\s*>`)
+	htmlLineBreakPattern          = regexp.MustCompile(`(?i)<br\s*/?>|</(?:li|h[1-6])\s*>`)
+	cafe9EventInfoPattern         = regexp.MustCompile(`(?is)<h[1-6]\b[^>]*>\s*Event\s+information\s*</h[1-6]>(.*?)(?:<h[1-6]\b|<footer\b|</main>|</body>|</html>)`)
+	sidneyDetailTextPattern       = regexp.MustCompile(`(?is)<body\b[^>]*>(.*?)</body>`)
+	sidneyContentContainerPattern = regexp.MustCompile(`(?is)<div\b[^>]*class\s*=\s*["'][^"']*\beventitem-column-content\b[^"']*["'][^>]*>(.*?)<div\b[^>]*class\s*=\s*["'][^"']*\beventitem-content-footer\b`)
+	sidneyHTMLContentPattern      = regexp.MustCompile(`(?is)<div\b[^>]*class\s*=\s*["'][^"']*\bsqs-html-content\b[^"']*["'][^>]*>(.*?)</div>`)
 )
 
 func sourceSupportsDetailDescriptionEnrichment(cfg sourceConfig) bool {
@@ -136,9 +141,6 @@ func detailLinksFromCandidateURLs(candidates []EventCandidate, limit int) []stri
 	links := make([]string, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
-		if strings.TrimSpace(candidate.Description) != "" {
-			continue
-		}
 		link := strings.TrimSpace(firstNonEmpty(candidate.URL, candidate.UID))
 		if link == "" {
 			continue
@@ -157,6 +159,10 @@ func detailLinksFromCandidateURLs(candidates []EventCandidate, limit int) []stri
 }
 
 func mergeDetailDescriptions(candidates []EventCandidate, details []eventDetailDescription) []EventCandidate {
+	return mergeDetailDescriptionsWithPreference(candidates, details, true)
+}
+
+func mergeDetailDescriptionsWithPreference(candidates []EventCandidate, details []eventDetailDescription, preferDetails bool) []EventCandidate {
 	if len(candidates) == 0 || len(details) == 0 {
 		return candidates
 	}
@@ -181,7 +187,7 @@ func mergeDetailDescriptions(candidates []EventCandidate, details []eventDetailD
 
 	merged := append([]EventCandidate(nil), candidates...)
 	for i := range merged {
-		if strings.TrimSpace(merged[i].Description) != "" {
+		if !preferDetails && strings.TrimSpace(merged[i].Description) != "" {
 			continue
 		}
 		if description := byURL[detailURLKey(firstNonEmpty(merged[i].URL, merged[i].UID))]; description != "" {
@@ -215,7 +221,7 @@ func ParseCafeNo9DetailPage(pageURL string, raw []byte) eventDetailDescription {
 	if len(match) < 2 {
 		return detail
 	}
-	detail.Description = htmlBlockText(match[1])
+	detail.Description = htmlParagraphText(match[1])
 	return detail
 }
 
@@ -276,7 +282,7 @@ func ParseSidneyAndMatildaDetailPage(pageURL string, raw []byte) eventDetailDesc
 	}
 	lines := htmlLines(raw)
 	detail.StartAt = sidneyDetailStartAt(lines)
-	detail.Description = sidneyDetailDescription(lines)
+	detail.Description = sidneyDetailDescription(raw)
 	return detail
 }
 
@@ -300,41 +306,64 @@ func sidneyDetailStartAt(lines []string) string {
 	return ""
 }
 
-func sidneyDetailDescription(lines []string) string {
-	start := -1
-	for i, line := range lines {
-		if strings.Contains(strings.ToLower(line), "google calendar") || strings.EqualFold(line, "ICS") {
-			start = i + 1
-			break
-		}
-	}
-	if start < 0 || start >= len(lines) {
+func sidneyDetailDescription(raw []byte) string {
+	body := sidneyDetailContent(raw)
+	if len(body) == 0 {
 		return ""
 	}
 
-	description := make([]string, 0)
-	for _, line := range lines[start:] {
-		lower := strings.ToLower(strings.TrimSpace(line))
-		switch {
-		case line == "":
-			continue
-		case strings.EqualFold(line, "ICS"):
-			continue
-		case strings.Contains(lower, "buy tickets"):
-			continue
-		case strings.EqualFold(line, "Back to All Events"):
-			continue
-		case strings.Contains(lower, "previous previous") || strings.Contains(lower, "next next"):
-			return strings.Join(description, "\n")
-		case strings.Contains(lower, "rivelin works"):
-			return strings.Join(description, "\n")
-		case strings.Contains(lower, "sidney & matilda") && len(description) > 0:
-			return strings.Join(description, "\n")
-		default:
-			description = append(description, line)
+	paragraphs := htmlParagraphs(body)
+	for i, paragraph := range paragraphs {
+		lower := strings.ToLower(paragraph)
+		if strings.Contains(lower, "google calendar") || strings.EqualFold(strings.TrimSpace(paragraph), "ICS") {
+			paragraphs = paragraphs[i+1:]
+			break
 		}
 	}
-	return strings.Join(description, "\n")
+	description := make([]string, 0, len(paragraphs))
+	for _, paragraph := range paragraphs {
+		if sidneyIsIgnorableDescriptionParagraph(paragraph) {
+			continue
+		}
+		description = append(description, paragraph)
+	}
+	return strings.Join(description, "\n\n")
+}
+
+func sidneyDetailContent(raw []byte) []byte {
+	body := raw
+	if match := sidneyDetailTextPattern.FindSubmatch(raw); len(match) >= 2 {
+		body = match[1]
+	}
+	if match := sidneyContentContainerPattern.FindSubmatch(body); len(match) >= 2 {
+		body = match[1]
+	}
+	if match := sidneyHTMLContentPattern.FindSubmatch(body); len(match) >= 2 {
+		return match[1]
+	}
+	return body
+}
+
+func sidneyIsIgnorableDescriptionParagraph(paragraph string) bool {
+	lower := strings.ToLower(strings.TrimSpace(paragraph))
+	switch {
+	case paragraph == "":
+		return true
+	case strings.EqualFold(paragraph, "ICS"):
+		return true
+	case strings.Contains(lower, "buy tickets"):
+		return true
+	case strings.EqualFold(paragraph, "Back to All Events"):
+		return true
+	case strings.Contains(lower, "previous previous") || strings.Contains(lower, "next next"):
+		return true
+	case strings.Contains(lower, "rivelin works"):
+		return true
+	case strings.Contains(lower, "#block-") || strings.Contains(lower, "--tweak-") || strings.Contains(lower, "@media screen"):
+		return true
+	default:
+		return false
+	}
 }
 
 func parseSidneyDetailDateTime(dateText, timeText string) (time.Time, error) {
@@ -370,6 +399,7 @@ func htmlLines(raw []byte) []string {
 	if match := sidneyDetailTextPattern.FindSubmatch(raw); len(match) >= 2 {
 		body = match[1]
 	}
+	body = stripNonContentHTML(body)
 	text := cafe9LineBreakPattern.ReplaceAllString(string(body), "\n")
 	text = cafe9TagPattern.ReplaceAllString(text, "\n")
 	text = html.UnescapeString(text)
@@ -385,8 +415,39 @@ func htmlLines(raw []byte) []string {
 	return lines
 }
 
-func htmlBlockText(raw []byte) string {
-	return strings.Join(htmlLines(raw), "\n")
+func htmlParagraphText(raw []byte) string {
+	return strings.Join(htmlParagraphs(raw), "\n\n")
+}
+
+func htmlParagraphs(raw []byte) []string {
+	body := stripNonContentHTML(raw)
+	text := htmlParagraphBreakPattern.ReplaceAllString(string(body), "\n\n")
+	text = htmlLineBreakPattern.ReplaceAllString(text, "\n")
+	text = cafe9TagPattern.ReplaceAllString(text, " ")
+	text = html.UnescapeString(text)
+
+	parts := strings.Split(text, "\n\n")
+	paragraphs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		lines := strings.Split(part, "\n")
+		cleanLines := make([]string, 0, len(lines))
+		for _, line := range lines {
+			line = htmlCleanText(line)
+			if line == "" {
+				continue
+			}
+			cleanLines = append(cleanLines, line)
+		}
+		if len(cleanLines) == 0 {
+			continue
+		}
+		paragraphs = append(paragraphs, strings.Join(cleanLines, "\n"))
+	}
+	return paragraphs
+}
+
+func stripNonContentHTML(raw []byte) []byte {
+	return htmlScriptStylePattern.ReplaceAll(raw, nil)
 }
 
 func htmlCleanText(value string) string {
@@ -405,6 +466,7 @@ func detailURLKey(value string) string {
 		return strings.TrimRight(value, "/")
 	}
 	parsed.Fragment = ""
+	parsed.Host = strings.TrimPrefix(strings.ToLower(parsed.Host), "www.")
 	return strings.TrimRight(parsed.String(), "/")
 }
 

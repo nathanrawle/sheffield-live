@@ -289,7 +289,7 @@ func TestReplayImportRunEnrichesCafeNo9DescriptionsFromDetailSnapshots(t *testin
 		t.Fatalf("replay import run: %v", err)
 	}
 
-	if got, want := report.Calendars[0].Candidates[0].Description, "The Leisure Society were founded by Nick Hemming.\nExpect oustanding songwriting and production craft."; got != want {
+	if got, want := report.Calendars[0].Candidates[0].Description, "The Leisure Society were founded by Nick Hemming.\n\nExpect oustanding songwriting and production craft."; got != want {
 		t.Fatalf("description = %q, want %q", got, want)
 	}
 	if got, want := report.Totals.Snapshots, 2; got != want {
@@ -372,7 +372,7 @@ func TestReplayImportRunEnrichesSidneyDescriptionsFromDetailSnapshots(t *testing
 		t.Fatalf("replay import run: %v", err)
 	}
 
-	if got, want := report.Calendars[0].Candidates[0].Description, "Leo Middea returns to Sheffield in 2026.\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."; got != want {
+	if got, want := report.Calendars[0].Candidates[0].Description, "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."; got != want {
 		t.Fatalf("description = %q, want %q", got, want)
 	}
 	if got, want := report.Totals.Snapshots, 3; got != want {
