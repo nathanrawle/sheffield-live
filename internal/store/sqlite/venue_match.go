@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
@@ -254,7 +255,7 @@ func formatProvisionalVenueAddress(name, value string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	if normalizedVenueKey(name) != "" && normalizedVenueKey(parts[0]) == normalizedVenueKey(name) {
+	if sameVenueAddressLine(parts[0], name) {
 		parts = parts[1:]
 	}
 	if len(parts) == 0 {
@@ -299,6 +300,31 @@ var sheffieldNeighbourhoodAliases = map[string]string{
 	"ecclesall":                   "Ecclesall",
 	"neepsend":                    "Neepsend",
 	"cultural-industries-quarter": "Cultural Industries Quarter",
+}
+
+func sameVenueAddressLine(addressLine, venueName string) bool {
+	return normalizedAddressNameKey(addressLine) != "" && normalizedAddressNameKey(addressLine) == normalizedAddressNameKey(venueName)
+}
+
+func normalizedAddressNameKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.ToLower(value)
+	value = strings.ReplaceAll(value, "&", " and ")
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "the ") {
+		value = strings.TrimSpace(strings.TrimPrefix(value, "the "))
+	}
+
+	var b strings.Builder
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func provisionalVenueSlug(candidate review.Candidate) string {

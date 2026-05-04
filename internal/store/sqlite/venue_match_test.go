@@ -117,19 +117,81 @@ func TestVenueMatchNoMatchResult(t *testing.T) {
 }
 
 func TestProvisionalVenueFromCandidateFormatsAddress(t *testing.T) {
-	venue, err := provisionalVenueFromCandidate(review.Candidate{
-		VenueText:        "Memorial Hall",
-		VenueLocationRaw: "Memorial Hall, Barkers Pool, Sheffield City Centre, Sheffield, S1 2JA",
-	})
-	if err != nil {
-		t.Fatalf("provisional venue: %v", err)
+	tests := []struct {
+		name              string
+		candidate         review.Candidate
+		wantAddress       string
+		wantNeighbourhood string
+	}{
+		{
+			name: "drops duplicated venue name and derives city centre",
+			candidate: review.Candidate{
+				VenueText:        "Memorial Hall",
+				VenueLocationRaw: "Memorial Hall, Barkers Pool, Sheffield City Centre, Sheffield, S1 2JA",
+			},
+			wantAddress:       "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA",
+			wantNeighbourhood: "City Centre",
+		},
+		{
+			name: "keeps non-duplicate first line",
+			candidate: review.Candidate{
+				VenueText:        "Yellow Arch Studios",
+				VenueLocationRaw: "Yellow Arch Road, Neepsend, Sheffield, S3 8BX",
+			},
+			wantAddress:       "Yellow Arch Road,\nNeepsend,\nSheffield,\nS3 8BX",
+			wantNeighbourhood: "Neepsend",
+		},
+		{
+			name: "drops leading the variant",
+			candidate: review.Candidate{
+				VenueText:        "Leadmill",
+				VenueLocationRaw: "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
+			},
+			wantAddress:       "6 Leadmill Road,\nSheffield City Centre,\nSheffield S1 4SE",
+			wantNeighbourhood: "City Centre",
+		},
+		{
+			name: "drops ampersand and and variant",
+			candidate: review.Candidate{
+				VenueText:        "Sidney & Matilda",
+				VenueLocationRaw: "Sidney and Matilda, Rivelin Works, Cultural Industries Quarter, Sheffield",
+			},
+			wantAddress:       "Rivelin Works,\nCultural Industries Quarter,\nSheffield",
+			wantNeighbourhood: "Cultural Industries Quarter",
+		},
+		{
+			name: "derives cultural industries quarter",
+			candidate: review.Candidate{
+				VenueText:        "Sidney & Matilda",
+				VenueLocationRaw: "Rivelin Works, Cultural Industries Quarter, Sheffield",
+			},
+			wantAddress:       "Rivelin Works,\nCultural Industries Quarter,\nSheffield",
+			wantNeighbourhood: "Cultural Industries Quarter",
+		},
+		{
+			name: "does not derive neighbourhood from landmark alone",
+			candidate: review.Candidate{
+				VenueText:        "Memorial Hall",
+				VenueLocationRaw: "Memorial Hall, Barkers Pool, Sheffield, S1 2JA",
+			},
+			wantAddress:       "Barkers Pool,\nSheffield,\nS1 2JA",
+			wantNeighbourhood: "",
+		},
 	}
 
-	if got, want := venue.Address, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA"; got != want {
-		t.Fatalf("venue address = %q, want %q", got, want)
-	}
-	if got, want := venue.Neighbourhood, "City Centre"; got != want {
-		t.Fatalf("venue neighbourhood = %q, want %q", got, want)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			venue, err := provisionalVenueFromCandidate(tc.candidate)
+			if err != nil {
+				t.Fatalf("provisional venue: %v", err)
+			}
+			if got := venue.Address; got != tc.wantAddress {
+				t.Fatalf("venue address = %q, want %q", got, tc.wantAddress)
+			}
+			if got := venue.Neighbourhood; got != tc.wantNeighbourhood {
+				t.Fatalf("venue neighbourhood = %q, want %q", got, tc.wantNeighbourhood)
+			}
+		})
 	}
 }
 

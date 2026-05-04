@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
@@ -405,15 +406,41 @@ func formatVenueAddress(name, value string) string {
 			}
 		}
 	}
-	if strings.TrimSpace(name) != "" && len(parts) > 0 {
-		if ingest.VenueSlugFromText(parts[0]) == ingest.VenueSlugFromText(name) {
-			parts = parts[1:]
-		}
+	if sameDisplayAddressLine(parts, name) {
+		parts = parts[1:]
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return strings.Join(parts, ",\n")
+}
+
+func sameDisplayAddressLine(parts []string, name string) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	return normalizedDisplayAddressNameKey(parts[0]) != "" && normalizedDisplayAddressNameKey(parts[0]) == normalizedDisplayAddressNameKey(name)
+}
+
+func normalizedDisplayAddressNameKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.ToLower(value)
+	value = strings.ReplaceAll(value, "&", " and ")
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "the ") {
+		value = strings.TrimSpace(strings.TrimPrefix(value, "the "))
+	}
+
+	var b strings.Builder
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func (s *Server) SetClockForTesting(clock func() time.Time) {

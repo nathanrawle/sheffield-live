@@ -381,6 +381,110 @@ func TestSQLiteAdminVenuesShowStagedProvisionalVenueWithoutEvents(t *testing.T) 
 	assertContains(t, detailBody, "No upcoming linked events for this provisional venue.")
 }
 
+func TestSQLitePublicVenuePagesRenderDerivedProvisionalVenueAddress(t *testing.T) {
+	st, server, _ := mustAdminVenuesServer(t)
+	defer st.Close()
+
+	result := ingest.ParseLeadmillICS([]byte("BEGIN:VCALENDAR\n" +
+		"BEGIN:VEVENT\n" +
+		"UID:memorial-hall-show\n" +
+		"SUMMARY:Memorial Hall Show\n" +
+		"LOCATION:Memorial Hall\\, Barkers Pool\\, Sheffield City Centre\\, Sheffield\\, S1 2JA\n" +
+		"CATEGORIES:Live\n" +
+		"DTSTART:20260501T190000Z\n" +
+		"DTEND:20260501T220000Z\n" +
+		"END:VEVENT\n" +
+		"END:VCALENDAR\n"))
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+
+	candidate := result.Candidates[0]
+	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(contextForTesting(), review.GroupInput{
+		Title:      "Memorial Hall imported",
+		SourceName: "Leadmill ICS",
+		SourceURL:  "file:memorial-hall.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       candidate.UID,
+			Name:             candidate.Summary,
+			VenueSlug:        ingest.VenueSlugFromText(candidate.Location),
+			VenueText:        candidate.Location,
+			VenueLocationRaw: candidate.LocationRaw,
+			StartAt:          candidate.StartAt,
+			EndAt:            candidate.EndAt,
+			Status:           "Listed",
+			Description:      "Imported from escaped ICS venue evidence.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+
+	adminQueueBody := renderPath(t, server, "/admin/venues")
+	assertContains(t, adminQueueBody, "Memorial Hall")
+	assertContains(t, adminQueueBody, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	assertNotContains(t, adminQueueBody, "Memorial Hall,\nBarkers Pool")
+
+	venueBody := renderPath(t, server, "/venues/memorial-hall")
+	assertContains(t, venueBody, "Memorial Hall")
+	assertContains(t, venueBody, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	assertContains(t, venueBody, "City Centre")
+	assertNotContains(t, venueBody, "Memorial Hall,\nBarkers Pool")
+
+	eventBody := renderPath(t, server, "/events/"+eventSlug)
+	assertContains(t, eventBody, "Memorial Hall Show")
+	assertContains(t, eventBody, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	assertContains(t, eventBody, "City Centre")
+	assertNotContains(t, eventBody, "Memorial Hall,\nBarkers Pool")
+
+	venuesBody := renderPath(t, server, "/venues")
+	assertContains(t, venuesBody, "Memorial Hall")
+	assertContains(t, venuesBody, "City Centre · Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	assertNotContains(t, venuesBody, "City Centre · Memorial Hall,\nBarkers Pool")
+}
+
+func TestStoredDuplicateVenueAddressLineIsHiddenAcrossPages(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if _, err := db.Exec(`
+		UPDATE venues
+		SET address = ?
+		WHERE slug = ?
+	`, "Imaginary Hall marketing copy,\n1 Void Street,\nSheffield", "imaginary-hall"); err != nil {
+		t.Fatalf("update venue address: %v", err)
+	}
+
+	adminQueueBody := renderPath(t, server, "/admin/venues")
+	assertContains(t, adminQueueBody, "1 Void Street,\nSheffield")
+	assertNotContains(t, adminQueueBody, "Imaginary Hall marketing copy,\n1 Void Street")
+
+	adminDetailBody := renderPath(t, server, "/admin/venues/imaginary-hall")
+	assertContains(t, adminDetailBody, "<textarea name=\"address\" rows=\"4\">1 Void Street,\nSheffield</textarea>")
+	assertNotContains(t, adminDetailBody, "Imaginary Hall marketing copy,\n1 Void Street")
+
+	venueBody := renderPath(t, server, "/venues/imaginary-hall")
+	assertContains(t, venueBody, "1 Void Street,\nSheffield")
+	assertNotContains(t, venueBody, "Imaginary Hall marketing copy,\n1 Void Street")
+
+	eventBody := renderPath(t, server, "/events/imaginary-hall-future-show")
+	assertContains(t, eventBody, "1 Void Street,\nSheffield")
+	assertNotContains(t, eventBody, "Imaginary Hall marketing copy,\n1 Void Street")
+
+	venuesBody := renderPath(t, server, "/venues")
+	assertContains(t, venuesBody, "City Centre · 1 Void Street,\nSheffield")
+	assertNotContains(t, venuesBody, "City Centre · Imaginary Hall marketing copy,\n1 Void Street")
+}
+
 func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T) {
 	st, server, path := mustAdminVenuesServer(t)
 	defer st.Close()
@@ -585,10 +689,45 @@ func TestSQLiteAdminVenueDetailPostSavesEditedFields(t *testing.T) {
 }
 
 func TestFormatVenueAddress(t *testing.T) {
-	got := formatVenueAddress("Memorial Hall", `Memorial Hall\, Barkers Pool\, Sheffield\, S1 2JA`)
-	want := "Barkers Pool,\nSheffield,\nS1 2JA"
-	if got != want {
-		t.Fatalf("formatVenueAddress() = %q, want %q", got, want)
+	tests := []struct {
+		name      string
+		venueName string
+		address   string
+		want      string
+	}{
+		{
+			name:      "drops duplicate first line",
+			venueName: "Memorial Hall",
+			address:   `Memorial Hall\, Barkers Pool\, Sheffield\, S1 2JA`,
+			want:      "Barkers Pool,\nSheffield,\nS1 2JA",
+		},
+		{
+			name:      "keeps non duplicate first line",
+			venueName: "Yellow Arch Studios",
+			address:   "Yellow Arch Road, Neepsend, Sheffield, S3 8BX",
+			want:      "Yellow Arch Road,\nNeepsend,\nSheffield,\nS3 8BX",
+		},
+		{
+			name:      "drops leading the variant",
+			venueName: "Leadmill",
+			address:   "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
+			want:      "6 Leadmill Road,\nSheffield City Centre,\nSheffield S1 4SE",
+		},
+		{
+			name:      "drops ampersand and and variant",
+			venueName: "Sidney & Matilda",
+			address:   "Sidney and Matilda, Rivelin Works, Sheffield",
+			want:      "Rivelin Works,\nSheffield",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatVenueAddress(tc.venueName, tc.address)
+			if got != tc.want {
+				t.Fatalf("formatVenueAddress() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
