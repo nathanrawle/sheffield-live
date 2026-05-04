@@ -174,13 +174,16 @@ func greystonesDescription(section []byte) string {
 	matches := greystonesParagraphPattern.FindAllSubmatch(section, -1)
 	parts := make([]string, 0, len(matches))
 	for _, match := range matches {
-		text := greystonesMatchText(match)
+		text := ""
+		if len(match) >= 2 {
+			text = semanticDescriptionText(string(match[1]))
+		}
 		if text == "" {
 			continue
 		}
 		parts = append(parts, text)
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n\n")
 }
 
 func greystonesSectionURL(pageURL string, section []byte) string {

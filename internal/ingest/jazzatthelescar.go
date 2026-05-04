@@ -184,12 +184,7 @@ func jazzAtTheLescarStartAt(datePart, startTime string, updatedDate time.Time) (
 }
 
 func jazzAtTheLescarDescription(raw string) string {
-	text := strings.ReplaceAll(raw, "<br>", "\n")
-	text = strings.ReplaceAll(text, "<br/>", "\n")
-	text = strings.ReplaceAll(text, "<br />", "\n")
-	text = html.UnescapeString(text)
-	text = jazzAtTheLescarTagPattern.ReplaceAllString(text, " ")
-	return jazzAtTheLescarCleanText(text)
+	return semanticDescriptionText(raw)
 }
 
 func jazzAtTheLescarCleanText(value string) string {

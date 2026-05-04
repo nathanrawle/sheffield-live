@@ -975,6 +975,160 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 	return err
 }
 
+type DescriptionRepairReport struct {
+	Repaired       int      `json:"description_repaired"`
+	Unchanged      int      `json:"description_unchanged"`
+	Skipped        int      `json:"description_skipped"`
+	RepairedSlugs  []string `json:"repaired_event_slugs"`
+	UnchangedSlugs []string `json:"unchanged_event_slugs"`
+	SkippedTitles  []string `json:"skipped_titles"`
+}
+
+func (s *Store) RepairEventDescriptionsFromReport(ctx context.Context, catalog *ingest.Catalog, report ingest.Report) (DescriptionRepairReport, error) {
+	repair := DescriptionRepairReport{
+		RepairedSlugs:  []string{},
+		UnchangedSlugs: []string{},
+		SkippedTitles:  []string{},
+	}
+	if s == nil || s.db == nil {
+		return repair, errors.New("sqlite store is not open")
+	}
+	if catalog == nil {
+		return repair, errors.New("catalog is nil")
+	}
+	if !strings.EqualFold(strings.TrimSpace(report.Status), "succeeded") {
+		return repair, nil
+	}
+
+	groups := ingest.ReviewGroupsFromReportWithCatalog(catalog, report)
+	for _, group := range groups {
+		if strings.TrimSpace(group.AuthoritativeSourceName) == "" ||
+			strings.TrimSpace(group.AuthoritativeSourceURL) == "" ||
+			strings.TrimSpace(group.AuthoritativeSourceEventKey) == "" ||
+			len(group.Candidates) != 1 {
+			repair.Skipped++
+			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(group.Title))
+			continue
+		}
+
+		event, err := singletonResolvedEventFromGroupInput(group, time.Now().UTC())
+		if err != nil {
+			repair.Skipped++
+			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(group.Title))
+			continue
+		}
+		result, err := s.repairAuthoritativeEventDescription(ctx, event, group.AuthoritativeSourceEventKey)
+		if err != nil {
+			return repair, err
+		}
+		switch result.Status {
+		case descriptionRepairRepaired:
+			repair.Repaired++
+			repair.RepairedSlugs = append(repair.RepairedSlugs, result.EventSlug)
+		case descriptionRepairUnchanged:
+			repair.Unchanged++
+			repair.UnchangedSlugs = append(repair.UnchangedSlugs, result.EventSlug)
+		default:
+			repair.Skipped++
+			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(group.Title))
+		}
+	}
+	return repair, nil
+}
+
+type descriptionRepairStatus string
+
+const (
+	descriptionRepairRepaired  descriptionRepairStatus = "repaired"
+	descriptionRepairUnchanged descriptionRepairStatus = "unchanged"
+	descriptionRepairSkipped   descriptionRepairStatus = "skipped"
+)
+
+type descriptionRepairResult struct {
+	Status    descriptionRepairStatus
+	EventSlug string
+}
+
+func (s *Store) repairAuthoritativeEventDescription(ctx context.Context, incoming domain.Event, sourceEventKey string) (descriptionRepairResult, error) {
+	incoming.Description = strings.TrimSpace(incoming.Description)
+	if !shouldReplaceDescription("", incoming.Description) {
+		return descriptionRepairResult{Status: descriptionRepairSkipped}, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return descriptionRepairResult{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	record, found, err := findExistingAuthoritativeEventForDescriptionRepairTx(ctx, tx, incoming, sourceEventKey)
+	if err != nil {
+		return descriptionRepairResult{}, err
+	}
+	if !found {
+		return descriptionRepairResult{Status: descriptionRepairSkipped}, nil
+	}
+	if !shouldReplaceDescription(record.Event.Description, incoming.Description) {
+		return descriptionRepairResult{Status: descriptionRepairUnchanged, EventSlug: record.Event.Slug}, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE events
+		SET description = ?
+		WHERE id = ?
+	`, incoming.Description, record.ID); err != nil {
+		return descriptionRepairResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return descriptionRepairResult{}, err
+	}
+	return descriptionRepairResult{Status: descriptionRepairRepaired, EventSlug: record.Event.Slug}, nil
+}
+
+func findExistingAuthoritativeEventForDescriptionRepairTx(ctx context.Context, tx queryer, incoming domain.Event, sourceEventKey string) (eventRecord, bool, error) {
+	sourceID, ok, err := loadSourceIDByNameURLTx(ctx, tx, incoming.SourceName, incoming.SourceURL)
+	if err != nil {
+		return eventRecord{}, false, err
+	}
+	if !ok {
+		return eventRecord{}, false, nil
+	}
+
+	if linked, ok, err := loadEventRecordBySourceLinkTx(ctx, tx, sourceID, sourceEventKey); err != nil {
+		return eventRecord{}, false, err
+	} else if ok {
+		return linked, true, nil
+	}
+
+	if legacy, ok, err := loadEventRecordBySlugAndSourceTx(ctx, tx, incoming.Slug, sourceID); err != nil {
+		return eventRecord{}, false, err
+	} else if ok {
+		return legacy, true, nil
+	}
+	if matched, found, ambiguous, err := uniqueLiveEventMatchForEventSourceTx(ctx, tx, incoming, sourceID); err != nil {
+		return eventRecord{}, false, err
+	} else if found && !ambiguous {
+		return matched, true, nil
+	}
+	return eventRecord{}, false, nil
+}
+
+func uniqueLiveEventMatchForEventSourceTx(ctx context.Context, q queryer, event domain.Event, sourceID int64) (eventRecord, bool, bool, error) {
+	result, err := matchLiveEventsBySourceIdentityTx(ctx, q, sourceID, event.Slug, event.Name, event.VenueSlug, event.Start)
+	if err != nil {
+		return eventRecord{}, false, false, err
+	}
+	switch len(result) {
+	case 0:
+		return eventRecord{}, false, false, nil
+	case 1:
+		return result[0], true, false, nil
+	default:
+		return eventRecord{}, false, true, nil
+	}
+}
+
 func matchLiveEventsByIdentityTx(ctx context.Context, q queryer, slug, name, venueSlug string, start time.Time) ([]eventRecord, error) {
 	matched := make(map[int64]eventRecord)
 
@@ -989,6 +1143,34 @@ func matchLiveEventsByIdentityTx(ctx context.Context, q queryer, slug, name, ven
 	}
 
 	records, err := loadLiveEventRecordsByFingerprintTx(ctx, q, name, venueSlug, start)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		matched[record.ID] = record
+	}
+
+	out := make([]eventRecord, 0, len(matched))
+	for _, record := range matched {
+		out = append(out, record)
+	}
+	return out, nil
+}
+
+func matchLiveEventsBySourceIdentityTx(ctx context.Context, q queryer, sourceID int64, slug, name, venueSlug string, start time.Time) ([]eventRecord, error) {
+	matched := make(map[int64]eventRecord)
+
+	if strings.TrimSpace(slug) != "" {
+		record, ok, err := loadLiveEventRecordBySlugAndSourceTx(ctx, q, slug, sourceID)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			matched[record.ID] = record
+		}
+	}
+
+	records, err := loadLiveEventRecordsByFingerprintAndSourceTx(ctx, q, sourceID, name, venueSlug, start)
 	if err != nil {
 		return nil, err
 	}
@@ -1182,13 +1364,13 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 	updated.VenueSlug = authoritative.VenueSlug
 	updated.Start = authoritative.Start
 	updated.End = authoritative.End
-	if updated.Genre == "" {
+	if authoritative.Genre != "" {
 		updated.Genre = authoritative.Genre
 	}
 	if authoritative.Status != "" {
 		updated.Status = authoritative.Status
 	}
-	if updated.Description == "" {
+	if authoritativeDescriptionUsable(authoritative.Description) {
 		updated.Description = authoritative.Description
 	}
 	updated.SourceName = authoritative.SourceName
@@ -1215,6 +1397,83 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 		return domain.Event{}, err
 	}
 	return updated, nil
+}
+
+func shouldReplaceDescription(existing, incoming string) bool {
+	incoming = strings.TrimSpace(incoming)
+	if incoming == "" || !descriptionIsClean(incoming) {
+		return false
+	}
+	existing = strings.TrimSpace(existing)
+	return existing == "" || descriptionIsGeneratedMarkup(existing)
+}
+
+func authoritativeDescriptionUsable(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if descriptionIsGeneratedMarkup(value) {
+		return false
+	}
+	switch {
+	case strings.EqualFold(value, "buy tickets"):
+		return false
+	case strings.EqualFold(value, "basement buy tickets"):
+		return false
+	case strings.EqualFold(value, "tickets"):
+		return false
+	case strings.EqualFold(value, "book tickets"):
+		return false
+	case strings.EqualFold(value, "read more"):
+		return false
+	case strings.EqualFold(value, "find out more"):
+		return false
+	case strings.EqualFold(value, "more info"):
+		return false
+	case strings.EqualFold(value, "event details"):
+		return false
+	case strings.EqualFold(value, "click here"):
+		return false
+	case strings.EqualFold(value, "back to events"):
+		return false
+	}
+	return true
+}
+
+func descriptionIsClean(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	switch {
+	case strings.Contains(lower, "#block-"):
+		return false
+	case strings.Contains(lower, "--tweak-"):
+		return false
+	case strings.Contains(lower, "@media screen"):
+		return false
+	case strings.Contains(lower, "<script") || strings.Contains(lower, "<style"):
+		return false
+	case strings.EqualFold(value, "buy tickets"):
+		return false
+	case strings.EqualFold(value, "basement buy tickets"):
+		return false
+	case len([]rune(value)) < 40 && !strings.ContainsAny(value, ".!?"):
+		return false
+	default:
+		return true
+	}
+}
+
+func descriptionIsGeneratedMarkup(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return strings.Contains(lower, "#block-") ||
+		strings.Contains(lower, "--tweak-") ||
+		strings.Contains(lower, "@media screen") ||
+		strings.Contains(lower, "<script") ||
+		strings.Contains(lower, "<style")
 }
 
 func ensureEventSourceLinkTx(ctx context.Context, tx execer, eventID, sourceID int64, sourceEventKey string, now time.Time) error {
@@ -1336,6 +1595,31 @@ func loadEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (event
 	`, slug)
 }
 
+func loadEventRecordBySlugAndSourceTx(ctx context.Context, q queryer, slug string, sourceID int64) (eventRecord, bool, error) {
+	return loadEventRecord(ctx, q, `
+		SELECT
+			e.id,
+			e.slug,
+			e.name,
+			v.slug,
+			e.start_at,
+			e.end_at,
+			e.genre,
+			e.status,
+			e.description,
+			s.name,
+			s.url,
+			e.last_checked_at,
+			e.origin,
+			e.publication_state
+		FROM events e
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE e.slug = ? AND e.source_id = ?
+		LIMIT 1
+	`, slug, sourceID)
+}
+
 func loadLiveEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (eventRecord, bool, error) {
 	return loadEventRecord(ctx, q, `
 		SELECT
@@ -1361,8 +1645,33 @@ func loadLiveEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (e
 	`, slug, string(domain.OriginLive))
 }
 
+func loadLiveEventRecordBySlugAndSourceTx(ctx context.Context, q queryer, slug string, sourceID int64) (eventRecord, bool, error) {
+	return loadEventRecord(ctx, q, `
+		SELECT
+			e.id,
+			e.slug,
+			e.name,
+			v.slug,
+			e.start_at,
+			e.end_at,
+			e.genre,
+			e.status,
+			e.description,
+			s.name,
+			s.url,
+			e.last_checked_at,
+			e.origin,
+			e.publication_state
+		FROM events e
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE e.slug = ? AND e.source_id = ? AND e.origin = ?
+		LIMIT 1
+	`, slug, sourceID, string(domain.OriginLive))
+}
+
 func loadLiveEventRecordsByFingerprintTx(ctx context.Context, q queryer, name, venueSlug string, start time.Time) ([]eventRecord, error) {
-	rows, err := q.QueryContext(ctx, `
+	return loadEventRecords(ctx, q, `
 		SELECT
 			e.id,
 			e.slug,
@@ -1386,6 +1695,38 @@ func loadLiveEventRecordsByFingerprintTx(ctx context.Context, q queryer, name, v
 		  AND e.start_at = ?
 		  AND e.origin = ?
 	`, strings.TrimSpace(name), strings.TrimSpace(venueSlug), formatRFC3339UTC(start), string(domain.OriginLive))
+}
+
+func loadLiveEventRecordsByFingerprintAndSourceTx(ctx context.Context, q queryer, sourceID int64, name, venueSlug string, start time.Time) ([]eventRecord, error) {
+	return loadEventRecords(ctx, q, `
+		SELECT
+			e.id,
+			e.slug,
+			e.name,
+			v.slug,
+			e.start_at,
+			e.end_at,
+			e.genre,
+			e.status,
+			e.description,
+			s.name,
+			s.url,
+			e.last_checked_at,
+			e.origin,
+			e.publication_state
+		FROM events e
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE e.source_id = ?
+		  AND e.name = ?
+		  AND v.slug = ?
+		  AND e.start_at = ?
+		  AND e.origin = ?
+	`, sourceID, strings.TrimSpace(name), strings.TrimSpace(venueSlug), formatRFC3339UTC(start), string(domain.OriginLive))
+}
+
+func loadEventRecords(ctx context.Context, q queryer, query string, args ...any) ([]eventRecord, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

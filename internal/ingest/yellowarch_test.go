@@ -82,3 +82,26 @@ func TestParseYellowArchPageSkipsEventsMissingTimes(t *testing.T) {
 		t.Fatalf("skip reason = %q, want %q", got, want)
 	}
 }
+
+func TestParseYellowArchPageNormalizesHTMLDescriptionBreaks(t *testing.T) {
+	result := ParseYellowArchPage([]byte(`
+		<script type="application/ld+json">
+			[{
+				"@type":"Event",
+				"name":"HTML Description",
+				"description":"Aggressive Management Presents<br>COPPER LUNGS<br><br><strong>The Electric Lives Tour</strong><p>Support from <em>Cargos</em></p>",
+				"startDate":"2026-05-01T19:00",
+				"endDate":"2026-05-01T22:00",
+				"location":{"name":"Yellow Arch Studios"}
+			}]
+		</script>
+	`))
+
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d: %#v", got, want, result.Candidates)
+	}
+	want := "Aggressive Management Presents\nCOPPER LUNGS\n\n**The Electric Lives Tour**\n\nSupport from _Cargos_"
+	if got := result.Candidates[0].Description; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}

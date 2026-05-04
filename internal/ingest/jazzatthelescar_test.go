@@ -65,6 +65,24 @@ func TestParseJazzAtTheLescarSourcePageAppliesLimit(t *testing.T) {
 	}
 }
 
+func TestParseJazzAtTheLescarPagePreservesDescriptionBreaks(t *testing.T) {
+	result := ParseJazzAtTheLescarPage([]byte(`
+		<div class="menu">Doors 8pm, music 8:30pm (unless otherwise stated).</div>
+		<div class="art">KO Quartet</div>
+		<div class="ttl">15th April / The Lescar / £10</div>
+		<div class="dsc">First line<br>Second line<br><br>Next paragraph.</div>
+		<div class="footer">Page last updated: 22nd April 2026</div>
+	`))
+
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d: %#v", got, want, result.Candidates)
+	}
+	want := "First line\nSecond line\n\nNext paragraph."
+	if got := result.Candidates[0].Description; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
+
 func TestParseJazzAtTheLescarPageFailsWithoutMetadata(t *testing.T) {
 	result := ParseJazzAtTheLescarPage([]byte(`<div class="art">KO Quartet</div><div class="ttl">15th April / The Lescar / £10</div><div class="dsc">Desc</div>`))
 
