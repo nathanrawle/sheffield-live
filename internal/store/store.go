@@ -123,69 +123,7 @@ func NewSeedStore() *Store {
 		},
 	}
 
-	checked := localTime(2026, time.April, 19, 10, 0)
-	events := []domain.Event{
-		{
-			Slug:             "matinee-noise-at-the-leadmill",
-			Name:             "Matinee Noise",
-			VenueSlug:        "leadmill",
-			Start:            localTime(2026, time.May, 8, 19, 30),
-			End:              localTime(2026, time.May, 8, 23, 0),
-			Genre:            "Indie / alt",
-			Status:           "Listed",
-			Description:      "A Friday bill with local support and a touring headliner.",
-			SourceName:       "The Leadmill live music listings",
-			SourceURL:        "https://leadmill.co.uk/events/live-music/",
-			LastChecked:      checked,
-			Origin:           domain.OriginLive,
-			PublicationState: domain.PublicationStateReviewed,
-		},
-		{
-			Slug:             "neepsend-afterhours",
-			Name:             "Abbeydale Afterhours",
-			VenueSlug:        "yellow-arch",
-			Start:            localTime(2026, time.May, 14, 20, 0),
-			End:              localTime(2026, time.May, 14, 23, 30),
-			Genre:            "Jazz / soul",
-			Status:           "Listed",
-			Description:      "A midweek set with keys, brass, and soul.",
-			SourceName:       "Yellow Arch what's on",
-			SourceURL:        "https://www.yellowarch.com/events/",
-			LastChecked:      checked,
-			Origin:           domain.OriginLive,
-			PublicationState: domain.PublicationStateReviewed,
-		},
-		{
-			Slug:             "courtyard-wildcards",
-			Name:             "Courtyard Wildcards",
-			VenueSlug:        "sidney-and-matilda",
-			Start:            localTime(2026, time.May, 22, 18, 45),
-			End:              localTime(2026, time.May, 22, 22, 45),
-			Genre:            "Punk / garage",
-			Status:           "Listed",
-			Description:      "A garage and punk double bill.",
-			SourceName:       "Sidney & Matilda listings",
-			SourceURL:        "https://www.sidneyandmatilda.com/",
-			LastChecked:      checked,
-			Origin:           domain.OriginLive,
-			PublicationState: domain.PublicationStateReviewed,
-		},
-		{
-			Slug:             "leadmill-late-room",
-			Name:             "Late Room",
-			VenueSlug:        "leadmill",
-			Start:            localTime(2026, time.June, 5, 22, 0),
-			End:              localTime(2026, time.June, 6, 1, 0),
-			Genre:            "DJ / club",
-			Status:           "Listed",
-			Description:      "A late-room dance set.",
-			SourceName:       "The Leadmill live music listings",
-			SourceURL:        "https://leadmill.co.uk/events/live-music/",
-			LastChecked:      checked,
-			Origin:           domain.OriginLive,
-			PublicationState: domain.PublicationStateReviewed,
-		},
-	}
+	events := []domain.Event{}
 
 	return NewStore(venues, events)
 }

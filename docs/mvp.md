@@ -10,7 +10,7 @@ The product is a small, readable Sheffield live-music browser that answers three
 
 The current scope includes:
 
-- SQLite persistence with curated bootstrap data
+- SQLite persistence with curated bootstrap venues
 - manual Sidney & Matilda ingest
 - review staging
 - review-to-public-event publishing
@@ -18,7 +18,7 @@ The current scope includes:
 - public browsing for home, events, event detail, venues, and venue detail
 - visible provenance and freshness on records
 - visibly tagged test and dev data
-- curated bootstrap and live records that are not tagged
+- curated bootstrap venues and live records that are not tagged
 - one lightweight SQLite driver dependency
 
 ## Non-Goals

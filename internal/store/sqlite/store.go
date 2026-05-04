@@ -784,7 +784,7 @@ func loadEvents(ctx context.Context, q queryer, query string, args ...any) ([]do
 	}
 	defer rows.Close()
 
-	var events []domain.Event
+	events := []domain.Event{}
 	for rows.Next() {
 		event, err := scanEvent(rows)
 		if err != nil {

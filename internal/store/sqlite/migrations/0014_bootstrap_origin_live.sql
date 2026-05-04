@@ -11,8 +11,7 @@ WHERE origin = 'seed'
     'sidney-and-matilda'
   );
 
-UPDATE events
-SET origin = 'live'
+DELETE FROM events
 WHERE origin = 'seed'
   AND slug IN (
     'matinee-noise-at-the-leadmill',

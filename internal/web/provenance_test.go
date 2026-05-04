@@ -17,7 +17,6 @@ func TestBootstrapPagesRenderWithoutOriginLabels(t *testing.T) {
 	for _, path := range []string{
 		"/events",
 		"/venues",
-		"/events/matinee-noise-at-the-leadmill",
 		"/venues/leadmill",
 	} {
 		assertNoOriginLabels(t, renderPath(t, server, path))

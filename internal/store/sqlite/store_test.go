@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -46,11 +47,11 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	if got := mustCount(t, db, "venues"); got != 7 {
 		t.Fatalf("venues rows = %d, want 7", got)
 	}
-	if got := mustCount(t, db, "events"); got != 4 {
-		t.Fatalf("events rows = %d, want 4", got)
+	if got := mustCount(t, db, "events"); got != 0 {
+		t.Fatalf("events rows = %d, want 0", got)
 	}
-	if got := mustCount(t, db, "sources"); got != 3 {
-		t.Fatalf("sources rows = %d, want 3", got)
+	if got := mustCount(t, db, "sources"); got != 0 {
+		t.Fatalf("sources rows = %d, want 0", got)
 	}
 	if got := mustCount(t, db, "import_runs"); got != 0 {
 		t.Fatalf("import_runs rows = %d, want 0", got)
@@ -330,7 +331,7 @@ func TestOpenMigratesVersion13DatabaseMarksBootstrapRecordsLive(t *testing.T) {
 	}
 	assertStoredVenueOrigin(t, db, "leadmill", domain.OriginLive)
 	assertStoredVenueOrigin(t, db, "community-room", domain.OriginSeed)
-	assertStoredEventOrigin(t, db, "matinee-noise-at-the-leadmill", domain.OriginLive)
+	assertStoredEventMissing(t, db, "matinee-noise-at-the-leadmill")
 	assertStoredEventOrigin(t, db, "community-room-show", domain.OriginSeed)
 }
 
@@ -1082,6 +1083,7 @@ func TestOpenRoundTripsUTCTimes(t *testing.T) {
 	}
 
 	db := mustRawDB(t, path)
+	insertStoreTestEvent(t, db, "round-trip-time-event", "leadmill")
 	start := time.Date(2026, time.May, 8, 19, 30, 0, 0, time.FixedZone("BST", 60*60))
 	end := time.Date(2026, time.May, 8, 23, 0, 0, 0, time.FixedZone("BST", 60*60))
 	checked := time.Date(2026, time.April, 19, 10, 0, 0, 0, time.FixedZone("BST", 60*60))
@@ -1089,7 +1091,7 @@ func TestOpenRoundTripsUTCTimes(t *testing.T) {
 		UPDATE events
 		SET start_at = ?, end_at = ?, last_checked_at = ?
 		WHERE slug = ?
-	`, start.Format(time.RFC3339), end.Format(time.RFC3339), checked.Format(time.RFC3339), "matinee-noise-at-the-leadmill"); err != nil {
+	`, start.Format(time.RFC3339), end.Format(time.RFC3339), checked.Format(time.RFC3339), "round-trip-time-event"); err != nil {
 		t.Fatalf("update event: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -1106,7 +1108,7 @@ func TestOpenRoundTripsUTCTimes(t *testing.T) {
 		}
 	}()
 
-	event, ok := st.EventBySlug("matinee-noise-at-the-leadmill")
+	event, ok := st.EventBySlug("round-trip-time-event")
 	if !ok {
 		t.Fatal("missing event")
 	}
@@ -1136,11 +1138,12 @@ func TestOpenRoundTripsNullCanonicalEndTime(t *testing.T) {
 	}
 
 	db := mustRawDB(t, path)
+	insertStoreTestEvent(t, db, "null-end-event", "leadmill")
 	if _, err := db.Exec(`
 		UPDATE events
 		SET end_at = NULL
 		WHERE slug = ?
-	`, "matinee-noise-at-the-leadmill"); err != nil {
+	`, "null-end-event"); err != nil {
 		t.Fatalf("clear event end: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -1153,7 +1156,7 @@ func TestOpenRoundTripsNullCanonicalEndTime(t *testing.T) {
 	}
 	defer st.Close()
 
-	event, ok := st.EventBySlug("matinee-noise-at-the-leadmill")
+	event, ok := st.EventBySlug("null-end-event")
 	if !ok {
 		t.Fatal("missing event")
 	}
@@ -1247,11 +1250,12 @@ func TestOpenRejectsCanonicalEqualTimeEndOutsideOwnedVenueBackfill(t *testing.T)
 	}
 
 	db := mustRawDB(t, path)
+	insertStoreTestEvent(t, db, "equal-end-event", "leadmill")
 	if _, err := db.Exec(`
 		UPDATE events
 		SET end_at = start_at
 		WHERE slug = ?
-	`, "matinee-noise-at-the-leadmill"); err != nil {
+	`, "equal-end-event"); err != nil {
 		t.Fatalf("set equal-time end: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -1377,10 +1381,11 @@ func TestOpenRejectsDanglingVenueReference(t *testing.T) {
 	}
 
 	db := mustRawDB(t, path)
+	insertStoreTestEvent(t, db, "dangling-venue-event", "leadmill")
 	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
 		t.Fatalf("disable foreign keys: %v", err)
 	}
-	if _, err := db.Exec(`UPDATE events SET venue_id = ? WHERE slug = ?`, 999999, "matinee-noise-at-the-leadmill"); err != nil {
+	if _, err := db.Exec(`UPDATE events SET venue_id = ? WHERE slug = ?`, 999999, "dangling-venue-event"); err != nil {
 		t.Fatalf("corrupt venue reference: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -1482,6 +1487,38 @@ func insertLegacyEvent(t *testing.T, db *sql.DB, slug string, venueID, sourceID 
 	}
 }
 
+func insertStoreTestEvent(t *testing.T, db *sql.DB, slug, venueSlug string) {
+	t.Helper()
+
+	sourceID := insertStoreTestSource(t, db)
+	venueID := lookupStoreVenueID(t, db, venueSlug)
+	insertLegacyEvent(t, db, slug, venueID, sourceID, domain.OriginLive)
+}
+
+func insertStoreTestSource(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+
+	res, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Store test source", "https://example.test/store-test")
+	if err != nil {
+		t.Fatalf("insert store test source: %v", err)
+	}
+	sourceID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("store test source id: %v", err)
+	}
+	return sourceID
+}
+
+func lookupStoreVenueID(t *testing.T, db *sql.DB, slug string) int64 {
+	t.Helper()
+
+	var venueID int64
+	if err := db.QueryRow(`SELECT id FROM venues WHERE slug = ?`, slug).Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue id %q: %v", slug, err)
+	}
+	return venueID
+}
+
 func assertStoredVenueOrigin(t *testing.T, db *sql.DB, slug string, want domain.Origin) {
 	t.Helper()
 
@@ -1503,6 +1540,17 @@ func assertStoredEventOrigin(t *testing.T, db *sql.DB, slug string, want domain.
 	}
 	if domain.Origin(origin) != want {
 		t.Fatalf("event %q origin = %q, want %q", slug, origin, want)
+	}
+}
+
+func assertStoredEventMissing(t *testing.T, db *sql.DB, slug string) {
+	t.Helper()
+
+	var found int
+	if err := db.QueryRow(`SELECT 1 FROM events WHERE slug = ?`, slug).Scan(&found); err == nil {
+		t.Fatalf("event %q still exists", slug)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("lookup event %q: %v", slug, err)
 	}
 }
 

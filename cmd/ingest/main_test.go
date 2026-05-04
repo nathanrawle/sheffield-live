@@ -1256,8 +1256,8 @@ func TestRunWithArgsReplayYellowArchReappliesLinkedAuthoritativeEvent(t *testing
 
 	db := openRawDB(t, path)
 	defer db.Close()
-	if got := countRows(t, db, "events"); got != 5 {
-		t.Fatalf("events rows = %d, want 5", got)
+	if got := countRows(t, db, "events"); got != 1 {
+		t.Fatalf("events rows = %d, want 1", got)
 	}
 	if got := countRows(t, db, "review_groups"); got != 0 {
 		t.Fatalf("review_groups rows = %d, want 0", got)
