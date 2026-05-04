@@ -95,6 +95,25 @@ func TestVenueMatchAddressBasedMatch(t *testing.T) {
 	assertVenueMatch(t, match, venueMatchResolved, "sidney-and-matilda", "Sidney & Matilda")
 }
 
+func TestVenueMatchAddressBasedMatchUsesEscapedICSEvidence(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	matcher, err := loadVenueMatcher(ctx, st.db)
+	if err != nil {
+		t.Fatalf("load venue matcher: %v", err)
+	}
+
+	match := matcher.matchCandidate(review.Candidate{
+		VenueLocationRaw: "Rivelin Works\\, 46 Sidney Street\\, Sheffield",
+	})
+	assertVenueMatch(t, match, venueMatchResolved, "sidney-and-matilda", "Sidney & Matilda")
+}
+
 func TestVenueMatchAmbiguousResult(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
@@ -189,6 +208,30 @@ func TestProvisionalVenueSlugPrefersNewlineDelimitedLocationHead(t *testing.T) {
 	}
 }
 
+func TestProvisionalVenueSlugPreservesEscapedCommaVenueHead(t *testing.T) {
+	candidate := review.Candidate{
+		VenueSlug:        "memorial-hall-1-void-street-sheffield",
+		VenueText:        "Memorial Hall, Barkers Pool, 1 Void Street, Sheffield",
+		VenueLocationRaw: "Memorial Hall\\, Barkers Pool, 1 Void Street, Sheffield",
+	}
+
+	if got, want := provisionalVenueSlug(candidate), "memorial-hall-barkers-pool"; got != want {
+		t.Fatalf("provisional venue slug = %q, want %q", got, want)
+	}
+}
+
+func TestProvisionalVenueSlugFallsBackToAddressFirstSplitForFullyEscapedICSLocation(t *testing.T) {
+	candidate := review.Candidate{
+		VenueSlug:        "memorial-hall-1-void-street-sheffield",
+		VenueText:        "Memorial Hall",
+		VenueLocationRaw: "Memorial Hall\\, Barkers Pool\\, Sheffield\\, S1 2JA",
+	}
+
+	if got, want := provisionalVenueSlug(candidate), "memorial-hall"; got != want {
+		t.Fatalf("provisional venue slug = %q, want %q", got, want)
+	}
+}
+
 func TestProvisionalVenueNamePrefersLocationHeadOverFullVenueText(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -212,6 +255,24 @@ func TestProvisionalVenueNamePrefersLocationHeadOverFullVenueText(t *testing.T) 
 				VenueLocationRaw: "Imaginary Hall\n1 Void Street\nSheffield\nS1 2JA",
 			},
 			want: "Imaginary Hall",
+		},
+		{
+			name: "escaped comma venue name only",
+			candidate: review.Candidate{
+				VenueSlug:        "foo-bar",
+				VenueText:        "Foo, Bar",
+				VenueLocationRaw: "Foo\\, Bar",
+			},
+			want: "Foo, Bar",
+		},
+		{
+			name: "escaped comma venue head with address",
+			candidate: review.Candidate{
+				VenueSlug:        "memorial-hall-1-void-street-sheffield",
+				VenueText:        "Memorial Hall, Barkers Pool, 1 Void Street, Sheffield",
+				VenueLocationRaw: "Memorial Hall\\, Barkers Pool, 1 Void Street, Sheffield",
+			},
+			want: "Memorial Hall, Barkers Pool",
 		},
 	}
 
@@ -282,6 +343,24 @@ func TestProvisionalVenueFromCandidateFormatsAddress(t *testing.T) {
 			candidate: review.Candidate{
 				VenueText:        "Memorial Hall",
 				VenueLocationRaw: "Memorial Hall, Barkers Pool, Sheffield, S1 2JA",
+			},
+			wantAddress:       "Barkers Pool,\nSheffield,\nS1 2JA",
+			wantNeighbourhood: "",
+		},
+		{
+			name: "preserves escaped comma venue head when address structure remains",
+			candidate: review.Candidate{
+				VenueText:        "Memorial Hall, Barkers Pool, 1 Void Street, Sheffield",
+				VenueLocationRaw: "Memorial Hall\\, Barkers Pool, 1 Void Street, Sheffield",
+			},
+			wantAddress:       "1 Void Street,\nSheffield",
+			wantNeighbourhood: "",
+		},
+		{
+			name: "fully escaped comma-delimited ics falls back to address-first split",
+			candidate: review.Candidate{
+				VenueText:        "Memorial Hall",
+				VenueLocationRaw: "Memorial Hall\\, Barkers Pool\\, Sheffield\\, S1 2JA",
 			},
 			wantAddress:       "Barkers Pool,\nSheffield,\nS1 2JA",
 			wantNeighbourhood: "",

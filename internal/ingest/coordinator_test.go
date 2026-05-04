@@ -597,7 +597,7 @@ func TestRunManualLeadmillParsesFilteredListingsFromLinkedICS(t *testing.T) {
 					"BEGIN:VEVENT\n" +
 					"UID:live-sheffield\n" +
 					"SUMMARY:Maybe Gold - Yellow Arch\n" +
-					"LOCATION:Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX\n" +
+					"LOCATION:Yellow Arch\\, 30-36 Burton Road\\, Neepsend\\, S3 8BX\n" +
 					"CATEGORIES:Live\n" +
 					"DTSTART:20260501T190000Z\n" +
 					"END:VEVENT\n" +
@@ -636,6 +636,9 @@ func TestRunManualLeadmillParsesFilteredListingsFromLinkedICS(t *testing.T) {
 	}
 	if got, want := report.Calendars[0].Candidates[0].Location, "Yellow Arch"; got != want {
 		t.Fatalf("location = %q, want %q", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].LocationRaw, "Yellow Arch\\, 30-36 Burton Road\\, Neepsend\\, S3 8BX"; got != want {
+		t.Fatalf("location raw = %q, want %q", got, want)
 	}
 }
 

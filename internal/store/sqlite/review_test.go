@@ -1145,6 +1145,54 @@ func TestStageReviewGroupGenericICSLocationVariantsReuseProvisionalVenueSlug(t *
 	}
 }
 
+func TestStageReviewGroupCreatesProvisionalVenueFromEscapedICSLocationEvidence(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	input := review.GroupInput{
+		Title:      "Escaped ICS provisional venue",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:escaped-venue.ics",
+		StagingKey: "v1:escaped-ics-provisional",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "candidate-a",
+			Name:             "Escaped venue show",
+			VenueSlug:        "memorial-hall-1-void-street-sheffield",
+			VenueText:        "Memorial Hall, Barkers Pool, 1 Void Street, Sheffield",
+			VenueLocationRaw: "Memorial Hall\\, Barkers Pool, 1 Void Street, Sheffield",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Should preserve escaped comma venue head.",
+		}},
+	}
+
+	result, err := st.StageReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !result.Created {
+		t.Fatal("created = false, want true")
+	}
+
+	venue, ok := st.VenueBySlug("memorial-hall-barkers-pool")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if venue.Name != "Memorial Hall, Barkers Pool" {
+		t.Fatalf("venue name = %q, want %q", venue.Name, "Memorial Hall, Barkers Pool")
+	}
+	if venue.Address != "1 Void Street,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nSheffield")
+	}
+}
+
 func TestStageReviewGroupRestagingDoesNotDuplicateOrOverwriteProvisionalVenue(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")

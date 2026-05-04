@@ -45,7 +45,7 @@ func loadVenueMatcher(ctx context.Context, q queryer) (venueMatcher, error) {
 	for _, venue := range venues {
 		matcher.add(matcher.bySlug, venue.Slug, venue)
 		matcher.add(matcher.byName, normalizedVenueKey(venue.Name), venue)
-		matcher.add(matcher.byAddress, normalizedVenueKey(venue.Address), venue)
+		matcher.add(matcher.byAddress, normalizedVenueEvidenceKey(venue.Address), venue)
 	}
 	return matcher, nil
 }
@@ -90,7 +90,7 @@ func (m venueMatcher) matchCandidate(candidate review.Candidate) venueMatchResul
 		add(m.bySlug[probe])
 	}
 	add(m.byName[normalizedVenueKey(candidate.VenueText)])
-	add(m.byAddress[normalizedVenueKey(candidate.VenueLocationRaw)])
+	add(m.byAddress[normalizedVenueEvidenceKey(candidate.VenueLocationRaw)])
 
 	switch {
 	case ambiguous:
@@ -205,7 +205,7 @@ func resolveReviewVenueTx(ctx context.Context, tx interface {
 func (m *venueMatcher) indexVenue(venue domain.Venue) {
 	m.add(m.bySlug, venue.Slug, venue)
 	m.add(m.byName, normalizedVenueKey(venue.Name), venue)
-	m.add(m.byAddress, normalizedVenueKey(venue.Address), venue)
+	m.add(m.byAddress, normalizedVenueEvidenceKey(venue.Address), venue)
 }
 
 func reviewCandidateFromInput(input review.CandidateInput) review.Candidate {
@@ -236,12 +236,12 @@ func venueLocationSlugProbes(value string) []string {
 		return nil
 	}
 	probes := make([]string, 0, 2)
-	if parts := normalizedVenueAddressParts(value); len(parts) > 0 {
+	if parts := venueLocationEvidenceParts(value); len(parts) > 0 {
 		if probe := normalizedVenueKey(parts[0]); probe != "" {
 			probes = append(probes, probe)
 		}
 	}
-	if probe := normalizedVenueKey(value); probe != "" {
+	if probe := normalizedVenueEvidenceKey(value); probe != "" {
 		if len(probes) == 0 || probes[0] != probe {
 			probes = append(probes, probe)
 		}
@@ -266,7 +266,7 @@ func provisionalVenueFromCandidate(candidate review.Candidate) (domain.Venue, er
 }
 
 func formatProvisionalVenueAddress(name, value string) string {
-	parts := normalizedVenueAddressParts(value)
+	parts := venueLocationEvidenceParts(value)
 	if len(parts) == 0 {
 		return ""
 	}
@@ -280,7 +280,7 @@ func formatProvisionalVenueAddress(name, value string) string {
 }
 
 func provisionalVenueNeighbourhood(value string) string {
-	for _, part := range normalizedVenueAddressParts(value) {
+	for _, part := range venueLocationEvidenceParts(value) {
 		if neighbourhood, ok := sheffieldNeighbourhoodAliases[normalizedVenueKey(part)]; ok {
 			return neighbourhood
 		}
@@ -288,7 +288,30 @@ func provisionalVenueNeighbourhood(value string) string {
 	return ""
 }
 
-func normalizedVenueAddressParts(value string) []string {
+func venueLocationEvidenceParts(value string) []string {
+	return ingest.VenueLocationEvidenceParts(value)
+}
+
+func normalizedVenueEvidenceKey(value string) string {
+	if text := venueLocationEvidenceText(value); text != "" {
+		return normalizedVenueKey(text)
+	}
+	return normalizedVenueKey(value)
+}
+
+func venueLocationEvidenceText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parts := venueLocationEvidenceParts(value)
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
+}
+
+func normalizedVenueTextParts(value string) []string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil
@@ -364,6 +387,11 @@ func venueLocationHeadSlug(value string) string {
 }
 
 func provisionalVenueName(candidate review.Candidate, slug string) string {
+	if ingest.HasICSEscapeSequences(candidate.VenueLocationRaw) {
+		if name := venueLocationHeadText(candidate.VenueLocationRaw); name != "" {
+			return name
+		}
+	}
 	if name := normalizedProvisionalVenueName(candidate.VenueText); name != "" {
 		return name
 	}
@@ -384,7 +412,7 @@ func normalizedProvisionalVenueName(value string) string {
 	if value == "" {
 		return ""
 	}
-	parts := normalizedVenueAddressParts(value)
+	parts := normalizedVenueTextParts(value)
 	if len(parts) == 0 {
 		return value
 	}
@@ -392,7 +420,7 @@ func normalizedProvisionalVenueName(value string) string {
 }
 
 func venueLocationHeadText(value string) string {
-	parts := normalizedVenueAddressParts(value)
+	parts := venueLocationEvidenceParts(value)
 	if len(parts) == 0 {
 		return ""
 	}
