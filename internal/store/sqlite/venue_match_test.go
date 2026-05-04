@@ -189,6 +189,42 @@ func TestProvisionalVenueSlugPrefersNewlineDelimitedLocationHead(t *testing.T) {
 	}
 }
 
+func TestProvisionalVenueNamePrefersLocationHeadOverFullVenueText(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate review.Candidate
+		want      string
+	}{
+		{
+			name: "comma-delimited generic ics location",
+			candidate: review.Candidate{
+				VenueSlug:        "imaginary-hall-1-void-street-sheffield-s1-2ja",
+				VenueText:        "Imaginary Hall, 1 Void Street, Sheffield, S1 2JA",
+				VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield, S1 2JA",
+			},
+			want: "Imaginary Hall",
+		},
+		{
+			name: "newline-delimited generic ics location",
+			candidate: review.Candidate{
+				VenueSlug:        "imaginary-hall-1-void-street-sheffield-s1-2ja",
+				VenueText:        "Imaginary Hall\n1 Void Street\nSheffield\nS1 2JA",
+				VenueLocationRaw: "Imaginary Hall\n1 Void Street\nSheffield\nS1 2JA",
+			},
+			want: "Imaginary Hall",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := provisionalVenueName(tc.candidate, provisionalVenueSlug(tc.candidate))
+			if got != tc.want {
+				t.Fatalf("provisional venue name = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProvisionalVenueFromCandidateFormatsAddress(t *testing.T) {
 	tests := []struct {
 		name              string

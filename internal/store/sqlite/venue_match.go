@@ -364,21 +364,39 @@ func venueLocationHeadSlug(value string) string {
 }
 
 func provisionalVenueName(candidate review.Candidate, slug string) string {
-	if name := strings.TrimSpace(candidate.VenueText); name != "" {
+	if name := normalizedProvisionalVenueName(candidate.VenueText); name != "" {
+		return name
+	}
+	if name := venueLocationHeadText(candidate.VenueLocationRaw); name != "" {
 		return name
 	}
 	if raw := strings.TrimSpace(candidate.VenueLocationRaw); raw != "" {
-		if head, _, ok := strings.Cut(raw, ","); ok {
-			if head = strings.TrimSpace(head); head != "" {
-				return head
-			}
-		}
 		return raw
 	}
 	if name := displayNameFromSlug(slug); name != "" {
 		return name
 	}
 	return slug
+}
+
+func normalizedProvisionalVenueName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parts := normalizedVenueAddressParts(value)
+	if len(parts) == 0 {
+		return value
+	}
+	return parts[0]
+}
+
+func venueLocationHeadText(value string) string {
+	parts := normalizedVenueAddressParts(value)
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[0]
 }
 
 func displayNameFromSlug(slug string) string {

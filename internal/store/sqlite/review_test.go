@@ -1093,8 +1093,15 @@ func TestStageReviewGroupGenericICSLocationVariantsReuseProvisionalVenueSlug(t *
 	if _, err := st.StageReviewGroup(ctx, first); err != nil {
 		t.Fatalf("stage first review group: %v", err)
 	}
-	if _, ok := st.VenueBySlug("imaginary-hall"); !ok {
+	venue, ok := st.VenueBySlug("imaginary-hall")
+	if !ok {
 		t.Fatal("normalized provisional venue not found after first stage")
+	}
+	if venue.Name != "Imaginary Hall" {
+		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
+	}
+	if venue.Address != "1 Void Street,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nSheffield")
 	}
 	if _, ok := st.VenueBySlug("imaginary-hall-1-void-street-sheffield"); ok {
 		t.Fatal("full-location provisional venue slug was inserted")
@@ -1122,6 +1129,16 @@ func TestStageReviewGroupGenericICSLocationVariantsReuseProvisionalVenueSlug(t *
 	}
 	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
 		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
+	}
+	venue, ok = st.VenueBySlug("imaginary-hall")
+	if !ok {
+		t.Fatal("normalized provisional venue not found after second stage")
+	}
+	if venue.Name != "Imaginary Hall" {
+		t.Fatalf("venue name after second stage = %q, want %q", venue.Name, "Imaginary Hall")
+	}
+	if venue.Address != "1 Void Street,\nSheffield" {
+		t.Fatalf("venue address after second stage = %q, want %q", venue.Address, "1 Void Street,\nSheffield")
 	}
 	if _, ok := st.VenueBySlug("imaginary-hall-1-void-street-sheffield-s1-2ja"); ok {
 		t.Fatal("postcode variant provisional venue slug was inserted")
