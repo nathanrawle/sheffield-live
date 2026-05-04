@@ -1087,26 +1087,46 @@ func (s *Store) repairAuthoritativeEventDescription(ctx context.Context, incomin
 }
 
 func findExistingAuthoritativeEventForDescriptionRepairTx(ctx context.Context, tx queryer, incoming domain.Event, sourceEventKey string) (eventRecord, bool, error) {
-	if sourceID, ok, err := loadSourceIDByNameURLTx(ctx, tx, incoming.SourceName, incoming.SourceURL); err != nil {
+	sourceID, ok, err := loadSourceIDByNameURLTx(ctx, tx, incoming.SourceName, incoming.SourceURL)
+	if err != nil {
+		return eventRecord{}, false, err
+	}
+	if !ok {
+		return eventRecord{}, false, nil
+	}
+
+	if linked, ok, err := loadEventRecordBySourceLinkTx(ctx, tx, sourceID, sourceEventKey); err != nil {
 		return eventRecord{}, false, err
 	} else if ok {
-		if linked, ok, err := loadEventRecordBySourceLinkTx(ctx, tx, sourceID, sourceEventKey); err != nil {
-			return eventRecord{}, false, err
-		} else if ok {
-			return linked, true, nil
-		}
+		return linked, true, nil
 	}
-	if legacy, ok, err := loadEventRecordBySlugTx(ctx, tx, incoming.Slug); err != nil {
+
+	if legacy, ok, err := loadEventRecordBySlugAndSourceTx(ctx, tx, incoming.Slug, sourceID); err != nil {
 		return eventRecord{}, false, err
 	} else if ok {
 		return legacy, true, nil
 	}
-	if matched, found, ambiguous, err := uniqueLiveEventMatchForEventTx(ctx, tx, incoming); err != nil {
+	if matched, found, ambiguous, err := uniqueLiveEventMatchForEventSourceTx(ctx, tx, incoming, sourceID); err != nil {
 		return eventRecord{}, false, err
 	} else if found && !ambiguous {
 		return matched, true, nil
 	}
 	return eventRecord{}, false, nil
+}
+
+func uniqueLiveEventMatchForEventSourceTx(ctx context.Context, q queryer, event domain.Event, sourceID int64) (eventRecord, bool, bool, error) {
+	result, err := matchLiveEventsBySourceIdentityTx(ctx, q, sourceID, event.Slug, event.Name, event.VenueSlug, event.Start)
+	if err != nil {
+		return eventRecord{}, false, false, err
+	}
+	switch len(result) {
+	case 0:
+		return eventRecord{}, false, false, nil
+	case 1:
+		return result[0], true, false, nil
+	default:
+		return eventRecord{}, false, true, nil
+	}
 }
 
 func matchLiveEventsByIdentityTx(ctx context.Context, q queryer, slug, name, venueSlug string, start time.Time) ([]eventRecord, error) {
@@ -1123,6 +1143,34 @@ func matchLiveEventsByIdentityTx(ctx context.Context, q queryer, slug, name, ven
 	}
 
 	records, err := loadLiveEventRecordsByFingerprintTx(ctx, q, name, venueSlug, start)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		matched[record.ID] = record
+	}
+
+	out := make([]eventRecord, 0, len(matched))
+	for _, record := range matched {
+		out = append(out, record)
+	}
+	return out, nil
+}
+
+func matchLiveEventsBySourceIdentityTx(ctx context.Context, q queryer, sourceID int64, slug, name, venueSlug string, start time.Time) ([]eventRecord, error) {
+	matched := make(map[int64]eventRecord)
+
+	if strings.TrimSpace(slug) != "" {
+		record, ok, err := loadLiveEventRecordBySlugAndSourceTx(ctx, q, slug, sourceID)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			matched[record.ID] = record
+		}
+	}
+
+	records, err := loadLiveEventRecordsByFingerprintAndSourceTx(ctx, q, sourceID, name, venueSlug, start)
 	if err != nil {
 		return nil, err
 	}
@@ -1547,6 +1595,31 @@ func loadEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (event
 	`, slug)
 }
 
+func loadEventRecordBySlugAndSourceTx(ctx context.Context, q queryer, slug string, sourceID int64) (eventRecord, bool, error) {
+	return loadEventRecord(ctx, q, `
+		SELECT
+			e.id,
+			e.slug,
+			e.name,
+			v.slug,
+			e.start_at,
+			e.end_at,
+			e.genre,
+			e.status,
+			e.description,
+			s.name,
+			s.url,
+			e.last_checked_at,
+			e.origin,
+			e.publication_state
+		FROM events e
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE e.slug = ? AND e.source_id = ?
+		LIMIT 1
+	`, slug, sourceID)
+}
+
 func loadLiveEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (eventRecord, bool, error) {
 	return loadEventRecord(ctx, q, `
 		SELECT
@@ -1572,8 +1645,33 @@ func loadLiveEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (e
 	`, slug, string(domain.OriginLive))
 }
 
+func loadLiveEventRecordBySlugAndSourceTx(ctx context.Context, q queryer, slug string, sourceID int64) (eventRecord, bool, error) {
+	return loadEventRecord(ctx, q, `
+		SELECT
+			e.id,
+			e.slug,
+			e.name,
+			v.slug,
+			e.start_at,
+			e.end_at,
+			e.genre,
+			e.status,
+			e.description,
+			s.name,
+			s.url,
+			e.last_checked_at,
+			e.origin,
+			e.publication_state
+		FROM events e
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE e.slug = ? AND e.source_id = ? AND e.origin = ?
+		LIMIT 1
+	`, slug, sourceID, string(domain.OriginLive))
+}
+
 func loadLiveEventRecordsByFingerprintTx(ctx context.Context, q queryer, name, venueSlug string, start time.Time) ([]eventRecord, error) {
-	rows, err := q.QueryContext(ctx, `
+	return loadEventRecords(ctx, q, `
 		SELECT
 			e.id,
 			e.slug,
@@ -1597,6 +1695,38 @@ func loadLiveEventRecordsByFingerprintTx(ctx context.Context, q queryer, name, v
 		  AND e.start_at = ?
 		  AND e.origin = ?
 	`, strings.TrimSpace(name), strings.TrimSpace(venueSlug), formatRFC3339UTC(start), string(domain.OriginLive))
+}
+
+func loadLiveEventRecordsByFingerprintAndSourceTx(ctx context.Context, q queryer, sourceID int64, name, venueSlug string, start time.Time) ([]eventRecord, error) {
+	return loadEventRecords(ctx, q, `
+		SELECT
+			e.id,
+			e.slug,
+			e.name,
+			v.slug,
+			e.start_at,
+			e.end_at,
+			e.genre,
+			e.status,
+			e.description,
+			s.name,
+			s.url,
+			e.last_checked_at,
+			e.origin,
+			e.publication_state
+		FROM events e
+		JOIN venues v ON v.id = e.venue_id
+		JOIN sources s ON s.id = e.source_id
+		WHERE e.source_id = ?
+		  AND e.name = ?
+		  AND v.slug = ?
+		  AND e.start_at = ?
+		  AND e.origin = ?
+	`, sourceID, strings.TrimSpace(name), strings.TrimSpace(venueSlug), formatRFC3339UTC(start), string(domain.OriginLive))
+}
+
+func loadEventRecords(ctx context.Context, q queryer, query string, args ...any) ([]eventRecord, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -288,6 +288,18 @@ func TestRunManualCafeNo9MergesRelativeCanonicalDetailPageDescription(t *testing
 func TestRunManualSidneyAndMatildaEnrichesICSDescriptionsFromDetailPages(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
+	icsBody := []byte(strings.Join([]string{
+		"BEGIN:VCALENDAR",
+		"BEGIN:VEVENT",
+		"UID:leo",
+		"SUMMARY:Leo Middea (Brazil)",
+		"LOCATION:Sidney & Matilda",
+		"URL:https://www.sidneyandmatilda.com/events/leo-middea-brazil",
+		"DTSTART:20260504T183000Z",
+		"END:VEVENT",
+		"END:VCALENDAR",
+		"",
+	}, "\n"))
 	fetcher := fakeFetcher{
 		results: map[string]FetchResult{
 			"https://www.sidneyandmatilda.com/": {
@@ -297,6 +309,7 @@ func TestRunManualSidneyAndMatildaEnrichesICSDescriptionsFromDetailPages(t *test
 				StatusCode: 200,
 				Body: []byte(`
 					<a href="https://calendar.example.test/live.ics">Google Calendar ICS</a>
+					<a href="https://calendar.example.test/club.ics">Google Calendar ICS</a>
 					<a href="/events/leo-middea-brazil">Leo Middea (Brazil)</a>
 				`),
 				CapturedAt: time.Date(2026, 4, 20, 12, 1, 0, 0, time.UTC),
@@ -306,19 +319,16 @@ func TestRunManualSidneyAndMatildaEnrichesICSDescriptionsFromDetailPages(t *test
 				FinalURL:   "https://calendar.example.test/live.ics",
 				Status:     "200 OK",
 				StatusCode: 200,
-				Body: []byte(strings.Join([]string{
-					"BEGIN:VCALENDAR",
-					"BEGIN:VEVENT",
-					"UID:leo",
-					"SUMMARY:Leo Middea (Brazil)",
-					"LOCATION:Sidney & Matilda",
-					"URL:https://www.sidneyandmatilda.com/events/leo-middea-brazil",
-					"DTSTART:20260504T183000Z",
-					"END:VEVENT",
-					"END:VCALENDAR",
-					"",
-				}, "\n")),
+				Body:       icsBody,
 				CapturedAt: time.Date(2026, 4, 20, 12, 2, 0, 0, time.UTC),
+			},
+			"https://calendar.example.test/club.ics": {
+				URL:        "https://calendar.example.test/club.ics",
+				FinalURL:   "https://calendar.example.test/club.ics",
+				Status:     "200 OK",
+				StatusCode: 200,
+				Body:       icsBody,
+				CapturedAt: time.Date(2026, 4, 20, 12, 3, 0, 0, time.UTC),
 			},
 			"https://www.sidneyandmatilda.com/events/leo-middea-brazil": {
 				URL:        "https://www.sidneyandmatilda.com/events/leo-middea-brazil",
@@ -326,7 +336,7 @@ func TestRunManualSidneyAndMatildaEnrichesICSDescriptionsFromDetailPages(t *test
 				Status:     "200 OK",
 				StatusCode: 200,
 				Body:       readFixture(t, "sidney_detail.html"),
-				CapturedAt: time.Date(2026, 4, 20, 12, 3, 0, 0, time.UTC),
+				CapturedAt: time.Date(2026, 4, 20, 12, 4, 0, 0, time.UTC),
 			},
 		},
 	}
@@ -336,11 +346,20 @@ func TestRunManualSidneyAndMatildaEnrichesICSDescriptionsFromDetailPages(t *test
 		t.Fatalf("run manual: %v", err)
 	}
 
-	if got, want := len(store.snapshots), 3; got != want {
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(store.snapshots), 4; got != want {
 		t.Fatalf("snapshots = %d, want %d", got, want)
 	}
-	if got, want := report.Calendars[0].Candidates[0].Description, "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."; got != want {
-		t.Fatalf("description = %q, want %q", got, want)
+	if got, want := report.Totals.Snapshots, 4; got != want {
+		t.Fatalf("total snapshots = %d, want %d", got, want)
+	}
+	wantDescription := "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."
+	for i, calendar := range report.Calendars {
+		if got := calendar.Candidates[0].Description; got != wantDescription {
+			t.Fatalf("calendar %d description = %q, want %q", i, got, wantDescription)
+		}
 	}
 }
 

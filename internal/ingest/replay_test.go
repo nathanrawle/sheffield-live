@@ -373,13 +373,25 @@ func TestReplayImportRunMergesCafeNo9RelativeCanonicalDetailPageDescription(t *t
 
 func TestReplayImportRunEnrichesSidneyDescriptionsFromDetailSnapshots(t *testing.T) {
 	finishedAt := time.Date(2026, 4, 20, 12, 30, 0, 0, time.UTC)
+	icsBody := []byte(strings.Join([]string{
+		"BEGIN:VCALENDAR",
+		"BEGIN:VEVENT",
+		"UID:leo",
+		"SUMMARY:Leo Middea (Brazil)",
+		"LOCATION:Sidney & Matilda",
+		"URL:https://www.sidneyandmatilda.com/events/leo-middea-brazil",
+		"DTSTART:20260504T183000Z",
+		"END:VEVENT",
+		"END:VCALENDAR",
+		"",
+	}, "\n"))
 	store := fakeReplayStore{
 		run: ReplayRun{
 			ID:         88,
 			StartedAt:  time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC),
 			FinishedAt: &finishedAt,
 			Status:     "succeeded",
-			Notes:      "links=1 candidates=1 skips=0 errors=0",
+			Notes:      "links=2 candidates=2 skips=0 errors=0",
 			Snapshots: []ReplaySnapshot{
 				{
 					ID:         461,
@@ -393,6 +405,7 @@ func TestReplayImportRunEnrichesSidneyDescriptionsFromDetailSnapshots(t *testing
 						StatusCode: 200,
 						Body: []byte(`
 							<a href="https://calendar.example.test/live.ics">Google Calendar ICS</a>
+							<a href="https://calendar.example.test/club.ics">Google Calendar ICS</a>
 							<a href="/events/leo-middea-brazil">Leo Middea (Brazil)</a>
 						`),
 						CapturedAt: time.Date(2026, 4, 20, 12, 1, 0, 0, time.UTC),
@@ -408,33 +421,36 @@ func TestReplayImportRunEnrichesSidneyDescriptionsFromDetailSnapshots(t *testing
 						FinalURL:   "https://calendar.example.test/live.ics",
 						Status:     "200 OK",
 						StatusCode: 200,
-						Body: []byte(strings.Join([]string{
-							"BEGIN:VCALENDAR",
-							"BEGIN:VEVENT",
-							"UID:leo",
-							"SUMMARY:Leo Middea (Brazil)",
-							"LOCATION:Sidney & Matilda",
-							"URL:https://www.sidneyandmatilda.com/events/leo-middea-brazil",
-							"DTSTART:20260504T183000Z",
-							"END:VEVENT",
-							"END:VCALENDAR",
-							"",
-						}, "\n")),
+						Body:       icsBody,
 						CapturedAt: time.Date(2026, 4, 20, 12, 2, 0, 0, time.UTC),
 					}, nil),
 				},
 				{
 					ID:         463,
+					SourceName: "Sidney & Matilda Google Calendar ICS",
+					SourceURL:  "https://calendar.example.test/club.ics",
+					CapturedAt: time.Date(2026, 4, 20, 12, 3, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:        "https://calendar.example.test/club.ics",
+						FinalURL:   "https://calendar.example.test/club.ics",
+						Status:     "200 OK",
+						StatusCode: 200,
+						Body:       icsBody,
+						CapturedAt: time.Date(2026, 4, 20, 12, 3, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         464,
 					SourceName: "Sidney & Matilda listings event details",
 					SourceURL:  "https://www.sidneyandmatilda.com/events/leo-middea-brazil",
-					CapturedAt: time.Date(2026, 4, 20, 12, 3, 0, 0, time.UTC),
+					CapturedAt: time.Date(2026, 4, 20, 12, 4, 0, 0, time.UTC),
 					Payload: mustReplaySnapshotPayload(t, FetchResult{
 						URL:        "https://www.sidneyandmatilda.com/events/leo-middea-brazil",
 						FinalURL:   "https://www.sidneyandmatilda.com/events/leo-middea-brazil",
 						Status:     "200 OK",
 						StatusCode: 200,
 						Body:       readFixture(t, "sidney_detail.html"),
-						CapturedAt: time.Date(2026, 4, 20, 12, 3, 0, 0, time.UTC),
+						CapturedAt: time.Date(2026, 4, 20, 12, 4, 0, 0, time.UTC),
 					}, nil),
 				},
 			},
@@ -446,10 +462,16 @@ func TestReplayImportRunEnrichesSidneyDescriptionsFromDetailSnapshots(t *testing
 		t.Fatalf("replay import run: %v", err)
 	}
 
-	if got, want := report.Calendars[0].Candidates[0].Description, "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."; got != want {
-		t.Fatalf("description = %q, want %q", got, want)
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
 	}
-	if got, want := report.Totals.Snapshots, 3; got != want {
+	wantDescription := "Leo Middea returns to Sheffield in 2026.\n\nHis music blends MPB, samba, bossa nova and contemporary Brazilian pop."
+	for i, calendar := range report.Calendars {
+		if got := calendar.Candidates[0].Description; got != wantDescription {
+			t.Fatalf("calendar %d description = %q, want %q", i, got, wantDescription)
+		}
+	}
+	if got, want := report.Totals.Snapshots, 4; got != want {
 		t.Fatalf("snapshots = %d, want %d", got, want)
 	}
 }

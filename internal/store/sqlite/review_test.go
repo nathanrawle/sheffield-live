@@ -2875,6 +2875,152 @@ func TestRepairEventDescriptionsFromReportUpdatesOnlyEligibleDescriptions(t *tes
 	assertEventDescription(t, st, cleanSlug, "Existing clean description.")
 }
 
+func TestRepairEventDescriptionsFromReportSkipsSameSlugUnderDifferentSource(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		uid     = "cross-source-slug"
+		name    = "Cross Source Slug"
+		startAt = "2026-05-14T18:30:00Z"
+	)
+	_ = mustEnsureSourceID(t, st, "Cafe No. 9 manual ingest", cafeNo9RepairSourceURL(uid))
+	otherSourceID := mustEnsureSourceID(t, st, "Different manual ingest", "https://different.example.test/events")
+	slug := mustLiveEventSlug(t, name, "cafe-no-9", startAt)
+	mustInsertRepairLegacyEvent(t, db, otherSourceID, slug, "cafe-no-9", name, startAt, "")
+
+	repair, err := st.RepairEventDescriptionsFromReport(ctx, mustReviewCatalog(t), ingest.Report{
+		Source:    ingest.CafeNo9Source,
+		SourceURL: "https://www.wegottickets.com/Cafe9",
+		Status:    "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{
+				cafeNo9RepairCandidate(uid, name, startAt, "Replacement description for the cross-source slug case."),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("repair descriptions: %v", err)
+	}
+
+	if repair.Repaired != 0 || repair.Unchanged != 0 || repair.Skipped != 1 {
+		t.Fatalf("repair counts = repaired %d unchanged %d skipped %d, want 0 0 1", repair.Repaired, repair.Unchanged, repair.Skipped)
+	}
+	assertEventDescription(t, st, slug, "")
+}
+
+func TestRepairEventDescriptionsFromReportSkipsSameFingerprintUnderDifferentSource(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		uid     = "cross-source-fingerprint"
+		name    = "Cross Source Fingerprint"
+		startAt = "2026-05-15T18:30:00Z"
+	)
+	_ = mustEnsureSourceID(t, st, "Cafe No. 9 manual ingest", cafeNo9RepairSourceURL(uid))
+	otherSourceID := mustEnsureSourceID(t, st, "Different manual ingest", "https://different.example.test/events")
+	mustInsertRepairLegacyEvent(t, db, otherSourceID, "legacy-cross-source-fingerprint", "cafe-no-9", name, startAt, "")
+
+	repair, err := st.RepairEventDescriptionsFromReport(ctx, mustReviewCatalog(t), ingest.Report{
+		Source:    ingest.CafeNo9Source,
+		SourceURL: "https://www.wegottickets.com/Cafe9",
+		Status:    "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{
+				cafeNo9RepairCandidate(uid, name, startAt, "Replacement description for the cross-source fingerprint case."),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("repair descriptions: %v", err)
+	}
+
+	if repair.Repaired != 0 || repair.Unchanged != 0 || repair.Skipped != 1 {
+		t.Fatalf("repair counts = repaired %d unchanged %d skipped %d, want 0 0 1", repair.Repaired, repair.Unchanged, repair.Skipped)
+	}
+	assertEventDescription(t, st, "legacy-cross-source-fingerprint", "")
+}
+
+func TestRepairEventDescriptionsFromReportRepairsSameSourceLegacyEventWithoutLink(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		uid     = "same-source-legacy"
+		name    = "Same Source Legacy"
+		startAt = "2026-05-16T18:30:00Z"
+	)
+	sourceID := mustEnsureSourceID(t, st, "Cafe No. 9 manual ingest", cafeNo9RepairSourceURL(uid))
+	slug := mustLiveEventSlug(t, name, "cafe-no-9", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, slug, "cafe-no-9", name, startAt, "")
+	beforeLinks := mustCount(t, db, "event_source_links")
+
+	repair, err := st.RepairEventDescriptionsFromReport(ctx, mustReviewCatalog(t), ingest.Report{
+		Source:    ingest.CafeNo9Source,
+		SourceURL: "https://www.wegottickets.com/Cafe9",
+		Status:    "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{
+				cafeNo9RepairCandidate(uid, name, startAt, "Replacement description for the same-source legacy event."),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("repair descriptions: %v", err)
+	}
+
+	if repair.Repaired != 1 || repair.Unchanged != 0 || repair.Skipped != 0 {
+		t.Fatalf("repair counts = repaired %d unchanged %d skipped %d, want 1 0 0", repair.Repaired, repair.Unchanged, repair.Skipped)
+	}
+	assertEventDescription(t, st, slug, "Replacement description for the same-source legacy event.")
+	if got := mustCount(t, db, "event_source_links"); got != beforeLinks {
+		t.Fatalf("event_source_links rows = %d, want unchanged %d", got, beforeLinks)
+	}
+}
+
 func TestPromoteSingletonReviewGroupIfMissingClearsExistingEndWhenOwnedVenueImportOmitsEnd(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -3273,13 +3419,18 @@ func mustReviewCatalog(t *testing.T) *ingest.Catalog {
 	return catalog
 }
 
+func cafeNo9RepairSourceURL(uid string) string {
+	return "https://www.wegottickets.com/event/" + uid
+}
+
 func mustPromoteCafeNo9Event(t *testing.T, st *Store, externalID, name, startAt, description string) string {
 	t.Helper()
 
+	sourceURL := cafeNo9RepairSourceURL(externalID)
 	slug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(context.Background(), review.GroupInput{
 		Title:      "Cafe No. 9 singleton",
 		SourceName: "Cafe No. 9 manual ingest",
-		SourceURL:  "https://www.wegottickets.com/Cafe9",
+		SourceURL:  sourceURL,
 		Candidates: []review.CandidateInput{{
 			ExternalID:  externalID,
 			Name:        name,
@@ -3288,7 +3439,7 @@ func mustPromoteCafeNo9Event(t *testing.T, st *Store, externalID, name, startAt,
 			Status:      "Listed",
 			Description: description,
 			SourceName:  "Cafe No. 9 manual ingest",
-			SourceURL:   "https://www.wegottickets.com/Cafe9",
+			SourceURL:   sourceURL,
 		}},
 	})
 	if err != nil {
@@ -3306,9 +3457,63 @@ func cafeNo9RepairCandidate(uid, summary, startAt, description string) ingest.Ev
 		Summary:     summary,
 		Description: description,
 		Location:    "Cafe No. 9",
-		URL:         "https://www.wegottickets.com/event/" + uid,
+		URL:         cafeNo9RepairSourceURL(uid),
 		Status:      "Listed",
 		StartAt:     startAt,
+	}
+}
+
+func mustEnsureSourceID(t *testing.T, st *Store, sourceName, sourceURL string) int64 {
+	t.Helper()
+
+	sourceID, err := st.EnsureSource(context.Background(), sourceName, sourceURL)
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	return sourceID
+}
+
+func mustLiveEventSlug(t *testing.T, name, venueSlug, startAt string) string {
+	t.Helper()
+
+	start, err := time.Parse(time.RFC3339, startAt)
+	if err != nil {
+		t.Fatalf("parse start time: %v", err)
+	}
+	slug, err := buildLiveEventSlug(name, venueSlug, start)
+	if err != nil {
+		t.Fatalf("build live event slug: %v", err)
+	}
+	return slug
+}
+
+func mustInsertRepairLegacyEvent(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, name, startAt, description string) {
+	t.Helper()
+
+	var venueID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+	`, venueSlug).Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue id: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			last_checked_at,
+			origin
+		) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, name, startAt, "Test", "Listed", description, "2026-05-01T10:00:00Z", string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert repair legacy event: %v", err)
 	}
 }
 
