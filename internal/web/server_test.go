@@ -502,6 +502,7 @@ func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T
 	assertContains(t, body, `name="coverage_note"`)
 	assertContains(t, body, `method="post"`)
 	assertContains(t, body, "Validate venue")
+	assertContains(t, body, "Save venue fields")
 	assertContains(t, body, "Stored venue fields")
 	assertContains(t, body, ">imaginary-hall</dd>")
 	assertContains(t, body, "1 Void Street,\nSheffield")
@@ -517,6 +518,35 @@ func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T
 	assertContains(t, body, "Fixture ICS")
 	assertContains(t, body, "Upcoming linked event description.")
 	assertNotContains(t, body, "Past Show")
+}
+
+func TestAdminVenueDetailHidesWriteControlsWithoutVenueAdminWrites(t *testing.T) {
+	server, err := NewServer(testServerDeps(provisionalVenueReadOnlyReviewStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	queueBody := renderPath(t, server, "/admin/venues")
+	assertContains(t, queueBody, "Imaginary Hall marketing copy")
+
+	body := renderPath(t, server, "/admin/venues/imaginary-hall")
+	assertContains(t, body, "Imaginary Hall marketing copy")
+	assertContains(t, body, "Stored venue fields")
+	assertNotContains(t, body, "Validate venue")
+	assertNotContains(t, body, "Save venue fields")
+	assertNotContains(t, body, `name="action" value="save"`)
+	assertNotContains(t, body, `name="action" value="validate"`)
+
+	for _, form := range []string{"action=validate", "action=save"} {
+		req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", strings.NewReader(form))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want %d; body %q", form, rr.Code, http.StatusNotFound, rr.Body.String())
+		}
+		assertContains(t, rr.Body.String(), "404 page not found")
+	}
 }
 
 func TestSQLiteAdminVenueDetailValidatedSlugReturnsNotFound(t *testing.T) {
@@ -3031,6 +3061,39 @@ func (reviewOnlyStoreStub) ResolveReviewGroup(context.Context, int64, []review.D
 
 func (reviewOnlyStoreStub) UpdateReviewGroupStatus(context.Context, int64, string) error {
 	return nil
+}
+
+type provisionalVenueReadOnlyReviewStoreStub struct {
+	reviewOnlyStoreStub
+}
+
+func (provisionalVenueReadOnlyReviewStoreStub) ListVenues(context.Context) ([]domain.Venue, error) {
+	return []domain.Venue{readOnlyProvisionalVenueFixture()}, nil
+}
+
+func (provisionalVenueReadOnlyReviewStoreStub) LoadVenueBySlug(_ context.Context, slug string) (domain.Venue, bool, error) {
+	if slug != "imaginary-hall" {
+		return domain.Venue{}, false, nil
+	}
+	return readOnlyProvisionalVenueFixture(), true, nil
+}
+
+func (provisionalVenueReadOnlyReviewStoreStub) ListEventsForVenue(context.Context, string) ([]domain.Event, error) {
+	return nil, nil
+}
+
+func readOnlyProvisionalVenueFixture() domain.Venue {
+	return domain.Venue{
+		Slug:            "imaginary-hall",
+		Name:            "Imaginary Hall marketing copy",
+		Address:         "1 Void Street, Sheffield",
+		Neighbourhood:   "City Centre",
+		Description:     "Pop-up room for test fixtures.",
+		Website:         "https://example.test/imaginary-hall",
+		ValidationState: domain.ValidationStateProvisional,
+		CoverageKind:    domain.CoverageKindVenue,
+		Origin:          domain.OriginLive,
+	}
 }
 
 type importHistoryOnlyStoreStub struct {

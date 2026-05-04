@@ -118,7 +118,7 @@ type PageData struct {
 	HasImportRunReviewGroups bool
 	HasReviewStorage         bool
 	HasVenueAdmin            bool
-	HasVenueValidation       bool
+	HasVenueAdminWrites      bool
 	Flash                    string
 }
 
@@ -458,6 +458,10 @@ func (s *Server) venueAdminStore() VenueAdminStore {
 	return nil
 }
 
+func (s *Server) canWriteVenueAdmin() bool {
+	return s.venueAdminStore() != nil
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cleaned := path.Clean(r.URL.Path)
 	switch {
@@ -522,18 +526,18 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		flash = "Rejected."
 	}
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          "Review",
-		MetaDescription:    "Review open staged event candidates.",
-		Active:             "admin-review",
-		Now:                s.now(),
-		ReviewGroups:       groups,
-		HasImportHistory:   s.importRunStore != nil,
-		HasImportRunDetail: s.replayStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
-		HasVenueAdmin:      s.hasVenueAdmin(),
-		HasVenueValidation: s.venueAdminStore() != nil,
-		Flash:              flash,
+		SiteName:            "Sheffield Live",
+		PageTitle:           "Review",
+		MetaDescription:     "Review open staged event candidates.",
+		Active:              "admin-review",
+		Now:                 s.now(),
+		ReviewGroups:        groups,
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		Flash:               flash,
 	}
 	if s.importRunStore != nil {
 		latest, err := s.importRunStore.LatestSuccessfulImport(r.Context())
@@ -571,16 +575,16 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 		flash = "Venue validated."
 	}
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          "Provisional venues",
-		MetaDescription:    "Queue of provisional venue rows awaiting validation.",
-		Now:                now,
-		HasImportHistory:   s.importRunStore != nil,
-		HasImportRunDetail: s.replayStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
-		HasVenueAdmin:      s.hasVenueAdmin(),
-		HasVenueValidation: s.venueAdminStore() != nil,
-		Flash:              flash,
+		SiteName:            "Sheffield Live",
+		PageTitle:           "Provisional venues",
+		MetaDescription:     "Queue of provisional venue rows awaiting validation.",
+		Now:                 now,
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		Flash:               flash,
 		ProvisionalVenues: buildProvisionalVenueRows(
 			venues,
 			events,
@@ -606,17 +610,17 @@ func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          "Review history",
-		MetaDescription:    "Read-only history of resolved and rejected review groups.",
-		Active:             "admin-review",
-		Now:                s.now(),
-		ReviewHistoryRows:  buildReviewHistoryRows(groups),
-		HasImportHistory:   s.importRunStore != nil,
-		HasImportRunDetail: s.replayStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
-		HasVenueAdmin:      s.hasVenueAdmin(),
-		HasVenueValidation: s.venueAdminStore() != nil,
+		SiteName:            "Sheffield Live",
+		PageTitle:           "Review history",
+		MetaDescription:     "Read-only history of resolved and rejected review groups.",
+		Active:              "admin-review",
+		Now:                 s.now(),
+		ReviewHistoryRows:   buildReviewHistoryRows(groups),
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
 	}
 	s.renderPage(w, "templates/admin_review_history.html", data)
 }
@@ -668,17 +672,17 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 		flash = "Venue saved."
 	}
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          pageTitle,
-		MetaDescription:    venue.Description,
-		Now:                s.now(),
-		Venue:              venue,
-		VenueEvents:        sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
-		HasImportHistory:   s.importRunStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
-		HasVenueAdmin:      s.hasVenueAdmin(),
-		HasVenueValidation: s.venueAdminStore() != nil,
-		Flash:              flash,
+		SiteName:            "Sheffield Live",
+		PageTitle:           pageTitle,
+		MetaDescription:     venue.Description,
+		Now:                 s.now(),
+		Venue:               venue,
+		VenueEvents:         sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
+		HasImportHistory:    s.importRunStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		Flash:               flash,
 	}
 	s.renderPage(w, "templates/admin_venue_detail.html", data)
 }
@@ -712,7 +716,7 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		HasImportRunReviewGroups: s.importRunReviewGroupStore != nil,
 		HasReviewStorage:         s.reviewStore != nil,
 		HasVenueAdmin:            s.hasVenueAdmin(),
-		HasVenueValidation:       s.venueAdminStore() != nil,
+		HasVenueAdminWrites:      s.canWriteVenueAdmin(),
 	}
 	s.renderPage(w, "templates/admin_import_runs.html", data)
 }
@@ -752,16 +756,16 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 	}
 
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          fmt.Sprintf("Import run #%d", run.ID),
-		MetaDescription:    "Read-only import run snapshot metadata.",
-		Now:                s.now(),
-		ImportRunDetail:    detail,
-		HasImportHistory:   s.importRunStore != nil,
-		HasImportRunDetail: s.replayStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
-		HasVenueAdmin:      s.hasVenueAdmin(),
-		HasVenueValidation: s.venueAdminStore() != nil,
+		SiteName:            "Sheffield Live",
+		PageTitle:           fmt.Sprintf("Import run #%d", run.ID),
+		MetaDescription:     "Read-only import run snapshot metadata.",
+		Now:                 s.now(),
+		ImportRunDetail:     detail,
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
 	}
 	s.renderPage(w, "templates/admin_import_run_detail.html", data)
 }
@@ -1044,17 +1048,17 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          group.Title,
-		MetaDescription:    "Review staged event candidates.",
-		Active:             "admin-review",
-		Now:                s.now(),
-		HasImportHistory:   s.importRunStore != nil,
-		HasImportRunDetail: s.replayStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
-		HasVenueAdmin:      s.hasVenueAdmin(),
-		HasVenueValidation: s.venueAdminStore() != nil,
-		Flash:              flash,
+		SiteName:            "Sheffield Live",
+		PageTitle:           group.Title,
+		MetaDescription:     "Review staged event candidates.",
+		Active:              "admin-review",
+		Now:                 s.now(),
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		Flash:               flash,
 	}
 	data.ReviewDetail = buildReviewDetail(group)
 	s.renderPage(w, "templates/admin_review_detail.html", data)

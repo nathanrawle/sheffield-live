@@ -108,6 +108,8 @@ Open `/admin/review` in the browser.
 - open duplicate groups preselect persisted majority defaults when no manual draft choice exists
 - duplicate groups may include a `Live canonical snapshot` comparison column
 - shared venue labels in review summaries come from deterministic matching over stored venue slug, venue text, and raw location evidence
+- when venue writes are available, `/admin/venues/{slug}` lets you save provisional venue fields in place and then use the separate validate action to remove the venue from the queue
+- when venue writes are unavailable, `/admin/venues/{slug}` remains read-only and hides save/validate controls
 - singleton groups use accept/reject when they were not auto-promoted during staging
 - resolving or accepting publishes one canonical public event
 - manual resolution reuses an existing venue when the selected evidence yields one unique match, otherwise it creates a provisional venue in the same transaction if staging or singleton auto-promotion did not already do so
@@ -115,7 +117,7 @@ Open `/admin/review` in the browser.
 - singleton auto-promotion can now create a provisional venue row immediately for a uniquely new venue
 - rejecting does not publish
 - open `/admin/venues` to inspect provisional venue rows created from newly detected venue evidence
-- open `/admin/venues/{slug}` to edit one provisional venue's fields and inspect its upcoming linked events
-- save the provisional venue fields in place, then use the separate validate action to mark the venue validated and remove it from the queue
+- open `/admin/venues/{slug}` to inspect one provisional venue and its upcoming linked events
+- when venue writes are available, use `/admin/venues/{slug}` to edit provisional venue fields and then use the separate validate action to mark the venue validated and remove it from the queue
 - the provisional venue queue still does not support venue merge actions
 - open `/admin/review/history` for the 50 newest resolved and rejected groups
