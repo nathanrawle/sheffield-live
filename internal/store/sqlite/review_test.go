@@ -1258,11 +1258,11 @@ func TestResolveReviewGroupUsesAuthoritativeSourceLinkIdentity(t *testing.T) {
 	if event.SourceURL != "https://calendar.example.test/live.ics" {
 		t.Fatalf("source url = %q, want %q", event.SourceURL, "https://calendar.example.test/live.ics")
 	}
-	if event.Genre != "Old genre" {
-		t.Fatalf("genre = %q, want preserved %q", event.Genre, "Old genre")
+	if event.Genre != "Indie" {
+		t.Fatalf("genre = %q, want %q", event.Genre, "Indie")
 	}
-	if event.Description != "Old description" {
-		t.Fatalf("description = %q, want preserved %q", event.Description, "Old description")
+	if event.Description != "First line" {
+		t.Fatalf("description = %q, want %q", event.Description, "First line")
 	}
 }
 
@@ -2652,11 +2652,11 @@ func TestPromoteSingletonReviewGroupIfMissingUpdatesLinkedEventInPlace(t *testin
 	if event.Status != "Sold out" {
 		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
 	}
-	if event.Genre != "Electronic" {
-		t.Fatalf("genre = %q, want preserved %q", event.Genre, "Electronic")
+	if event.Genre != "Ambient" {
+		t.Fatalf("genre = %q, want %q", event.Genre, "Ambient")
 	}
-	if event.Description != "First description" {
-		t.Fatalf("description = %q, want preserved %q", event.Description, "First description")
+	if event.Description != "Updated description" {
+		t.Fatalf("description = %q, want %q", event.Description, "Updated description")
 	}
 	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
 		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)

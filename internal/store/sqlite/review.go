@@ -1316,13 +1316,13 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 	updated.VenueSlug = authoritative.VenueSlug
 	updated.Start = authoritative.Start
 	updated.End = authoritative.End
-	if updated.Genre == "" {
+	if authoritative.Genre != "" {
 		updated.Genre = authoritative.Genre
 	}
 	if authoritative.Status != "" {
 		updated.Status = authoritative.Status
 	}
-	if shouldReplaceDescription(updated.Description, authoritative.Description) {
+	if authoritativeDescriptionUsable(authoritative.Description) {
 		updated.Description = authoritative.Description
 	}
 	updated.SourceName = authoritative.SourceName
@@ -1358,6 +1358,20 @@ func shouldReplaceDescription(existing, incoming string) bool {
 	}
 	existing = strings.TrimSpace(existing)
 	return existing == "" || descriptionIsGeneratedMarkup(existing)
+}
+
+func authoritativeDescriptionUsable(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if descriptionIsGeneratedMarkup(value) {
+		return false
+	}
+	if strings.EqualFold(value, "buy tickets") || strings.EqualFold(value, "basement buy tickets") {
+		return false
+	}
+	return true
 }
 
 func descriptionIsClean(value string) bool {
