@@ -1,0 +1,108 @@
+package ingest
+
+import "testing"
+
+func TestStripVenueNameFromEventTitle(t *testing.T) {
+	tests := []struct {
+		name      string
+		title     string
+		venueSlug string
+		want      string
+	}{
+		{
+			name:      "prefix colon",
+			title:     "The Leadmill: Matinee Noise",
+			venueSlug: "leadmill",
+			want:      "Matinee Noise",
+		},
+		{
+			name:      "prefix dash",
+			title:     "Sidney and Matilda - Courtyard Wildcards",
+			venueSlug: "sidney-and-matilda",
+			want:      "Courtyard Wildcards",
+		},
+		{
+			name:      "suffix dash",
+			title:     "Maybe Gold - Yellow Arch Studios",
+			venueSlug: "yellow-arch",
+			want:      "Maybe Gold",
+		},
+		{
+			name:      "suffix at sign",
+			title:     "Late Show @ Cafe No. 9",
+			venueSlug: "cafe-no-9",
+			want:      "Late Show",
+		},
+		{
+			name:      "suffix at word",
+			title:     "An evening with Ellie Gowers at Cafe No9",
+			venueSlug: "cafe-no-9",
+			want:      "An evening with Ellie Gowers",
+		},
+		{
+			name:      "case and whitespace",
+			title:     "  maybe   gold   -   yellow   arch  ",
+			venueSlug: "yellow-arch",
+			want:      "maybe gold",
+		},
+		{
+			name:      "corporation alias",
+			title:     "Frog Lord at Corporation Sheffield",
+			venueSlug: "corporation",
+			want:      "Frog Lord",
+		},
+		{
+			name:      "bare prefix is preserved",
+			title:     "Cafe No. 9 Late Show",
+			venueSlug: "cafe-no-9",
+			want:      "Cafe No. 9 Late Show",
+		},
+		{
+			name:      "embedded venue phrase is preserved",
+			title:     "Jazz at The Lescar Quartet",
+			venueSlug: "lescar",
+			want:      "Jazz at The Lescar Quartet",
+		},
+		{
+			name:      "partial word is preserved",
+			title:     "The Leadmillers - Big Night",
+			venueSlug: "leadmill",
+			want:      "The Leadmillers - Big Night",
+		},
+		{
+			name:      "empty result is preserved",
+			title:     "The Greystones - ",
+			venueSlug: "greystones",
+			want:      "The Greystones -",
+		},
+		{
+			name:      "unknown venue slug is preserved",
+			title:     "Late Show - Unknown Room",
+			venueSlug: "unknown-room",
+			want:      "Late Show - Unknown Room",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripVenueNameFromEventTitle(tc.title, tc.venueSlug); got != tc.want {
+				t.Fatalf("stripVenueNameFromEventTitle(%q, %q) = %q, want %q", tc.title, tc.venueSlug, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCleanEventCandidateSummaryForConfigUsesSourceVenueNormalizer(t *testing.T) {
+	cfg := sourceConfig{
+		Key:                   LeadmillSource,
+		VenueNormalizerFamily: "leadmill",
+	}
+	candidate := EventCandidate{
+		Summary:  "Maybe Gold - Yellow Arch",
+		Location: "Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX",
+	}
+
+	if got, want := cleanEventCandidateSummaryForConfig(cfg, candidate), "Maybe Gold"; got != want {
+		t.Fatalf("clean summary = %q, want %q", got, want)
+	}
+}

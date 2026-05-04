@@ -124,7 +124,7 @@ func parseSourcePageForSource(cfg sourceConfig, pageURL string, body []byte, lim
 	if !ok {
 		return ParseResult{}, fmt.Errorf("unsupported source page parser family %q", cfg.SourcePageParserFamily)
 	}
-	return parser(pageURL, body, limit), nil
+	return normalizeParseResultEventTitles(cfg, parser(pageURL, body, limit)), nil
 }
 
 func extractSourcePageLinksForSource(cfg sourceConfig, pageURL string, body []byte, limit int) ([]string, error) {
@@ -151,7 +151,7 @@ func parseICSForSource(cfg sourceConfig, body []byte) ParseResult {
 	if !ok {
 		return ParseResult{Errors: []string{fmt.Sprintf("unsupported ICS parser family %q", cfg.ICSParserFamily)}}
 	}
-	return parser(body)
+	return normalizeParseResultEventTitles(cfg, parser(body))
 }
 
 func roomEvidenceForSourcePage(cfg sourceConfig, pageURL string, body []byte) map[string]sourceRoomEvidence {
@@ -206,7 +206,7 @@ func parseLinkedPageForSource(cfg sourceConfig, pageURL string, body []byte) (Pa
 	if !ok {
 		return ParseResult{}, fmt.Errorf("unsupported linked page source family %q", cfg.LinkedPageParserFamily)
 	}
-	return parser(pageURL, body), nil
+	return normalizeParseResultEventTitles(cfg, parser(pageURL, body)), nil
 }
 
 func VenueSlugForSourceLocation(source, value string) string {
@@ -218,11 +218,7 @@ func VenueSlugForSourceLocation(source, value string) string {
 	if family == "" {
 		return VenueSlugFromText(value)
 	}
-	normalizer, ok := venueNormalizerFamilies[family]
-	if !ok {
-		return VenueSlugFromText(value)
-	}
-	return normalizer(value)
+	return venueSlugForNormalizerFamily(family, value)
 }
 
 func limitParseResult(parse ParseResult, limit int) ParseResult {
@@ -231,4 +227,16 @@ func limitParseResult(parse ParseResult, limit int) ParseResult {
 	}
 	parse.Candidates = append([]EventCandidate(nil), parse.Candidates[:limit]...)
 	return parse
+}
+
+func venueSlugForNormalizerFamily(family, value string) string {
+	family = strings.TrimSpace(family)
+	if family == "" {
+		return VenueSlugFromText(value)
+	}
+	normalizer, ok := venueNormalizerFamilies[family]
+	if !ok {
+		return VenueSlugFromText(value)
+	}
+	return normalizer(value)
 }

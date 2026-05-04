@@ -372,6 +372,42 @@ func TestReviewGroupsFromReportClustersByFallback(t *testing.T) {
 	}
 }
 
+func TestReviewGroupsFromReportCleansVenueAffixBeforeFallbackClustering(t *testing.T) {
+	report := successfulReviewStageReport(
+		CalendarReport{
+			URL: "https://calendar.example.test/one.ics",
+			Candidates: []EventCandidate{
+				{
+					Summary:  "Late Junction - Yellow Arch",
+					Location: "Yellow Arch Studios",
+					StartAt:  "2026-05-01T19:00:00Z",
+				},
+				{
+					Summary:  "Late Junction",
+					Location: "Yellow Arch Studios",
+					StartAt:  "2026-05-01T19:00:00Z",
+				},
+			},
+		},
+	)
+
+	groups := ReviewGroupsFromReport(report)
+	if got, want := len(groups), 1; got != want {
+		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got, want := groups[0].Title, "Duplicate review: Late Junction"; got != want {
+		t.Fatalf("group title = %q, want %q", got, want)
+	}
+	if got, want := len(groups[0].Candidates), 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	for i, candidate := range groups[0].Candidates {
+		if got, want := candidate.Name, "Late Junction"; got != want {
+			t.Fatalf("candidate %d name = %q, want %q", i, got, want)
+		}
+	}
+}
+
 func TestReviewGroupsFromReportEmitsSingletons(t *testing.T) {
 	report := successfulReviewStageReport(
 		CalendarReport{

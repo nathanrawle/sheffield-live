@@ -453,11 +453,7 @@ func (c *Catalog) VenueSlugForSourceLocation(source, value string) string {
 	if family == "" {
 		return VenueSlugFromText(value)
 	}
-	normalizer, ok := venueNormalizerFamilies[family]
-	if !ok {
-		return VenueSlugFromText(value)
-	}
-	return normalizer(value)
+	return venueSlugForNormalizerFamily(family, value)
 }
 
 func (c *Catalog) detectReplaySourcePageSnapshot(decoded []decodedReplaySnapshot) (sourceConfig, decodedReplaySnapshot, error) {
