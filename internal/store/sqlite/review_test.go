@@ -1175,7 +1175,7 @@ func TestStageReviewGroupCreatesProvisionalVenueFromEscapedICSLocationEvidence(t
 			StartAt:          "2026-05-10T18:30:00Z",
 			EndAt:            "2026-05-10T22:00:00Z",
 			Status:           "Listed",
-			Description:      "Should preserve escaped comma venue head.",
+			Description:      "Should truncate escaped comma venue head.",
 		}},
 	}
 
@@ -1187,15 +1187,15 @@ func TestStageReviewGroupCreatesProvisionalVenueFromEscapedICSLocationEvidence(t
 		t.Fatal("created = false, want true")
 	}
 
-	venue, ok := st.VenueBySlug("memorial-hall-barkers-pool")
+	venue, ok := st.VenueBySlug("memorial-hall")
 	if !ok {
 		t.Fatal("provisional venue not found")
 	}
-	if venue.Name != "Memorial Hall, Barkers Pool" {
-		t.Fatalf("venue name = %q, want %q", venue.Name, "Memorial Hall, Barkers Pool")
+	if venue.Name != "Memorial Hall" {
+		t.Fatalf("venue name = %q, want %q", venue.Name, "Memorial Hall")
 	}
-	if venue.Address != "1 Void Street,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nSheffield")
+	if venue.Address != "Barkers Pool,\n1 Void Street,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "Barkers Pool,\n1 Void Street,\nSheffield")
 	}
 }
 

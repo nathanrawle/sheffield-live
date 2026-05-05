@@ -387,11 +387,6 @@ func venueLocationHeadSlug(value string) string {
 }
 
 func provisionalVenueName(candidate review.Candidate, slug string) string {
-	if ingest.HasICSEscapeSequences(candidate.VenueLocationRaw) {
-		if name := venueLocationHeadText(candidate.VenueLocationRaw); name != "" {
-			return name
-		}
-	}
 	if name := normalizedProvisionalVenueName(candidate.VenueText); name != "" {
 		return name
 	}

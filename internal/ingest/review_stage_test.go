@@ -423,7 +423,7 @@ func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *te
 	}
 }
 
-func TestReviewGroupsFromLeadmillReportPreservesEvidenceDerivedVenueHeadSlug(t *testing.T) {
+func TestReviewGroupsFromLeadmillReportTruncatesEscapedCommaVenueHeadSlug(t *testing.T) {
 	report := Report{
 		Source:      LeadmillSource,
 		SourceURL:   "https://leadmill.co.uk/live/",
@@ -450,12 +450,12 @@ func TestReviewGroupsFromLeadmillReportPreservesEvidenceDerivedVenueHeadSlug(t *
 	if got, want := len(groups), 1; got != want {
 		t.Fatalf("groups = %d, want %d", got, want)
 	}
-	if got, want := groups[0].Candidates[0].VenueSlug, "memorial-hall-barkers-pool"; got != want {
+	if got, want := groups[0].Candidates[0].VenueSlug, "memorial-hall"; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
 	}
 }
 
-func TestReviewGroupsFromReportUsesEscapedRawVenueHeadForSlug(t *testing.T) {
+func TestReviewGroupsFromReportTruncatesEscapedRawVenueHeadForSlug(t *testing.T) {
 	report := Report{
 		Source:      DefaultSource,
 		SourceURL:   "https://example.test/calendar.ics",
@@ -481,11 +481,23 @@ func TestReviewGroupsFromReportUsesEscapedRawVenueHeadForSlug(t *testing.T) {
 	if got, want := len(groups), 1; got != want {
 		t.Fatalf("groups = %d, want %d", got, want)
 	}
-	if got, want := groups[0].Candidates[0].VenueSlug, "memorial-hall-barkers-pool"; got != want {
+	if got, want := groups[0].Candidates[0].VenueSlug, "memorial-hall"; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
 	}
 	if got, want := groups[0].Candidates[0].VenueLocationRaw, "Memorial Hall\\, Barkers Pool, Sheffield, S1 2JA"; got != want {
 		t.Fatalf("venue location raw = %q, want %q", got, want)
+	}
+}
+
+func TestReviewStageVenueSlugUsesSourceNormalizer(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("default catalog: %v", err)
+	}
+
+	candidate := EventCandidate{Location: "Imaginary Hall, 1 Void Street, Sheffield"}
+	if got, want := reviewStageVenueSlug(catalog, LeadmillSource, candidate), "imaginary-hall"; got != want {
+		t.Fatalf("reviewStageVenueSlug(...) = %q, want %q", got, want)
 	}
 }
 

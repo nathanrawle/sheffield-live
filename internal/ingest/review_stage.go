@@ -250,16 +250,16 @@ func reviewStageFirstNonEmpty(values ...string) string {
 }
 
 func reviewStageVenueSlug(catalog *Catalog, source string, candidate EventCandidate) string {
-	value, derivedFromEvidence := reviewStageVenueSlugValue(candidate)
-	if derivedFromEvidence || catalog == nil {
+	value := reviewStageVenueSlugValue(candidate)
+	if catalog == nil {
 		return VenueSlugFromText(value)
 	}
 	return catalog.VenueSlugForSourceLocation(source, value)
 }
 
-func reviewStageVenueSlugValue(candidate EventCandidate) (string, bool) {
+func reviewStageVenueSlugValue(candidate EventCandidate) string {
 	if head := VenueLocationEvidenceHead(candidate.LocationRaw); head != "" {
-		return head, true
+		return head
 	}
-	return strings.TrimSpace(candidate.Location), false
+	return strings.TrimSpace(candidate.Location)
 }

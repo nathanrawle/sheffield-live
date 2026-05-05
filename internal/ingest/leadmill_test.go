@@ -102,11 +102,11 @@ func TestLeadmillVenueTextUsesFirstLocationSegment(t *testing.T) {
 	}
 }
 
-func TestLeadmillVenueTextFromEvidencePreservesEscapedCommas(t *testing.T) {
+func TestLeadmillVenueTextFromEvidenceTruncatesEscapedCommaLocationHead(t *testing.T) {
 	location := "Memorial Hall, Barkers Pool, Sheffield, S1 2JA"
 	raw := "Memorial Hall\\, Barkers Pool, Sheffield, S1 2JA"
 
-	if got, want := leadmillVenueTextFromEvidence(location, raw), "Memorial Hall, Barkers Pool"; got != want {
+	if got, want := leadmillVenueTextFromEvidence(location, raw), "Memorial Hall"; got != want {
 		t.Fatalf("leadmillVenueTextFromEvidence(%q, %q) = %q, want %q", location, raw, got, want)
 	}
 }

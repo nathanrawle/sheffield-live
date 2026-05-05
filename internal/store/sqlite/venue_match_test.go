@@ -208,14 +208,14 @@ func TestProvisionalVenueSlugPrefersNewlineDelimitedLocationHead(t *testing.T) {
 	}
 }
 
-func TestProvisionalVenueSlugPreservesEscapedCommaVenueHead(t *testing.T) {
+func TestProvisionalVenueSlugTruncatesEscapedCommaVenueHead(t *testing.T) {
 	candidate := review.Candidate{
 		VenueSlug:        "memorial-hall-1-void-street-sheffield",
 		VenueText:        "Memorial Hall, Barkers Pool, 1 Void Street, Sheffield",
 		VenueLocationRaw: "Memorial Hall\\, Barkers Pool, 1 Void Street, Sheffield",
 	}
 
-	if got, want := provisionalVenueSlug(candidate), "memorial-hall-barkers-pool"; got != want {
+	if got, want := provisionalVenueSlug(candidate), "memorial-hall"; got != want {
 		t.Fatalf("provisional venue slug = %q, want %q", got, want)
 	}
 }
@@ -263,7 +263,7 @@ func TestProvisionalVenueNamePrefersLocationHeadOverFullVenueText(t *testing.T) 
 				VenueText:        "Foo, Bar",
 				VenueLocationRaw: "Foo\\, Bar",
 			},
-			want: "Foo, Bar",
+			want: "Foo",
 		},
 		{
 			name: "escaped comma venue head with address",
@@ -272,7 +272,7 @@ func TestProvisionalVenueNamePrefersLocationHeadOverFullVenueText(t *testing.T) 
 				VenueText:        "Memorial Hall, Barkers Pool, 1 Void Street, Sheffield",
 				VenueLocationRaw: "Memorial Hall\\, Barkers Pool, 1 Void Street, Sheffield",
 			},
-			want: "Memorial Hall, Barkers Pool",
+			want: "Memorial Hall",
 		},
 	}
 
@@ -348,12 +348,12 @@ func TestProvisionalVenueFromCandidateFormatsAddress(t *testing.T) {
 			wantNeighbourhood: "",
 		},
 		{
-			name: "preserves escaped comma venue head when address structure remains",
+			name: "retains truncated locality in address when escaped comma splits venue head",
 			candidate: review.Candidate{
 				VenueText:        "Memorial Hall, Barkers Pool, 1 Void Street, Sheffield",
 				VenueLocationRaw: "Memorial Hall\\, Barkers Pool, 1 Void Street, Sheffield",
 			},
-			wantAddress:       "1 Void Street,\nSheffield",
+			wantAddress:       "Barkers Pool,\n1 Void Street,\nSheffield",
 			wantNeighbourhood: "",
 		},
 		{
