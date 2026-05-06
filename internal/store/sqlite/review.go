@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -90,6 +92,9 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 		if err := replaceReviewCandidatesTx(ctx, tx, groupID, input.Candidates, input.SourceName, input.SourceURL); err != nil {
 			return review.StageGroupResult{}, err
 		}
+		if err := ensureProvisionalVenuesForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
+			return review.StageGroupResult{}, err
+		}
 		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, groupID, input, now); err != nil {
 			return review.StageGroupResult{}, err
 		}
@@ -128,6 +133,13 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 			return review.StageGroupResult{}, err
 		}
 		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, group.ID, input, now); err != nil {
+			return review.StageGroupResult{}, err
+		}
+		backfillCandidates, err := refreshStagedReviewCandidateVenueEvidenceTx(ctx, tx, group.ID, input.Candidates)
+		if err != nil {
+			return review.StageGroupResult{}, err
+		}
+		if err := ensureProvisionalVenuesForReviewCandidatesTx(ctx, tx, backfillCandidates); err != nil {
 			return review.StageGroupResult{}, err
 		}
 	}
@@ -207,6 +219,25 @@ func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context
 		_ = tx.Rollback()
 	}()
 
+	matcher, err := loadVenueMatcher(ctx, tx)
+	if err != nil {
+		return "", false, err
+	}
+	venueMatch, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, reviewCandidateFromInput(input.Candidates[0]))
+	if err != nil {
+		return "", false, err
+	}
+	switch venueMatch.status {
+	case venueMatchResolved:
+		event.VenueSlug = venueMatch.slug
+		event.Slug, err = buildLiveEventSlug(event.Name, event.VenueSlug, event.Start)
+		if err != nil {
+			return "", false, err
+		}
+	case venueMatchAmbiguous, venueMatchNoMatch:
+		return "", false, nil
+	}
+
 	record, found, ambiguous, err := uniqueLiveEventMatchForEventTx(ctx, tx, event)
 	if err != nil {
 		return "", false, err
@@ -252,6 +283,39 @@ func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context
 		return "", false, err
 	}
 	return event.Slug, true, nil
+}
+
+func ensureProvisionalVenuesForCandidateInputsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, inputs []review.CandidateInput) error {
+	candidates := make([]review.Candidate, 0, len(inputs))
+	for _, input := range inputs {
+		if input.CanonicalEventID != 0 {
+			continue
+		}
+		candidates = append(candidates, reviewCandidateFromInput(input))
+	}
+	return ensureProvisionalVenuesForReviewCandidatesTx(ctx, tx, candidates)
+}
+
+func ensureProvisionalVenuesForReviewCandidatesTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, candidates []review.Candidate) error {
+	matcher, err := loadVenueMatcher(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		if candidate.CanonicalEventID != 0 {
+			continue
+		}
+		if _, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, candidate); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, stagingKey string) (int64, error) {
@@ -341,6 +405,72 @@ func replaceReviewCandidatesTx(ctx context.Context, tx execer, groupID int64, ca
 	return nil
 }
 
+func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, groupID int64, incoming []review.CandidateInput) ([]review.Candidate, error) {
+	existing, err := loadReviewCandidates(ctx, tx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	var backfillCandidates []review.Candidate
+
+	incomingByFingerprint := make(map[string][]review.CandidateInput)
+	for _, candidate := range incoming {
+		if candidate.CanonicalEventID != 0 {
+			continue
+		}
+		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
+		incomingByFingerprint[fingerprint] = append(incomingByFingerprint[fingerprint], candidate)
+	}
+
+	existingByFingerprint := make(map[string][]review.Candidate)
+	for _, candidate := range existing {
+		if candidate.CanonicalEventID != 0 {
+			continue
+		}
+		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
+		existingByFingerprint[fingerprint] = append(existingByFingerprint[fingerprint], candidate)
+	}
+
+	for fingerprint, incomingBucket := range incomingByFingerprint {
+		existingBucket := existingByFingerprint[fingerprint]
+		if len(existingBucket) != len(incomingBucket) || len(existingBucket) != 1 {
+			continue
+		}
+		incomingCandidate := incomingBucket[0]
+		existingCandidate := existingBucket[0]
+		incomingVenueText := strings.TrimSpace(incomingCandidate.VenueText)
+		incomingVenueLocationRaw := strings.TrimSpace(incomingCandidate.VenueLocationRaw)
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE review_candidates
+			SET venue_text = ?,
+				venue_location_raw = ?
+			WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
+		`, incomingVenueText, incomingVenueLocationRaw, existingCandidate.ID, groupID); err != nil {
+			return nil, err
+		}
+		if reviewCandidateNeedsProvisionalVenueBackfill(existingCandidate, incomingVenueText, incomingVenueLocationRaw) {
+			existingCandidate.VenueSlug = strings.TrimSpace(incomingCandidate.VenueSlug)
+			existingCandidate.VenueText = incomingVenueText
+			existingCandidate.VenueLocationRaw = incomingVenueLocationRaw
+			backfillCandidates = append(backfillCandidates, existingCandidate)
+		}
+	}
+
+	return backfillCandidates, nil
+}
+
+func reviewCandidateNeedsProvisionalVenueBackfill(existing review.Candidate, incomingVenueText, incomingVenueLocationRaw string) bool {
+	if existing.CanonicalEventID != 0 {
+		return false
+	}
+	if strings.TrimSpace(existing.VenueText) != "" || strings.TrimSpace(existing.VenueLocationRaw) != "" {
+		return false
+	}
+	return incomingVenueLocationRaw != ""
+}
+
 func insertReviewCandidatesTx(ctx context.Context, tx execer, groupID int64, candidates []review.CandidateInput, defaultSourceName, defaultSourceURL string) error {
 	for i, candidate := range candidates {
 		if err := insertReviewCandidate(ctx, tx, groupID, i+1, candidate, defaultSourceName, defaultSourceURL); err != nil {
@@ -388,6 +518,8 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 		ExternalID:       "",
 		Name:             record.Event.Name,
 		VenueSlug:        record.Event.VenueSlug,
+		VenueText:        "",
+		VenueLocationRaw: "",
 		StartAt:          formatRFC3339UTC(record.Event.Start),
 		EndAt:            formatOptionalTime(record.Event.End),
 		Genre:            record.Event.Genre,
@@ -410,6 +542,8 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 				external_id = ?,
 				name = ?,
 				venue_slug = ?,
+				venue_text = ?,
+				venue_location_raw = ?,
 				start_at = ?,
 				end_at = ?,
 				genre = ?,
@@ -419,7 +553,7 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 				source_url = ?,
 				provenance = ?
 			WHERE id = ? AND group_id = ?
-		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.SourceName, candidate.SourceURL, candidate.Provenance, existing.ID, groupID); err != nil {
+		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.VenueText, candidate.VenueLocationRaw, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.SourceName, candidate.SourceURL, candidate.Provenance, existing.ID, groupID); err != nil {
 			return nil, err
 		}
 		return record, nil
@@ -428,6 +562,19 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 		return nil, err
 	}
 	return record, nil
+}
+
+func stagedReviewCandidateFingerprint(values ...string) string {
+	sum := sha256.New()
+	writeStagedReviewCandidateFingerprintPart(sum, "review-stage-candidate:v1")
+	for _, value := range values {
+		writeStagedReviewCandidateFingerprintPart(sum, value)
+	}
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+func writeStagedReviewCandidateFingerprintPart(sum interface{ Write([]byte) (int, error) }, value string) {
+	_, _ = fmt.Fprintf(sum, "%d:%s\x00", len(value), value)
 }
 
 func canonicalMatchForGroupInputTx(ctx context.Context, q queryer, input review.GroupInput) (*eventRecord, error) {
@@ -654,6 +801,18 @@ func maybeAutoResolveDuplicateReviewGroupTx(ctx context.Context, tx interface {
 				winner = candidate
 			}
 		}
+		matcher, err := loadVenueMatcher(ctx, tx)
+		if err != nil {
+			return false, "", "", err
+		}
+		venueMatch, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, winner)
+		if err != nil {
+			return false, "", "", err
+		}
+		if venueMatch.status != venueMatchResolved {
+			return false, "", "", nil
+		}
+		winner.VenueSlug = venueMatch.slug
 		if err := persistResolvedChoiceSetTx(ctx, tx, groupID, chooseAllFieldsFromCandidate(winner, now), now); err != nil {
 			return false, "", "", err
 		}
@@ -1938,6 +2097,23 @@ func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	matcher, err := loadVenueMatcher(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+	for i := range groups {
+		sharedVenue, err := loadReviewGroupSharedVenue(ctx, s.db, matcher, groups[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if sharedVenue.status == venueMatchResolved {
+			groups[i].SharedVenueSlug = sharedVenue.slug
+			groups[i].SharedVenueName = sharedVenue.name
+		} else {
+			groups[i].SharedVenueSlug = ""
+			groups[i].SharedVenueName = ""
+		}
+	}
 	return groups, nil
 }
 
@@ -2014,6 +2190,23 @@ func (s *Store) ListClosedReviewGroups(ctx context.Context, limit int) ([]review
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	matcher, err := loadVenueMatcher(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+	for i := range groups {
+		sharedVenue, err := loadReviewGroupSharedVenue(ctx, s.db, matcher, groups[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if sharedVenue.status == venueMatchResolved {
+			groups[i].SharedVenueSlug = sharedVenue.slug
+			groups[i].SharedVenueName = sharedVenue.name
+		} else {
+			groups[i].SharedVenueSlug = ""
+			groups[i].SharedVenueName = ""
+		}
 	}
 	return groups, nil
 }
@@ -2094,6 +2287,23 @@ func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID in
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	matcher, err := loadVenueMatcher(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+	for i := range groups {
+		sharedVenue, err := loadReviewGroupSharedVenue(ctx, s.db, matcher, groups[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if sharedVenue.status == venueMatchResolved {
+			groups[i].SharedVenueSlug = sharedVenue.slug
+			groups[i].SharedVenueName = sharedVenue.name
+		} else {
+			groups[i].SharedVenueSlug = ""
+			groups[i].SharedVenueName = ""
+		}
+	}
 	return groups, nil
 }
 
@@ -2124,6 +2334,18 @@ func (s *Store) LoadReviewGroup(ctx context.Context, id int64) (review.Group, bo
 	group.Candidates = candidates
 	group.DraftChoices = choices
 	group.DefaultChoices = defaults
+	matcher, err := loadVenueMatcher(ctx, s.db)
+	if err != nil {
+		return review.Group{}, false, err
+	}
+	sharedVenue := matcher.matchSharedVenue(candidates)
+	if sharedVenue.status == venueMatchResolved {
+		group.SharedVenueSlug = sharedVenue.slug
+		group.SharedVenueName = sharedVenue.name
+	} else {
+		group.SharedVenueSlug = ""
+		group.SharedVenueName = ""
+	}
 	return group, true, nil
 }
 
@@ -2235,6 +2457,10 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		return err
 	}
 	group.Candidates = candidates
+	matcher, err := loadVenueMatcher(ctx, tx)
+	if err != nil {
+		return err
+	}
 
 	seen := make(map[review.Field]struct{}, len(choices))
 	selectedCandidates := make(map[review.Field]review.Candidate, len(choices))
@@ -2258,6 +2484,19 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 			return fmt.Errorf("review candidate %d not found in group %d", choice.CandidateID, groupID)
 		}
 		selectedCandidates[choice.Field] = candidate
+	}
+
+	if venueCandidate, ok := selectedCandidates[review.FieldVenueSlug]; ok {
+		resolvedSlug, err := resolveReviewVenueTx(ctx, tx, &matcher, venueCandidate)
+		if err != nil {
+			return err
+		}
+		venueCandidate.VenueSlug = resolvedSlug
+		selectedCandidates[review.FieldVenueSlug] = venueCandidate
+	}
+
+	for _, choice := range choices {
+		candidate := selectedCandidates[choice.Field]
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO review_draft_choices (
 				group_id,
@@ -2383,6 +2622,8 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 			external_id,
 			name,
 			venue_slug,
+			venue_text,
+			venue_location_raw,
 			start_at,
 			end_at,
 			genre,
@@ -2391,9 +2632,11 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 			source_name,
 			source_url,
 			provenance
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, groupID, position, nullableCanonicalEventID(input.CanonicalEventID), strings.TrimSpace(input.ExternalID), input.Name,
 		strings.TrimSpace(input.VenueSlug),
+		strings.TrimSpace(input.VenueText),
+		input.VenueLocationRaw,
 		strings.TrimSpace(input.StartAt),
 		strings.TrimSpace(input.EndAt),
 		strings.TrimSpace(input.Genre),
@@ -3191,6 +3434,8 @@ func loadReviewCandidates(ctx context.Context, q queryer, groupID int64) ([]revi
 			external_id,
 			name,
 			venue_slug,
+			venue_text,
+			venue_location_raw,
 			start_at,
 			end_at,
 			genre,
@@ -3232,6 +3477,8 @@ func loadReviewCandidate(ctx context.Context, q queryer, groupID, candidateID in
 			external_id,
 			name,
 			venue_slug,
+			venue_text,
+			venue_location_raw,
 			start_at,
 			end_at,
 			genre,
@@ -3275,6 +3522,8 @@ func loadCanonicalSnapshotCandidate(ctx context.Context, q queryer, groupID int6
 			external_id,
 			name,
 			venue_slug,
+			venue_text,
+			venue_location_raw,
 			start_at,
 			end_at,
 			genre,
@@ -3318,6 +3567,8 @@ func scanReviewCandidate(rows *sql.Rows) (review.Candidate, error) {
 		&candidate.ExternalID,
 		&candidate.Name,
 		&candidate.VenueSlug,
+		&candidate.VenueText,
+		&candidate.VenueLocationRaw,
 		&candidate.StartAt,
 		&candidate.EndAt,
 		&candidate.Genre,

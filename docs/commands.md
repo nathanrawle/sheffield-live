@@ -38,10 +38,15 @@ Routes:
 - `GET /admin/review/{groupID}` review detail
 - `GET /admin/import-runs` read-only import history
 - `GET /admin/import-runs/{id}` read-only import run snapshot metadata
+- `GET /admin/venues` provisional venue queue
+- `GET /admin/venues/{slug}` provisional venue detail
+- `POST /admin/venues/{slug}` save provisional venue field edits or validate the venue when venue writes are available
 - `POST /admin/review/{groupID}` review actions
 - `GET /healthz` plain-text health check
 - `GET /readyz` plain-text readiness check backed by a cheap store probe
 - `GET /static/site.css` embedded stylesheet
+
+The provisional venue queue lists provisional venue rows created from newly detected venue evidence during new-group staging, singleton auto-promotion, or manual review resolution. Detail pages show upcoming linked events. When venue writes are available, they also show editable venue fields and support two POST actions on the same route: save field edits in place or validate the venue and return to the queue. If venue writes are unavailable, provisional venue detail remains read-only and hides those controls.
 
 `/events` query parameters:
 
@@ -61,9 +66,15 @@ Review behavior:
 - duplicate groups use field-by-field draft choices, a canonical draft summary, and persisted majority defaults
 - open duplicate reviews preselect those persisted defaults when no manual draft exists
 - duplicate reviews may include a `Live canonical snapshot` matrix column sourced from an existing live event
+- review summaries derive shared venue labels from deterministic matching over stored candidate venue slug, venue text, and raw location evidence
 - the review queue shows a read-only link to the latest successful import when the store provides import history
 - `action=save` stores draft choices for duplicate groups
 - `action=resolved` confirms a duplicate and resolves it, publishing one canonical public event
+- manual review resolution canonicalizes the selected venue to an existing venue when the evidence yields one unique match
+- new-group staging and non-authoritative singleton auto-promotion can create provisional venue rows immediately when venue evidence is uniquely new
+- open-group restaging can backfill a provisional venue row only when a previously evidence-less candidate is refreshed with usable raw venue evidence
+- when no unique existing venue match exists at manual review resolution time, resolution creates a provisional venue row and publishes against it in the same transaction if one does not already exist
+- ambiguous venue evidence fails closed and leaves the group open
 - canonical-backed duplicate resolution can update the matched live event in place
 - when authoritative source identity and canonical slug match point at different live events, authoritative identity wins
 - singleton groups use accept/reject actions when they were staged instead of auto-promoted
@@ -145,7 +156,9 @@ Stage review groups:
 - wraps the ingest report with `review_stage`
 - creates duplicate review groups
 - creates singleton review groups only for singleton candidates that were not auto-promoted first
+- persists review-candidate venue evidence as `venue_text` and `venue_location_raw`; for ICS sources `venue_text` stays cleaned for display while `venue_location_raw` preserves the unfolded raw `LOCATION` text for later decoded comma/newline venue parsing
 - singleton candidates may auto-promote when they are the first matching live event seen; authoritative sources can also upgrade provisional events in place
+- singleton auto-promotion can create a provisional venue row immediately for a uniquely new venue
 - duplicate groups may also auto-resolve as `canonical_exact_match` or `unanimous_duplicate`
 - reports `groups_created` and `groups_reused`
 - reports `auto_promoted_count` and `auto_promoted`
@@ -153,6 +166,7 @@ Stage review groups:
 - each staged group includes `result: created|reused`
 - each duplicate auto-resolved row includes `title`, `result`, `review_group_id`, `candidate_count`, and `canonical_event_slug` when applicable
 - each staged or reused group persists a link to the current import run
+- `-stage-review-groups` can create provisional venue rows immediately for newly created staged groups when venue evidence is uniquely new, even when no event is published yet
 - successful supporting singleton auto-promotion creates provisional events, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton groups by `staging_key` while linking the current import run
 - only runs after a successful ingest
 

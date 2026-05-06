@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
@@ -52,6 +53,11 @@ type ReviewStore interface {
 	SaveReviewDraftChoices(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
 	ResolveReviewGroup(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
 	UpdateReviewGroupStatus(ctx context.Context, groupID int64, status string) error
+}
+
+type VenueAdminStore interface {
+	ValidateVenue(ctx context.Context, slug string) error
+	UpdateProvisionalVenue(ctx context.Context, input store.VenueUpdateInput) error
 }
 
 const adminReviewHistoryLimit = 50
@@ -103,6 +109,7 @@ type PageData struct {
 	ReviewGroups             []review.GroupSummary
 	ReviewHistoryRows        []ReviewHistoryRow
 	ReviewDetail             ReviewDetail
+	ProvisionalVenues        []ProvisionalVenueRow
 	ImportRunRows            []ImportRunRow
 	ImportRunDetail          ImportRunDetail
 	LatestImport             *ingest.ImportRunSummary
@@ -110,6 +117,8 @@ type PageData struct {
 	HasImportRunDetail       bool
 	HasImportRunReviewGroups bool
 	HasReviewStorage         bool
+	HasVenueAdmin            bool
+	HasVenueAdminWrites      bool
 	Flash                    string
 }
 
@@ -132,6 +141,12 @@ type ReviewDetail struct {
 	Rows                 []ReviewFieldRow
 	Preview              []ReviewPreviewRow
 	SingleCandidateRows  []ReviewSingleCandidateRow
+}
+
+type ProvisionalVenueRow struct {
+	Venue              domain.Venue
+	UpcomingEventCount int
+	NextEvent          *domain.Event
 }
 
 type ReviewHistoryRow struct {
@@ -255,6 +270,10 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			}
 			return value
 		},
+		"multilineAddress": formatMultilineAddress,
+		"displayAddress": func(name, value string) string {
+			return formatVenueAddress(name, value)
+		},
 		"candidateDisplayLabel": func(candidate review.Candidate) string {
 			if candidate.IsCanonicalSnapshot() {
 				return "Live canonical snapshot"
@@ -302,6 +321,9 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			}
 			return slug
 		},
+		"originText": func(origin domain.Origin) string {
+			return string(origin)
+		},
 		"year":            func(t time.Time) string { return t.In(localLocation).Format("2006") },
 		"joinStrings":     func(values []string, sep string) string { return strings.Join(values, sep) },
 		"descriptionHTML": descriptionHTML,
@@ -320,6 +342,8 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"templates/venue_detail.html",
 		"templates/admin_review.html",
 		"templates/admin_review_history.html",
+		"templates/admin_venues.html",
+		"templates/admin_venue_detail.html",
 		"templates/admin_import_runs.html",
 		"templates/admin_import_run_detail.html",
 		"templates/admin_review_detail.html",
@@ -354,8 +378,89 @@ func NewServer(deps ServerDeps) (*Server, error) {
 	}, nil
 }
 
+func formatMultilineAddress(value string) string {
+	return formatVenueAddress("", value)
+}
+
+func formatVenueAddress(name, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	replacer := strings.NewReplacer(
+		`\n`, "\n",
+		`\N`, "\n",
+		`\,`, ",",
+		`\;`, ";",
+		`\\`, `\`,
+	)
+	value = replacer.Replace(value)
+
+	lines := strings.Split(value, "\n")
+	parts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		for _, part := range strings.Split(line, ",") {
+			part = strings.Join(strings.Fields(strings.TrimSpace(part)), " ")
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+	}
+	if sameDisplayAddressLine(parts, name) {
+		parts = parts[1:]
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ",\n")
+}
+
+func sameDisplayAddressLine(parts []string, name string) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	return normalizedDisplayAddressNameKey(parts[0]) != "" && normalizedDisplayAddressNameKey(parts[0]) == normalizedDisplayAddressNameKey(name)
+}
+
+func normalizedDisplayAddressNameKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.ToLower(value)
+	value = strings.ReplaceAll(value, "&", " and ")
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "the ") {
+		value = strings.TrimSpace(strings.TrimPrefix(value, "the "))
+	}
+
+	var b strings.Builder
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func (s *Server) SetClockForTesting(clock func() time.Time) {
 	s.clock = clock
+}
+
+func (s *Server) hasVenueAdmin() bool {
+	return s.reviewStore != nil || s.importRunStore != nil || s.replayStore != nil
+}
+
+func (s *Server) venueAdminStore() VenueAdminStore {
+	if store, ok := s.catalog.(VenueAdminStore); ok {
+		return store
+	}
+	return nil
+}
+
+func (s *Server) canWriteVenueAdmin() bool {
+	return s.venueAdminStore() != nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -375,10 +480,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminReview(w, r)
 	case cleaned == "/admin/review/history":
 		s.handleAdminReviewHistory(w, r)
+	case cleaned == "/admin/venues":
+		s.handleAdminVenues(w, r)
 	case r.URL.Path == "/admin/import-runs":
 		s.handleAdminImportRuns(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/import-runs/"):
 		s.handleAdminImportRunDetail(w, r)
+	case strings.HasPrefix(cleaned, "/admin/venues/"):
+		s.handleAdminVenueDetail(w, r, strings.TrimPrefix(cleaned, "/admin/venues/"))
 	case strings.HasPrefix(cleaned, "/admin/review/"):
 		s.handleAdminReviewDetail(w, r, strings.TrimPrefix(cleaned, "/admin/review/"))
 	case strings.HasPrefix(cleaned, "/events/"):
@@ -418,16 +527,18 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		flash = "Rejected."
 	}
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          "Review",
-		MetaDescription:    "Review open staged event candidates.",
-		Active:             "admin-review",
-		Now:                s.now(),
-		ReviewGroups:       groups,
-		HasImportHistory:   s.importRunStore != nil,
-		HasImportRunDetail: s.replayStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
-		Flash:              flash,
+		SiteName:            "Sheffield Live",
+		PageTitle:           "Review",
+		MetaDescription:     "Review open staged event candidates.",
+		Active:              "admin-review",
+		Now:                 s.now(),
+		ReviewGroups:        groups,
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		Flash:               flash,
 	}
 	if s.importRunStore != nil {
 		latest, err := s.importRunStore.LatestSuccessfulImport(r.Context())
@@ -438,6 +549,51 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		data.LatestImport = latest
 	}
 	s.renderPage(w, "templates/admin_review.html", data)
+}
+
+func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
+	if s.catalog == nil || !s.hasVenueAdmin() {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	venues, err := s.catalog.ListVenues(r.Context())
+	if err != nil {
+		http.Error(w, "load venues", http.StatusInternalServerError)
+		return
+	}
+	events, err := s.catalog.ListEvents(r.Context())
+	if err != nil {
+		http.Error(w, "load events", http.StatusInternalServerError)
+		return
+	}
+	now := s.now()
+	flash := ""
+	if r.URL.Query().Get("validated") == "1" {
+		flash = "Venue validated."
+	}
+	data := PageData{
+		SiteName:            "Sheffield Live",
+		PageTitle:           "Provisional venues",
+		MetaDescription:     "Queue of provisional venue rows awaiting validation.",
+		Now:                 now,
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		Flash:               flash,
+		ProvisionalVenues: buildProvisionalVenueRows(
+			venues,
+			events,
+			now,
+			s.localLocation,
+		),
+	}
+	s.renderPage(w, "templates/admin_venues.html", data)
 }
 
 func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request) {
@@ -455,17 +611,81 @@ func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          "Review history",
-		MetaDescription:    "Read-only history of resolved and rejected review groups.",
-		Active:             "admin-review",
-		Now:                s.now(),
-		ReviewHistoryRows:  buildReviewHistoryRows(groups),
-		HasImportHistory:   s.importRunStore != nil,
-		HasImportRunDetail: s.replayStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
+		SiteName:            "Sheffield Live",
+		PageTitle:           "Review history",
+		MetaDescription:     "Read-only history of resolved and rejected review groups.",
+		Active:              "admin-review",
+		Now:                 s.now(),
+		ReviewHistoryRows:   buildReviewHistoryRows(groups),
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
 	}
 	s.renderPage(w, "templates/admin_review_history.html", data)
+}
+
+func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, slug string) {
+	if s.catalog == nil || !s.hasVenueAdmin() {
+		http.NotFound(w, r)
+		return
+	}
+	slug = strings.TrimSpace(slug)
+	if slug == "" || strings.Contains(slug, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		s.postAdminVenueDecision(w, r, slug)
+		return
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "load venue", http.StatusInternalServerError)
+		return
+	}
+	if !ok || venue.ValidationState != domain.ValidationStateProvisional {
+		http.NotFound(w, r)
+		return
+	}
+
+	events, err := s.catalog.ListEventsForVenue(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "load venue events", http.StatusInternalServerError)
+		return
+	}
+	pageTitle := strings.TrimSpace(venue.Name)
+	if pageTitle == "" {
+		pageTitle = strings.TrimSpace(venue.Slug)
+	}
+	if pageTitle == "" {
+		pageTitle = "Provisional venue"
+	}
+	flash := ""
+	if r.URL.Query().Get("saved") == "1" {
+		flash = "Venue saved."
+	}
+	data := PageData{
+		SiteName:            "Sheffield Live",
+		PageTitle:           pageTitle,
+		MetaDescription:     venue.Description,
+		Now:                 s.now(),
+		Venue:               venue,
+		VenueEvents:         sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
+		HasImportHistory:    s.importRunStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		Flash:               flash,
+	}
+	s.renderPage(w, "templates/admin_venue_detail.html", data)
 }
 
 func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
@@ -496,6 +716,8 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		HasImportRunDetail:       s.replayStore != nil,
 		HasImportRunReviewGroups: s.importRunReviewGroupStore != nil,
 		HasReviewStorage:         s.reviewStore != nil,
+		HasVenueAdmin:            s.hasVenueAdmin(),
+		HasVenueAdminWrites:      s.canWriteVenueAdmin(),
 	}
 	s.renderPage(w, "templates/admin_import_runs.html", data)
 }
@@ -535,16 +757,95 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 	}
 
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          fmt.Sprintf("Import run #%d", run.ID),
-		MetaDescription:    "Read-only import run snapshot metadata.",
-		Now:                s.now(),
-		ImportRunDetail:    detail,
-		HasImportHistory:   s.importRunStore != nil,
-		HasImportRunDetail: s.replayStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
+		SiteName:            "Sheffield Live",
+		PageTitle:           fmt.Sprintf("Import run #%d", run.ID),
+		MetaDescription:     "Read-only import run snapshot metadata.",
+		Now:                 s.now(),
+		ImportRunDetail:     detail,
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
 	}
 	s.renderPage(w, "templates/admin_import_run_detail.html", data)
+}
+
+func (s *Server) postAdminVenueDecision(w http.ResponseWriter, r *http.Request, slug string) {
+	adminStore := s.venueAdminStore()
+	if adminStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	action := strings.TrimSpace(r.FormValue("action"))
+	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "load venue", http.StatusInternalServerError)
+		return
+	}
+	if !ok || venue.ValidationState != domain.ValidationStateProvisional {
+		http.NotFound(w, r)
+		return
+	}
+	switch action {
+	case "validate":
+		if err := adminStore.ValidateVenue(r.Context(), slug); err != nil {
+			lower := strings.ToLower(err.Error())
+			if strings.Contains(lower, "not found") || strings.Contains(lower, "not provisional") {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, "validate venue", http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/venues?validated=1", http.StatusSeeOther)
+	case "save":
+		input, err := provisionalVenueUpdateFromForm(slug, r.Form)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := adminStore.UpdateProvisionalVenue(r.Context(), input); err != nil {
+			lower := strings.ToLower(err.Error())
+			if strings.Contains(lower, "not found") || strings.Contains(lower, "not provisional") {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/admin/venues/%s?saved=1", slug), http.StatusSeeOther)
+	default:
+		http.Error(w, "invalid venue action", http.StatusBadRequest)
+	}
+}
+
+func provisionalVenueUpdateFromForm(slug string, form url.Values) (store.VenueUpdateInput, error) {
+	input := store.VenueUpdateInput{
+		Slug:          strings.TrimSpace(slug),
+		Name:          strings.TrimSpace(form.Get("name")),
+		Address:       strings.TrimSpace(form.Get("address")),
+		Neighbourhood: strings.TrimSpace(form.Get("neighbourhood")),
+		Description:   strings.TrimSpace(form.Get("description")),
+		Website:       strings.TrimSpace(form.Get("website")),
+		CoverageNote:  strings.TrimSpace(form.Get("coverage_note")),
+	}
+	switch strings.TrimSpace(form.Get("coverage_kind")) {
+	case "", string(domain.CoverageKindVenue):
+		input.CoverageKind = domain.CoverageKindVenue
+	case string(domain.CoverageKindProgram):
+		input.CoverageKind = domain.CoverageKindProgram
+	default:
+		return store.VenueUpdateInput{}, fmt.Errorf("invalid coverage kind")
+	}
+	if input.Slug == "" {
+		return store.VenueUpdateInput{}, fmt.Errorf("venue slug is required")
+	}
+	return input, nil
 }
 
 func (s *Server) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request, rawGroupID string) {
@@ -748,15 +1049,17 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	data := PageData{
-		SiteName:           "Sheffield Live",
-		PageTitle:          group.Title,
-		MetaDescription:    "Review staged event candidates.",
-		Active:             "admin-review",
-		Now:                s.now(),
-		HasImportHistory:   s.importRunStore != nil,
-		HasImportRunDetail: s.replayStore != nil,
-		HasReviewStorage:   s.reviewStore != nil,
-		Flash:              flash,
+		SiteName:            "Sheffield Live",
+		PageTitle:           group.Title,
+		MetaDescription:     "Review staged event candidates.",
+		Active:              "admin-review",
+		Now:                 s.now(),
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		Flash:               flash,
 	}
 	data.ReviewDetail = buildReviewDetail(group)
 	s.renderPage(w, "templates/admin_review_detail.html", data)
@@ -1242,6 +1545,60 @@ func reviewGroupStatusSummary(groups []review.GroupSummary) string {
 		parts = append(parts, fmt.Sprintf("%d %s", counts[status], status))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func buildProvisionalVenueRows(venues []domain.Venue, events []domain.Event, now time.Time, loc *time.Location) []ProvisionalVenueRow {
+	provisional := make([]domain.Venue, 0, len(venues))
+	for _, venue := range venues {
+		if venue.ValidationState == domain.ValidationStateProvisional {
+			provisional = append(provisional, venue)
+		}
+	}
+
+	upcoming := sortEventsForDisplay(upcomingEvents(events, now, loc))
+	eventsByVenue := make(map[string][]domain.Event, len(provisional))
+	for _, event := range upcoming {
+		eventsByVenue[event.VenueSlug] = append(eventsByVenue[event.VenueSlug], event)
+	}
+
+	rows := make([]ProvisionalVenueRow, 0, len(provisional))
+	for _, venue := range provisional {
+		linkedEvents := eventsByVenue[venue.Slug]
+		row := ProvisionalVenueRow{
+			Venue:              venue,
+			UpcomingEventCount: len(linkedEvents),
+		}
+		if len(linkedEvents) > 0 {
+			next := linkedEvents[0]
+			row.NextEvent = &next
+		}
+		rows = append(rows, row)
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		iHasNext := rows[i].NextEvent != nil
+		jHasNext := rows[j].NextEvent != nil
+		switch {
+		case iHasNext && jHasNext:
+			if rows[i].NextEvent.Start.Equal(rows[j].NextEvent.Start) {
+				if rows[i].Venue.Name == rows[j].Venue.Name {
+					return rows[i].Venue.Slug < rows[j].Venue.Slug
+				}
+				return rows[i].Venue.Name < rows[j].Venue.Name
+			}
+			return rows[i].NextEvent.Start.Before(rows[j].NextEvent.Start)
+		case iHasNext:
+			return true
+		case jHasNext:
+			return false
+		default:
+			if rows[i].Venue.Name == rows[j].Venue.Name {
+				return rows[i].Venue.Slug < rows[j].Venue.Slug
+			}
+			return rows[i].Venue.Name < rows[j].Venue.Name
+		}
+	})
+	return rows
 }
 
 func reviewStatusSortRank(status string) int {

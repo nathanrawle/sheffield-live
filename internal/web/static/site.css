@@ -373,6 +373,10 @@ a:focus-visible {
   margin-bottom: 0;
 }
 
+.address-text {
+  white-space: pre-line;
+}
+
 .review-list {
   display: grid;
   gap: 0.75rem;
@@ -452,6 +456,10 @@ a:focus-visible {
 
 .import-run-review-groups-table {
   min-width: 720px;
+}
+
+.provisional-venue-table {
+  min-width: 920px;
 }
 
 .import-run-table th,
@@ -605,6 +613,40 @@ a:focus-visible {
 
 .review-action-form {
   margin-top: 0.75rem;
+}
+
+.venue-edit-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.venue-edit-form label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.venue-edit-form input,
+.venue-edit-form select,
+.venue-edit-form textarea {
+  width: 100%;
+  min-height: 2.35rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.venue-edit-form textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.venue-edit-form-full,
+.venue-edit-form-actions {
+  grid-column: 1 / -1;
 }
 
 .primary-button {

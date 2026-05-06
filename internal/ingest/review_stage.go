@@ -158,23 +158,25 @@ func reviewStageKey(catalog *Catalog, source string, candidate EventCandidate) (
 		"fallback",
 		summary,
 		startAt,
-		reviewStageVenueSlug(catalog, source, candidate.Location),
+		reviewStageVenueSlug(catalog, source, candidate),
 	}, "\x00"), true
 }
 
 func reviewStageCandidateInput(catalog *Catalog, report Report, calendar CalendarReport, candidate EventCandidate) review.CandidateInput {
 	return review.CandidateInput{
-		ExternalID:  strings.TrimSpace(candidate.UID),
-		Name:        strings.TrimSpace(candidate.Summary),
-		VenueSlug:   reviewStageVenueSlug(catalog, report.Source, candidate.Location),
-		StartAt:     strings.TrimSpace(candidate.StartAt),
-		EndAt:       strings.TrimSpace(candidate.EndAt),
-		Genre:       "",
-		Status:      reviewStageStatus(candidate.Status),
-		Description: strings.TrimSpace(candidate.Description),
-		SourceName:  reviewStageSourceName(catalog, report),
-		SourceURL:   reviewStageFirstNonEmpty(candidate.URL, calendar.URL, report.SourceURL),
-		Provenance:  reviewStageProvenance(report, calendar, candidate),
+		ExternalID:       strings.TrimSpace(candidate.UID),
+		Name:             strings.TrimSpace(candidate.Summary),
+		VenueSlug:        reviewStageVenueSlug(catalog, report.Source, candidate),
+		VenueText:        strings.TrimSpace(candidate.Location),
+		VenueLocationRaw: candidate.LocationRaw,
+		StartAt:          strings.TrimSpace(candidate.StartAt),
+		EndAt:            strings.TrimSpace(candidate.EndAt),
+		Genre:            "",
+		Status:           reviewStageStatus(candidate.Status),
+		Description:      strings.TrimSpace(candidate.Description),
+		SourceName:       reviewStageSourceName(catalog, report),
+		SourceURL:        reviewStageFirstNonEmpty(candidate.URL, calendar.URL, report.SourceURL),
+		Provenance:       reviewStageProvenance(report, calendar, candidate),
 	}
 }
 
@@ -247,9 +249,17 @@ func reviewStageFirstNonEmpty(values ...string) string {
 	return ""
 }
 
-func reviewStageVenueSlug(catalog *Catalog, source, value string) string {
+func reviewStageVenueSlug(catalog *Catalog, source string, candidate EventCandidate) string {
+	value := reviewStageVenueSlugValue(candidate)
 	if catalog == nil {
 		return VenueSlugFromText(value)
 	}
 	return catalog.VenueSlugForSourceLocation(source, value)
+}
+
+func reviewStageVenueSlugValue(candidate EventCandidate) string {
+	if head := VenueLocationEvidenceHead(candidate.LocationRaw); head != "" {
+		return head
+	}
+	return strings.TrimSpace(candidate.Location)
 }

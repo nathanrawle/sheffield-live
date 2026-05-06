@@ -8,6 +8,7 @@ import (
 type Origin string
 type CoverageKind string
 type PublicationState string
+type ValidationState string
 
 const (
 	OriginSeed Origin = "seed"
@@ -18,35 +19,39 @@ const (
 	PublicationStateReviewed    PublicationState = "reviewed"
 	PublicationStateProvisional PublicationState = "provisional"
 
+	ValidationStateValidated   ValidationState = "validated"
+	ValidationStateProvisional ValidationState = "provisional"
+
 	CoverageKindVenue   CoverageKind = "venue"
 	CoverageKindProgram CoverageKind = "program"
 )
 
 type Venue struct {
-	Slug          string
-	Name          string
-	Address       string
-	Neighbourhood string
-	Description   string
-	Website       string
-	CoverageKind  CoverageKind
-	CoverageNote  string
-	Origin        Origin
+	Slug            string
+	Name            string
+	Address         string
+	Neighbourhood   string
+	Description     string
+	Website         string
+	ValidationState ValidationState
+	CoverageKind    CoverageKind
+	CoverageNote    string
+	Origin          Origin
 }
 
 type Event struct {
-	Slug        string
-	Name        string
-	VenueSlug   string
-	Start       time.Time
-	End         time.Time
-	Genre       string
-	Status      string
-	Description string
-	SourceName  string
-	SourceURL   string
-	LastChecked time.Time
-	Origin      Origin
+	Slug             string
+	Name             string
+	VenueSlug        string
+	Start            time.Time
+	End              time.Time
+	Genre            string
+	Status           string
+	Description      string
+	SourceName       string
+	SourceURL        string
+	LastChecked      time.Time
+	Origin           Origin
 	PublicationState PublicationState
 }
 

@@ -2,9 +2,11 @@
   <p class="eyebrow">Admin</p>
   <h1>Import history</h1>
   <p class="lede">Read-only history of ingest runs and stored snapshot counts.</p>
-  {{if .HasReviewStorage}}
-  <p class="review-group-meta"><a href="/admin/review">Review queue</a></p>
-  {{end}}
+  <p class="review-group-meta">
+    {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if .HasReviewStorage}} · {{end}}
+    <a href="/admin/venues">Provisional venues</a>
+  </p>
 </section>
 
 <section class="section-block">

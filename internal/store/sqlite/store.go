@@ -32,6 +32,8 @@ const (
 	schemaVersionV9   = 9
 	schemaVersionV10  = 10
 	schemaVersionV11  = 11
+	schemaVersionV12  = 12
+	schemaVersionV13  = 13
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -51,6 +53,8 @@ var migrations = []struct {
 	{version: schemaVersionV9, path: "migrations/0009_events_nullable_end_at.sql"},
 	{version: schemaVersionV10, path: "migrations/0010_review_canonical_defaults.sql"},
 	{version: schemaVersionV11, path: "migrations/0011_events_publication_state.sql"},
+	{version: schemaVersionV12, path: "migrations/0012_venue_validation_state.sql"},
+	{version: schemaVersionV13, path: "migrations/0013_review_candidate_venue_evidence.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -220,6 +224,103 @@ func (s *Store) LoadVenueBySlug(ctx context.Context, slug string) (domain.Venue,
 	return loadVenueBySlug(ctx, s.db, slug)
 }
 
+func (s *Store) ValidateVenue(ctx context.Context, slug string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return errors.New("venue slug is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	venue, ok, err := loadVenueBySlug(ctx, tx, slug)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("venue %q not found", slug)
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		return fmt.Errorf("venue %q is not provisional", slug)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE venues
+		SET validation_state = ?
+		WHERE slug = ?
+	`, string(domain.ValidationStateValidated), slug); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) UpdateProvisionalVenue(ctx context.Context, input seedstore.VenueUpdateInput) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	input.Slug = strings.TrimSpace(input.Slug)
+	if input.Slug == "" {
+		return errors.New("venue slug is required")
+	}
+	switch input.CoverageKind {
+	case "", domain.CoverageKindVenue:
+		input.CoverageKind = domain.CoverageKindVenue
+	case domain.CoverageKindProgram:
+	default:
+		return fmt.Errorf("invalid coverage kind")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	venue, ok, err := loadVenueBySlug(ctx, tx, input.Slug)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("venue %q not found", input.Slug)
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		return fmt.Errorf("venue %q is not provisional", input.Slug)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE venues
+		SET
+			name = ?,
+			address = ?,
+			neighbourhood = ?,
+			description = ?,
+			website = ?,
+			coverage_kind = ?,
+			coverage_note = ?
+		WHERE slug = ?
+	`,
+		strings.TrimSpace(input.Name),
+		strings.TrimSpace(input.Address),
+		strings.TrimSpace(input.Neighbourhood),
+		strings.TrimSpace(input.Description),
+		strings.TrimSpace(input.Website),
+		string(input.CoverageKind),
+		strings.TrimSpace(input.CoverageNote),
+		input.Slug,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) EventBySlug(slug string) (domain.Event, bool) {
 	event, ok, _ := s.LoadEventBySlug(context.Background(), slug)
 	return event, ok
@@ -294,8 +395,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV11 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV11)
+	if version > schemaVersionV13 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV13)
 	}
 
 	for _, migration := range migrations {
@@ -381,9 +482,9 @@ func bootstrapSeedData(ctx context.Context, tx *sql.Tx) error {
 
 func insertVenue(ctx context.Context, tx execer, venue domain.Venue) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO venues (slug, name, address, neighbourhood, description, website, coverage_kind, coverage_note, origin)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, venue.Slug, venue.Name, venue.Address, venue.Neighbourhood, venue.Description, venue.Website, normalizedCoverageKind(venue), strings.TrimSpace(venue.CoverageNote), string(venue.Origin))
+		INSERT INTO venues (slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, venue.Slug, venue.Name, venue.Address, venue.Neighbourhood, venue.Description, venue.Website, string(normalizedValidationState(venue.ValidationState)), normalizedCoverageKind(venue), strings.TrimSpace(venue.CoverageNote), string(venue.Origin))
 	if err != nil {
 		return 0, err
 	}
@@ -622,7 +723,7 @@ func tableExists(ctx context.Context, q queryer, table string) (bool, error) {
 
 func loadVenues(ctx context.Context, q queryer) ([]domain.Venue, error) {
 	rows, err := q.QueryContext(ctx, `
-		SELECT slug, name, address, neighbourhood, description, website, coverage_kind, coverage_note, origin
+		SELECT slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin
 		FROM venues
 		ORDER BY id
 	`)
@@ -634,11 +735,13 @@ func loadVenues(ctx context.Context, q queryer) ([]domain.Venue, error) {
 	var venues []domain.Venue
 	for rows.Next() {
 		var venue domain.Venue
+		var validationState string
 		var coverageKind string
 		var origin string
-		if err := rows.Scan(&venue.Slug, &venue.Name, &venue.Address, &venue.Neighbourhood, &venue.Description, &venue.Website, &coverageKind, &venue.CoverageNote, &origin); err != nil {
+		if err := rows.Scan(&venue.Slug, &venue.Name, &venue.Address, &venue.Neighbourhood, &venue.Description, &venue.Website, &validationState, &coverageKind, &venue.CoverageNote, &origin); err != nil {
 			return nil, err
 		}
+		venue.ValidationState = normalizedValidationState(domain.ValidationState(validationState))
 		venue.CoverageKind = domain.CoverageKind(normalizedCoverageKindValue(coverageKind))
 		venue.Origin = domain.Origin(origin)
 		venues = append(venues, venue)
@@ -651,20 +754,22 @@ func loadVenues(ctx context.Context, q queryer) ([]domain.Venue, error) {
 
 func loadVenueBySlug(ctx context.Context, q queryer, slug string) (domain.Venue, bool, error) {
 	row := q.QueryRowContext(ctx, `
-		SELECT slug, name, address, neighbourhood, description, website, coverage_kind, coverage_note, origin
+		SELECT slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin
 		FROM venues
 		WHERE slug = ?
 		LIMIT 1
 	`, slug)
 	var venue domain.Venue
+	var validationState string
 	var coverageKind string
 	var origin string
-	switch err := row.Scan(&venue.Slug, &venue.Name, &venue.Address, &venue.Neighbourhood, &venue.Description, &venue.Website, &coverageKind, &venue.CoverageNote, &origin); {
+	switch err := row.Scan(&venue.Slug, &venue.Name, &venue.Address, &venue.Neighbourhood, &venue.Description, &venue.Website, &validationState, &coverageKind, &venue.CoverageNote, &origin); {
 	case errors.Is(err, sql.ErrNoRows):
 		return domain.Venue{}, false, nil
 	case err != nil:
 		return domain.Venue{}, false, err
 	}
+	venue.ValidationState = normalizedValidationState(domain.ValidationState(validationState))
 	venue.CoverageKind = domain.CoverageKind(normalizedCoverageKindValue(coverageKind))
 	venue.Origin = domain.Origin(origin)
 	return venue, true, nil
@@ -839,6 +944,17 @@ func normalizedPublicationState(state domain.PublicationState) domain.Publicatio
 		return domain.PublicationStateReviewed
 	default:
 		return domain.PublicationStateReviewed
+	}
+}
+
+func normalizedValidationState(state domain.ValidationState) domain.ValidationState {
+	switch state {
+	case domain.ValidationStateProvisional:
+		return domain.ValidationStateProvisional
+	case domain.ValidationStateValidated, "":
+		return domain.ValidationStateValidated
+	default:
+		return domain.ValidationStateProvisional
 	}
 }
 

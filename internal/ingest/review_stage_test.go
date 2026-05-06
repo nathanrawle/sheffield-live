@@ -390,11 +390,12 @@ func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *te
 				URL: "https://leadmill.co.uk/listings/?ical=1",
 				Candidates: []EventCandidate{
 					{
-						Summary:  "One",
-						Location: "Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX",
-						URL:      "https://leadmill.co.uk/event/one/",
-						StartAt:  "2026-05-01T19:00:00Z",
-						EndAt:    "2026-05-01T22:00:00Z",
+						Summary:     "One",
+						Location:    "Yellow Arch",
+						LocationRaw: "Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX",
+						URL:         "https://leadmill.co.uk/event/one/",
+						StartAt:     "2026-05-01T19:00:00Z",
+						EndAt:       "2026-05-01T22:00:00Z",
 					},
 				},
 			},
@@ -411,8 +412,92 @@ func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *te
 	if got, want := groups[0].Candidates[0].VenueSlug, "yellow-arch"; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
 	}
+	if got, want := groups[0].Candidates[0].VenueText, "Yellow Arch"; got != want {
+		t.Fatalf("venue text = %q, want %q", got, want)
+	}
+	if got, want := groups[0].Candidates[0].VenueLocationRaw, "Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX"; got != want {
+		t.Fatalf("venue location raw = %q, want %q", got, want)
+	}
 	if got := groups[0].AuthoritativeSourceEventKey; got != "" {
 		t.Fatalf("authoritative source event key = %q, want empty", got)
+	}
+}
+
+func TestReviewGroupsFromLeadmillReportTruncatesEscapedCommaVenueHeadSlug(t *testing.T) {
+	report := Report{
+		Source:      LeadmillSource,
+		SourceURL:   "https://leadmill.co.uk/live/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://leadmill.co.uk/listings/?ical=1",
+				Candidates: []EventCandidate{
+					{
+						Summary:     "One",
+						Location:    "Memorial Hall, Barkers Pool",
+						LocationRaw: "Memorial Hall\\, Barkers Pool, Sheffield, S1 2JA",
+						URL:         "https://leadmill.co.uk/event/one/",
+						StartAt:     "2026-05-01T19:00:00Z",
+						EndAt:       "2026-05-01T22:00:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	groups := ReviewGroupsFromReport(report)
+	if got, want := len(groups), 1; got != want {
+		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got, want := groups[0].Candidates[0].VenueSlug, "memorial-hall"; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+}
+
+func TestReviewGroupsFromReportTruncatesEscapedRawVenueHeadForSlug(t *testing.T) {
+	report := Report{
+		Source:      DefaultSource,
+		SourceURL:   "https://example.test/calendar.ics",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://example.test/calendar.ics",
+				Candidates: []EventCandidate{
+					{
+						Summary:     "One",
+						Location:    "Memorial Hall, Barkers Pool, Sheffield, S1 2JA",
+						LocationRaw: "Memorial Hall\\, Barkers Pool, Sheffield, S1 2JA",
+						StartAt:     "2026-05-01T19:00:00Z",
+						EndAt:       "2026-05-01T22:00:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	groups := ReviewGroupsFromReport(report)
+	if got, want := len(groups), 1; got != want {
+		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got, want := groups[0].Candidates[0].VenueSlug, "memorial-hall"; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+	if got, want := groups[0].Candidates[0].VenueLocationRaw, "Memorial Hall\\, Barkers Pool, Sheffield, S1 2JA"; got != want {
+		t.Fatalf("venue location raw = %q, want %q", got, want)
+	}
+}
+
+func TestReviewStageVenueSlugUsesSourceNormalizer(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("default catalog: %v", err)
+	}
+
+	candidate := EventCandidate{Location: "Imaginary Hall, 1 Void Street, Sheffield"}
+	if got, want := reviewStageVenueSlug(catalog, LeadmillSource, candidate), "imaginary-hall"; got != want {
+		t.Fatalf("reviewStageVenueSlug(...) = %q, want %q", got, want)
 	}
 }
 

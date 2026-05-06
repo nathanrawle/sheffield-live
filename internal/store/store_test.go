@@ -50,6 +50,9 @@ func TestSeedStoreMarksAllFixturesSeed(t *testing.T) {
 		if venue.Origin != domain.OriginSeed {
 			t.Fatalf("venue %q origin = %q, want seed", venue.Slug, venue.Origin)
 		}
+		if venue.ValidationState != domain.ValidationStateValidated {
+			t.Fatalf("venue %q validation state = %q, want validated", venue.Slug, venue.ValidationState)
+		}
 	}
 	for _, event := range st.Events() {
 		if event.Origin != domain.OriginSeed {

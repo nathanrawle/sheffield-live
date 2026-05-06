@@ -40,8 +40,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 
 	db := mustRawDB(t, path)
 
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
 	}
 	if got := mustCount(t, db, "venues"); got != 7 {
 		t.Fatalf("venues rows = %d, want 7", got)
@@ -64,8 +64,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT version, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version, &appliedAt); err != nil {
 		t.Fatalf("scan migration row: %v", err)
 	}
-	if version != schemaVersionV11 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV11)
+	if version != schemaVersionV13 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV13)
 	}
 	if _, err := time.Parse(time.RFC3339, appliedAt); err != nil {
 		t.Fatalf("applied_at %q is not RFC3339: %v", appliedAt, err)
@@ -99,8 +99,8 @@ func TestOpenReopensPersistentData(t *testing.T) {
 	}
 
 	db := mustRawDB(t, path)
-	if _, err := db.Exec(`INSERT INTO venues (slug, name, address, neighbourhood, description, website, origin) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"persisted-venue", "Persisted Venue", "1 Persisted Street, Sheffield", "Centre", "Persisted venue", "https://example.test/venue", string(domain.OriginLive)); err != nil {
+	if _, err := db.Exec(`INSERT INTO venues (slug, name, address, neighbourhood, description, website, validation_state, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"persisted-venue", "Persisted Venue", "1 Persisted Street, Sheffield", "Centre", "Persisted venue", "https://example.test/venue", "unknown", string(domain.OriginLive)); err != nil {
 		t.Fatalf("insert venue: %v", err)
 	}
 	var venueID int64
@@ -145,6 +145,9 @@ func TestOpenReopensPersistentData(t *testing.T) {
 	if venue.Name != "Persisted Venue" {
 		t.Fatalf("venue name = %q, want %q", venue.Name, "Persisted Venue")
 	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("venue validation state = %q, want provisional", venue.ValidationState)
+	}
 
 	event, ok := st.EventBySlug("persisted-event")
 	if !ok {
@@ -155,6 +158,336 @@ func TestOpenReopensPersistentData(t *testing.T) {
 	}
 	if got := st.EventsForVenue("persisted-venue"); len(got) != 1 || got[0].Slug != "persisted-event" {
 		t.Fatalf("events for venue = %#v, want one persisted event", got)
+	}
+}
+
+func TestOpenMigratesVersion11DatabaseAddsVenueValidationState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	db := mustRawDB(t, path)
+	for _, migration := range migrations[:len(migrations)-1] {
+		migrationSQL, err := readMigration(migration.path)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", migration.path, err)
+		}
+		if _, err := db.Exec(migrationSQL); err != nil {
+			t.Fatalf("apply migration %s: %v", migration.path, err)
+		}
+	}
+	if _, err := db.Exec(`
+		INSERT INTO venues (
+			slug, name, address, neighbourhood, description, website, coverage_kind, coverage_note, origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "pre-v12-venue", "Pre-v12 Venue", "1 Old Street, Sheffield", "Centre", "Legacy venue", "https://example.test/pre-v12", "venue", "", string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert legacy venue: %v", err)
+	}
+	for _, migration := range migrations[:len(migrations)-1] {
+		if _, err := db.Exec(`
+			INSERT INTO schema_migrations (version, applied_at)
+			VALUES (?, ?)
+		`, migration.version, formatRFC3339UTC(time.Date(2026, time.April, 22, 8+migration.version, 0, 0, 0, time.UTC))); err != nil {
+			t.Fatalf("insert v%d migration row: %v", migration.version, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	venue, ok, err := st.LoadVenueBySlug(context.Background(), "pre-v12-venue")
+	if err != nil {
+		t.Fatalf("load venue: %v", err)
+	}
+	if !ok {
+		t.Fatal("legacy venue not found")
+	}
+	if venue.ValidationState != domain.ValidationStateValidated {
+		t.Fatalf("venue validation state = %q, want validated", venue.ValidationState)
+	}
+
+	db = mustRawDB(t, path)
+	defer db.Close()
+	var validationState string
+	if err := db.QueryRow(`SELECT validation_state FROM venues WHERE slug = ?`, "pre-v12-venue").Scan(&validationState); err != nil {
+		t.Fatalf("scan validation state: %v", err)
+	}
+	if validationState != string(domain.ValidationStateValidated) {
+		t.Fatalf("validation_state = %q, want %q", validationState, domain.ValidationStateValidated)
+	}
+}
+
+func TestOpenMigratesVersion12DatabaseAddsReviewCandidateVenueEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	db := mustRawDB(t, path)
+	for _, migration := range migrations[:len(migrations)-1] {
+		migrationSQL, err := readMigration(migration.path)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", migration.path, err)
+		}
+		if _, err := db.Exec(migrationSQL); err != nil {
+			t.Fatalf("apply migration %s: %v", migration.path, err)
+		}
+	}
+	groupRes, err := db.Exec(`
+		INSERT INTO review_groups (
+			title,
+			source_name,
+			source_url,
+			status,
+			notes,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "Venue evidence migration", "Fixture ICS", "file:migration.ics", review.StatusOpen, "Preserved notes", formatRFC3339UTC(time.Date(2026, time.April, 23, 9, 0, 0, 0, time.UTC)), formatRFC3339UTC(time.Date(2026, time.April, 23, 10, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("insert review group: %v", err)
+	}
+	groupID, err := groupRes.LastInsertId()
+	if err != nil {
+		t.Fatalf("review group id: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO review_candidates (
+			group_id,
+			position,
+			external_id,
+			name,
+			venue_slug,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			source_name,
+			source_url,
+			provenance
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, groupID, 1, "candidate-a", "Candidate A", "leadmill", "2026-05-01T19:00:00Z", "2026-05-01T22:00:00Z", "Indie", "Listed", "Description", "Fixture ICS", "file:candidate-a.ics", "fixture UID candidate-a"); err != nil {
+		t.Fatalf("insert review candidate: %v", err)
+	}
+	for _, migration := range migrations[:len(migrations)-1] {
+		if _, err := db.Exec(`
+			INSERT INTO schema_migrations (version, applied_at)
+			VALUES (?, ?)
+		`, migration.version, formatRFC3339UTC(time.Date(2026, time.April, 23, 11+migration.version, 0, 0, 0, time.UTC))); err != nil {
+			t.Fatalf("insert v%d migration row: %v", migration.version, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db = mustRawDB(t, path)
+	defer db.Close()
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
+	}
+
+	group, ok, err := st.LoadReviewGroup(context.Background(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if len(group.Candidates) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(group.Candidates))
+	}
+	if group.Candidates[0].VenueText != "" {
+		t.Fatalf("candidate venue text = %q, want empty", group.Candidates[0].VenueText)
+	}
+	if group.Candidates[0].VenueLocationRaw != "" {
+		t.Fatalf("candidate venue location raw = %q, want empty", group.Candidates[0].VenueLocationRaw)
+	}
+	var venueText string
+	var venueLocationRaw string
+	if err := db.QueryRow(`SELECT venue_text, venue_location_raw FROM review_candidates WHERE group_id = ?`, groupID).Scan(&venueText, &venueLocationRaw); err != nil {
+		t.Fatalf("scan review candidate venue evidence: %v", err)
+	}
+	if venueText != "" {
+		t.Fatalf("stored venue text = %q, want empty", venueText)
+	}
+	if venueLocationRaw != "" {
+		t.Fatalf("stored venue location raw = %q, want empty", venueLocationRaw)
+	}
+}
+
+func TestValidateVenueMarksProvisionalVenueValidated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	if _, err := db.Exec(`
+		INSERT INTO venues (
+			slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "provisional-room", "Provisional Room", "1 Test Street, Sheffield", "Centre", "Fixture provisional venue", "https://example.test/provisional-room", string(domain.ValidationStateProvisional), string(domain.CoverageKindVenue), "", string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert provisional venue: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	if err := st.ValidateVenue(context.Background(), "provisional-room"); err != nil {
+		t.Fatalf("validate venue: %v", err)
+	}
+
+	venue, ok, err := st.LoadVenueBySlug(context.Background(), "provisional-room")
+	if err != nil {
+		t.Fatalf("load venue: %v", err)
+	}
+	if !ok {
+		t.Fatal("validated venue not found")
+	}
+	if venue.ValidationState != domain.ValidationStateValidated {
+		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateValidated)
+	}
+}
+
+func TestValidateVenueRejectsMissingAndNonProvisionalVenues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if err := st.ValidateVenue(context.Background(), "missing-room"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("validate missing venue error = %v, want not found", err)
+	}
+	if err := st.ValidateVenue(context.Background(), "leadmill"); err == nil || !strings.Contains(err.Error(), "not provisional") {
+		t.Fatalf("validate validated venue error = %v, want not provisional", err)
+	}
+}
+
+func TestUpdateProvisionalVenuePersistsEditedFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	if _, err := db.Exec(`
+		INSERT INTO venues (
+			slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "provisional-room", "Provisional Room", "1 Test Street, Sheffield", "Centre", "Fixture provisional venue", "https://example.test/provisional-room", string(domain.ValidationStateProvisional), string(domain.CoverageKindVenue), "", string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert provisional venue: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	err = st.UpdateProvisionalVenue(context.Background(), seedstore.VenueUpdateInput{
+		Slug:          "provisional-room",
+		Name:          "Updated Room",
+		Address:       "99 Updated Street, Sheffield",
+		Neighbourhood: "Kelham",
+		Description:   "Updated fixture description.",
+		Website:       "https://example.test/updated-room",
+		CoverageKind:  domain.CoverageKindProgram,
+		CoverageNote:  "Programme-only for now.",
+	})
+	if err != nil {
+		t.Fatalf("update provisional venue: %v", err)
+	}
+
+	venue, ok, err := st.LoadVenueBySlug(context.Background(), "provisional-room")
+	if err != nil {
+		t.Fatalf("load venue: %v", err)
+	}
+	if !ok {
+		t.Fatal("updated venue not found")
+	}
+	if venue.Name != "Updated Room" {
+		t.Fatalf("venue name = %q, want %q", venue.Name, "Updated Room")
+	}
+	if venue.Address != "99 Updated Street, Sheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "99 Updated Street, Sheffield")
+	}
+	if venue.Neighbourhood != "Kelham" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Kelham")
+	}
+	if venue.Description != "Updated fixture description." {
+		t.Fatalf("venue description = %q, want %q", venue.Description, "Updated fixture description.")
+	}
+	if venue.Website != "https://example.test/updated-room" {
+		t.Fatalf("venue website = %q, want %q", venue.Website, "https://example.test/updated-room")
+	}
+	if venue.CoverageKind != domain.CoverageKindProgram {
+		t.Fatalf("venue coverage kind = %q, want %q", venue.CoverageKind, domain.CoverageKindProgram)
+	}
+	if venue.CoverageNote != "Programme-only for now." {
+		t.Fatalf("venue coverage note = %q, want %q", venue.CoverageNote, "Programme-only for now.")
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
+	}
+}
+
+func TestUpdateProvisionalVenueRejectsMissingNonProvisionalAndInvalidCoverageKind(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if err := st.UpdateProvisionalVenue(context.Background(), seedstore.VenueUpdateInput{
+		Slug:         "missing-room",
+		CoverageKind: domain.CoverageKindVenue,
+	}); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("update missing venue error = %v, want not found", err)
+	}
+	if err := st.UpdateProvisionalVenue(context.Background(), seedstore.VenueUpdateInput{
+		Slug:         "leadmill",
+		CoverageKind: domain.CoverageKindVenue,
+	}); err == nil || !strings.Contains(err.Error(), "not provisional") {
+		t.Fatalf("update validated venue error = %v, want not provisional", err)
+	}
+	if err := st.UpdateProvisionalVenue(context.Background(), seedstore.VenueUpdateInput{
+		Slug:         "leadmill",
+		CoverageKind: domain.CoverageKind("sideways"),
+	}); err == nil || !strings.Contains(err.Error(), "invalid coverage kind") {
+		t.Fatalf("update invalid coverage kind error = %v, want invalid coverage kind", err)
 	}
 }
 
@@ -187,15 +520,15 @@ func TestOpenMigratesVersion1Database(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV11 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV11)
+	if version != schemaVersionV13 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV13)
 	}
 	if got := mustCount(t, db, "review_groups"); got != 0 {
 		t.Fatalf("review_groups rows = %d, want 0", got)
@@ -297,15 +630,15 @@ func TestOpenMigratesVersion2DatabasePreservesReviewDataAndAddsStagingKey(t *tes
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV11 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV11)
+	if version != schemaVersionV13 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV13)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
@@ -444,8 +777,8 @@ func TestOpenMigratesVersion3DatabaseAddsEventSourceLinks(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
@@ -584,8 +917,8 @@ func TestOpenMigratesVersion4DatabaseAddsReviewGroupAuthoritativeLinkColumns(t *
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
 	}
 
 	group, ok, err := st.LoadReviewGroup(context.Background(), openGroupID)
@@ -689,8 +1022,8 @@ func TestOpenMigratesVersion5DatabaseAddsEventSecondarySourceInfoTable(t *testin
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV11 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV11)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV13 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV13)
 	}
 	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
 		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)

@@ -294,6 +294,551 @@ func TestSQLiteAdminImportRunDetailRendersReviewGroupsForRun(t *testing.T) {
 	assertNotContains(t, body, bodyText)
 }
 
+func TestSQLiteAdminVenuesEmptyState(t *testing.T) {
+	st, server, _ := mustAdminVenuesServer(t)
+	defer st.Close()
+
+	body := renderPath(t, server, "/admin/venues")
+	assertContains(t, body, "Provisional venues")
+	assertContains(t, body, "No provisional venues are queued right now.")
+	assertContains(t, body, `href="/admin/review"`)
+}
+
+func TestAdminVenuePagesMissingWithoutAdminStores(t *testing.T) {
+	server, err := NewServer(testServerDeps(store.NewSeedStore()))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	tests := []string{
+		"/admin/venues",
+		"/admin/venues/imaginary-hall",
+	}
+	for _, path := range tests {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want %d", path, rr.Code, http.StatusNotFound)
+		}
+		assertContains(t, rr.Body.String(), "404 page not found")
+	}
+}
+
+func TestSQLiteAdminVenuesListOnlyProvisionalVenues(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	body := renderPath(t, server, "/admin/venues")
+	assertContains(t, body, "Provisional venues")
+	assertContains(t, body, "Imaginary Hall marketing copy")
+	assertContains(t, body, "Quiet Room")
+	assertContains(t, body, `href="/admin/venues/imaginary-hall"`)
+	assertContains(t, body, `href="/admin/venues/quiet-room"`)
+	assertContains(t, body, `href="/events/imaginary-hall-future-show"`)
+	assertContains(t, body, "Future Show")
+	assertContains(t, body, ">1</td>")
+	assertNotContains(t, body, `href="/admin/venues/validated-room"`)
+	assertNotContains(t, body, "Validated Room")
+}
+
+func TestSQLiteAdminVenuesShowStagedProvisionalVenueWithoutEvents(t *testing.T) {
+	st, server, _ := mustAdminVenuesServer(t)
+	defer st.Close()
+
+	result, err := st.StageReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Staged new venue",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:staged-new-venue.ics",
+		StagingKey: "v1:staged-new-venue",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "candidate-a",
+			Name:             "Staged venue show",
+			VenueSlug:        "imagniary-hal-temp",
+			VenueText:        "Imaginary Hall",
+			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Staged without publishing an event.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !result.Created {
+		t.Fatal("created = false, want true")
+	}
+
+	body := renderPath(t, server, "/admin/venues")
+	assertContains(t, body, "Queue of provisional venue rows created from newly detected venue evidence.")
+	assertContains(t, body, `href="/admin/venues/imaginary-hall"`)
+	assertContains(t, body, "Imaginary Hall")
+	assertContains(t, body, ">0</td>")
+
+	detailBody := renderPath(t, server, "/admin/venues/imaginary-hall")
+	assertContains(t, detailBody, "No upcoming linked events for this provisional venue.")
+}
+
+func TestSQLitePublicVenuePagesRenderDerivedProvisionalVenueAddress(t *testing.T) {
+	st, server, _ := mustAdminVenuesServer(t)
+	defer st.Close()
+
+	result := ingest.ParseLeadmillICS([]byte("BEGIN:VCALENDAR\n" +
+		"BEGIN:VEVENT\n" +
+		"UID:memorial-hall-show\n" +
+		"SUMMARY:Memorial Hall Show\n" +
+		"LOCATION:Memorial Hall\\, Barkers Pool\\, Sheffield City Centre\\, Sheffield\\, S1 2JA\n" +
+		"CATEGORIES:Live\n" +
+		"DTSTART:20260501T190000Z\n" +
+		"DTEND:20260501T220000Z\n" +
+		"END:VEVENT\n" +
+		"END:VCALENDAR\n"))
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+
+	candidate := result.Candidates[0]
+	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(contextForTesting(), review.GroupInput{
+		Title:      "Memorial Hall imported",
+		SourceName: "Leadmill ICS",
+		SourceURL:  "file:memorial-hall.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       candidate.UID,
+			Name:             candidate.Summary,
+			VenueSlug:        ingest.VenueSlugFromText(candidate.Location),
+			VenueText:        candidate.Location,
+			VenueLocationRaw: candidate.LocationRaw,
+			StartAt:          candidate.StartAt,
+			EndAt:            candidate.EndAt,
+			Status:           "Listed",
+			Description:      "Imported from escaped ICS venue evidence.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+
+	adminQueueBody := renderPath(t, server, "/admin/venues")
+	assertContains(t, adminQueueBody, "Memorial Hall")
+	assertContains(t, adminQueueBody, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	assertNotContains(t, adminQueueBody, "Memorial Hall,\nBarkers Pool")
+
+	venueBody := renderPath(t, server, "/venues/memorial-hall")
+	assertContains(t, venueBody, "Memorial Hall")
+	assertContains(t, venueBody, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	assertContains(t, venueBody, "City Centre")
+	assertNotContains(t, venueBody, "Memorial Hall,\nBarkers Pool")
+
+	eventBody := renderPath(t, server, "/events/"+eventSlug)
+	assertContains(t, eventBody, "Memorial Hall Show")
+	assertContains(t, eventBody, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	assertContains(t, eventBody, "City Centre")
+	assertNotContains(t, eventBody, "Memorial Hall,\nBarkers Pool")
+
+	venuesBody := renderPath(t, server, "/venues")
+	assertContains(t, venuesBody, "Memorial Hall")
+	assertContains(t, venuesBody, "City Centre · Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	assertNotContains(t, venuesBody, "City Centre · Memorial Hall,\nBarkers Pool")
+}
+
+func TestStoredDuplicateVenueAddressLineIsHiddenAcrossPages(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if _, err := db.Exec(`
+		UPDATE venues
+		SET address = ?
+		WHERE slug = ?
+	`, "Imaginary Hall marketing copy,\n1 Void Street,\nSheffield", "imaginary-hall"); err != nil {
+		t.Fatalf("update venue address: %v", err)
+	}
+
+	adminQueueBody := renderPath(t, server, "/admin/venues")
+	assertContains(t, adminQueueBody, "1 Void Street,\nSheffield")
+	assertNotContains(t, adminQueueBody, "Imaginary Hall marketing copy,\n1 Void Street")
+
+	adminDetailBody := renderPath(t, server, "/admin/venues/imaginary-hall")
+	assertContains(t, adminDetailBody, "<textarea name=\"address\" rows=\"4\">1 Void Street,\nSheffield</textarea>")
+	assertNotContains(t, adminDetailBody, "Imaginary Hall marketing copy,\n1 Void Street")
+
+	venueBody := renderPath(t, server, "/venues/imaginary-hall")
+	assertContains(t, venueBody, "1 Void Street,\nSheffield")
+	assertNotContains(t, venueBody, "Imaginary Hall marketing copy,\n1 Void Street")
+
+	eventBody := renderPath(t, server, "/events/imaginary-hall-future-show")
+	assertContains(t, eventBody, "1 Void Street,\nSheffield")
+	assertNotContains(t, eventBody, "Imaginary Hall marketing copy,\n1 Void Street")
+
+	venuesBody := renderPath(t, server, "/venues")
+	assertContains(t, venuesBody, "City Centre · 1 Void Street,\nSheffield")
+	assertNotContains(t, venuesBody, "City Centre · Imaginary Hall marketing copy,\n1 Void Street")
+}
+
+func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	body := renderPath(t, server, "/admin/venues/imaginary-hall")
+	assertContains(t, body, "Imaginary Hall marketing copy")
+	assertContains(t, body, `href="/admin/venues"`)
+	assertContains(t, body, `name="action" value="save"`)
+	assertContains(t, body, `name="name" value="Imaginary Hall marketing copy"`)
+	assertContains(t, body, "<textarea name=\"address\" rows=\"4\">1 Void Street,\nSheffield</textarea>")
+	assertContains(t, body, `name="neighbourhood" value="City Centre"`)
+	assertContains(t, body, `name="website" value="https://example.test/imaginary-hall"`)
+	assertContains(t, body, `name="coverage_kind"`)
+	assertContains(t, body, `name="coverage_note"`)
+	assertContains(t, body, `method="post"`)
+	assertContains(t, body, "Validate venue")
+	assertContains(t, body, "Save venue fields")
+	assertContains(t, body, "Stored venue fields")
+	assertContains(t, body, ">imaginary-hall</dd>")
+	assertContains(t, body, "1 Void Street,\nSheffield")
+	assertContains(t, body, "City Centre")
+	assertContains(t, body, "Pop-up room for test fixtures.")
+	assertContains(t, body, "https://example.test/imaginary-hall")
+	assertContains(t, body, ">provisional</dd>")
+	assertContains(t, body, ">venue</dd>")
+	assertContains(t, body, ">live</dd>")
+	assertContains(t, body, "1 upcoming linked events")
+	assertContains(t, body, `href="/events/imaginary-hall-future-show"`)
+	assertContains(t, body, "Future Show")
+	assertContains(t, body, "Fixture ICS")
+	assertContains(t, body, "Upcoming linked event description.")
+	assertNotContains(t, body, "Past Show")
+}
+
+func TestAdminVenueDetailHidesWriteControlsWithoutVenueAdminWrites(t *testing.T) {
+	server, err := NewServer(testServerDeps(provisionalVenueReadOnlyReviewStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	queueBody := renderPath(t, server, "/admin/venues")
+	assertContains(t, queueBody, "Imaginary Hall marketing copy")
+
+	body := renderPath(t, server, "/admin/venues/imaginary-hall")
+	assertContains(t, body, "Imaginary Hall marketing copy")
+	assertContains(t, body, "Stored venue fields")
+	assertNotContains(t, body, "Validate venue")
+	assertNotContains(t, body, "Save venue fields")
+	assertNotContains(t, body, `name="action" value="save"`)
+	assertNotContains(t, body, `name="action" value="validate"`)
+
+	for _, form := range []string{"action=validate", "action=save"} {
+		req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", strings.NewReader(form))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want %d; body %q", form, rr.Code, http.StatusNotFound, rr.Body.String())
+		}
+		assertContains(t, rr.Body.String(), "404 page not found")
+	}
+}
+
+func TestSQLiteAdminVenueDetailValidatedSlugReturnsNotFound(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/venues/validated-room", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+	assertContains(t, rr.Body.String(), "404 page not found")
+}
+
+func TestSQLiteAdminVenueDetailUnknownSlugReturnsNotFound(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/venues/missing-room", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+	assertContains(t, rr.Body.String(), "404 page not found")
+}
+
+func TestSQLiteAdminVenueListRejectsPost(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues", strings.NewReader(""))
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "method not allowed")
+}
+
+func TestAdminVenuePagesRequireAdminSurface(t *testing.T) {
+	server, err := NewServer(testServerDeps(readOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	for _, path := range []string{"/admin/venues", "/admin/venues/imaginary-hall"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want %d; body %q", path, rr.Code, http.StatusNotFound, rr.Body.String())
+		}
+		assertContains(t, rr.Body.String(), "404 page not found")
+	}
+}
+
+func TestSQLiteAdminVenueDetailPostValidatesVenueAndRedirects(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	beforeVenueBody := renderPath(t, server, "/venues/imaginary-hall")
+	assertContains(t, beforeVenueBody, "Imaginary Hall marketing copy")
+	beforeEventBody := renderPath(t, server, "/events/imaginary-hall-future-show")
+	assertContains(t, beforeEventBody, "Future Show")
+	assertContains(t, beforeEventBody, "Imaginary Hall marketing copy")
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", strings.NewReader("action=validate"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	location := rr.Header().Get("Location")
+	if location != "/admin/venues?validated=1" {
+		t.Fatalf("Location = %q, want %q", location, "/admin/venues?validated=1")
+	}
+
+	queueBody := renderPath(t, server, location)
+	assertContains(t, queueBody, "Venue validated.")
+	assertNotContains(t, queueBody, "Imaginary Hall marketing copy")
+	assertNotContains(t, queueBody, `href="/admin/venues/imaginary-hall"`)
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	var validationState string
+	if err := db.QueryRow(`SELECT validation_state FROM venues WHERE slug = ?`, "imaginary-hall").Scan(&validationState); err != nil {
+		t.Fatalf("lookup validation state: %v", err)
+	}
+	if got, want := validationState, string(domain.ValidationStateValidated); got != want {
+		t.Fatalf("validation_state = %q, want %q", got, want)
+	}
+
+	afterVenueBody := renderPath(t, server, "/venues/imaginary-hall")
+	assertContains(t, afterVenueBody, "Imaginary Hall marketing copy")
+	afterEventBody := renderPath(t, server, "/events/imaginary-hall-future-show")
+	assertContains(t, afterEventBody, "Future Show")
+	assertContains(t, afterEventBody, "Imaginary Hall marketing copy")
+}
+
+func TestSQLiteAdminVenueDetailPostSavesEditedFields(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	form := strings.NewReader(url.Values{
+		"action":        {"save"},
+		"name":          {"Imaginary Hall"},
+		"address":       {"99 Updated Street, Sheffield"},
+		"neighbourhood": {"Kelham"},
+		"description":   {"Updated venue description."},
+		"website":       {"https://example.test/imaginary-hall-updated"},
+		"coverage_kind": {"program"},
+		"coverage_note": {"Programme-only while listings settle."},
+	}.Encode())
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/venues/imaginary-hall?saved=1" {
+		t.Fatalf("Location = %q, want %q", location, "/admin/venues/imaginary-hall?saved=1")
+	}
+
+	venue, ok, err := st.LoadVenueBySlug(contextForTesting(), "imaginary-hall")
+	if err != nil {
+		t.Fatalf("load venue: %v", err)
+	}
+	if !ok {
+		t.Fatal("saved venue not found")
+	}
+	if venue.Name != "Imaginary Hall" {
+		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
+	}
+	if venue.Address != "99 Updated Street, Sheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "99 Updated Street, Sheffield")
+	}
+	if venue.Neighbourhood != "Kelham" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Kelham")
+	}
+	if venue.Description != "Updated venue description." {
+		t.Fatalf("venue description = %q, want %q", venue.Description, "Updated venue description.")
+	}
+	if venue.Website != "https://example.test/imaginary-hall-updated" {
+		t.Fatalf("venue website = %q, want %q", venue.Website, "https://example.test/imaginary-hall-updated")
+	}
+	if venue.CoverageKind != domain.CoverageKindProgram {
+		t.Fatalf("venue coverage kind = %q, want %q", venue.CoverageKind, domain.CoverageKindProgram)
+	}
+	if venue.CoverageNote != "Programme-only while listings settle." {
+		t.Fatalf("venue coverage note = %q, want %q", venue.CoverageNote, "Programme-only while listings settle.")
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
+	}
+
+	body := renderPath(t, server, "/admin/venues/imaginary-hall?saved=1")
+	assertContains(t, body, "Venue saved.")
+	assertContains(t, body, `name="name" value="Imaginary Hall"`)
+	assertContains(t, body, "99 Updated Street,\nSheffield")
+	assertContains(t, body, "Programme-only while listings settle.")
+}
+
+func TestFormatVenueAddress(t *testing.T) {
+	tests := []struct {
+		name      string
+		venueName string
+		address   string
+		want      string
+	}{
+		{
+			name:      "drops duplicate first line",
+			venueName: "Memorial Hall",
+			address:   `Memorial Hall\, Barkers Pool\, Sheffield\, S1 2JA`,
+			want:      "Barkers Pool,\nSheffield,\nS1 2JA",
+		},
+		{
+			name:      "keeps non duplicate first line",
+			venueName: "Yellow Arch Studios",
+			address:   "Yellow Arch Road, Neepsend, Sheffield, S3 8BX",
+			want:      "Yellow Arch Road,\nNeepsend,\nSheffield,\nS3 8BX",
+		},
+		{
+			name:      "drops leading the variant",
+			venueName: "Leadmill",
+			address:   "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
+			want:      "6 Leadmill Road,\nSheffield City Centre,\nSheffield S1 4SE",
+		},
+		{
+			name:      "drops ampersand and and variant",
+			venueName: "Sidney & Matilda",
+			address:   "Sidney and Matilda, Rivelin Works, Sheffield",
+			want:      "Rivelin Works,\nSheffield",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatVenueAddress(tc.venueName, tc.address)
+			if got != tc.want {
+				t.Fatalf("formatVenueAddress() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSQLiteAdminVenueDetailPostRejectsMissingAndNonProvisionalVenues(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	tests := []string{
+		"/admin/venues/missing-room",
+		"/admin/venues/validated-room",
+	}
+	for _, path := range tests {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("action=validate"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want %d; body %q", path, rr.Code, http.StatusNotFound, rr.Body.String())
+		}
+		assertContains(t, rr.Body.String(), "404 page not found")
+	}
+}
+
+func TestSQLiteAdminVenueDetailPostRejectsInvalidCoverageKind(t *testing.T) {
+	st, server, path := mustAdminVenuesServer(t)
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", strings.NewReader("action=save&coverage_kind=sideways"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "invalid coverage kind")
+}
+
+func TestAdminPagesLinkToProvisionalVenues(t *testing.T) {
+	st, server, runID, _, path := mustImportRunDetailServer(t, false)
+	defer st.Close()
+
+	groupID := mustCreateWebReviewGroupForImportRun(t, st, path, "Fixture review group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 2)
+
+	reviewBody := renderPath(t, server, "/admin/review")
+	assertContains(t, reviewBody, `href="/admin/venues"`)
+
+	reviewDetailBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
+	assertContains(t, reviewDetailBody, `href="/admin/venues"`)
+
+	importRunsBody := renderPath(t, server, "/admin/import-runs")
+	assertContains(t, importRunsBody, `href="/admin/venues"`)
+
+	importRunDetailBody := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
+	assertContains(t, importRunDetailBody, `href="/admin/venues"`)
+}
+
+func TestAdminReviewHistoryLinksToProvisionalVenues(t *testing.T) {
+	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review/history")
+	assertContains(t, body, `href="/admin/venues"`)
+}
+
+func TestAdminImportRunDetailReplayOnlyShowsProvisionalVenuesLink(t *testing.T) {
+	server, err := NewServer(testServerDeps(replayOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/import-runs/1")
+	assertContains(t, body, "Import run #1")
+	assertContains(t, body, `href="/admin/venues"`)
+	assertNotContains(t, body, `href="/admin/review"`)
+	assertNotContains(t, body, `href="/admin/import-runs"`)
+}
+
 func TestSQLiteAdminImportRunDetailInvalidAndMissingIDs(t *testing.T) {
 	st, server, _, _, _ := mustImportRunDetailServer(t, false)
 	defer st.Close()
@@ -876,6 +1421,7 @@ func TestSQLiteAdminReviewHistoryListsClosedGroupsNewestFirst(t *testing.T) {
 	body := renderPath(t, server, "/admin/review/history")
 	assertContains(t, body, "Review history")
 	assertContains(t, body, `href="/admin/review"`)
+	assertContains(t, body, `href="/admin/venues"`)
 	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(rejectedID)+`"`)
 	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(resolvedID)+`"`)
 	assertContains(t, body, "rejected")
@@ -2049,6 +2595,26 @@ func mustReviewServerWithSingletonGroup(t *testing.T) (*sqlitestore.Store, *Serv
 	return st, server, groupID, path
 }
 
+func mustAdminVenuesServer(t *testing.T) (*sqlitestore.Store, *Server, string) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		_ = st.Close()
+		t.Fatalf("new server: %v", err)
+	}
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 19, 10, 0)
+	})
+	return st, server, path
+}
+
 func mustRawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 
@@ -2129,6 +2695,43 @@ func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store
 	}
 
 	return st, server, runID, bodyText, path
+}
+
+func seedAdminVenueFixtures(t *testing.T, path string) {
+	t.Helper()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	mustInsertAdminVenue(t, db, domain.Venue{
+		Slug:            "imaginary-hall",
+		Name:            "Imaginary Hall marketing copy",
+		Address:         "1 Void Street, Sheffield",
+		Neighbourhood:   "City Centre",
+		Description:     "Pop-up room for test fixtures.",
+		Website:         "https://example.test/imaginary-hall",
+		ValidationState: domain.ValidationStateProvisional,
+		CoverageKind:    domain.CoverageKindVenue,
+		Origin:          domain.OriginLive,
+	})
+	mustInsertAdminVenue(t, db, domain.Venue{
+		Slug:            "quiet-room",
+		Name:            "Quiet Room",
+		ValidationState: domain.ValidationStateProvisional,
+		Origin:          domain.OriginLive,
+	})
+	mustInsertAdminVenue(t, db, domain.Venue{
+		Slug:            "validated-room",
+		Name:            "Validated Room",
+		Address:         "10 Verified Street, Sheffield",
+		ValidationState: domain.ValidationStateValidated,
+		Origin:          domain.OriginLive,
+	})
+
+	sourceID := mustInsertAdminSource(t, db, "Fixture ICS", "https://example.test/fixture")
+	mustInsertAdminEvent(t, db, sourceID, "imaginary-hall-future-show", "imaginary-hall", "Future Show", fixtureLocalTime(2026, time.April, 20, 19, 30), fixtureLocalTime(2026, time.April, 20, 22, 0), "Upcoming linked event description.")
+	mustInsertAdminEvent(t, db, sourceID, "imaginary-hall-past-show", "imaginary-hall", "Past Show", fixtureLocalTime(2026, time.April, 18, 19, 0), fixtureLocalTime(2026, time.April, 18, 21, 0), "Past linked event description.")
+	mustInsertAdminEvent(t, db, sourceID, "validated-room-future-show", "validated-room", "Validated Venue Show", fixtureLocalTime(2026, time.April, 21, 20, 0), fixtureLocalTime(2026, time.April, 21, 22, 0), "Validated venue event.")
 }
 
 func mustWebSnapshotPayload(t *testing.T, result ingest.FetchResult) string {
@@ -2357,6 +2960,54 @@ func mustCreateWebPublishableReviewGroupForImportRun(t *testing.T, st *sqlitesto
 	return groupID
 }
 
+func mustInsertAdminVenue(t *testing.T, db *sql.DB, venue domain.Venue) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+		INSERT INTO venues (slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, venue.Slug, venue.Name, venue.Address, venue.Neighbourhood, venue.Description, venue.Website, string(venue.ValidationState), string(venue.CoverageKind), venue.CoverageNote, string(venue.Origin)); err != nil {
+		t.Fatalf("insert venue %q: %v", venue.Slug, err)
+	}
+}
+
+func mustInsertAdminSource(t *testing.T, db *sql.DB, name, sourceURL string) int64 {
+	t.Helper()
+
+	res, err := db.Exec(`
+		INSERT INTO sources (name, url)
+		VALUES (?, ?)
+	`, name, sourceURL)
+	if err != nil {
+		t.Fatalf("insert source %q: %v", name, err)
+	}
+	sourceID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("source last insert id: %v", err)
+	}
+	return sourceID
+}
+
+func mustInsertAdminEvent(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, name string, startAt, endAt time.Time, description string) {
+	t.Helper()
+
+	var venueID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+	`, venueSlug).Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue id for %q: %v", venueSlug, err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug, venue_id, source_id, name, start_at, end_at, genre, status, description, last_checked_at, origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, name, startAt.Format(time.RFC3339), endAt.Format(time.RFC3339), "Indie", "Listed", description, fixtureLocalTime(2026, time.April, 19, 9, 0).Format(time.RFC3339), string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert event %q: %v", slug, err)
+	}
+}
+
 type readOnlyStoreStub struct{}
 
 func (readOnlyStoreStub) ListVenues(context.Context) ([]domain.Venue, error) { return nil, nil }
@@ -2412,6 +3063,39 @@ func (reviewOnlyStoreStub) UpdateReviewGroupStatus(context.Context, int64, strin
 	return nil
 }
 
+type provisionalVenueReadOnlyReviewStoreStub struct {
+	reviewOnlyStoreStub
+}
+
+func (provisionalVenueReadOnlyReviewStoreStub) ListVenues(context.Context) ([]domain.Venue, error) {
+	return []domain.Venue{readOnlyProvisionalVenueFixture()}, nil
+}
+
+func (provisionalVenueReadOnlyReviewStoreStub) LoadVenueBySlug(_ context.Context, slug string) (domain.Venue, bool, error) {
+	if slug != "imaginary-hall" {
+		return domain.Venue{}, false, nil
+	}
+	return readOnlyProvisionalVenueFixture(), true, nil
+}
+
+func (provisionalVenueReadOnlyReviewStoreStub) ListEventsForVenue(context.Context, string) ([]domain.Event, error) {
+	return nil, nil
+}
+
+func readOnlyProvisionalVenueFixture() domain.Venue {
+	return domain.Venue{
+		Slug:            "imaginary-hall",
+		Name:            "Imaginary Hall marketing copy",
+		Address:         "1 Void Street, Sheffield",
+		Neighbourhood:   "City Centre",
+		Description:     "Pop-up room for test fixtures.",
+		Website:         "https://example.test/imaginary-hall",
+		ValidationState: domain.ValidationStateProvisional,
+		CoverageKind:    domain.CoverageKindVenue,
+		Origin:          domain.OriginLive,
+	}
+}
+
 type importHistoryOnlyStoreStub struct {
 	readOnlyStoreStub
 }
@@ -2464,6 +3148,10 @@ type importHistoryWithDetailNoReviewStoreStub struct {
 	importHistoryOnlyStoreStub
 }
 
+type replayOnlyStoreStub struct {
+	readOnlyStoreStub
+}
+
 type failingReadyChecker struct{}
 
 func (failingReadyChecker) Ready(context.Context) error {
@@ -2488,6 +3176,15 @@ func (importHistoryWithDetailNoReviewStoreStub) ListReviewGroupsForImportRun(con
 			CandidateCount: 1,
 			UpdatedAt:      time.Date(2026, time.April, 20, 10, 1, 0, 0, time.UTC),
 		},
+	}, nil
+}
+
+func (replayOnlyStoreStub) LoadImportRun(context.Context, int64) (ingest.ReplayRun, error) {
+	return ingest.ReplayRun{
+		ID:        1,
+		StartedAt: time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
+		Status:    "succeeded",
+		Notes:     "fixture",
 	}, nil
 }
 
