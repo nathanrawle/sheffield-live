@@ -98,6 +98,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - non-authoritative singleton auto-promotion can create a `provisional` live venue row immediately when singleton venue evidence is uniquely new
 - when manual review resolution finds no unique existing venue match, it inserts a `provisional` live venue in the same transaction and publishes the event against that venue if an earlier flow has not already created it
 - admins can later edit a provisional venue in place and flip it to `validated` from the provisional venue detail page without changing linked public events
+- venue closure or retirement should use a future lifecycle state separate from `origin` and `validation_state`
 - ambiguous venue evidence fails closed and rolls back the review resolution transaction
 - authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
 - authoritative identity takes precedence over canonical slug attachment when they disagree

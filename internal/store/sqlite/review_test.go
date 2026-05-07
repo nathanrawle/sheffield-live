@@ -2570,15 +2570,8 @@ func TestResolveReviewGroupRollsBackProvisionalVenueWhenLaterCanonicalUpdateFail
 		t.Fatalf("rewrite venue evidence: %v", err)
 	}
 
-	var canonicalEventID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM events
-		ORDER BY id
-		LIMIT 1
-	`).Scan(&canonicalEventID); err != nil {
-		t.Fatalf("lookup canonical event id: %v", err)
-	}
+	sourceID := mustEnsureReviewTestSource(t, db)
+	canonicalEventID := mustInsertReviewTestEvent(t, db, sourceID, "canonical-rollback-anchor", "sidney-and-matilda", "Canonical Rollback Anchor")
 	if _, err := db.Exec(`
 		UPDATE review_candidates
 		SET canonical_event_id = ?
@@ -2594,15 +2587,6 @@ func TestResolveReviewGroupRollsBackProvisionalVenueWhenLaterCanonicalUpdateFail
 		WHERE slug = ?
 	`, "leadmill").Scan(&venueID); err != nil {
 		t.Fatalf("lookup venue id: %v", err)
-	}
-	var sourceID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM sources
-		ORDER BY id
-		LIMIT 1
-	`).Scan(&sourceID); err != nil {
-		t.Fatalf("lookup source id: %v", err)
 	}
 	if _, err := db.Exec(`
 		INSERT INTO events (
@@ -2621,7 +2605,7 @@ func TestResolveReviewGroupRollsBackProvisionalVenueWhenLaterCanonicalUpdateFail
 	`, "live-solo-show-imaginary-hall-20260503190000", venueID, sourceID, "Existing conflict", "2026-05-10T10:00:00Z", "2026-05-10T12:00:00Z", "Other", "Listed", "Conflict row", "2026-05-09T09:00:00Z", string(domain.OriginTest)); err != nil {
 		t.Fatalf("insert conflicting event: %v", err)
 	}
-	beforeEventCount++
+	beforeEventCount = mustCount(t, db, "events")
 
 	err = st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group))
 	if err == nil {
@@ -2829,62 +2813,37 @@ func TestResolveReviewGroupCreatesProvisionalVenueFromNormalizedHumanEvidence(t 
 		UPDATE review_candidates
 		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
 		WHERE id = ?
-	`, "imagniary-hal-temp", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Sheffield", group.Candidates[0].ID); err != nil {
+	`, "imagniary-hal-temp", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Neepsend, Sheffield", group.Candidates[0].ID); err != nil {
 		t.Fatalf("rewrite venue evidence: %v", err)
 	}
 
-	var venueID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM venues
-		WHERE slug = ?
-	`, "leadmill").Scan(&venueID); err != nil {
-		t.Fatalf("lookup venue id: %v", err)
-	}
-	sourceID := mustEnsureReviewTestSource(t, db)
-	canonicalEventID := mustInsertReviewTestEvent(t, db, sourceID, "canonical-rollback-anchor", "sidney-and-matilda", "Canonical Rollback Anchor")
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET canonical_event_id = ?
-		WHERE id = ?
-	`, canonicalEventID, group.Candidates[0].ID); err != nil {
-		t.Fatalf("set canonical event id: %v", err)
-	}
-	if _, err := db.Exec(`
-		INSERT INTO events (
-			slug,
-			venue_id,
-			source_id,
-			name,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			last_checked_at,
-			origin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, "live-solo-show-imaginary-hall-20260503190000", venueID, sourceID, "Existing conflict", "2026-05-10T10:00:00Z", "2026-05-10T12:00:00Z", "Other", "Listed", "Conflict row", "2026-05-09T09:00:00Z", string(domain.OriginTest)); err != nil {
-		t.Fatalf("insert conflicting event: %v", err)
-	}
-	beforeEventCount = mustCount(t, db, "events")
-
-	err = st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group))
-	if err == nil {
-		t.Fatal("expected resolve review group to fail")
-	}
-	if got, want := err.Error(), `review event slug "live-solo-show-imaginary-hall-20260503190000" already belongs to a different event`; got != want {
-		t.Fatalf("resolve error = %q, want %q", got, want)
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
 	}
 
-	if _, ok := st.VenueBySlug("imaginary-hall"); ok {
-		t.Fatal("provisional venue row survived rolled-back resolve")
+	venue, ok := st.VenueBySlug("imaginary-hall")
+	if !ok {
+		t.Fatal("normalized provisional venue not found")
 	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
-		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
+	if venue.Name != "Imaginary Hall" {
+		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
 	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	if venue.Address != "1 Void Street,\nNeepsend,\nSheffield" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nNeepsend,\nSheffield")
+	}
+	if venue.Neighbourhood != "Neepsend" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
+	}
+	if _, ok := st.VenueBySlug("imagniary-hal-temp"); ok {
+		t.Fatal("stale provisional venue slug was inserted")
+	}
+
+	event, ok := st.EventBySlug("live-solo-show-imaginary-hall-20260503190000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	if event.VenueSlug != "imaginary-hall" {
+		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "imaginary-hall")
 	}
 
 	after, ok, err := st.LoadReviewGroup(ctx, groupID)
