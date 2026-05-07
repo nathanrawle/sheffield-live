@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"sheffield-live/internal/domain"
 )
@@ -52,7 +51,7 @@ func NewSeedStore() *Store {
 			Website:         "https://www.cafe9sheffield.co.uk/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "corporation",
@@ -63,7 +62,7 @@ func NewSeedStore() *Store {
 			Website:         "https://www.corporation.org.uk/live/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "leadmill",
@@ -74,7 +73,7 @@ func NewSeedStore() *Store {
 			Website:         "https://leadmill.co.uk/events/live-music/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "lescar",
@@ -86,7 +85,7 @@ func NewSeedStore() *Store {
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindProgram,
 			CoverageNote:    "Current coverage follows the Jazz at The Lescar programme rather than every event at The Lescar.",
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "greystones",
@@ -97,7 +96,7 @@ func NewSeedStore() *Store {
 			Website:         "https://www.mygreystones.co.uk/events/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "yellow-arch",
@@ -108,7 +107,7 @@ func NewSeedStore() *Store {
 			Website:         "https://www.yellowarch.com/events/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 		{
 			Slug:            "sidney-and-matilda",
@@ -119,73 +118,11 @@ func NewSeedStore() *Store {
 			Website:         "https://www.sidneyandmatilda.com/",
 			ValidationState: domain.ValidationStateValidated,
 			CoverageKind:    domain.CoverageKindVenue,
-			Origin:          domain.OriginSeed,
+			Origin:          domain.OriginLive,
 		},
 	}
 
-	checked := localTime(2026, time.April, 19, 10, 0)
-	events := []domain.Event{
-		{
-			Slug:             "matinee-noise-at-the-leadmill",
-			Name:             "Matinee Noise",
-			VenueSlug:        "leadmill",
-			Start:            localTime(2026, time.May, 8, 19, 30),
-			End:              localTime(2026, time.May, 8, 23, 0),
-			Genre:            "Indie / alt",
-			Status:           "Listed",
-			Description:      "A Friday bill with local support and a touring headliner.",
-			SourceName:       "The Leadmill live music listings",
-			SourceURL:        "https://leadmill.co.uk/events/live-music/",
-			LastChecked:      checked,
-			Origin:           domain.OriginSeed,
-			PublicationState: domain.PublicationStateReviewed,
-		},
-		{
-			Slug:             "neepsend-afterhours",
-			Name:             "Abbeydale Afterhours",
-			VenueSlug:        "yellow-arch",
-			Start:            localTime(2026, time.May, 14, 20, 0),
-			End:              localTime(2026, time.May, 14, 23, 30),
-			Genre:            "Jazz / soul",
-			Status:           "Listed",
-			Description:      "A midweek set with keys, brass, and soul.",
-			SourceName:       "Yellow Arch what's on",
-			SourceURL:        "https://www.yellowarch.com/events/",
-			LastChecked:      checked,
-			Origin:           domain.OriginSeed,
-			PublicationState: domain.PublicationStateReviewed,
-		},
-		{
-			Slug:             "courtyard-wildcards",
-			Name:             "Courtyard Wildcards",
-			VenueSlug:        "sidney-and-matilda",
-			Start:            localTime(2026, time.May, 22, 18, 45),
-			End:              localTime(2026, time.May, 22, 22, 45),
-			Genre:            "Punk / garage",
-			Status:           "Listed",
-			Description:      "A garage and punk double bill.",
-			SourceName:       "Sidney & Matilda listings",
-			SourceURL:        "https://www.sidneyandmatilda.com/",
-			LastChecked:      checked,
-			Origin:           domain.OriginSeed,
-			PublicationState: domain.PublicationStateReviewed,
-		},
-		{
-			Slug:             "leadmill-late-room",
-			Name:             "Late Room",
-			VenueSlug:        "leadmill",
-			Start:            localTime(2026, time.June, 5, 22, 0),
-			End:              localTime(2026, time.June, 6, 1, 0),
-			Genre:            "DJ / club",
-			Status:           "Listed",
-			Description:      "A late-room dance set.",
-			SourceName:       "The Leadmill live music listings",
-			SourceURL:        "https://leadmill.co.uk/events/live-music/",
-			LastChecked:      checked,
-			Origin:           domain.OriginSeed,
-			PublicationState: domain.PublicationStateReviewed,
-		},
-	}
+	events := []domain.Event{}
 
 	return NewStore(venues, events)
 }
@@ -285,16 +222,4 @@ func sortEvents(events []domain.Event) {
 		}
 		return events[i].Start.Before(events[j].Start)
 	})
-}
-
-func localTime(year int, month time.Month, day, hour, minute int) time.Time {
-	return time.Date(year, month, day, hour, minute, 0, 0, sheffieldLocation()).UTC()
-}
-
-func sheffieldLocation() *time.Location {
-	loc, err := time.LoadLocation("Europe/London")
-	if err != nil {
-		return time.FixedZone("Europe/London", 0)
-	}
-	return loc
 }

@@ -33,10 +33,21 @@ func TestImportWriteMethods(t *testing.T) {
 
 	sourceID, err := st.EnsureSource(ctx, "Sidney & Matilda listings", "https://www.sidneyandmatilda.com/")
 	if err != nil {
+		t.Fatalf("ensure new source: %v", err)
+	}
+	if got, want := mustCount(t, db, "sources"), sourceCount+1; got != want {
+		t.Fatalf("sources after new ensure = %d, want %d", got, want)
+	}
+
+	existingSourceID, err := st.EnsureSource(ctx, "Sidney & Matilda listings", "https://www.sidneyandmatilda.com/")
+	if err != nil {
 		t.Fatalf("ensure existing source: %v", err)
 	}
-	if got := mustCount(t, db, "sources"); got != sourceCount {
-		t.Fatalf("sources after existing ensure = %d, want %d", got, sourceCount)
+	if existingSourceID != sourceID {
+		t.Fatalf("existing source ID = %d, want %d", existingSourceID, sourceID)
+	}
+	if got, want := mustCount(t, db, "sources"), sourceCount+1; got != want {
+		t.Fatalf("sources after existing ensure = %d, want %d", got, want)
 	}
 
 	icsSourceID, err := st.EnsureSource(ctx, "Sidney & Matilda Google Calendar ICS", "https://calendar.example.test/basic.ics")
@@ -46,7 +57,7 @@ func TestImportWriteMethods(t *testing.T) {
 	if icsSourceID == sourceID {
 		t.Fatalf("ICS source ID = existing source ID %d", sourceID)
 	}
-	if got, want := mustCount(t, db, "sources"), sourceCount+1; got != want {
+	if got, want := mustCount(t, db, "sources"), sourceCount+2; got != want {
 		t.Fatalf("sources after new ensure = %d, want %d", got, want)
 	}
 

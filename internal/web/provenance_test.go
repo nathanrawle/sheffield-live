@@ -11,19 +11,15 @@ import (
 	"sheffield-live/internal/store"
 )
 
-func TestSeedPagesShowOriginLabels(t *testing.T) {
+func TestBootstrapPagesRenderWithoutOriginLabels(t *testing.T) {
 	server := mustServer(t, store.NewSeedStore())
 
 	for _, path := range []string{
 		"/events",
 		"/venues",
-		"/events/matinee-noise-at-the-leadmill",
 		"/venues/leadmill",
 	} {
-		body := renderPath(t, server, path)
-		if !strings.Contains(body, "Seed data") {
-			t.Fatalf("%s missing seed badge in %q", path, body)
-		}
+		assertNoOriginLabels(t, renderPath(t, server, path))
 	}
 }
 
@@ -150,13 +146,13 @@ func TestMixedPagesBadgeItemByItem(t *testing.T) {
 	))
 
 	eventBody := renderPath(t, server, "/events")
-	assertLabelCount(t, eventBody, "Seed data", 1)
+	assertLabelCount(t, eventBody, "Seed data", 0)
 	assertLabelCount(t, eventBody, "Test data", 1)
 	assertLabelCount(t, eventBody, "Development data", 1)
 	assertLabelCount(t, eventBody, "live data", 0)
 
 	venueBody := renderPath(t, server, "/venues")
-	assertLabelCount(t, venueBody, "Seed data", 1)
+	assertLabelCount(t, venueBody, "Seed data", 0)
 	assertLabelCount(t, venueBody, "Test data", 1)
 	assertLabelCount(t, venueBody, "Development data", 1)
 	assertLabelCount(t, venueBody, "live data", 0)

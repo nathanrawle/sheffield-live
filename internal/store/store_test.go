@@ -14,8 +14,8 @@ func TestSeedStoreLookups(t *testing.T) {
 	if got := len(st.Venues()); got != 7 {
 		t.Fatalf("venues = %d, want 7", got)
 	}
-	if got := len(st.Events()); got != 4 {
-		t.Fatalf("events = %d, want 4", got)
+	if got := len(st.Events()); got != 0 {
+		t.Fatalf("events = %d, want 0", got)
 	}
 
 	if _, ok := st.VenueBySlug("leadmill"); !ok {
@@ -33,30 +33,26 @@ func TestSeedStoreLookups(t *testing.T) {
 	if _, ok := st.VenueBySlug("greystones"); !ok {
 		t.Fatal("expected greystones venue")
 	}
-	if _, ok := st.EventBySlug("matinee-noise-at-the-leadmill"); !ok {
-		t.Fatal("expected matinee-noise-at-the-leadmill event")
-	}
-
 	events := st.EventsForVenue("leadmill")
-	if got := len(events); got != 2 {
-		t.Fatalf("leadmill events = %d, want 2", got)
+	if got := len(events); got != 0 {
+		t.Fatalf("leadmill events = %d, want 0", got)
 	}
 }
 
-func TestSeedStoreMarksAllFixturesSeed(t *testing.T) {
+func TestSeedStoreMarksBootstrapRecordsLive(t *testing.T) {
 	st := NewSeedStore()
 
 	for _, venue := range st.Venues() {
-		if venue.Origin != domain.OriginSeed {
-			t.Fatalf("venue %q origin = %q, want seed", venue.Slug, venue.Origin)
+		if venue.Origin != domain.OriginLive {
+			t.Fatalf("venue %q origin = %q, want live", venue.Slug, venue.Origin)
 		}
 		if venue.ValidationState != domain.ValidationStateValidated {
 			t.Fatalf("venue %q validation state = %q, want validated", venue.Slug, venue.ValidationState)
 		}
 	}
 	for _, event := range st.Events() {
-		if event.Origin != domain.OriginSeed {
-			t.Fatalf("event %q origin = %q, want seed", event.Slug, event.Origin)
+		if event.Origin != domain.OriginLive {
+			t.Fatalf("event %q origin = %q, want live", event.Slug, event.Origin)
 		}
 	}
 }
@@ -114,16 +110,10 @@ func TestValidateRejectsMissingVenueReference(t *testing.T) {
 	}
 }
 
-func TestSeedEventsStoreUTC(t *testing.T) {
+func TestSeedStoreHasNoBootstrapEvents(t *testing.T) {
 	st := NewSeedStore()
-	event, ok := st.EventBySlug("matinee-noise-at-the-leadmill")
-	if !ok {
-		t.Fatal("expected event")
-	}
-	if event.Start.Location() != time.UTC {
-		t.Fatalf("start location = %v, want UTC", event.Start.Location())
-	}
-	if event.LastChecked.Location() != time.UTC {
-		t.Fatalf("last checked location = %v, want UTC", event.LastChecked.Location())
+
+	if got := len(st.Events()); got != 0 {
+		t.Fatalf("events = %d, want 0", got)
 	}
 }

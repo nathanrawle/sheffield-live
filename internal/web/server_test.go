@@ -36,7 +36,6 @@ func TestRoutes(t *testing.T) {
 	}{
 		{name: "home", path: "/", code: http.StatusOK, body: "Sheffield live music"},
 		{name: "events", path: "/events", code: http.StatusOK, body: "Upcoming shows"},
-		{name: "event detail", path: "/events/matinee-noise-at-the-leadmill", code: http.StatusOK, body: "The Leadmill live music listings"},
 		{name: "venues", path: "/venues", code: http.StatusOK, body: "Sheffield rooms"},
 		{name: "venue detail", path: "/venues/leadmill", code: http.StatusOK, body: "Leadmill"},
 		{name: "static css", path: "/static/site.css", code: http.StatusOK, body: "color-scheme"},
@@ -999,8 +998,20 @@ func TestSQLiteEventDetailRendersSecondarySourceInfo(t *testing.T) {
 
 	db := mustRawDB(t, path)
 	defer db.Close()
+	primarySourceID := mustInsertAdminSource(t, db, "Primary source", "https://example.test/primary")
+	mustInsertAdminEvent(
+		t,
+		db,
+		primarySourceID,
+		"secondary-source-event",
+		"leadmill",
+		"Secondary Source Event",
+		fixtureLocalTime(2026, time.May, 8, 19, 30),
+		fixtureLocalTime(2026, time.May, 8, 22, 30),
+		"Primary description.",
+	)
 	var eventID int64
-	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, "matinee-noise-at-the-leadmill").Scan(&eventID); err != nil {
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, "secondary-source-event").Scan(&eventID); err != nil {
 		t.Fatalf("lookup event id: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Songkick mirror", "https://example.test/songkick/matinee-noise"); err != nil {
@@ -1029,7 +1040,7 @@ func TestSQLiteEventDetailRendersSecondarySourceInfo(t *testing.T) {
 				created_at,
 				updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, eventID, sourceID, "leadmill", "Matinee Noise", "2026-05-08T18:30:00Z", row.infoType, row.value, "2026-04-21T10:00:00Z", "2026-04-21T10:00:00Z"); err != nil {
+		`, eventID, sourceID, "leadmill", "Secondary Source Event", "2026-05-08T18:30:00Z", row.infoType, row.value, "2026-04-21T10:00:00Z", "2026-04-21T10:00:00Z"); err != nil {
 			t.Fatalf("insert secondary source info row: %v", err)
 		}
 	}
@@ -1039,13 +1050,13 @@ func TestSQLiteEventDetailRendersSecondarySourceInfo(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 
-	body := renderPath(t, server, "/events/matinee-noise-at-the-leadmill")
+	body := renderPath(t, server, "/events/secondary-source-event")
 	assertContains(t, body, "Also seen from other sources")
 	assertContains(t, body, `href="https://example.test/songkick/matinee-noise"`)
 	assertContains(t, body, "Songkick mirror")
 	assertContains(t, body, "<strong>Genre</strong>: Post-punk")
 	assertContains(t, body, "Late update from a secondary listing.")
-	assertContains(t, body, "The Leadmill live music listings")
+	assertContains(t, body, "Primary source")
 }
 
 func TestSQLiteEventDetailOmitsSecondarySourceInfoWhenNoneExists(t *testing.T) {
@@ -1061,14 +1072,29 @@ func TestSQLiteEventDetailOmitsSecondarySourceInfoWhenNoneExists(t *testing.T) {
 		}
 	}()
 
+	db := mustRawDB(t, path)
+	defer db.Close()
+	primarySourceID := mustInsertAdminSource(t, db, "Primary source", "https://example.test/primary")
+	mustInsertAdminEvent(
+		t,
+		db,
+		primarySourceID,
+		"primary-only-event",
+		"leadmill",
+		"Primary Only Event",
+		fixtureLocalTime(2026, time.May, 8, 19, 30),
+		fixtureLocalTime(2026, time.May, 8, 22, 30),
+		"Primary description.",
+	)
+
 	server, err := NewServer(testServerDeps(st))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
 
-	body := renderPath(t, server, "/events/matinee-noise-at-the-leadmill")
+	body := renderPath(t, server, "/events/primary-only-event")
 	assertNotContains(t, body, "Also seen from other sources")
-	assertContains(t, body, "The Leadmill live music listings")
+	assertContains(t, body, "Primary source")
 }
 
 func TestHomeShowsTodayAndThisWeekWithFixedClock(t *testing.T) {

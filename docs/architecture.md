@@ -13,8 +13,8 @@ Sheffield Live is a single Go monolith. It serves server-rendered HTML from one 
 - `internal/domain` defines shared venue, event, and origin types
 - `internal/ingest` loads the source catalog, fetches source pages, dispatches to bounded parser/extractor families, and stages review groups from ingest reports
 - `internal/review` defines review group, candidate, default-choice, and draft-choice types
-- `internal/store` provides the seed-store implementation and catalog interface
-- `internal/store/sqlite` opens SQLite, runs migrations, bootstraps seed data, and implements persistence
+- `internal/store` provides the bootstrap-store implementation and catalog interface
+- `internal/store/sqlite` opens SQLite, runs migrations, bootstraps curated baseline venues, and implements persistence
 - `internal/web` routes requests and renders pages
 - `internal/web/static` embeds `site.css`
 - `internal/web/templates` embeds HTML templates
@@ -98,6 +98,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - non-authoritative singleton auto-promotion can create a `provisional` live venue row immediately when singleton venue evidence is uniquely new
 - when manual review resolution finds no unique existing venue match, it inserts a `provisional` live venue in the same transaction and publishes the event against that venue if an earlier flow has not already created it
 - admins can later edit a provisional venue in place and flip it to `validated` from the provisional venue detail page without changing linked public events
+- venue closure or retirement should use a future lifecycle state separate from `origin` and `validation_state`
 - ambiguous venue evidence fails closed and rolls back the review resolution transaction
 - authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
 - authoritative identity takes precedence over canonical slug attachment when they disagree
@@ -115,5 +116,5 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 
 ## Visibility
 
-Seed, test, and development records are visible in the UI through their origin labels.
-Live records are not tagged.
+Test and development records are visible in the UI through their origin labels.
+Curated bootstrap venues and live records are not tagged.

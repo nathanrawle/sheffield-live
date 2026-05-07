@@ -2570,15 +2570,8 @@ func TestResolveReviewGroupRollsBackProvisionalVenueWhenLaterCanonicalUpdateFail
 		t.Fatalf("rewrite venue evidence: %v", err)
 	}
 
-	var canonicalEventID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM events
-		ORDER BY id
-		LIMIT 1
-	`).Scan(&canonicalEventID); err != nil {
-		t.Fatalf("lookup canonical event id: %v", err)
-	}
+	sourceID := mustEnsureReviewTestSource(t, db)
+	canonicalEventID := mustInsertReviewTestEvent(t, db, sourceID, "canonical-rollback-anchor", "sidney-and-matilda", "Canonical Rollback Anchor")
 	if _, err := db.Exec(`
 		UPDATE review_candidates
 		SET canonical_event_id = ?
@@ -2594,15 +2587,6 @@ func TestResolveReviewGroupRollsBackProvisionalVenueWhenLaterCanonicalUpdateFail
 		WHERE slug = ?
 	`, "leadmill").Scan(&venueID); err != nil {
 		t.Fatalf("lookup venue id: %v", err)
-	}
-	var sourceID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM sources
-		ORDER BY id
-		LIMIT 1
-	`).Scan(&sourceID); err != nil {
-		t.Fatalf("lookup source id: %v", err)
 	}
 	if _, err := db.Exec(`
 		INSERT INTO events (
@@ -2621,7 +2605,7 @@ func TestResolveReviewGroupRollsBackProvisionalVenueWhenLaterCanonicalUpdateFail
 	`, "live-solo-show-imaginary-hall-20260503190000", venueID, sourceID, "Existing conflict", "2026-05-10T10:00:00Z", "2026-05-10T12:00:00Z", "Other", "Listed", "Conflict row", "2026-05-09T09:00:00Z", string(domain.OriginTest)); err != nil {
 		t.Fatalf("insert conflicting event: %v", err)
 	}
-	beforeEventCount++
+	beforeEventCount = mustCount(t, db, "events")
 
 	err = st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group))
 	if err == nil {
@@ -2824,6 +2808,7 @@ func TestResolveReviewGroupCreatesProvisionalVenueFromNormalizedHumanEvidence(t 
 	if !ok {
 		t.Fatal("review group not found")
 	}
+
 	if _, err := db.Exec(`
 		UPDATE review_candidates
 		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
@@ -4531,15 +4516,7 @@ func TestPromoteSingletonReviewGroupIfMissingAttachesLegacySlugMatch(t *testing.
 	`, "leadmill").Scan(&venueID); err != nil {
 		t.Fatalf("lookup venue id: %v", err)
 	}
-	var sourceID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM sources
-		ORDER BY id
-		LIMIT 1
-	`).Scan(&sourceID); err != nil {
-		t.Fatalf("lookup source id: %v", err)
-	}
+	sourceID := mustEnsureReviewTestSource(t, db)
 
 	slug := "live-utc-show-sidney-and-matilda-20260501190000"
 	if _, err := db.Exec(`
@@ -4652,15 +4629,7 @@ func TestResolveReviewGroupUpsertsSlugConflict(t *testing.T) {
 	`, "leadmill").Scan(&venueID); err != nil {
 		t.Fatalf("lookup venue id: %v", err)
 	}
-	var sourceID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM sources
-		ORDER BY id
-		LIMIT 1
-	`).Scan(&sourceID); err != nil {
-		t.Fatalf("lookup source id: %v", err)
-	}
+	sourceID := mustEnsureReviewTestSource(t, db)
 	conflictSlug := "live-utc-show-sidney-and-matilda-20260501190000"
 	if _, err := db.Exec(`
 		INSERT INTO events (
@@ -5130,6 +5099,62 @@ func mustCreatePublishableSingletonReviewGroup(t *testing.T, st *Store, title st
 		t.Fatalf("create review group: %v", err)
 	}
 	return id
+}
+
+func mustEnsureReviewTestSource(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+
+	if _, err := db.Exec(`
+		INSERT OR IGNORE INTO sources (name, url)
+		VALUES (?, ?)
+	`, "Review test source", "https://example.test/review-test"); err != nil {
+		t.Fatalf("insert review test source: %v", err)
+	}
+	var sourceID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM sources
+		WHERE name = ? AND url = ?
+	`, "Review test source", "https://example.test/review-test").Scan(&sourceID); err != nil {
+		t.Fatalf("lookup review test source id: %v", err)
+	}
+	return sourceID
+}
+
+func mustInsertReviewTestEvent(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, name string) int64 {
+	t.Helper()
+
+	var venueID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+	`, venueSlug).Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue id %q: %v", venueSlug, err)
+	}
+	res, err := db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			last_checked_at,
+			origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, name, "2026-05-01T19:00:00Z", "2026-05-01T22:00:00Z", "Indie", "Listed", "Review test event", "2026-04-30T10:00:00Z", string(domain.OriginLive))
+	if err != nil {
+		t.Fatalf("insert review test event %q: %v", slug, err)
+	}
+	eventID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("review test event id: %v", err)
+	}
+	return eventID
 }
 
 func mustCreateAuthoritativeReviewGroup(t *testing.T, st *Store, title string) int64 {
