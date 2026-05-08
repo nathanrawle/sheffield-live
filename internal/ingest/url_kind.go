@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"unicode/utf8"
 )
 
 func IsCalendarURL(value string) bool {
@@ -47,6 +48,33 @@ func URLWithTextFragment(rawURL, text string) string {
 		return rawURL
 	}
 	parsed.Fragment = ":~:text=" + text
-	parsed.RawFragment = ":~:text=" + url.PathEscape(text)
+	parsed.RawFragment = ":~:text=" + escapeTextFragment(text)
 	return parsed.String()
 }
+
+func escapeTextFragment(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, r := range value {
+		if isTextFragmentPlainByte(r) {
+			builder.WriteRune(r)
+			continue
+		}
+		var buf [utf8.UTFMax]byte
+		n := utf8.EncodeRune(buf[:], r)
+		for _, c := range buf[:n] {
+			builder.WriteByte('%')
+			builder.WriteByte(upperHex[c>>4])
+			builder.WriteByte(upperHex[c&0x0f])
+		}
+	}
+	return builder.String()
+}
+
+func isTextFragmentPlainByte(r rune) bool {
+	return (r >= 'a' && r <= 'z') ||
+		(r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9')
+}
+
+const upperHex = "0123456789ABCDEF"
