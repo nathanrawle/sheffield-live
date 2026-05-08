@@ -89,7 +89,7 @@ func reviewStageAuthoritativeSource(catalog *Catalog, source string, group revie
 			return "", "", ""
 		}
 		candidateSourceName := reviewStageFirstNonEmpty(candidate.SourceName, group.SourceName)
-		candidateSourceURL := reviewStageFirstNonEmpty(candidate.SourceURL, group.SourceURL)
+		candidateSourceURL := reviewStageFirstNonEmpty(candidate.CalendarURL, candidate.SourceURL, group.SourceURL)
 		if candidateSourceName == "" || candidateSourceURL == "" {
 			return "", "", ""
 		}
@@ -175,9 +175,31 @@ func reviewStageCandidateInput(catalog *Catalog, report Report, calendar Calenda
 		Status:           reviewStageStatus(candidate.Status),
 		Description:      strings.TrimSpace(candidate.Description),
 		SourceName:       reviewStageSourceName(catalog, report),
-		SourceURL:        reviewStageFirstNonEmpty(candidate.URL, calendar.URL, report.SourceURL),
+		SourceURL:        reviewStageOfficialSourceURL(report, candidate),
+		CalendarURL:      reviewStageCalendarURL(calendar, candidate),
 		Provenance:       reviewStageProvenance(report, calendar, candidate),
 	}
+}
+
+func reviewStageOfficialSourceURL(report Report, candidate EventCandidate) string {
+	if candidateURL := strings.TrimSpace(candidate.URL); candidateURL != "" && !IsCalendarURL(candidateURL) {
+		return candidateURL
+	}
+	sourceURL := strings.TrimSpace(report.SourceURL)
+	if sourceURL == "" || IsCalendarURL(sourceURL) {
+		return sourceURL
+	}
+	return URLWithTextFragment(sourceURL, candidate.Summary)
+}
+
+func reviewStageCalendarURL(calendar CalendarReport, candidate EventCandidate) string {
+	for _, value := range []string{calendar.URL, candidate.URL} {
+		value = strings.TrimSpace(value)
+		if IsCalendarURL(value) {
+			return value
+		}
+	}
+	return ""
 }
 
 func reviewStageTitle(group review.GroupInput) string {

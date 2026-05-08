@@ -418,8 +418,47 @@ func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *te
 	if got, want := groups[0].Candidates[0].VenueLocationRaw, "Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX"; got != want {
 		t.Fatalf("venue location raw = %q, want %q", got, want)
 	}
+	if got, want := groups[0].Candidates[0].SourceURL, "https://leadmill.co.uk/event/one/"; got != want {
+		t.Fatalf("candidate source url = %q, want %q", got, want)
+	}
+	if got, want := groups[0].Candidates[0].CalendarURL, "https://leadmill.co.uk/listings/?ical=1"; got != want {
+		t.Fatalf("candidate calendar url = %q, want %q", got, want)
+	}
 	if got := groups[0].AuthoritativeSourceEventKey; got != "" {
 		t.Fatalf("authoritative source event key = %q, want empty", got)
+	}
+}
+
+func TestReviewGroupsFromLeadmillCalendarUsesListingsFallbackWhenCandidateHasNoDetailURL(t *testing.T) {
+	report := Report{
+		Source:      LeadmillSource,
+		SourceURL:   "https://leadmill.co.uk/live/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://leadmill.co.uk/listings/?ical=1",
+				Candidates: []EventCandidate{
+					{
+						Summary:  "One Night",
+						Location: "The Leadmill",
+						StartAt:  "2026-05-01T19:00:00Z",
+						EndAt:    "2026-05-01T22:00:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	groups := ReviewGroupsFromReport(report)
+	if got, want := len(groups), 1; got != want {
+		t.Fatalf("groups = %d, want %d", got, want)
+	}
+	if got, want := groups[0].Candidates[0].SourceURL, "https://leadmill.co.uk/live/#:~:text=One%20Night"; got != want {
+		t.Fatalf("candidate source url = %q, want %q", got, want)
+	}
+	if got, want := groups[0].Candidates[0].CalendarURL, "https://leadmill.co.uk/listings/?ical=1"; got != want {
+		t.Fatalf("candidate calendar url = %q, want %q", got, want)
 	}
 }
 

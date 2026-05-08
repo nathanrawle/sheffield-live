@@ -4,7 +4,19 @@
     <h1>{{.Event.Name}}</h1>
     {{with originLabel .Event.Origin}}<p class="origin-badge">{{.}}</p>{{end}}
     <div class="lede description-copy">{{descriptionHTML .Event.Description}}</div>
-    <p><a class="primary-button" href="{{.Event.SourceURL}}">View official listing</a></p>
+    <p class="event-actions">
+      {{with .Event.OfficialListingURL}}<a class="primary-button" href="{{.}}">View official listing</a>{{end}}
+      {{with .Event.CalendarURL}}
+      <a class="icon-button" href="{{.}}" aria-label="Open calendar item" title="Open calendar item">
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="M8 2v4"></path>
+          <path d="M16 2v4"></path>
+          <rect x="3" y="4" width="18" height="18" rx="2"></rect>
+          <path d="M3 10h18"></path>
+        </svg>
+      </a>
+      {{end}}
+    </p>
     <p class="review-group-meta">Checked from {{.Event.SourceName}} on {{dateShort .Event.LastChecked}}.</p>
   </header>
 

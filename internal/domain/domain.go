@@ -40,19 +40,21 @@ type Venue struct {
 }
 
 type Event struct {
-	Slug             string
-	Name             string
-	VenueSlug        string
-	Start            time.Time
-	End              time.Time
-	Genre            string
-	Status           string
-	Description      string
-	SourceName       string
-	SourceURL        string
-	LastChecked      time.Time
-	Origin           Origin
-	PublicationState PublicationState
+	Slug               string
+	Name               string
+	VenueSlug          string
+	Start              time.Time
+	End                time.Time
+	Genre              string
+	Status             string
+	Description        string
+	SourceName         string
+	SourceURL          string
+	OfficialListingURL string
+	CalendarURL        string
+	LastChecked        time.Time
+	Origin             Origin
+	PublicationState   PublicationState
 }
 
 func (e Event) HasEnd() bool {

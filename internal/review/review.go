@@ -95,6 +95,7 @@ type Candidate struct {
 	Description      string
 	SourceName       string
 	SourceURL        string
+	CalendarURL      string
 	Provenance       string
 }
 
@@ -125,6 +126,7 @@ type CandidateInput struct {
 	Description      string
 	SourceName       string
 	SourceURL        string
+	CalendarURL      string
 	Provenance       string
 }
 

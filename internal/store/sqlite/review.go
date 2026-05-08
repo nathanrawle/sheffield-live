@@ -98,7 +98,7 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, groupID, input, now); err != nil {
 			return review.StageGroupResult{}, err
 		}
-		autoResolved, outcome, canonicalSlug, err := maybeAutoResolveDuplicateReviewGroupTx(ctx, tx, groupID, now)
+		autoResolved, outcome, canonicalSlug, err := maybeAutoResolveDuplicateReviewGroupTx(ctx, tx, groupID, now, s.sourceMetadata)
 		if err != nil {
 			return review.StageGroupResult{}, err
 		}
@@ -166,6 +166,17 @@ func (s *Store) PromoteSingletonReviewGroupIfMissing(ctx context.Context, input 
 	return s.promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx, input, now)
 }
 
+func (s *Store) decorateEventForPublish(event domain.Event) domain.Event {
+	return decorateEventForPublish(event, s.sourceMetadata)
+}
+
+func decorateEventForPublish(event domain.Event, sourceMetadata ingest.SourceMetadataLookup) domain.Event {
+	links := decorateEventLinkValues(event.Name, event.SourceName, event.SourceURL, event.OfficialListingURL, event.CalendarURL, sourceMetadata)
+	event.OfficialListingURL = links.officialListingURL
+	event.CalendarURL = links.calendarURL
+	return event
+}
+
 func (s *Store) promoteAuthoritativeSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput, now time.Time) (string, bool, error) {
 	sourceEventKey := authoritativeSingletonSourceEventKey(s.sourceMetadata, input)
 	if sourceEventKey == "" {
@@ -176,6 +187,7 @@ func (s *Store) promoteAuthoritativeSingletonReviewGroupIfMissing(ctx context.Co
 	if err != nil {
 		return "", false, nil
 	}
+	event = s.decorateEventForPublish(event)
 	event.PublicationState = domain.PublicationStateReviewed
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -209,6 +221,7 @@ func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context
 	if err != nil {
 		return "", false, nil
 	}
+	event = s.decorateEventForPublish(event)
 	event.PublicationState = domain.PublicationStateProvisional
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -526,7 +539,8 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 		Status:           record.Event.Status,
 		Description:      record.Event.Description,
 		SourceName:       record.Event.SourceName,
-		SourceURL:        record.Event.SourceURL,
+		SourceURL:        firstNonEmptyReviewText(record.Event.OfficialListingURL, record.Event.SourceURL),
+		CalendarURL:      record.Event.CalendarURL,
 		Provenance:       "Canonical live event snapshot",
 	}
 
@@ -551,9 +565,10 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 				description = ?,
 				source_name = ?,
 				source_url = ?,
+				calendar_url = ?,
 				provenance = ?
 			WHERE id = ? AND group_id = ?
-		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.VenueText, candidate.VenueLocationRaw, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.SourceName, candidate.SourceURL, candidate.Provenance, existing.ID, groupID); err != nil {
+		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.VenueText, candidate.VenueLocationRaw, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.SourceName, candidate.SourceURL, candidate.CalendarURL, candidate.Provenance, existing.ID, groupID); err != nil {
 			return nil, err
 		}
 		return record, nil
@@ -751,7 +766,7 @@ func reviewConsensusFields() []review.Field {
 func maybeAutoResolveDuplicateReviewGroupTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, groupID int64, now time.Time) (bool, string, string, error) {
+}, groupID int64, now time.Time, sourceMetadata ingest.SourceMetadataLookup) (bool, string, string, error) {
 	group, ok, err := loadReviewGroup(ctx, tx, groupID)
 	if err != nil {
 		return false, "", "", err
@@ -820,9 +835,11 @@ func maybeAutoResolveDuplicateReviewGroupTx(ctx context.Context, tx interface {
 		if err != nil {
 			return false, "", "", err
 		}
+		event = decorateEventForPublish(event, sourceMetadata)
 		if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
 			event.SourceName = authoritative.SourceName
 			event.SourceURL = authoritative.SourceURL
+			event = decorateEventForPublish(event, sourceMetadata)
 			record, applied, err := applyAuthoritativeEventTx(ctx, tx, event, authoritative.SourceEventKey, now)
 			if err != nil {
 				return false, "", "", err
@@ -1010,6 +1027,7 @@ func singletonResolvedEventFromGroupInput(input review.GroupInput, publishedAt t
 		Description: strings.TrimSpace(candidate.Description),
 		SourceName:  strings.TrimSpace(candidate.SourceName),
 		SourceURL:   strings.TrimSpace(candidate.SourceURL),
+		CalendarURL: strings.TrimSpace(candidate.CalendarURL),
 		Provenance:  strings.TrimSpace(candidate.Provenance),
 	}
 	selected := make(map[review.Field]review.Candidate, len(review.CanonicalFields))
@@ -1120,6 +1138,12 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 	if strings.TrimSpace(updated.Description) == "" && strings.TrimSpace(incoming.Description) != "" {
 		updated.Description = incoming.Description
 	}
+	if strings.TrimSpace(updated.OfficialListingURL) == "" && strings.TrimSpace(incoming.OfficialListingURL) != "" {
+		updated.OfficialListingURL = incoming.OfficialListingURL
+	}
+	if strings.TrimSpace(updated.CalendarURL) == "" && strings.TrimSpace(incoming.CalendarURL) != "" {
+		updated.CalendarURL = incoming.CalendarURL
+	}
 	updated.LastChecked = incoming.LastChecked.UTC()
 
 	_, err := tx.ExecContext(ctx, `
@@ -1128,9 +1152,11 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 			genre = ?,
 			status = ?,
 			description = ?,
+			official_listing_url = ?,
+			calendar_url = ?,
 			last_checked_at = ?
 		WHERE id = ?
-	`, nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, formatRFC3339UTC(updated.LastChecked), existing.ID)
+	`, nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, updated.OfficialListingURL, updated.CalendarURL, formatRFC3339UTC(updated.LastChecked), existing.ID)
 	return err
 }
 
@@ -1500,14 +1526,18 @@ func insertEventTx(ctx context.Context, tx execer, event domain.Event, venueID, 
 			genre,
 			status,
 			description,
+			official_listing_url,
+			calendar_url,
 			last_checked_at,
 			origin,
 			publication_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
+		event.OfficialListingURL,
+		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
 		string(event.Origin),
 		string(normalizedPublicationState(event.PublicationState)))
@@ -1534,6 +1564,12 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 	}
 	updated.SourceName = authoritative.SourceName
 	updated.SourceURL = authoritative.SourceURL
+	if strings.TrimSpace(authoritative.OfficialListingURL) != "" {
+		updated.OfficialListingURL = authoritative.OfficialListingURL
+	}
+	if strings.TrimSpace(authoritative.CalendarURL) != "" {
+		updated.CalendarURL = authoritative.CalendarURL
+	}
 	updated.LastChecked = authoritative.LastChecked.UTC()
 	updated.Origin = authoritative.Origin
 	updated.PublicationState = normalizedPublicationState(authoritative.PublicationState)
@@ -1548,11 +1584,13 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 			genre = ?,
 			status = ?,
 			description = ?,
+			official_listing_url = ?,
+			calendar_url = ?,
 			last_checked_at = ?,
 			origin = ?,
 			publication_state = ?
 		WHERE id = ?
-	`, venueID, sourceID, updated.Name, formatRFC3339UTC(updated.Start), nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, formatRFC3339UTC(updated.LastChecked), string(updated.Origin), string(updated.PublicationState), existing.ID); err != nil {
+	`, venueID, sourceID, updated.Name, formatRFC3339UTC(updated.Start), nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, updated.OfficialListingURL, updated.CalendarURL, formatRFC3339UTC(updated.LastChecked), string(updated.Origin), string(updated.PublicationState), existing.ID); err != nil {
 		return domain.Event{}, err
 	}
 	return updated, nil
@@ -1717,6 +1755,8 @@ func loadEventRecordBySourceLinkTx(ctx context.Context, q queryer, sourceID int6
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -1743,6 +1783,8 @@ func loadEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (event
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -1768,6 +1810,8 @@ func loadEventRecordBySlugAndSourceTx(ctx context.Context, q queryer, slug strin
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -1793,6 +1837,8 @@ func loadLiveEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (e
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -1818,6 +1864,8 @@ func loadLiveEventRecordBySlugAndSourceTx(ctx context.Context, q queryer, slug s
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -1843,6 +1891,8 @@ func loadLiveEventRecordsByFingerprintTx(ctx context.Context, q queryer, name, v
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -1870,6 +1920,8 @@ func loadLiveEventRecordsByFingerprintAndSourceTx(ctx context.Context, q queryer
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -1911,6 +1963,8 @@ func loadEventRecords(ctx context.Context, q queryer, query string, args ...any)
 			&record.Event.Description,
 			&record.Event.SourceName,
 			&record.Event.SourceURL,
+			&record.Event.OfficialListingURL,
+			&record.Event.CalendarURL,
 			&lastCheckedText,
 			&origin,
 			&publicationState,
@@ -1977,6 +2031,8 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 		&record.Event.Description,
 		&record.Event.SourceName,
 		&record.Event.SourceURL,
+		&record.Event.OfficialListingURL,
+		&record.Event.CalendarURL,
 		&lastCheckedText,
 		&origin,
 		&publicationState,
@@ -2018,6 +2074,16 @@ func nullableReviewText(value string) any {
 		return nil
 	}
 	return strings.TrimSpace(value)
+}
+
+func firstNonEmptyReviewText(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func nullableCanonicalEventID(id int64) any {
@@ -2517,10 +2583,12 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	if err != nil {
 		return err
 	}
+	event = s.decorateEventForPublish(event)
 	canonicalCandidate, hasCanonicalCandidate := canonicalSnapshotCandidate(candidates)
 	if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
 		event.SourceName = authoritative.SourceName
 		event.SourceURL = authoritative.SourceURL
+		event = s.decorateEventForPublish(event)
 		canonicalRecord, applied, err := applyAuthoritativeEventTx(ctx, tx, event, authoritative.SourceEventKey, now)
 		if err != nil {
 			return err
@@ -2603,6 +2671,7 @@ func (s *Store) UpdateReviewGroupStatus(ctx context.Context, groupID int64, stat
 func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, position int, input review.CandidateInput, defaultSourceName, defaultSourceURL string) error {
 	input.SourceName = strings.TrimSpace(input.SourceName)
 	input.SourceURL = strings.TrimSpace(input.SourceURL)
+	input.CalendarURL = strings.TrimSpace(input.CalendarURL)
 	if input.SourceName == "" {
 		input.SourceName = defaultSourceName
 	}
@@ -2631,8 +2700,9 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 			description,
 			source_name,
 			source_url,
+			calendar_url,
 			provenance
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, groupID, position, nullableCanonicalEventID(input.CanonicalEventID), strings.TrimSpace(input.ExternalID), input.Name,
 		strings.TrimSpace(input.VenueSlug),
 		strings.TrimSpace(input.VenueText),
@@ -2644,6 +2714,7 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 		strings.TrimSpace(input.Description),
 		input.SourceName,
 		input.SourceURL,
+		input.CalendarURL,
 		strings.TrimSpace(input.Provenance))
 	return err
 }
@@ -3071,11 +3142,17 @@ func authoritativeLinkFromStoredReviewCandidate(group review.Group, candidate re
 	if sourceName == "" {
 		sourceName = strings.TrimSpace(group.SourceName)
 	}
-	sourceURL := strings.TrimSpace(candidate.SourceURL)
+	sourceURL := strings.TrimSpace(candidate.CalendarURL)
+	if sourceURL == "" {
+		sourceURL = strings.TrimSpace(candidate.SourceURL)
+	}
 	if sourceURL == "" {
 		sourceURL = strings.TrimSpace(group.SourceURL)
 	}
 	sourceEventKey := strings.TrimSpace(candidate.ExternalID)
+	if sourceEventKey == "" {
+		sourceEventKey = strings.TrimSpace(candidate.SourceURL)
+	}
 	if sourceEventKey == "" {
 		sourceEventKey = sourceURL
 	}
@@ -3099,7 +3176,10 @@ func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 	rows := make([]eventSecondarySourceInfoRow, 0, len(candidates)*2)
 	for _, candidate := range candidates {
 		sourceName := strings.TrimSpace(candidate.SourceName)
-		sourceURL := strings.TrimSpace(candidate.SourceURL)
+		sourceURL := strings.TrimSpace(candidate.CalendarURL)
+		if sourceURL == "" {
+			sourceURL = strings.TrimSpace(candidate.SourceURL)
+		}
 		if sourceName == "" || sourceURL == "" {
 			continue
 		}
@@ -3213,6 +3293,17 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 	if sourceURL == "" {
 		sourceURL = strings.TrimSpace(group.SourceURL)
 	}
+	calendarURL := ""
+	if sourceCandidate, ok := selected[review.FieldSourceURL]; ok {
+		calendarURL = strings.TrimSpace(sourceCandidate.CalendarURL)
+	}
+	if calendarURL == "" && ingest.IsCalendarURL(sourceURL) {
+		calendarURL = sourceURL
+	}
+	officialListingURL := ""
+	if !ingest.IsCalendarURL(sourceURL) {
+		officialListingURL = sourceURL
+	}
 
 	if name == "" {
 		return domain.Event{}, errors.New("review event name is required")
@@ -3247,19 +3338,21 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 	}
 
 	event := domain.Event{
-		Slug:             slug,
-		Name:             name,
-		VenueSlug:        venueSlug,
-		Start:            start,
-		End:              end,
-		Genre:            genre,
-		Status:           status,
-		Description:      description,
-		SourceName:       sourceName,
-		SourceURL:        sourceURL,
-		LastChecked:      publishedAt.UTC(),
-		Origin:           domain.OriginLive,
-		PublicationState: domain.PublicationStateReviewed,
+		Slug:               slug,
+		Name:               name,
+		VenueSlug:          venueSlug,
+		Start:              start,
+		End:                end,
+		Genre:              genre,
+		Status:             status,
+		Description:        description,
+		SourceName:         sourceName,
+		SourceURL:          sourceURL,
+		OfficialListingURL: officialListingURL,
+		CalendarURL:        calendarURL,
+		LastChecked:        publishedAt.UTC(),
+		Origin:             domain.OriginLive,
+		PublicationState:   domain.PublicationStateReviewed,
 	}
 	if err := event.ValidateCanonical(); err != nil {
 		return domain.Event{}, fmt.Errorf("review event %w", err)
@@ -3327,10 +3420,12 @@ func upsertEventTx(ctx context.Context, tx interface {
 			genre,
 			status,
 			description,
+			official_listing_url,
+			calendar_url,
 			last_checked_at,
 			origin,
 			publication_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(slug) DO UPDATE SET
 			venue_id = excluded.venue_id,
 			source_id = excluded.source_id,
@@ -3340,6 +3435,8 @@ func upsertEventTx(ctx context.Context, tx interface {
 			genre = excluded.genre,
 			status = excluded.status,
 			description = excluded.description,
+			official_listing_url = excluded.official_listing_url,
+			calendar_url = excluded.calendar_url,
 			last_checked_at = excluded.last_checked_at,
 			origin = excluded.origin,
 			publication_state = excluded.publication_state
@@ -3347,6 +3444,8 @@ func upsertEventTx(ctx context.Context, tx interface {
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
+		event.OfficialListingURL,
+		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
 		string(event.Origin),
 		string(normalizedPublicationState(event.PublicationState)))
@@ -3387,6 +3486,8 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 			genre = ?,
 			status = ?,
 			description = ?,
+			official_listing_url = ?,
+			calendar_url = ?,
 			last_checked_at = ?,
 			origin = ?,
 			publication_state = ?
@@ -3395,6 +3496,8 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
+		event.OfficialListingURL,
+		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
 		string(event.Origin),
 		string(normalizedPublicationState(event.PublicationState)),
@@ -3443,6 +3546,7 @@ func loadReviewCandidates(ctx context.Context, q queryer, groupID int64) ([]revi
 			description,
 			source_name,
 			source_url,
+			calendar_url,
 			provenance
 		FROM review_candidates
 		WHERE group_id = ?
@@ -3486,6 +3590,7 @@ func loadReviewCandidate(ctx context.Context, q queryer, groupID, candidateID in
 			description,
 			source_name,
 			source_url,
+			calendar_url,
 			provenance
 		FROM review_candidates
 		WHERE group_id = ? AND id = ?
@@ -3531,6 +3636,7 @@ func loadCanonicalSnapshotCandidate(ctx context.Context, q queryer, groupID int6
 			description,
 			source_name,
 			source_url,
+			calendar_url,
 			provenance
 		FROM review_candidates
 		WHERE group_id = ? AND canonical_event_id IS NOT NULL
@@ -3576,6 +3682,7 @@ func scanReviewCandidate(rows *sql.Rows) (review.Candidate, error) {
 		&candidate.Description,
 		&candidate.SourceName,
 		&candidate.SourceURL,
+		&candidate.CalendarURL,
 		&candidate.Provenance,
 	); err != nil {
 		return review.Candidate{}, err

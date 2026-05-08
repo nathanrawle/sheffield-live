@@ -1241,6 +1241,72 @@ func TestVenueAndEventDetailShowCoverageNote(t *testing.T) {
 	assertContains(t, eventBody, "View official listing")
 }
 
+func TestEventDetailSeparatesOfficialListingAndCalendarLinks(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+			CoverageKind:  domain.CoverageKindVenue,
+		}},
+		[]domain.Event{{
+			Slug:               "leadmill-calendar",
+			Name:               "Leadmill Calendar",
+			VenueSlug:          "leadmill",
+			Start:              fixtureLocalTime(2026, time.April, 19, 20, 0),
+			End:                fixtureLocalTime(2026, time.April, 19, 22, 0),
+			Genre:              "Indie",
+			Status:             "Listed",
+			Description:        "Event",
+			SourceName:         "The Leadmill manual ingest",
+			SourceURL:          "https://leadmill.co.uk/listings/?ical=1",
+			OfficialListingURL: "https://leadmill.co.uk/event/leadmill-calendar/",
+			CalendarURL:        "https://leadmill.co.uk/listings/?ical=1",
+			LastChecked:        fixtureLocalTime(2026, time.April, 19, 9, 0),
+		}},
+	))
+
+	body := renderPath(t, server, "/events/leadmill-calendar")
+	assertContains(t, body, `class="primary-button" href="https://leadmill.co.uk/event/leadmill-calendar/">View official listing`)
+	assertContains(t, body, `class="icon-button" href="https://leadmill.co.uk/listings/?ical=1" aria-label="Open calendar item"`)
+	assertNotContains(t, body, `class="primary-button" href="https://leadmill.co.uk/listings/?ical=1"`)
+}
+
+func TestEventDetailFallsBackToVenueWebsiteWhenOnlyCalendarSourceIsAvailable(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+			CoverageKind:  domain.CoverageKindVenue,
+		}},
+		[]domain.Event{{
+			Slug:        "legacy-calendar-source",
+			Name:        "Legacy Calendar Source",
+			VenueSlug:   "leadmill",
+			Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+			End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "Event",
+			SourceName:  "Legacy calendar source",
+			SourceURL:   "https://example.test/events.ics",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+		}},
+	))
+
+	body := renderPath(t, server, "/events/legacy-calendar-source")
+	assertContains(t, body, `class="primary-button" href="https://example.test/leadmill">View official listing`)
+	assertContains(t, body, `class="icon-button" href="https://example.test/events.ics" aria-label="Open calendar item"`)
+	assertNotContains(t, body, `class="primary-button" href="https://example.test/events.ics"`)
+}
+
 func TestEventDetailShowsStartOnlyCopyWhenEndIsUnknown(t *testing.T) {
 	server := mustClockedServer(t, store.NewStore(
 		[]domain.Venue{{
