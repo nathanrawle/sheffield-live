@@ -105,3 +105,70 @@ func TestParseYellowArchPageNormalizesHTMLDescriptionBreaks(t *testing.T) {
 		t.Fatalf("description = %q, want %q", got, want)
 	}
 }
+
+func TestParseYellowArchDetailPageExtractsVisibleEventContent(t *testing.T) {
+	detail := ParseYellowArchDetailPage("https://www.yellowarch.com/event/jazz-hot-six-14/", []byte(`
+		<html>
+		  <head>
+		    <link rel="canonical" href="/event/jazz-hot-six-14/">
+		  </head>
+		  <body>
+		    <h1>Jazz Hot Six</h1>
+		    <div class="event-single__content">
+		      <p>Every first Tuesday of the month</p>
+		      <p>Martin Winning - Clarinet<br />Emily Chaplais - Violin<br />Shez Sheridan - Guitar, Lap Steel, Vocals</p>
+		      <div class="event-single__venue-address-wrapper">
+		        <h3>Venue</h3>
+		        <span>Yellow Arch Studios</span>
+		      </div>
+		    </div>
+		  </body>
+		</html>
+	`))
+
+	if got, want := detail.URL, "https://www.yellowarch.com/event/jazz-hot-six-14/"; got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+	if got, want := detail.URLAliases, []string{"https://www.yellowarch.com/event/jazz-hot-six-14/"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("url aliases = %#v, want %#v", got, want)
+	}
+	if got, want := detail.Summary, "Jazz Hot Six"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+	want := "Every first Tuesday of the month\n\nMartin Winning - Clarinet\nEmily Chaplais - Violin\nShez Sheridan - Guitar, Lap Steel, Vocals"
+	if got := detail.Description; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
+
+func TestParseYellowArchDetailPageFailsClosedOnMissingOrAmbiguousBoundary(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing content",
+			body: `<div class="event-single__venue-address-wrapper">Venue</div>`,
+		},
+		{
+			name: "missing venue boundary",
+			body: `<div class="event-single__content"><p>Description</p></div>`,
+		},
+		{
+			name: "ambiguous content",
+			body: `
+				<div class="event-single__content"><p>One</p><div class="event-single__venue-address-wrapper">Venue</div></div>
+				<div class="event-single__content"><p>Two</p><div class="event-single__venue-address-wrapper">Venue</div></div>
+			`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			detail := ParseYellowArchDetailPage("https://www.yellowarch.com/event/test/", []byte(tc.body))
+			if detail.Description != "" {
+				t.Fatalf("description = %q, want empty", detail.Description)
+			}
+		})
+	}
+}

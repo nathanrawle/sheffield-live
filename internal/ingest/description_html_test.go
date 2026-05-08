@@ -22,6 +22,16 @@ func TestSemanticDescriptionTextConveysEmphasisAndDropsStyle(t *testing.T) {
 	}
 }
 
+func TestSemanticDescriptionTextPreservesInlineTagBoundaryWhitespace(t *testing.T) {
+	raw := `<p>Known for supporting artists ranging from <strong>Sleater-Kinney </strong>and <strong>The Breeders </strong>to <strong>The Cribs </strong>and <strong>Stereophonics.</strong></p>`
+
+	got := semanticDescriptionText(raw)
+	want := "Known for supporting artists ranging from **Sleater-Kinney** and **The Breeders** to **The Cribs** and **Stereophonics.**"
+	if got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
+
 func TestSemanticDescriptionTextCollapsesRepeatedBreaks(t *testing.T) {
 	raw := `One<br><br><br>Two<br />Three`
 

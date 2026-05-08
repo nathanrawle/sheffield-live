@@ -29,7 +29,7 @@ After that, parsing depends on the source mode:
 - Jazz at The Lescar parses repeated source-page listing blocks into review candidates using the page-level default music time plus the footer year hint.
 - The Greystones extracts linked month pages from the events hub, stores those month-page snapshots, and parses repeated listing rows from each month page into review candidates.
 - Leadmill extracts the official iCal feed from the source page, fetches that ICS payload, stores the raw ICS snapshot, and keeps only `Live` listings with Sheffield locations.
-- Yellow Arch parses candidates, skips, and parse errors directly from schema.org `Event` JSON-LD embedded in the source page. No secondary snapshots are fetched for that source.
+- Yellow Arch parses candidates, skips, and parse errors from schema.org `Event` JSON-LD embedded in the source page, then fetches candidate detail pages to enrich descriptions from bounded visible event content. Detail URLs are enrichment inputs and do not appear as report links.
 - Corporation extracts linked official event detail pages from the source page, fetches and stores those detail-page snapshots, and parses candidates from the detail-page HTML.
 
 Snapshots are kept as separate raw artifacts. They are not the same thing as canonical public event rows.
@@ -43,7 +43,7 @@ The runtime no longer branches on source key directly. Each catalog entry select
 Template-fit families:
 
 - Sidney & Matilda uses a configured ICS-link extractor, detail-link extractor, generic ICS parser, and conservative detail-page description parser
-- Yellow Arch uses a configured JSON-LD source-page parser
+- Yellow Arch uses a configured JSON-LD source-page parser and a conservative detail-page description parser
 
 Custom adapter families:
 

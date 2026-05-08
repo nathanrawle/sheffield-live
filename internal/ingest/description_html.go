@@ -4,6 +4,7 @@ import (
 	"html"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 var (
@@ -68,13 +69,46 @@ func replaceSemanticInlineTags(value, names, marker string) string {
 				return ""
 			}
 			changed = true
-			return marker + inner + marker
+			prefix, suffix := semanticInlineBoundarySpaces(parts[1])
+			return prefix + marker + inner + marker + suffix
 		})
 		value = next
 		if !changed {
 			return value
 		}
 	}
+}
+
+func semanticInlineBoundarySpaces(value string) (string, string) {
+	value = descriptionScriptStylePattern.ReplaceAllString(value, "")
+	value = descriptionTagPattern.ReplaceAllString(value, " ")
+	value = html.UnescapeString(value)
+	prefix := ""
+	if first, ok := firstRune(value); ok && unicode.IsSpace(first) {
+		prefix = " "
+	}
+	suffix := ""
+	if last, ok := lastRune(value); ok && unicode.IsSpace(last) {
+		suffix = " "
+	}
+	return prefix, suffix
+}
+
+func firstRune(value string) (rune, bool) {
+	for _, r := range value {
+		return r, true
+	}
+	return 0, false
+}
+
+func lastRune(value string) (rune, bool) {
+	var last rune
+	ok := false
+	for _, r := range value {
+		last = r
+		ok = true
+	}
+	return last, ok
 }
 
 func semanticInlineText(value string) string {
