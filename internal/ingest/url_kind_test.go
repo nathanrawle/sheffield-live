@@ -2,6 +2,19 @@ package ingest
 
 import "testing"
 
+func TestIsCalendarURLTreatsOpaqueICSURLsAsCalendars(t *testing.T) {
+	for _, value := range []string{
+		"file:sidney.ics",
+		"file:sidney.ical",
+	} {
+		t.Run(value, func(t *testing.T) {
+			if !IsCalendarURL(value) {
+				t.Fatalf("IsCalendarURL(%q) = false, want true", value)
+			}
+		})
+	}
+}
+
 func TestURLWithTextFragmentUsesWholeEventName(t *testing.T) {
 	got := URLWithTextFragment("https://www.sidneyandmatilda.com/events", "S&M Presents: Seazoo")
 	want := "https://www.sidneyandmatilda.com/events#:~:text=S%26M%20Presents%3A%20Seazoo"

@@ -28,6 +28,9 @@ func IsCalendarURL(value string) bool {
 	}
 
 	ext := strings.ToLower(path.Ext(parsed.EscapedPath()))
+	if ext == "" && parsed.Opaque != "" {
+		ext = strings.ToLower(path.Ext(parsed.Opaque))
+	}
 	if ext == ".ics" || ext == ".ical" {
 		return true
 	}
