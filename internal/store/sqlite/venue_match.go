@@ -167,6 +167,7 @@ func ensureProvisionalVenueForCandidateTx(ctx context.Context, tx interface {
 				if err != nil {
 					return venueMatchResult{}, err
 				}
+				matcher.indexVenue(venue)
 				match.name = venue.Name
 			}
 		}
@@ -254,9 +255,37 @@ func resolveReviewVenueTx(ctx context.Context, tx interface {
 }
 
 func (m *venueMatcher) indexVenue(venue domain.Venue) {
+	m.removeVenue(venue.Slug)
 	m.add(m.bySlug, venue.Slug, venue)
 	m.add(m.byName, normalizedVenueKey(venue.Name), venue)
 	m.add(m.byAddress, normalizedVenueEvidenceKey(venue.Address), venue)
+}
+
+func (m *venueMatcher) removeVenue(slug string) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return
+	}
+
+	remove := func(index map[string][]domain.Venue) {
+		for key, venues := range index {
+			filtered := venues[:0]
+			for _, venue := range venues {
+				if venue.Slug != slug {
+					filtered = append(filtered, venue)
+				}
+			}
+			if len(filtered) == 0 {
+				delete(index, key)
+				continue
+			}
+			index[key] = filtered
+		}
+	}
+
+	remove(m.bySlug)
+	remove(m.byName)
+	remove(m.byAddress)
 }
 
 func reviewCandidateFromInput(input review.CandidateInput) review.Candidate {
