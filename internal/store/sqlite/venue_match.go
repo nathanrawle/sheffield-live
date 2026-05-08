@@ -157,6 +157,19 @@ func ensureProvisionalVenueForCandidateTx(ctx context.Context, tx interface {
 }, matcher *venueMatcher, candidate review.Candidate) (venueMatchResult, error) {
 	match := matcher.matchCandidate(candidate)
 	if match.status != venueMatchNoMatch {
+		if match.status == venueMatchResolved {
+			venue, ok, err := loadVenueBySlug(ctx, tx, match.slug)
+			if err != nil {
+				return venueMatchResult{}, err
+			}
+			if ok {
+				venue, err = backfillProvisionalVenueFromCandidateTx(ctx, tx, venue, candidate)
+				if err != nil {
+					return venueMatchResult{}, err
+				}
+				match.name = venue.Name
+			}
+		}
 		return match, nil
 	}
 
@@ -167,6 +180,10 @@ func ensureProvisionalVenueForCandidateTx(ctx context.Context, tx interface {
 	if existing, ok, err := loadVenueBySlug(ctx, tx, slug); err != nil {
 		return venueMatchResult{}, err
 	} else if ok {
+		existing, err = backfillProvisionalVenueFromCandidateTx(ctx, tx, existing, candidate)
+		if err != nil {
+			return venueMatchResult{}, err
+		}
 		matcher.indexVenue(existing)
 		return venueMatchResult{status: venueMatchResolved, slug: existing.Slug, name: existing.Name}, nil
 	}
@@ -180,6 +197,40 @@ func ensureProvisionalVenueForCandidateTx(ctx context.Context, tx interface {
 	}
 	matcher.indexVenue(venue)
 	return venueMatchResult{status: venueMatchResolved, slug: venue.Slug, name: venue.Name}, nil
+}
+
+func backfillProvisionalVenueFromCandidateTx(ctx context.Context, tx execer, venue domain.Venue, candidate review.Candidate) (domain.Venue, error) {
+	if venue.ValidationState != domain.ValidationStateProvisional || strings.TrimSpace(candidate.VenueLocationRaw) == "" {
+		return venue, nil
+	}
+
+	address := strings.TrimSpace(venue.Address)
+	if address == "" {
+		address = formatProvisionalVenueAddress(venue.Name, candidate.VenueLocationRaw)
+	}
+
+	neighbourhood := strings.TrimSpace(venue.Neighbourhood)
+	if neighbourhood == "" {
+		neighbourhood = provisionalVenueNeighbourhood(candidate.VenueLocationRaw)
+	}
+
+	if address == strings.TrimSpace(venue.Address) && neighbourhood == strings.TrimSpace(venue.Neighbourhood) {
+		return venue, nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE venues
+		SET address = ?,
+			neighbourhood = ?
+		WHERE slug = ?
+			AND validation_state = ?
+	`, address, neighbourhood, venue.Slug, string(domain.ValidationStateProvisional)); err != nil {
+		return domain.Venue{}, err
+	}
+
+	venue.Address = address
+	venue.Neighbourhood = neighbourhood
+	return venue, nil
 }
 
 func resolveReviewVenueTx(ctx context.Context, tx interface {

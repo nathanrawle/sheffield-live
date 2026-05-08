@@ -3111,6 +3111,67 @@ func TestPromoteSingletonReviewGroupIfMissingCreatesProvisionalVenueWhenVenueIsU
 	}
 }
 
+func TestPromoteSingletonReviewGroupIfMissingBackfillsBlankProvisionalVenueAddress(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if _, err := insertVenue(ctx, st.db, domain.Venue{
+		Slug:            "memorial-hall",
+		Name:            "Memorial Hall",
+		ValidationState: domain.ValidationStateProvisional,
+		CoverageKind:    domain.CoverageKindVenue,
+		Origin:          domain.OriginLive,
+	}); err != nil {
+		t.Fatalf("insert blank provisional venue: %v", err)
+	}
+
+	input := review.GroupInput{
+		Title:      "Memorial Hall singleton",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:fixture.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "memorial-hall-1",
+			Name:             "Memorial Hall show",
+			VenueSlug:        "memorial-hall",
+			VenueText:        "Memorial Hall",
+			VenueLocationRaw: "Memorial Hall, Barkers Pool, Sheffield City Centre, Sheffield, S1 2JA",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Missing address venue row should be backfilled.",
+		}},
+	}
+	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input); err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	} else if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+
+	venue, ok := st.VenueBySlug("memorial-hall")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if venue.Address != "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	}
+	if venue.Neighbourhood != "City Centre" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "City Centre")
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
+	}
+}
+
 func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenVenueEvidenceIsAmbiguous(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
