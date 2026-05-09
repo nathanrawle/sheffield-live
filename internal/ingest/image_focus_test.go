@@ -94,6 +94,69 @@ func TestEstimateImageFocusUsesCoarseBlobForEdgeNoisyBackground(t *testing.T) {
 	}
 }
 
+func TestEstimateImageFocusUsesVerticalRectangleWithImageSide(t *testing.T) {
+	var body bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 180, 120))
+	fillRect(img, img.Bounds(), color.RGBA{R: 54, G: 68, B: 82, A: 255})
+	fillRect(img, image.Rect(0, 0, 80, 120), color.RGBA{R: 238, G: 232, B: 218, A: 255})
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+
+	focus, err := EstimateImageFocus("image/png", body.Bytes())
+	if err != nil {
+		t.Fatalf("estimate image focus: %v", err)
+	}
+	if focus.X < 20 || focus.X > 24 || focus.Y != 50 {
+		t.Fatalf("focus = %d,%d, want center of left-side embedded rectangle", focus.X, focus.Y)
+	}
+}
+
+func TestEstimateImageFocusUsesVerticalRectangleBetweenEdges(t *testing.T) {
+	var body bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 220, 120))
+	fillRect(img, img.Bounds(), color.RGBA{R: 38, G: 46, B: 55, A: 255})
+	fillRect(img, image.Rect(90, 0, 170, 120), color.RGBA{R: 230, G: 224, B: 208, A: 255})
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+
+	focus, err := EstimateImageFocus("image/png", body.Bytes())
+	if err != nil {
+		t.Fatalf("estimate image focus: %v", err)
+	}
+	if focus.X < 58 || focus.X > 60 || focus.Y != 50 {
+		t.Fatalf("focus = %d,%d, want center of embedded rectangle between vertical edges", focus.X, focus.Y)
+	}
+}
+
+func TestVerticalRectangleFocusIgnoresPartialHeightEdges(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 180, 120))
+	fillRect(img, img.Bounds(), color.RGBA{R: 60, G: 70, B: 82, A: 255})
+	fillRect(img, image.Rect(0, 22, 80, 98), color.RGBA{R: 235, G: 230, B: 218, A: 255})
+
+	red, green, blue, luma, width, height := focusTestSample(img)
+	if focus, ok := verticalRectangleFocus(red, green, blue, luma, width, height); ok {
+		t.Fatalf("vertical rectangle focus = %#v, want no full-height rectangle detection", focus)
+	}
+}
+
+func TestVerticalRectangleFocusIgnoresRepeatingVerticalStripes(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 180, 120))
+	for x := 0; x < 180; x += 12 {
+		c := color.RGBA{R: 52, G: 62, B: 74, A: 255}
+		if x/12%2 == 0 {
+			c = color.RGBA{R: 230, G: 226, B: 214, A: 255}
+		}
+		fillRect(img, image.Rect(x, 0, minInt(180, x+12), 120), c)
+	}
+
+	red, green, blue, luma, width, height := focusTestSample(img)
+	if focus, ok := verticalRectangleFocus(red, green, blue, luma, width, height); ok {
+		t.Fatalf("vertical rectangle focus = %#v, want repeating vertical pattern ignored", focus)
+	}
+}
+
 func TestEstimateImageFocusPrioritizesSkinToneRegion(t *testing.T) {
 	skin := chromaticSkinToneScore(0.72, 0.48, 0.32, rgbHueDegrees(0.72, 0.48, 0.32, 0.72, 0.32), 0.72, 0.32)
 	blue := chromaticSkinToneScore(0.08, 0.27, 0.94, rgbHueDegrees(0.08, 0.27, 0.94, 0.94, 0.08), 0.94, 0.08)
@@ -115,6 +178,41 @@ func fillEllipse(img *image.RGBA, centerX, centerY, radiusX, radiusY int, c colo
 			}
 		}
 	}
+}
+
+func fillRect(img *image.RGBA, rect image.Rectangle, c color.RGBA) {
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			img.Set(x, y, c)
+		}
+	}
+}
+
+func focusTestSample(img image.Image) ([]float64, []float64, []float64, []float64, int, int) {
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	sampleWidth, sampleHeight := focusSampleSize(width, height)
+	red := make([]float64, sampleWidth*sampleHeight)
+	green := make([]float64, sampleWidth*sampleHeight)
+	blue := make([]float64, sampleWidth*sampleHeight)
+	luma := make([]float64, sampleWidth*sampleHeight)
+	for y := 0; y < sampleHeight; y++ {
+		srcY := bounds.Min.Y + minInt(height-1, y*height/sampleHeight)
+		for x := 0; x < sampleWidth; x++ {
+			srcX := bounds.Min.X + minInt(width-1, x*width/sampleWidth)
+			c := color.NRGBAModel.Convert(img.At(srcX, srcY)).(color.NRGBA)
+			idx := y*sampleWidth + x
+			r := float64(c.R) / 255
+			g := float64(c.G) / 255
+			b := float64(c.B) / 255
+			red[idx] = r
+			green[idx] = g
+			blue[idx] = b
+			luma[idx] = 0.2126*r + 0.7152*g + 0.0722*b
+		}
+	}
+	return red, green, blue, luma, sampleWidth, sampleHeight
 }
 
 func TestEstimateImageFocusPrioritizesSepiaSkinToneRange(t *testing.T) {

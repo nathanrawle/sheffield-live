@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"sort"
 	"strings"
 )
 
@@ -84,6 +85,9 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 	}
 
 	sampleWidth, sampleHeight := focusSampleSize(width, height)
+	red := make([]float64, sampleWidth*sampleHeight)
+	green := make([]float64, sampleWidth*sampleHeight)
+	blue := make([]float64, sampleWidth*sampleHeight)
 	luma := make([]float64, sampleWidth*sampleHeight)
 	saturation := make([]float64, sampleWidth*sampleHeight)
 	chromaticSkinTone := make([]float64, sampleWidth*sampleHeight)
@@ -98,6 +102,9 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 			r := float64(c.R) / 255
 			g := float64(c.G) / 255
 			b := float64(c.B) / 255
+			red[idx] = r
+			green[idx] = g
+			blue[idx] = b
 			luma[idx] = 0.2126*r + 0.7152*g + 0.0722*b
 			maxChannel := math.Max(r, math.Max(g, b))
 			minChannel := math.Min(r, math.Min(g, b))
@@ -113,6 +120,9 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 			}
 			chromaticSkinTone[idx] = chromaticSkinToneScore(r, g, b, hue, maxChannel, minChannel)
 		}
+	}
+	if focus, ok := verticalRectangleFocus(red, green, blue, luma, sampleWidth, sampleHeight); ok {
+		return focus, nil
 	}
 	toneProfile := imageToneProfileForSample(sampleWidth*sampleHeight, grayLikePixels, sepiaLikePixels)
 
@@ -173,6 +183,220 @@ func focusPercent(normalized float64) int {
 	}
 	percent := 50 + (target-50)*localFocusStrength
 	return int(math.Round(percent))
+}
+
+type verticalEdgeCandidate struct {
+	x        int
+	score    float64
+	coverage float64
+	run      float64
+}
+
+type verticalRectangleCandidate struct {
+	left  int
+	right int
+	score float64
+}
+
+func verticalRectangleFocus(red, green, blue, luma []float64, width, height int) (ImageFocus, bool) {
+	if width < 24 || height < 24 || len(luma) != width*height || len(red) != len(luma) || len(green) != len(luma) || len(blue) != len(luma) {
+		return DefaultImageFocus(), false
+	}
+
+	edges := verticalEdgeStrengths(red, green, blue, luma, width, height)
+	edgeCandidates := groupedVerticalEdgeCandidates(edges, width, height)
+	if len(edgeCandidates) == 0 || hasRepeatingVerticalEdgePattern(edgeCandidates) {
+		return DefaultImageFocus(), false
+	}
+
+	rectangles := verticalRectangleCandidates(edgeCandidates, width, height)
+	if len(rectangles) == 0 {
+		return DefaultImageFocus(), false
+	}
+	sort.Slice(rectangles, func(i, j int) bool {
+		return rectangles[i].score > rectangles[j].score
+	})
+
+	best := rectangles[0]
+	centerX := (float64(best.left) + float64(best.right)) / 2 / float64(width)
+	return NormalizeImageFocus(int(math.Round(centerX*100)), DefaultImageFocusY), true
+}
+
+func verticalEdgeStrengths(red, green, blue, luma []float64, width, height int) []float64 {
+	edges := make([]float64, (width-1)*height)
+	for y := 0; y < height; y++ {
+		for x := 1; x < width; x++ {
+			left := y*width + x - 1
+			right := left + 1
+			dr := red[right] - red[left]
+			dg := green[right] - green[left]
+			db := blue[right] - blue[left]
+			colorContrast := math.Sqrt(dr*dr+dg*dg+db*db) / math.Sqrt(3)
+			lumaContrast := math.Abs(luma[right] - luma[left])
+			edges[y*(width-1)+x-1] = math.Max(lumaContrast, colorContrast*0.85)
+		}
+	}
+	return edges
+}
+
+func groupedVerticalEdgeCandidates(edges []float64, width, height int) []verticalEdgeCandidate {
+	raw := verticalEdgeCandidates(edges, width, height)
+	if len(raw) == 0 {
+		return nil
+	}
+	sort.Slice(raw, func(i, j int) bool {
+		return raw[i].x < raw[j].x
+	})
+
+	groups := make([]verticalEdgeCandidate, 0, len(raw))
+	best := raw[0]
+	lastX := raw[0].x
+	for _, candidate := range raw[1:] {
+		if candidate.x-lastX <= 2 {
+			if candidate.score > best.score {
+				best = candidate
+			}
+			lastX = candidate.x
+			continue
+		}
+		groups = append(groups, best)
+		best = candidate
+		lastX = candidate.x
+	}
+	groups = append(groups, best)
+	return groups
+}
+
+func verticalEdgeCandidates(edges []float64, width, height int) []verticalEdgeCandidate {
+	threshold := verticalEdgeThreshold(edges)
+	if threshold <= 0 {
+		return nil
+	}
+
+	boundaryCount := width - 1
+	candidates := make([]verticalEdgeCandidate, 0, boundaryCount)
+	for x := 1; x < width; x++ {
+		strongRows := 0
+		currentRun := 0
+		longestRun := 0
+		totalStrength := 0.0
+		for y := 0; y < height; y++ {
+			strength := verticalEdgeStrengthAt(edges, boundaryCount, x, y)
+			totalStrength += strength
+			if strength >= threshold {
+				strongRows++
+				currentRun++
+				if currentRun > longestRun {
+					longestRun = currentRun
+				}
+			} else {
+				currentRun = 0
+			}
+		}
+		coverage := float64(strongRows) / float64(height)
+		run := float64(longestRun) / float64(height)
+		meanStrength := totalStrength / float64(height)
+		if coverage < 0.76 || run < 0.68 || meanStrength < threshold*0.9 {
+			continue
+		}
+		candidates = append(candidates, verticalEdgeCandidate{
+			x:        x,
+			score:    meanStrength * (0.45 + coverage) * (0.45 + run),
+			coverage: coverage,
+			run:      run,
+		})
+	}
+	return candidates
+}
+
+func verticalEdgeStrengthAt(edges []float64, boundaryCount, x, y int) float64 {
+	idx := y*boundaryCount + x - 1
+	strength := edges[idx]
+	if x > 1 {
+		strength = math.Max(strength, edges[idx-1]*0.85)
+	}
+	if x < boundaryCount {
+		strength = math.Max(strength, edges[idx+1]*0.85)
+	}
+	return strength
+}
+
+func verticalEdgeThreshold(edges []float64) float64 {
+	if len(edges) == 0 {
+		return 0
+	}
+	sum := 0.0
+	maxStrength := 0.0
+	for _, edge := range edges {
+		sum += edge
+		if edge > maxStrength {
+			maxStrength = edge
+		}
+	}
+	if maxStrength < 0.14 {
+		return 0
+	}
+	mean := sum / float64(len(edges))
+	return maxFloat(0.11, maxFloat(maxStrength*0.36, mean*3.0))
+}
+
+func hasRepeatingVerticalEdgePattern(candidates []verticalEdgeCandidate) bool {
+	if len(candidates) < 5 {
+		return false
+	}
+	byScore := append([]verticalEdgeCandidate(nil), candidates...)
+	sort.Slice(byScore, func(i, j int) bool {
+		return byScore[i].score > byScore[j].score
+	})
+	return byScore[4].score >= byScore[0].score*0.62
+}
+
+func verticalRectangleCandidates(edges []verticalEdgeCandidate, width, height int) []verticalRectangleCandidate {
+	rectangles := make([]verticalRectangleCandidate, 0, len(edges)*len(edges))
+	for _, edge := range edges {
+		rectangles = appendRectangleCandidate(rectangles, 0, edge.x, edge.score*0.92, width, height)
+		rectangles = appendRectangleCandidate(rectangles, edge.x, width, edge.score*0.92, width, height)
+	}
+	for i := 0; i < len(edges); i++ {
+		for j := i + 1; j < len(edges); j++ {
+			left := edges[i]
+			right := edges[j]
+			score := left.score + right.score
+			rectangles = appendRectangleCandidate(rectangles, left.x, right.x, score, width, height)
+		}
+	}
+	return rectangles
+}
+
+func appendRectangleCandidate(rectangles []verticalRectangleCandidate, left, right int, edgeScore float64, width, height int) []verticalRectangleCandidate {
+	if right <= left {
+		return rectangles
+	}
+	aspect := float64(right-left) / float64(height)
+	aspectScore := verticalRectangleAspectScore(aspect)
+	if aspectScore <= 0 {
+		return rectangles
+	}
+	return append(rectangles, verticalRectangleCandidate{
+		left:  left,
+		right: right,
+		score: edgeScore * aspectScore,
+	})
+}
+
+func verticalRectangleAspectScore(aspect float64) float64 {
+	if aspect < 0.45 || aspect > 1.90 {
+		return 0
+	}
+	commonRatios := []float64{0.67, 0.71, 0.77, 1.50, 1.78}
+	bestDistance := math.Inf(1)
+	for _, ratio := range commonRatios {
+		distance := math.Abs(math.Log(aspect / ratio))
+		if distance < bestDistance {
+			bestDistance = distance
+		}
+	}
+	return 0.55 + 0.45*(1-math.Min(1, bestDistance/0.45))
 }
 
 func coarseBlobSaliency(luma, saturation, skinTone []float64, width, height int) []float64 {
