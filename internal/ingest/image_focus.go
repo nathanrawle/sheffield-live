@@ -127,7 +127,7 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 			if contrast > 0 {
 				skinTone := maxFloat(chromaticSkinTone[idx], monochromeSkinToneScore(luma[idx], saturation[idx], toneProfile))
 				base := contrast * (1 + 0.7*saturation[idx])
-				saliency[idx] = (base + 0.18*skinTone) * (1 + 7.0*skinTone)
+				saliency[idx] = base * (1 + 2.0*skinTone)
 			}
 		}
 	}

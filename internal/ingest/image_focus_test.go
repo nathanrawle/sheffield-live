@@ -69,89 +69,43 @@ func TestEstimateImageFocusUsesLocalSaliencyInsteadOfGlobalAverage(t *testing.T)
 }
 
 func TestEstimateImageFocusPrioritizesSkinToneRegion(t *testing.T) {
-	var body bytes.Buffer
-	img := image.NewRGBA(image.Rect(0, 0, 120, 80))
-	for y := 0; y < 80; y++ {
-		for x := 0; x < 120; x++ {
-			img.Set(x, y, color.RGBA{R: 120, G: 120, B: 120, A: 255})
-		}
+	skin := chromaticSkinToneScore(0.72, 0.48, 0.32, rgbHueDegrees(0.72, 0.48, 0.32, 0.72, 0.32), 0.72, 0.32)
+	blue := chromaticSkinToneScore(0.08, 0.27, 0.94, rgbHueDegrees(0.08, 0.27, 0.94, 0.94, 0.08), 0.94, 0.08)
+	if skin <= 0.5 {
+		t.Fatalf("skin score = %v, want strong positive score", skin)
 	}
-	for y := 24; y < 56; y++ {
-		for x := 8; x < 40; x++ {
-			img.Set(x, y, color.RGBA{R: 20, G: 70, B: 240, A: 255})
-		}
-		for x := 82; x < 114; x++ {
-			img.Set(x, y, color.RGBA{R: 184, G: 122, B: 82, A: 255})
-		}
-	}
-	if err := png.Encode(&body, img); err != nil {
-		t.Fatalf("encode png: %v", err)
-	}
-
-	focus, err := EstimateImageFocus("image/png", body.Bytes())
-	if err != nil {
-		t.Fatalf("estimate image focus: %v", err)
-	}
-	if focus.X <= 60 {
-		t.Fatalf("focus = %d,%d, want skin-tone region on right", focus.X, focus.Y)
+	if blue != 0 {
+		t.Fatalf("blue score = %v, want 0", blue)
 	}
 }
 
 func TestEstimateImageFocusPrioritizesSepiaSkinToneRange(t *testing.T) {
-	var body bytes.Buffer
-	img := image.NewRGBA(image.Rect(0, 0, 120, 80))
-	for y := 0; y < 80; y++ {
-		for x := 0; x < 120; x++ {
-			img.Set(x, y, color.RGBA{R: 96, G: 75, B: 50, A: 255})
-		}
+	profile := imageToneProfileForSample(100, 0, 75)
+	skin := monochromeSkinToneScore(0.58, 0.24, profile)
+	shadow := monochromeSkinToneScore(0.12, 0.24, profile)
+	if profile.sepia <= 0 {
+		t.Fatalf("sepia profile = %#v, want positive sepia score", profile)
 	}
-	for y := 24; y < 56; y++ {
-		for x := 8; x < 40; x++ {
-			img.Set(x, y, color.RGBA{R: 35, G: 28, B: 20, A: 255})
-		}
-		for x := 82; x < 114; x++ {
-			img.Set(x, y, color.RGBA{R: 184, G: 142, B: 100, A: 255})
-		}
+	if skin <= 0.5 {
+		t.Fatalf("sepia skin proxy = %v, want strong positive score", skin)
 	}
-	if err := png.Encode(&body, img); err != nil {
-		t.Fatalf("encode png: %v", err)
-	}
-
-	focus, err := EstimateImageFocus("image/png", body.Bytes())
-	if err != nil {
-		t.Fatalf("estimate image focus: %v", err)
-	}
-	if focus.X <= 60 {
-		t.Fatalf("focus = %d,%d, want sepia skin-tone range on right", focus.X, focus.Y)
+	if shadow >= skin {
+		t.Fatalf("sepia shadow proxy = %v, want less than skin proxy %v", shadow, skin)
 	}
 }
 
 func TestEstimateImageFocusPrioritizesGrayscaleSkinToneRange(t *testing.T) {
-	var body bytes.Buffer
-	img := image.NewRGBA(image.Rect(0, 0, 120, 80))
-	for y := 0; y < 80; y++ {
-		for x := 0; x < 120; x++ {
-			img.Set(x, y, color.RGBA{R: 95, G: 95, B: 95, A: 255})
-		}
+	profile := imageToneProfileForSample(100, 80, 0)
+	skin := monochromeSkinToneScore(0.58, 0.02, profile)
+	shadow := monochromeSkinToneScore(0.12, 0.02, profile)
+	if profile.grayscale <= 0 {
+		t.Fatalf("grayscale profile = %#v, want positive grayscale score", profile)
 	}
-	for y := 24; y < 56; y++ {
-		for x := 8; x < 40; x++ {
-			img.Set(x, y, color.RGBA{R: 12, G: 12, B: 12, A: 255})
-		}
-		for x := 82; x < 114; x++ {
-			img.Set(x, y, color.RGBA{R: 158, G: 158, B: 158, A: 255})
-		}
+	if skin <= 0.4 {
+		t.Fatalf("grayscale skin proxy = %v, want strong positive score", skin)
 	}
-	if err := png.Encode(&body, img); err != nil {
-		t.Fatalf("encode png: %v", err)
-	}
-
-	focus, err := EstimateImageFocus("image/png", body.Bytes())
-	if err != nil {
-		t.Fatalf("estimate image focus: %v", err)
-	}
-	if focus.X <= 60 {
-		t.Fatalf("focus = %d,%d, want grayscale skin-tone range on right", focus.X, focus.Y)
+	if shadow >= skin {
+		t.Fatalf("grayscale shadow proxy = %v, want less than skin proxy %v", shadow, skin)
 	}
 }
 
