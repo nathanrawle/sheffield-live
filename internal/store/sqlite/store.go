@@ -35,6 +35,7 @@ const (
 	schemaVersionV12  = 12
 	schemaVersionV13  = 13
 	schemaVersionV14  = 14
+	schemaVersionV15  = 15
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -57,6 +58,7 @@ var migrations = []struct {
 	{version: schemaVersionV12, path: "migrations/0012_venue_validation_state.sql"},
 	{version: schemaVersionV13, path: "migrations/0013_review_candidate_venue_evidence.sql"},
 	{version: schemaVersionV14, path: "migrations/0014_bootstrap_origin_live.sql"},
+	{version: schemaVersionV15, path: "migrations/0015_event_public_links.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -150,6 +152,9 @@ func Open(path string, sourceMetadata ...ingest.SourceMetadataLookup) (st *Store
 	if err := backfillCanonicalUnknownEnds(ctx, tx, metadata); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill canonical unknown ends: %w", path, err)
 	}
+	if err := backfillEventPublicLinks(ctx, tx, metadata); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: backfill event public links: %w", path, err)
+	}
 	if err := auditCanonicalEqualTimeEnds(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: audit canonical equal-time ends: %w", path, err)
 	}
@@ -192,7 +197,7 @@ func (s *Store) ListEvents(ctx context.Context) ([]domain.Event, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("sqlite store is not open")
 	}
-	return loadEvents(ctx, s.db, `
+	events, err := loadEvents(ctx, s.db, `
 		SELECT
 			e.slug,
 			e.name,
@@ -204,6 +209,8 @@ func (s *Store) ListEvents(ctx context.Context) ([]domain.Event, error) {
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -212,6 +219,11 @@ func (s *Store) ListEvents(ctx context.Context) ([]domain.Event, error) {
 		JOIN sources s ON s.id = e.source_id
 		ORDER BY e.start_at, e.slug
 	`)
+	if err != nil {
+		return nil, err
+	}
+	decorateEventLinks(events, s.sourceMetadata)
+	return events, nil
 }
 
 func (s *Store) VenueBySlug(slug string) (domain.Venue, bool) {
@@ -332,7 +344,14 @@ func (s *Store) LoadEventBySlug(ctx context.Context, slug string) (domain.Event,
 	if s == nil || s.db == nil {
 		return domain.Event{}, false, errors.New("sqlite store is not open")
 	}
-	return loadEventBySlug(ctx, s.db, slug)
+	event, ok, err := loadEventBySlug(ctx, s.db, slug)
+	if err != nil || !ok {
+		return event, ok, err
+	}
+	events := []domain.Event{event}
+	decorateEventLinks(events, s.sourceMetadata)
+	event = events[0]
+	return event, true, nil
 }
 
 func (s *Store) EventSecondarySourceInfoByEventSlug(ctx context.Context, slug string) ([]seedstore.EventSecondarySourceInfo, error) {
@@ -351,7 +370,7 @@ func (s *Store) ListEventsForVenue(ctx context.Context, venueSlug string) ([]dom
 	if s == nil || s.db == nil {
 		return nil, errors.New("sqlite store is not open")
 	}
-	return loadEvents(ctx, s.db, `
+	events, err := loadEvents(ctx, s.db, `
 		SELECT
 			e.slug,
 			e.name,
@@ -363,6 +382,8 @@ func (s *Store) ListEventsForVenue(ctx context.Context, venueSlug string) ([]dom
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -372,6 +393,11 @@ func (s *Store) ListEventsForVenue(ctx context.Context, venueSlug string) ([]dom
 		WHERE v.slug = ?
 		ORDER BY e.start_at, e.slug
 	`, venueSlug)
+	if err != nil {
+		return nil, err
+	}
+	decorateEventLinks(events, s.sourceMetadata)
+	return events, nil
 }
 
 func (s *Store) Validate(ctx context.Context) error {
@@ -397,8 +423,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV14 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV14)
+	if version > schemaVersionV15 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV15)
 	}
 
 	for _, migration := range migrations {
@@ -516,14 +542,18 @@ func insertEvent(ctx context.Context, tx execer, event domain.Event, venueID, so
 			genre,
 			status,
 			description,
+			official_listing_url,
+			calendar_url,
 			last_checked_at,
 			origin,
 			publication_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
+		event.OfficialListingURL,
+		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
 		string(event.Origin),
 		string(normalizedPublicationState(event.PublicationState)))
@@ -564,6 +594,8 @@ func validate(ctx context.Context, q queryer) error {
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -811,6 +843,8 @@ func loadEventBySlug(ctx context.Context, q queryer, slug string) (domain.Event,
 			e.description,
 			s.name,
 			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, ''),
 			e.last_checked_at,
 			e.origin,
 			e.publication_state
@@ -889,6 +923,54 @@ func appendUniqueString(values []string, candidate string) []string {
 	return append(values, candidate)
 }
 
+type decoratedEventLinks struct {
+	officialListingURL string
+	calendarURL        string
+}
+
+func decorateEventLinks(events []domain.Event, sourceMetadata ingest.SourceMetadataLookup) {
+	for i := range events {
+		links := decorateEventLinkValues(
+			events[i].Name,
+			events[i].SourceName,
+			events[i].SourceURL,
+			events[i].OfficialListingURL,
+			events[i].CalendarURL,
+			sourceMetadata,
+		)
+		events[i].OfficialListingURL = links.officialListingURL
+		events[i].CalendarURL = links.calendarURL
+	}
+}
+
+func decorateEventLinkValues(eventName, sourceName, sourceURL, officialListingURL, calendarURL string, sourceMetadata ingest.SourceMetadataLookup) decoratedEventLinks {
+	sourceURL = strings.TrimSpace(sourceURL)
+	officialListingURL = strings.TrimSpace(officialListingURL)
+	calendarURL = strings.TrimSpace(calendarURL)
+
+	if calendarURL == "" && ingest.IsCalendarURL(sourceURL) {
+		calendarURL = sourceURL
+	}
+	listingsURL := ""
+	if sourceMetadata != nil {
+		listingsURL = strings.TrimSpace(sourceMetadata.ListingsURLForSourceName(sourceName))
+	}
+	if officialListingURL == "" || ingest.IsCalendarURL(officialListingURL) {
+		if sourceURL != "" && !ingest.IsCalendarURL(sourceURL) {
+			officialListingURL = sourceURL
+		} else if listingsURL != "" && !ingest.IsCalendarURL(listingsURL) {
+			officialListingURL = listingsURL
+		}
+	}
+	if listingsURL != "" && officialListingURL == listingsURL {
+		officialListingURL = ingest.URLWithTextFragment(officialListingURL, eventName)
+	}
+	return decoratedEventLinks{
+		officialListingURL: officialListingURL,
+		calendarURL:        calendarURL,
+	}
+}
+
 func scanEvent(rows *sql.Rows) (domain.Event, error) {
 	var event domain.Event
 	var origin string
@@ -907,6 +989,8 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 		&event.Description,
 		&event.SourceName,
 		&event.SourceURL,
+		&event.OfficialListingURL,
+		&event.CalendarURL,
 		&lastCheckedText,
 		&origin,
 		&publicationState,
@@ -1145,6 +1229,69 @@ func linkReviewGroupToImportRunTx(ctx context.Context, tx interface {
 		VALUES (?, ?, ?)
 	`, importRunID, reviewGroupID, formatRFC3339UTC(linkedAt))
 	return err
+}
+
+func backfillEventPublicLinks(ctx context.Context, tx interface {
+	execer
+	queryer
+}, sourceMetadata ingest.SourceMetadataLookup) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT
+			e.id,
+			e.name,
+			s.name,
+			s.url,
+			COALESCE(e.official_listing_url, ''),
+			COALESCE(e.calendar_url, '')
+		FROM events e
+		JOIN sources s ON s.id = e.source_id
+		ORDER BY e.id
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type eventLinkBackfill struct {
+		id                 int64
+		officialListingURL string
+		calendarURL        string
+	}
+	var updates []eventLinkBackfill
+	for rows.Next() {
+		var eventID int64
+		var eventName string
+		var sourceName string
+		var sourceURL string
+		var officialListingURL string
+		var calendarURL string
+		if err := rows.Scan(&eventID, &eventName, &sourceName, &sourceURL, &officialListingURL, &calendarURL); err != nil {
+			return err
+		}
+		updated := decorateEventLinkValues(eventName, sourceName, sourceURL, officialListingURL, calendarURL, sourceMetadata)
+		if updated.officialListingURL == officialListingURL && updated.calendarURL == calendarURL {
+			continue
+		}
+		updates = append(updates, eventLinkBackfill{
+			id:                 eventID,
+			officialListingURL: updated.officialListingURL,
+			calendarURL:        updated.calendarURL,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, update := range updates {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE events
+			SET official_listing_url = ?,
+				calendar_url = ?
+			WHERE id = ?
+		`, update.officialListingURL, update.calendarURL, update.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizedCoverageKind(venue domain.Venue) string {

@@ -2231,6 +2231,54 @@ func TestResolveReviewGroupAuthoritativePathCreatesSecondarySourceInfoRows(t *te
 	}
 }
 
+func TestResolveReviewGroupAuthoritativePathPreservesSecondaryDetailURLWhenCalendarURLExists(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative secondary detail")
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET calendar_url = ?
+		WHERE group_id = ? AND position = 1
+	`, "https://secondary.example.test/feed.ics", groupID); err != nil {
+		t.Fatalf("set secondary calendar url: %v", err)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	event, ok := st.EventBySlug("live-utc-show-sidney-and-matilda-20260501190000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	secondary, err := st.EventSecondarySourceInfoByEventSlug(ctx, event.Slug)
+	if err != nil {
+		t.Fatalf("load secondary source info: %v", err)
+	}
+	if got, want := len(secondary), 1; got != want {
+		t.Fatalf("secondary source groups = %d, want %d", got, want)
+	}
+	if got, want := secondary[0].SourceURL, "https://example.test/utc-show"; got != want {
+		t.Fatalf("secondary source url = %q, want %q", got, want)
+	}
+}
+
 func TestResolveReviewGroupAuthoritativePathUpsertsSecondarySourceInfoRows(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -4237,6 +4285,159 @@ func TestPromoteSingletonReviewGroupIfMissingUpdatesLinkedEventInPlace(t *testin
 	}
 	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
 		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
+	}
+}
+
+func TestPromoteSingletonReviewGroupIfMissingLinksOwnedICSByAuthoritativeFeed(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeEventCount := mustCount(t, db, "events")
+
+	const (
+		feedURL       = "https://leadmill.co.uk/listings/?ical=1"
+		firstDetail   = "https://leadmill.co.uk/event/feed-detail/"
+		secondDetail  = "https://leadmill.co.uk/event/feed-detail-renamed/"
+		sourceName    = "The Leadmill manual ingest"
+		sourceEventID = "leadmill-feed-1"
+	)
+
+	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:                       "First feed apply",
+		SourceName:                  sourceName,
+		SourceURL:                   "https://leadmill.co.uk/live/",
+		AuthoritativeSourceName:     sourceName,
+		AuthoritativeSourceURL:      feedURL,
+		AuthoritativeSourceEventKey: sourceEventID,
+		Candidates: []review.CandidateInput{{
+			ExternalID:  sourceEventID,
+			Name:        "Feed Detail",
+			VenueSlug:   "leadmill",
+			StartAt:     "2026-05-10T18:30:00Z",
+			EndAt:       "2026-05-10T22:00:00Z",
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "First description",
+			SourceName:  sourceName,
+			SourceURL:   firstDetail,
+			CalendarURL: feedURL,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("first promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("first promoted = false, want true")
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 1 {
+		t.Fatalf("event_source_links rows = %d, want 1", got)
+	}
+
+	event, ok := st.EventBySlug(firstSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", firstSlug)
+	}
+	if got, want := event.SourceURL, feedURL; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := event.OfficialListingURL, firstDetail; got != want {
+		t.Fatalf("official listing url = %q, want %q", got, want)
+	}
+	if got, want := event.CalendarURL, feedURL; got != want {
+		t.Fatalf("calendar url = %q, want %q", got, want)
+	}
+
+	var linkedSourceName string
+	var linkedSourceURL string
+	var linkedSourceEventKey string
+	if err := db.QueryRow(`
+		SELECT s.name, s.url, l.source_event_key
+		FROM event_source_links l
+		JOIN sources s ON s.id = l.source_id
+		LIMIT 1
+	`).Scan(&linkedSourceName, &linkedSourceURL, &linkedSourceEventKey); err != nil {
+		t.Fatalf("scan event source link: %v", err)
+	}
+	if linkedSourceName != sourceName {
+		t.Fatalf("linked source name = %q, want %q", linkedSourceName, sourceName)
+	}
+	if linkedSourceURL != feedURL {
+		t.Fatalf("linked source url = %q, want %q", linkedSourceURL, feedURL)
+	}
+	if linkedSourceEventKey != sourceEventID {
+		t.Fatalf("linked source event key = %q, want %q", linkedSourceEventKey, sourceEventID)
+	}
+
+	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:                       "Second feed apply",
+		SourceName:                  sourceName,
+		SourceURL:                   "https://leadmill.co.uk/live/",
+		AuthoritativeSourceName:     sourceName,
+		AuthoritativeSourceURL:      feedURL,
+		AuthoritativeSourceEventKey: sourceEventID,
+		Candidates: []review.CandidateInput{{
+			ExternalID:  sourceEventID,
+			Name:        "Feed Detail Renamed",
+			VenueSlug:   "leadmill",
+			StartAt:     "2026-05-10T19:00:00Z",
+			EndAt:       "2026-05-10T23:00:00Z",
+			Genre:       "Indie",
+			Status:      "Sold out",
+			Description: "Updated description",
+			SourceName:  sourceName,
+			SourceURL:   secondDetail,
+			CalendarURL: feedURL,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("second promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("second promoted = false, want true")
+	}
+	if secondSlug != firstSlug {
+		t.Fatalf("second slug = %q, want %q", secondSlug, firstSlug)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount+1)
+	}
+	if got := mustCount(t, db, "event_source_links"); got != 1 {
+		t.Fatalf("event_source_links rows = %d, want 1", got)
+	}
+
+	event, ok = st.EventBySlug(firstSlug)
+	if !ok {
+		t.Fatalf("missing updated event %q", firstSlug)
+	}
+	if got, want := event.Name, "Feed Detail Renamed"; got != want {
+		t.Fatalf("name = %q, want %q", got, want)
+	}
+	if !event.Start.Equal(time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)) {
+		t.Fatalf("start = %s, want updated start", event.Start.Format(time.RFC3339))
+	}
+	if got, want := event.SourceURL, feedURL; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := event.OfficialListingURL, secondDetail; got != want {
+		t.Fatalf("official listing url = %q, want %q", got, want)
+	}
+	if got, want := event.CalendarURL, feedURL; got != want {
+		t.Fatalf("calendar url = %q, want %q", got, want)
 	}
 }
 

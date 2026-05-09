@@ -117,6 +117,7 @@ type SourceMetadataLookup interface {
 	OwnedVenueSlugForReviewStageSourceName(sourceName string) string
 	NonAuthoritativeSingletonVenueSlugForSource(source string) string
 	NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName string) string
+	ListingsURLForSourceName(sourceName string) string
 }
 
 func LoadCatalog(dir string) (*Catalog, error) {
@@ -421,6 +422,25 @@ func (c *Catalog) NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sou
 	return c.nonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName)
 }
 
+func (c *Catalog) ListingsURLForSourceName(sourceName string) string {
+	if c == nil {
+		return ""
+	}
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		return ""
+	}
+	for _, cfg := range c.byKey {
+		if sourceName == strings.TrimSpace(cfg.ReviewStageSourceName) ||
+			sourceName == strings.TrimSpace(cfg.Name) ||
+			sourceName == strings.TrimSpace(cfg.CalendarSourceName) ||
+			sourceName == strings.TrimSpace(cfg.LinkedPageSourceName) {
+			return strings.TrimSpace(cfg.URL)
+		}
+	}
+	return ""
+}
+
 func (c *Catalog) VenueSlugForSourceLocation(source, value string) string {
 	if c == nil {
 		return VenueSlugFromText(value)
@@ -596,4 +616,12 @@ func NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName strin
 		return ""
 	}
 	return catalog.nonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName)
+}
+
+func ListingsURLForSourceName(sourceName string) string {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		return ""
+	}
+	return catalog.ListingsURLForSourceName(sourceName)
 }

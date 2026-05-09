@@ -374,6 +374,7 @@ func reviewCandidateFromInput(input review.CandidateInput) review.Candidate {
 		Description:      strings.TrimSpace(input.Description),
 		SourceName:       strings.TrimSpace(input.SourceName),
 		SourceURL:        strings.TrimSpace(input.SourceURL),
+		CalendarURL:      strings.TrimSpace(input.CalendarURL),
 		Provenance:       strings.TrimSpace(input.Provenance),
 	}
 }

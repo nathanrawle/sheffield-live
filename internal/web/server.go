@@ -1165,6 +1165,7 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 		http.Error(w, "event venue not found", http.StatusInternalServerError)
 		return
 	}
+	event = eventWithPublicLinks(event, venue)
 	var secondarySources []store.EventSecondarySourceInfo
 	if s.secondarySourceStore != nil {
 		loaded, err := s.secondarySourceStore.EventSecondarySourceInfoByEventSlug(r.Context(), slug)
@@ -1185,6 +1186,34 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 		Venue:                 venue,
 	}
 	s.renderPage(w, "templates/event_detail.html", data)
+}
+
+func eventWithPublicLinks(event domain.Event, venue domain.Venue) domain.Event {
+	sourceURL := strings.TrimSpace(event.SourceURL)
+	officialListingURL := strings.TrimSpace(event.OfficialListingURL)
+	calendarURL := ""
+	for _, candidate := range []string{event.CalendarURL, officialListingURL, sourceURL} {
+		candidate = strings.TrimSpace(candidate)
+		if ingest.IsCalendarURL(candidate) {
+			calendarURL = candidate
+			break
+		}
+	}
+
+	if officialListingURL == "" || ingest.IsCalendarURL(officialListingURL) {
+		switch venueWebsite := strings.TrimSpace(venue.Website); {
+		case sourceURL != "" && !ingest.IsCalendarURL(sourceURL):
+			officialListingURL = sourceURL
+		case venueWebsite != "" && !ingest.IsCalendarURL(venueWebsite):
+			officialListingURL = venueWebsite
+		default:
+			officialListingURL = ""
+		}
+	}
+
+	event.OfficialListingURL = officialListingURL
+	event.CalendarURL = calendarURL
+	return event
 }
 
 func (s *Server) handleVenues(w http.ResponseWriter, r *http.Request) {

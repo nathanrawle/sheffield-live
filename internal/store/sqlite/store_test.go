@@ -41,8 +41,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 
 	db := mustRawDB(t, path)
 
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV15 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV15)
 	}
 	if got := mustCount(t, db, "venues"); got != 7 {
 		t.Fatalf("venues rows = %d, want 7", got)
@@ -65,8 +65,8 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT version, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version, &appliedAt); err != nil {
 		t.Fatalf("scan migration row: %v", err)
 	}
-	if version != schemaVersionV14 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV14)
+	if version != schemaVersionV15 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV15)
 	}
 	if _, err := time.Parse(time.RFC3339, appliedAt); err != nil {
 		t.Fatalf("applied_at %q is not RFC3339: %v", appliedAt, err)
@@ -159,6 +159,53 @@ func TestOpenReopensPersistentData(t *testing.T) {
 	}
 	if got := st.EventsForVenue("persisted-venue"); len(got) != 1 || got[0].Slug != "persisted-event" {
 		t.Fatalf("events for venue = %#v, want one persisted event", got)
+	}
+}
+
+func TestLoadEventBySlugDecoratesCalendarSourceWithListingsFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	var venueID int64
+	if err := st.db.QueryRow(`SELECT id FROM venues WHERE slug = ?`, "leadmill").Scan(&venueID); err != nil {
+		t.Fatalf("lookup leadmill venue id: %v", err)
+	}
+	result, err := st.db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "The Leadmill manual ingest", "https://leadmill.co.uk/listings/?ical=1")
+	if err != nil {
+		t.Fatalf("insert calendar source: %v", err)
+	}
+	sourceID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("calendar source id: %v", err)
+	}
+	start := time.Date(2026, time.May, 20, 18, 30, 0, 0, time.UTC)
+	end := time.Date(2026, time.May, 20, 21, 0, 0, 0, time.UTC)
+	checked := time.Date(2026, time.May, 20, 9, 0, 0, 0, time.UTC)
+	if _, err := st.db.Exec(`
+		INSERT INTO events (
+			slug, venue_id, source_id, name, start_at, end_at, genre, status, description, last_checked_at, origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "leadmill-calendar-source", venueID, sourceID, "Leadmill Calendar Source", formatRFC3339UTC(start), formatRFC3339UTC(end), "Indie", "Listed", "Calendar event", formatRFC3339UTC(checked), string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert calendar event: %v", err)
+	}
+
+	event, ok, err := st.LoadEventBySlug(context.Background(), "leadmill-calendar-source")
+	if err != nil {
+		t.Fatalf("load calendar event: %v", err)
+	}
+	if !ok {
+		t.Fatal("calendar event not found")
+	}
+	if got, want := event.OfficialListingURL, "https://leadmill.co.uk/live/#:~:text=Leadmill%20Calendar%20Source"; got != want {
+		t.Fatalf("official listing url = %q, want %q", got, want)
+	}
+	if got, want := event.CalendarURL, "https://leadmill.co.uk/listings/?ical=1"; got != want {
+		t.Fatalf("calendar url = %q, want %q", got, want)
 	}
 }
 
@@ -262,8 +309,8 @@ func TestOpenMigratesVersion12DatabaseAddsReviewCandidateVenueEvidence(t *testin
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV15 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV15)
 	}
 
 	group, ok, err := st.LoadReviewGroup(context.Background(), groupID)
@@ -326,8 +373,8 @@ func TestOpenMigratesVersion13DatabaseMarksBootstrapRecordsLive(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV15 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV15)
 	}
 	assertStoredVenueOrigin(t, db, "leadmill", domain.OriginLive)
 	assertStoredVenueOrigin(t, db, "community-room", domain.OriginSeed)
@@ -531,15 +578,15 @@ func TestOpenMigratesVersion1Database(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV15 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV15)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV14 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV14)
+	if version != schemaVersionV15 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV15)
 	}
 	if got := mustCount(t, db, "review_groups"); got != 0 {
 		t.Fatalf("review_groups rows = %d, want 0", got)
@@ -641,15 +688,15 @@ func TestOpenMigratesVersion2DatabasePreservesReviewDataAndAddsStagingKey(t *tes
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV15 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV15)
 	}
 	var version int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatalf("scan max schema version: %v", err)
 	}
-	if version != schemaVersionV14 {
-		t.Fatalf("schema version = %d, want %d", version, schemaVersionV14)
+	if version != schemaVersionV15 {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersionV15)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
@@ -788,8 +835,8 @@ func TestOpenMigratesVersion3DatabaseAddsEventSourceLinks(t *testing.T) {
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV15 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV15)
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
@@ -928,8 +975,8 @@ func TestOpenMigratesVersion4DatabaseAddsReviewGroupAuthoritativeLinkColumns(t *
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV15 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV15)
 	}
 
 	group, ok, err := st.LoadReviewGroup(context.Background(), openGroupID)
@@ -1033,8 +1080,8 @@ func TestOpenMigratesVersion5DatabaseAddsEventSecondarySourceInfoTable(t *testin
 
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV14 {
-		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV14)
+	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionV15 {
+		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionV15)
 	}
 	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
 		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
