@@ -53,6 +53,40 @@ func TestImageAssetFocusRoundTrip(t *testing.T) {
 	}
 }
 
+func TestImageAssetFocusAllowsEdges(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/edge.jpg",
+		PublicURL:   "/media/events/edge.jpg",
+		StoragePath: "events/edge.jpg",
+		ContentType: "image/jpeg",
+		FocusX:      0,
+		FocusY:      100,
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+
+	got, ok, err := st.LoadImageAsset(ctx, "https://example.test/edge.jpg")
+	if err != nil {
+		t.Fatalf("load image asset: %v", err)
+	}
+	if !ok {
+		t.Fatal("image asset not found")
+	}
+	if got.FocusX != 0 || got.FocusY != 100 {
+		t.Fatalf("focus = %d,%d, want 0,100", got.FocusX, got.FocusY)
+	}
+}
+
 func TestUpdateImageAssetFocusUpdatesDenormalizedRows(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")

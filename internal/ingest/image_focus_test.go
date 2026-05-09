@@ -68,6 +68,35 @@ func TestEstimateImageFocusUsesLocalSaliencyInsteadOfGlobalAverage(t *testing.T)
 	}
 }
 
+func TestEstimateImageFocusPrioritizesSkinToneRegion(t *testing.T) {
+	var body bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 120, 80))
+	for y := 0; y < 80; y++ {
+		for x := 0; x < 120; x++ {
+			img.Set(x, y, color.RGBA{R: 120, G: 120, B: 120, A: 255})
+		}
+	}
+	for y := 24; y < 56; y++ {
+		for x := 8; x < 40; x++ {
+			img.Set(x, y, color.RGBA{R: 20, G: 70, B: 240, A: 255})
+		}
+		for x := 82; x < 114; x++ {
+			img.Set(x, y, color.RGBA{R: 184, G: 122, B: 82, A: 255})
+		}
+	}
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+
+	focus, err := EstimateImageFocus("image/png", body.Bytes())
+	if err != nil {
+		t.Fatalf("estimate image focus: %v", err)
+	}
+	if focus.X <= 60 {
+		t.Fatalf("focus = %d,%d, want skin-tone region on right", focus.X, focus.Y)
+	}
+}
+
 func TestFocusPercentSnapsToCentroidSidePastThreshold(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -75,9 +104,12 @@ func TestFocusPercentSnapsToCentroidSidePastThreshold(t *testing.T) {
 		want       int
 	}{
 		{name: "center stays centered", normalized: 0.5, want: 50},
+		{name: "close to center stays centered", normalized: 0.54, want: 50},
 		{name: "near center keeps damping", normalized: 0.6, want: 59},
 		{name: "left threshold snaps to damped edge", normalized: 0.31, want: 8},
 		{name: "right threshold snaps to damped edge", normalized: 0.69, want: 93},
+		{name: "far left snaps to edge", normalized: 0.16, want: 0},
+		{name: "far right snaps to edge", normalized: 0.84, want: 100},
 	}
 
 	for _, tc := range tests {
@@ -122,12 +154,24 @@ func TestEstimateImageFocusDefaultsForWebPWithoutDecoder(t *testing.T) {
 
 func TestNormalizeImageFocusDefaultsZeroAndClamps(t *testing.T) {
 	focus := NormalizeImageFocus(0, 120)
-	if focus.X != 50 || focus.Y != 95 {
-		t.Fatalf("focus = %d,%d, want 50,95", focus.X, focus.Y)
+	if focus.X != 0 || focus.Y != 100 {
+		t.Fatalf("focus = %d,%d, want 0,100", focus.X, focus.Y)
 	}
 
 	focus = NormalizeImageFocus(-10, 3)
-	if focus.X != 5 || focus.Y != 5 {
-		t.Fatalf("focus = %d,%d, want 5,5", focus.X, focus.Y)
+	if focus.X != 0 || focus.Y != 3 {
+		t.Fatalf("focus = %d,%d, want 0,3", focus.X, focus.Y)
+	}
+
+	focus = NormalizeImageFocus(0, 0)
+	if focus != DefaultImageFocus() {
+		t.Fatalf("focus = %#v, want default", focus)
+	}
+
+	if got := NormalizeImageFocusValue(0); got != 50 {
+		t.Fatalf("value focus = %d, want scalar zero to default to 50", got)
+	}
+	if got := NormalizeExplicitImageFocusValue(0); got != 0 {
+		t.Fatalf("explicit value focus = %d, want edge 0", got)
 	}
 }

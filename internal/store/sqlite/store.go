@@ -981,7 +981,7 @@ func normalizedImageFocus(x, y int) ingest.ImageFocus {
 }
 
 func normalizedImageFocusValue(value int) int {
-	return ingest.NormalizeImageFocusValue(value)
+	return ingest.NormalizeExplicitImageFocusValue(value)
 }
 
 type decoratedEventLinks struct {

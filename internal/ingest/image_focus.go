@@ -29,9 +29,12 @@ func DefaultImageFocus() ImageFocus {
 }
 
 func NormalizeImageFocus(x, y int) ImageFocus {
+	if x == 0 && y == 0 {
+		return DefaultImageFocus()
+	}
 	return ImageFocus{
-		X: NormalizeImageFocusValue(x),
-		Y: NormalizeImageFocusValue(y),
+		X: NormalizeExplicitImageFocusValue(x),
+		Y: NormalizeExplicitImageFocusValue(y),
 	}
 }
 
@@ -39,11 +42,15 @@ func NormalizeImageFocusValue(value int) int {
 	if value == 0 {
 		return DefaultImageFocusX
 	}
-	if value < 5 {
-		return 5
+	return NormalizeExplicitImageFocusValue(value)
+}
+
+func NormalizeExplicitImageFocusValue(value int) int {
+	if value < 0 {
+		return 0
 	}
-	if value > 95 {
-		return 95
+	if value > 100 {
+		return 100
 	}
 	return value
 }
@@ -79,6 +86,7 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 	sampleWidth, sampleHeight := focusSampleSize(width, height)
 	luma := make([]float64, sampleWidth*sampleHeight)
 	saturation := make([]float64, sampleWidth*sampleHeight)
+	skinTone := make([]float64, sampleWidth*sampleHeight)
 	for y := 0; y < sampleHeight; y++ {
 		srcY := bounds.Min.Y + minInt(height-1, y*height/sampleHeight)
 		for x := 0; x < sampleWidth; x++ {
@@ -94,6 +102,7 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 			if maxChannel > 0 {
 				saturation[idx] = (maxChannel - minChannel) / maxChannel
 			}
+			skinTone[idx] = skinToneScore(r, g, b)
 		}
 	}
 
@@ -107,8 +116,9 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 			down := luma[minInt(sampleHeight-1, y+1)*sampleWidth+x]
 			contrast := math.Hypot(right-left, down-up)
 			if contrast > 0 {
-				saliency[idx] = contrast * (1 + 0.7*saturation[idx])
+				saliency[idx] = contrast * (1 + 0.7*saturation[idx]) * (1 + 2.0*skinTone[idx])
 			}
+			saliency[idx] += 0.09 * skinTone[idx]
 		}
 	}
 
@@ -126,18 +136,76 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 func focusPercent(normalized float64) int {
 	const (
 		localFocusStrength       = 0.85
+		centerHoldThreshold      = 5.0
 		sideSnapThresholdPercent = 18.0
+		hardSnapThresholdPercent = 34.0
 	)
 	target := normalized * 100
-	if math.Abs(target-50) >= sideSnapThresholdPercent {
-		if target < 50 {
+	offset := target - 50
+	absOffset := math.Abs(offset)
+	if absOffset <= centerHoldThreshold {
+		return 50
+	}
+	if absOffset >= hardSnapThresholdPercent {
+		if offset < 0 {
+			return 0
+		}
+		return 100
+	}
+	if absOffset >= sideSnapThresholdPercent {
+		target = 100
+		if offset < 0 {
 			target = 0
-		} else {
-			target = 100
 		}
 	}
 	percent := 50 + (target-50)*localFocusStrength
 	return int(math.Round(percent))
+}
+
+func skinToneScore(r, g, b float64) float64 {
+	maxChannel := math.Max(r, math.Max(g, b))
+	minChannel := math.Min(r, math.Min(g, b))
+	if maxChannel < 0.14 || maxChannel-minChannel < 0.035 {
+		return 0
+	}
+	hue := rgbHueDegrees(r, g, b, maxChannel, minChannel)
+	if hue > 70 && hue < 335 {
+		return 0
+	}
+	saturation := (maxChannel - minChannel) / maxChannel
+	if saturation < 0.08 || saturation > 0.82 {
+		return 0
+	}
+	luma := 0.2126*r + 0.7152*g + 0.0722*b
+	if luma < 0.12 || luma > 0.95 {
+		return 0
+	}
+	hueDistance := math.Min(math.Abs(hue-24), math.Min(math.Abs(hue+360-24), math.Abs(hue-360-24)))
+	hueScore := 1 - math.Min(1, hueDistance/46)
+	warmthScore := clampFloat((r-b+0.08)/0.36, 0, 1)
+	saturationScore := 1 - math.Min(1, math.Abs(saturation-0.38)/0.44)
+	return hueScore * warmthScore * saturationScore
+}
+
+func rgbHueDegrees(r, g, b, maxChannel, minChannel float64) float64 {
+	delta := maxChannel - minChannel
+	if delta <= 0 {
+		return 0
+	}
+	var hue float64
+	switch maxChannel {
+	case r:
+		hue = math.Mod((g-b)/delta, 6)
+	case g:
+		hue = (b-r)/delta + 2
+	default:
+		hue = (r-g)/delta + 4
+	}
+	hue *= 60
+	if hue < 0 {
+		hue += 360
+	}
+	return hue
 }
 
 func mostSalientFocusWindow(saliency []float64, width, height int) (float64, float64, float64) {
@@ -234,6 +302,16 @@ func maxInt(a, b int) int {
 }
 
 func clampInt(value, minValue, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func clampFloat(value, minValue, maxValue float64) float64 {
 	if value < minValue {
 		return minValue
 	}
