@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	jazzAtTheLescarBlockPattern       = regexp.MustCompile(`(?is)<div\s+class=["']art["']>(.*?)</div>\s*<div\s+class=["']ttl["']>(.*?)</div>.*?<div\s+class=["']dsc["']>(.*?)</div>`)
+	jazzAtTheLescarBlockPattern       = regexp.MustCompile(`(?is)<div\s+class=["']art["']>(.*?)</div>\s*<div\s+class=["']ttl["']>(.*?)</div>(.*?)<div\s+class=["']dsc["']>(.*?)</div>`)
 	jazzAtTheLescarTagPattern         = regexp.MustCompile(`(?is)<[^>]+>`)
 	jazzAtTheLescarWhitespacePattern  = regexp.MustCompile(`\s+`)
 	jazzAtTheLescarDefaultTimePattern = regexp.MustCompile(`(?i)music\s+(\d{1,2}(?::\d{2})?\s*[ap]m)`)
@@ -19,11 +19,15 @@ var (
 	jazzAtTheLescarDayPattern         = regexp.MustCompile(`(?i)\b(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+)?(\d{1,2})(?:st|nd|rd|th)?\b`)
 )
 
-func ParseJazzAtTheLescarSourcePage(_ string, raw []byte, limit int) ParseResult {
-	return limitParseResult(ParseJazzAtTheLescarPage(raw), limit)
+func ParseJazzAtTheLescarSourcePage(pageURL string, raw []byte, limit int) ParseResult {
+	return limitParseResult(parseJazzAtTheLescarPage(pageURL, raw), limit)
 }
 
 func ParseJazzAtTheLescarPage(raw []byte) ParseResult {
+	return parseJazzAtTheLescarPage("", raw)
+}
+
+func parseJazzAtTheLescarPage(pageURL string, raw []byte) ParseResult {
 	defaultTime, updatedDate, err := parseJazzAtTheLescarPageMetadata(raw)
 	if err != nil {
 		return ParseResult{Errors: []string{err.Error()}}
@@ -36,7 +40,7 @@ func ParseJazzAtTheLescarPage(raw []byte) ParseResult {
 
 	var result ParseResult
 	for _, match := range matches {
-		candidate, skip, err := jazzAtTheLescarCandidateFromBlock(match[1], match[2], match[3], defaultTime, updatedDate)
+		candidate, skip, err := jazzAtTheLescarCandidateFromBlock(pageURL, match[1], match[2], match[3], match[4], defaultTime, updatedDate)
 		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
 			continue
@@ -71,7 +75,7 @@ func parseJazzAtTheLescarPageMetadata(raw []byte) (string, time.Time, error) {
 	return strings.ToLower(strings.TrimSpace(string(defaultTimeMatch[1]))), updatedDate, nil
 }
 
-func jazzAtTheLescarCandidateFromBlock(rawTitle, rawTTL, rawDescription []byte, defaultTime string, updatedDate time.Time) (EventCandidate, ParseSkip, error) {
+func jazzAtTheLescarCandidateFromBlock(pageURL string, rawTitle, rawTTL, rawImage, rawDescription []byte, defaultTime string, updatedDate time.Time) (EventCandidate, ParseSkip, error) {
 	title := jazzAtTheLescarCleanText(string(rawTitle))
 	ttl := jazzAtTheLescarCleanText(string(rawTTL))
 	description := jazzAtTheLescarDescription(string(rawDescription))
@@ -108,11 +112,13 @@ func jazzAtTheLescarCandidateFromBlock(rawTitle, rawTTL, rawDescription []byte, 
 	}
 
 	return EventCandidate{
-		Summary:     title,
-		Description: description,
-		Location:    venue,
-		Status:      "Listed",
-		StartAt:     formatTime(startAt),
+		Summary:        title,
+		Description:    description,
+		Location:       venue,
+		ImageSourceURL: firstImageSrc(pageURL, rawImage),
+		ImageAlt:       title,
+		Status:         "Listed",
+		StartAt:        formatTime(startAt),
 	}, ParseSkip{}, nil
 }
 

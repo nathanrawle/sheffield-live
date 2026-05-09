@@ -180,16 +180,50 @@ func parseEvent(properties []icsProperty) (EventCandidate, ParseSkip) {
 	}
 
 	return EventCandidate{
-		UID:         uid,
-		Summary:     summary,
-		Description: cleanICSValue(firstValue(properties, "DESCRIPTION")),
-		Location:    location,
-		LocationRaw: rawLocation,
-		URL:         cleanICSValue(firstValue(properties, "URL")),
-		Status:      status,
-		StartAt:     formatTime(startAt),
-		EndAt:       endText,
+		UID:            uid,
+		Summary:        summary,
+		Description:    cleanICSValue(firstValue(properties, "DESCRIPTION")),
+		Location:       location,
+		LocationRaw:    rawLocation,
+		URL:            cleanICSValue(firstValue(properties, "URL")),
+		ImageSourceURL: firstICSImageURL(properties),
+		ImageAlt:       summary,
+		Status:         status,
+		StartAt:        formatTime(startAt),
+		EndAt:          endText,
 	}, ParseSkip{}
+}
+
+func firstICSImageURL(properties []icsProperty) string {
+	if imageURL := cleanICSValue(firstValue(properties, "IMAGE")); imageURL != "" {
+		return imageURL
+	}
+	for _, property := range properties {
+		if property.name != "ATTACH" {
+			continue
+		}
+		value := cleanICSValue(property.value)
+		if value == "" {
+			continue
+		}
+		formatType := strings.ToLower(strings.TrimSpace(property.params["FMTTYPE"]))
+		if strings.HasPrefix(formatType, "image/") || valueLooksLikeImageURL(value) {
+			return value
+		}
+	}
+	return ""
+}
+
+func valueLooksLikeImageURL(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return false
+	}
+	return strings.HasSuffix(lower, ".jpg") ||
+		strings.HasSuffix(lower, ".jpeg") ||
+		strings.HasSuffix(lower, ".png") ||
+		strings.HasSuffix(lower, ".gif") ||
+		strings.HasSuffix(lower, ".webp")
 }
 
 func firstProperty(properties []icsProperty, name string) (icsProperty, bool) {

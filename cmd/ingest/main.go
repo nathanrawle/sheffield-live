@@ -43,12 +43,20 @@ type ingestCommandConfig struct {
 	stageReviewGroups  bool
 	repairDescriptions bool
 	importRunID        int64
+	imageFetcher       ingest.Fetcher
+	imageStorage       ingest.ImageStorage
 }
 
 var (
 	openSQLiteStore = sqlite.Open
 	newHTTPFetcher  = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
 		return ingest.NewHTTPFetcher(timeout, userAgent)
+	}
+	newHTTPImageFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return ingest.NewHTTPFetcherWithMaxBodyBytes(timeout, userAgent, ingest.DefaultMaxImageBytes)
+	}
+	newLocalImageStorage = func(root, urlPrefix string) (ingest.ImageStorage, error) {
+		return ingest.NewLocalImageStorage(root, urlPrefix)
 	}
 	runManualImport = func(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
 		return ingest.RunManualWithCatalog(ctx, st, fetcher, catalog, opts)
@@ -129,6 +137,9 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if err := configureImageIngest(&cfg); err != nil {
+			return err
+		}
 		return runAllSources(context.Background(), st, fetcher, catalog, cfg, stdout)
 	}
 
@@ -165,9 +176,29 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 			})
 			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
 		}
+		if err := configureImageIngest(&cfg); err != nil {
+			return err
+		}
 		result = runSingleManualSource(context.Background(), st, fetcher, catalog, cfg, cfg.source)
 	}
 	return encodeManualRunResult(stdout, cfg.stageReviewGroups, result)
+}
+
+func configureImageIngest(cfg *ingestCommandConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	imageFetcher, err := newHTTPImageFetcher(cfg.timeout, cfg.httpUserAgent)
+	if err != nil {
+		return err
+	}
+	imageStorage, err := newLocalImageStorage(env("MEDIA_ROOT", "./data/media"), env("MEDIA_URL_PREFIX", "/media"))
+	if err != nil {
+		return err
+	}
+	cfg.imageFetcher = imageFetcher
+	cfg.imageStorage = imageStorage
+	return nil
 }
 
 func parseIngestArgs(args []string) (ingestCommandConfig, error) {
@@ -426,8 +457,10 @@ func reviewStageForReport(ctx context.Context, st reviewStageStore, catalog *ing
 
 func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, source string) manualRunExecution {
 	report, runErr := runManualImport(ctx, st, fetcher, catalog, ingest.Options{
-		Source: source,
-		Limit:  cfg.limit,
+		Source:       source,
+		Limit:        cfg.limit,
+		ImageFetcher: cfg.imageFetcher,
+		ImageStorage: cfg.imageStorage,
 	})
 	if runErr != nil && report.ImportRunID == 0 {
 		return manualRunExecution{Report: report, Err: runErr}
@@ -681,4 +714,12 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func env(key, fallback string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	return value
 }

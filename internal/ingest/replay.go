@@ -173,7 +173,7 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 				continue
 			}
 			parse := parseICSForSource(sourceCfg, snapshot.body)
-			calendar.Candidates = mergeDetailDescriptions(parse.Candidates, detailResult.Descriptions)
+			calendar.Candidates = attachExistingCandidateImages(ctx, st, mergeDetailDescriptions(parse.Candidates, detailResult.Descriptions))
 			calendar.Skips = parse.Skips
 			calendar.Errors = append(calendar.Errors, parse.Errors...)
 			report.Calendars = append(report.Calendars, calendar)
@@ -218,7 +218,7 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 			if err != nil {
 				return Report{}, fmt.Errorf("import run %d parse linked page %q: %w", importRunID, link, err)
 			}
-			calendar.Candidates = parse.Candidates
+			calendar.Candidates = attachExistingCandidateImages(ctx, st, parse.Candidates)
 			calendar.Skips = parse.Skips
 			calendar.Errors = append(calendar.Errors, parse.Errors...)
 			report.Calendars = append(report.Calendars, calendar)
@@ -229,7 +229,7 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 		report.Calendars = append(report.Calendars, CalendarReport{
 			URL:        pageBaseURL,
 			Snapshot:   snapshotReportFromEnvelope(page.snapshot, page.envelope, page.body),
-			Candidates: mergeDetailDescriptions(pageParse.Parse.Candidates, detailResult.Descriptions),
+			Candidates: attachExistingCandidateImages(ctx, st, mergeDetailDescriptions(pageParse.Parse.Candidates, detailResult.Descriptions)),
 			Skips:      pageParse.Parse.Skips,
 			Errors:     append([]string{}, pageParse.Parse.Errors...),
 		})
@@ -271,7 +271,7 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 			if err != nil {
 				return Report{}, fmt.Errorf("import run %d parse source page %q: %w", importRunID, link, err)
 			}
-			calendar.Candidates = mergeDetailDescriptions(linkedParse.Parse.Candidates, detailResult.Descriptions)
+			calendar.Candidates = attachExistingCandidateImages(ctx, st, mergeDetailDescriptions(linkedParse.Parse.Candidates, detailResult.Descriptions))
 			calendar.Skips = linkedParse.Parse.Skips
 			calendar.Errors = append(calendar.Errors, linkedParse.Parse.Errors...)
 			report.Calendars = append(report.Calendars, calendar)

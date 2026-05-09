@@ -58,6 +58,29 @@ func TestParseICSReportsStructuralErrors(t *testing.T) {
 	}
 }
 
+func TestParseICSExtractsImageURL(t *testing.T) {
+	result := ParseICS([]byte("BEGIN:VCALENDAR\n" +
+		"BEGIN:VEVENT\n" +
+		"UID:image-show\n" +
+		"SUMMARY:Image Show\n" +
+		"LOCATION:Sidney & Matilda\n" +
+		"IMAGE:https://example.test/show.webp\n" +
+		"DTSTART:20260501T190000Z\n" +
+		"END:VEVENT\n" +
+		"END:VCALENDAR\n"))
+
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	candidate := result.Candidates[0]
+	if got, want := candidate.ImageSourceURL, "https://example.test/show.webp"; got != want {
+		t.Fatalf("image source url = %q, want %q", got, want)
+	}
+	if got, want := candidate.ImageAlt, "Image Show"; got != want {
+		t.Fatalf("image alt = %q, want %q", got, want)
+	}
+}
+
 func TestParseICSPreservesRawLocationEvidence(t *testing.T) {
 	result := ParseICS([]byte("BEGIN:VCALENDAR\n" +
 		"BEGIN:VEVENT\n" +

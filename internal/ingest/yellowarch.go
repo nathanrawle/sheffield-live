@@ -68,6 +68,9 @@ func ParseYellowArchSourcePage(pageURL string, raw []byte, limit int) ParseResul
 		if strings.TrimSpace(result.Candidates[i].UID) == "" && strings.TrimSpace(resolvedURL) != "" {
 			result.Candidates[i].UID = resolvedURL
 		}
+		if imageURL := resolveImageSourceURL(pageURL, result.Candidates[i].ImageSourceURL); imageURL != "" {
+			result.Candidates[i].ImageSourceURL = imageURL
+		}
 	}
 	return result
 }
@@ -152,13 +155,15 @@ func yellowArchCandidateFromNode(node map[string]any) (EventCandidate, ParseSkip
 	}
 
 	return EventCandidate{
-		Summary:     name,
-		Description: description,
-		Location:    location,
-		URL:         rawURL,
-		Status:      "Listed",
-		StartAt:     formatTime(startAt),
-		EndAt:       formatTime(endAt),
+		Summary:        name,
+		Description:    description,
+		Location:       location,
+		URL:            rawURL,
+		ImageSourceURL: jsonLDImageURL(node["image"]),
+		ImageAlt:       name,
+		Status:         "Listed",
+		StartAt:        formatTime(startAt),
+		EndAt:          formatTime(endAt),
 	}, ParseSkip{}, nil
 }
 

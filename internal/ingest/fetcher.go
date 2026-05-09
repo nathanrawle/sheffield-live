@@ -10,6 +10,7 @@ import (
 )
 
 const DefaultMaxBodyBytes int64 = 2 * 1024 * 1024
+const DefaultMaxImageBytes int64 = 5 * 1024 * 1024
 
 type Fetcher interface {
 	Fetch(ctx context.Context, url string) (FetchResult, error)
@@ -34,16 +35,23 @@ type HTTPFetcher struct {
 }
 
 func NewHTTPFetcher(timeout time.Duration, userAgent string) (*HTTPFetcher, error) {
+	return NewHTTPFetcherWithMaxBodyBytes(timeout, userAgent, DefaultMaxBodyBytes)
+}
+
+func NewHTTPFetcherWithMaxBodyBytes(timeout time.Duration, userAgent string, maxBodyBytes int64) (*HTTPFetcher, error) {
 	if timeout <= 0 {
 		return nil, errors.New("timeout must be positive")
 	}
 	if userAgent == "" {
 		return nil, errors.New("user-agent must be set")
 	}
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = DefaultMaxBodyBytes
+	}
 
 	fetcher := &HTTPFetcher{
 		userAgent:    userAgent,
-		maxBodyBytes: DefaultMaxBodyBytes,
+		maxBodyBytes: maxBodyBytes,
 	}
 	fetcher.client = &http.Client{
 		Timeout: timeout,

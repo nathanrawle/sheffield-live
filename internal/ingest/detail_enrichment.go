@@ -12,11 +12,15 @@ import (
 )
 
 type eventDetailDescription struct {
-	URL         string
-	URLAliases  []string
-	Summary     string
-	StartAt     string
-	Description string
+	URL            string
+	URLAliases     []string
+	Summary        string
+	StartAt        string
+	Description    string
+	ImageSourceURL string
+	ImageAlt       string
+	ImageWidth     int
+	ImageHeight    int
 }
 
 type liveDetailDescriptionResult struct {
@@ -84,7 +88,7 @@ func liveDetailDescriptionsForCandidates(ctx context.Context, st Store, fetcher 
 		}
 		detail := parseDetailDescriptionForSource(cfg, firstNonEmpty(fetchResult.FinalURL, fetchResult.URL), fetchResult.Body)
 		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, fetchResult.URL, fetchResult.FinalURL, detail.URL)
-		if strings.TrimSpace(detail.Description) == "" {
+		if strings.TrimSpace(detail.Description) == "" && strings.TrimSpace(detail.ImageSourceURL) == "" {
 			continue
 		}
 		result.Descriptions = append(result.Descriptions, detail)
@@ -119,7 +123,7 @@ func replayDetailDescriptionsForSource(decoded []decodedReplaySnapshot, cfg sour
 		}
 		detail := parseDetailDescriptionForSource(cfg, firstNonEmpty(snapshot.envelope.Metadata.FinalURL, snapshot.envelope.Metadata.URL), snapshot.body)
 		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, snapshot.envelope.Metadata.URL, snapshot.envelope.Metadata.FinalURL, detail.URL)
-		if strings.TrimSpace(detail.Description) == "" {
+		if strings.TrimSpace(detail.Description) == "" && strings.TrimSpace(detail.ImageSourceURL) == "" {
 			continue
 		}
 		result.Descriptions = append(result.Descriptions, detail)
@@ -172,22 +176,25 @@ func mergeDetailDescriptionsWithPreference(candidates []EventCandidate, details 
 		return candidates
 	}
 
-	byURL := make(map[string]string, len(details))
-	bySummaryStart := make(map[string]string, len(details))
+	byURL := make(map[string]eventDetailDescription, len(details))
+	bySummaryStart := make(map[string]eventDetailDescription, len(details))
 	for _, detail := range details {
 		description := strings.TrimSpace(detail.Description)
-		if description == "" {
+		imageURL := strings.TrimSpace(detail.ImageSourceURL)
+		if description == "" && imageURL == "" {
 			continue
 		}
+		detail.Description = description
+		detail.ImageSourceURL = imageURL
 		for _, alias := range appendDetailURLAliases(detail.URLAliases, detail.URL) {
 			key := detailURLKey(alias)
 			if key == "" {
 				continue
 			}
-			byURL[key] = description
+			byURL[key] = detail
 		}
 		if key := detailSummaryStartKey(detail.Summary, detail.StartAt); key != "" {
-			bySummaryStart[key] = description
+			bySummaryStart[key] = detail
 		}
 	}
 	if len(byURL) == 0 && len(bySummaryStart) == 0 {
@@ -199,15 +206,30 @@ func mergeDetailDescriptionsWithPreference(candidates []EventCandidate, details 
 		if !preferDetails && strings.TrimSpace(merged[i].Description) != "" {
 			continue
 		}
-		if description := byURL[detailURLKey(firstNonEmpty(merged[i].URL, merged[i].UID))]; description != "" {
-			merged[i].Description = description
+		if detail, ok := byURL[detailURLKey(firstNonEmpty(merged[i].URL, merged[i].UID))]; ok {
+			mergeDetailIntoCandidate(&merged[i], detail, preferDetails)
 			continue
 		}
-		if description := bySummaryStart[detailSummaryStartKey(merged[i].Summary, merged[i].StartAt)]; description != "" {
-			merged[i].Description = description
+		if detail, ok := bySummaryStart[detailSummaryStartKey(merged[i].Summary, merged[i].StartAt)]; ok {
+			mergeDetailIntoCandidate(&merged[i], detail, preferDetails)
 		}
 	}
 	return merged
+}
+
+func mergeDetailIntoCandidate(candidate *EventCandidate, detail eventDetailDescription, preferDetails bool) {
+	if candidate == nil {
+		return
+	}
+	if strings.TrimSpace(detail.Description) != "" && (preferDetails || strings.TrimSpace(candidate.Description) == "") {
+		candidate.Description = detail.Description
+	}
+	if strings.TrimSpace(detail.ImageSourceURL) != "" && (preferDetails || strings.TrimSpace(candidate.ImageSourceURL) == "") {
+		candidate.ImageSourceURL = detail.ImageSourceURL
+		candidate.ImageAlt = detail.ImageAlt
+		candidate.ImageWidth = detail.ImageWidth
+		candidate.ImageHeight = detail.ImageHeight
+	}
 }
 
 func parseDetailDescriptionForSource(cfg sourceConfig, pageURL string, body []byte) eventDetailDescription {
@@ -225,8 +247,9 @@ func parseDetailDescriptionForSource(cfg sourceConfig, pageURL string, body []by
 
 func ParseCafeNo9DetailPage(pageURL string, raw []byte) eventDetailDescription {
 	detail := eventDetailDescription{
-		URL:     strings.TrimSpace(pageURL),
-		Summary: firstHTMLHeadingText(raw),
+		URL:            strings.TrimSpace(pageURL),
+		Summary:        firstHTMLHeadingText(raw),
+		ImageSourceURL: firstDocumentImageURL(pageURL, raw),
 	}
 	if canonicalURL := firstCanonicalLink(pageURL, raw); canonicalURL != "" {
 		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, canonicalURL)
@@ -241,8 +264,9 @@ func ParseCafeNo9DetailPage(pageURL string, raw []byte) eventDetailDescription {
 
 func ParseYellowArchDetailPage(pageURL string, raw []byte) eventDetailDescription {
 	detail := eventDetailDescription{
-		URL:     strings.TrimSpace(pageURL),
-		Summary: firstHTMLHeadingText(raw),
+		URL:            strings.TrimSpace(pageURL),
+		Summary:        firstHTMLHeadingText(raw),
+		ImageSourceURL: firstDocumentImageURL(pageURL, raw),
 	}
 	if canonicalURL := firstCanonicalLink(pageURL, raw); canonicalURL != "" {
 		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, canonicalURL)
@@ -308,16 +332,18 @@ func isSidneyAndMatildaEventDetailLink(label, href string) bool {
 
 func ParseSidneyAndMatildaDetailPage(pageURL string, raw []byte) eventDetailDescription {
 	detail := eventDetailDescription{
-		URL:     strings.TrimSpace(pageURL),
-		Summary: firstHTMLHeadingText(raw),
+		URL:            strings.TrimSpace(pageURL),
+		Summary:        firstHTMLHeadingText(raw),
+		ImageSourceURL: firstDocumentImageURL(pageURL, raw),
 	}
 	if canonicalURL := firstCanonicalLink(pageURL, raw); canonicalURL != "" {
 		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, canonicalURL)
 	}
-	if structured := parseSidneyAndMatildaStructuredDetail(raw); strings.TrimSpace(structured.Description) != "" {
+	if structured := parseSidneyAndMatildaStructuredDetail(pageURL, raw); strings.TrimSpace(structured.Description) != "" {
 		structured.URL = firstNonEmpty(detail.URL, structured.URL)
 		structured.URLAliases = appendDetailURLAliases(detail.URLAliases, structured.URLAliases...)
 		structured.Summary = firstNonEmpty(structured.Summary, detail.Summary)
+		structured.ImageSourceURL = firstNonEmpty(structured.ImageSourceURL, detail.ImageSourceURL)
 		return structured
 	}
 	lines := htmlLines(raw)
@@ -535,7 +561,7 @@ func firstCanonicalLink(pageURL string, raw []byte) string {
 	return canonicalURL
 }
 
-func parseSidneyAndMatildaStructuredDetail(raw []byte) eventDetailDescription {
+func parseSidneyAndMatildaStructuredDetail(pageURL string, raw []byte) eventDetailDescription {
 	matches := yellowArchJSONLDPattern.FindAllSubmatch(raw, -1)
 	for _, match := range matches {
 		nodes, found, err := parseSidneyAndMatildaJSONLDScript(match[1])
@@ -556,11 +582,13 @@ func parseSidneyAndMatildaStructuredDetail(raw []byte) eventDetailDescription {
 			}
 			rawURL := yellowArchJSONString(node["url"])
 			return eventDetailDescription{
-				URL:         rawURL,
-				URLAliases:  appendDetailURLAliases(nil, rawURL),
-				Summary:     strings.TrimSuffix(name, " — Sidney&Matilda"),
-				StartAt:     startAt,
-				Description: description,
+				URL:            rawURL,
+				URLAliases:     appendDetailURLAliases(nil, rawURL),
+				Summary:        strings.TrimSuffix(name, " — Sidney&Matilda"),
+				StartAt:        startAt,
+				Description:    description,
+				ImageSourceURL: resolveImageSourceURL(pageURL, jsonLDImageURL(node["image"])),
+				ImageAlt:       name,
 			}
 		}
 	}
