@@ -989,7 +989,7 @@ func reviewCandidatesMatchingEvent(candidates []review.Candidate, event domain.E
 }
 
 func reviewCandidateMatchesEvent(candidate review.Candidate, event domain.Event) bool {
-	if strings.TrimSpace(candidate.Name) != strings.TrimSpace(event.Name) {
+	if normalizedReviewEventName(candidate.Name) != normalizedReviewEventName(event.Name) {
 		return false
 	}
 	if strings.TrimSpace(candidate.VenueSlug) != strings.TrimSpace(event.VenueSlug) {
@@ -1000,6 +1000,10 @@ func reviewCandidateMatchesEvent(candidate review.Candidate, event domain.Event)
 		return false
 	}
 	return start.UTC().Equal(event.Start.UTC())
+}
+
+func normalizedReviewEventName(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
 func exactCanonicalDuplicate(candidates []review.Candidate) bool {

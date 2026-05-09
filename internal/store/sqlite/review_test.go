@@ -2413,7 +2413,7 @@ func TestResolveReviewGroupNonAuthoritativePathUpsertsSecondaryDescriptions(t *t
 				},
 				{
 					ExternalID:  "secondary-fusion",
-					Name:        "Fusion Night",
+					Name:        "  fusion   night  ",
 					VenueSlug:   "leadmill",
 					StartAt:     "2026-06-01T19:00:00Z",
 					EndAt:       "2026-06-01T22:00:00Z",
