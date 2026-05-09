@@ -205,6 +205,7 @@ const (
 	verticalRectangleCandidateSourceNone verticalRectangleCandidateSource = iota
 	verticalRectangleCandidateSourceEdge
 	verticalRectangleCandidateSourceRegionBoundary
+	verticalRectangleCandidateSourcePanelRegion
 )
 
 func (source verticalRectangleCandidateSource) String() string {
@@ -213,6 +214,8 @@ func (source verticalRectangleCandidateSource) String() string {
 		return "edge"
 	case verticalRectangleCandidateSourceRegionBoundary:
 		return "region_boundary"
+	case verticalRectangleCandidateSourcePanelRegion:
+		return "panel_region"
 	default:
 		return ""
 	}
@@ -242,6 +245,15 @@ type verticalRectangleParams struct {
 	RegionBoundaryThresholdFloor     float64
 	RegionBoundaryThresholdMaxRatio  float64
 	RegionBoundaryThresholdMeanRatio float64
+	PanelRegionBandCount             int
+	PanelRegionGutterWidth           int
+	PanelRegionStep                  int
+	PanelRegionWidthStep             int
+	PanelRegionMinBandContrast       float64
+	PanelRegionMinCoverage           float64
+	PanelRegionMinMeanContrast       float64
+	PanelRegionMinScore              float64
+	PanelRegionSideCandidateWeight   float64
 	RepeatingEdgeMinCount            int
 	RepeatingEdgeScoreRatio          float64
 	SideRectangleEdgeWeight          float64
@@ -259,10 +271,12 @@ type verticalRectangleDetection struct {
 	Candidate                    verticalRectangleCandidate
 	EdgeCandidateCount           int
 	RegionBoundaryCandidateCount int
+	PanelRegionCandidateCount    int
 	RectangleCandidateCount      int
 	RepeatingPatternRejected     bool
 	EdgeThreshold                float64
 	RegionBoundaryThreshold      float64
+	PanelRegionBestScore         float64
 }
 
 func defaultVerticalRectangleParams() verticalRectangleParams {
@@ -290,6 +304,15 @@ func defaultVerticalRectangleParams() verticalRectangleParams {
 		RegionBoundaryThresholdFloor:     0.055,
 		RegionBoundaryThresholdMaxRatio:  0.26,
 		RegionBoundaryThresholdMeanRatio: 1.85,
+		PanelRegionBandCount:             12,
+		PanelRegionGutterWidth:           8,
+		PanelRegionStep:                  4,
+		PanelRegionWidthStep:             4,
+		PanelRegionMinBandContrast:       0.055,
+		PanelRegionMinCoverage:           0.76,
+		PanelRegionMinMeanContrast:       0.09,
+		PanelRegionMinScore:              0.60,
+		PanelRegionSideCandidateWeight:   0.82,
 		RepeatingEdgeMinCount:            5,
 		RepeatingEdgeScoreRatio:          0.62,
 		SideRectangleEdgeWeight:          0.92,
@@ -339,7 +362,14 @@ func detectVerticalRectangle(red, green, blue, luma []float64, width, height int
 	result.RegionBoundaryThreshold = regionThreshold
 	regionBoundaryCandidates := groupedVerticalEdgeCandidates(rawRegionBoundaryCandidates, params)
 	result.RegionBoundaryCandidateCount = len(regionBoundaryCandidates)
-	detectVerticalRectangleFromCandidates(regionBoundaryCandidates, width, height, params, verticalRectangleCandidateSourceRegionBoundary, &result)
+	if detectVerticalRectangleFromCandidates(regionBoundaryCandidates, width, height, params, verticalRectangleCandidateSourceRegionBoundary, &result) {
+		return result
+	}
+
+	panelCandidates, panelBestScore := panelRegionRectangleCandidates(red, green, blue, luma, width, height, params)
+	result.PanelRegionCandidateCount = len(panelCandidates)
+	result.PanelRegionBestScore = panelBestScore
+	detectVerticalRectangleFromRectangles(panelCandidates, width, &result)
 	return result
 }
 
@@ -353,6 +383,23 @@ func detectVerticalRectangleFromCandidates(candidates []verticalEdgeCandidate, w
 	}
 
 	rectangles := verticalRectangleCandidates(candidates, width, height, params, source)
+	result.RectangleCandidateCount += len(rectangles)
+	if len(rectangles) == 0 {
+		return false
+	}
+	sort.Slice(rectangles, func(i, j int) bool {
+		return rectangles[i].score > rectangles[j].score
+	})
+
+	best := rectangles[0]
+	centerX := (float64(best.left) + float64(best.right)) / 2 / float64(width)
+	result.Focus = NormalizeImageFocus(int(math.Round(centerX*100)), DefaultImageFocusY)
+	result.Candidate = best
+	result.Detected = true
+	return true
+}
+
+func detectVerticalRectangleFromRectangles(rectangles []verticalRectangleCandidate, width int, result *verticalRectangleDetection) bool {
 	result.RectangleCandidateCount += len(rectangles)
 	if len(rectangles) == 0 {
 		return false
@@ -624,6 +671,183 @@ func verticalRegionBoundaryThreshold(strengths []float64, params verticalRectang
 	}
 	mean := sum / float64(len(strengths))
 	return maxFloat(params.RegionBoundaryThresholdFloor, maxFloat(maxStrength*params.RegionBoundaryThresholdMaxRatio, mean*params.RegionBoundaryThresholdMeanRatio))
+}
+
+func panelRegionRectangleCandidates(red, green, blue, luma []float64, width, height int, params verticalRectangleParams) ([]verticalRectangleCandidate, float64) {
+	if width < params.MinSampleDimension || height < params.MinSampleDimension {
+		return nil, 0
+	}
+	step := maxInt(1, params.PanelRegionStep)
+	widthStep := maxInt(1, params.PanelRegionWidthStep)
+	gutterWidth := params.PanelRegionGutterWidth
+	if gutterWidth <= 0 {
+		gutterWidth = maxInt(2, width/18)
+	}
+	bandCount := params.PanelRegionBandCount
+	if bandCount <= 0 || bandCount > height {
+		bandCount = height
+	}
+	if bandCount < 1 {
+		return nil, 0
+	}
+
+	minPanelWidth := maxInt(1, int(math.Ceil(params.AspectMin*float64(height))))
+	maxPanelWidth := minInt(width-1, int(math.Floor(params.AspectMax*float64(height))))
+	if maxPanelWidth < minPanelWidth {
+		return nil, 0
+	}
+
+	candidates := make([]verticalRectangleCandidate, 0)
+	bestScore := 0.0
+	for panelWidth := minPanelWidth; panelWidth <= maxPanelWidth; panelWidth += widthStep {
+		leftLimit := width - panelWidth
+		for left := 0; left <= leftLimit; left += step {
+			right := left + panelWidth
+			candidate, ok := scorePanelRegionCandidate(red, green, blue, luma, width, height, left, right, gutterWidth, bandCount, params)
+			if candidate.score > bestScore {
+				bestScore = candidate.score
+			}
+			if ok {
+				candidates = append(candidates, candidate)
+			}
+		}
+		if leftLimit%step != 0 {
+			right := width
+			left := right - panelWidth
+			candidate, ok := scorePanelRegionCandidate(red, green, blue, luma, width, height, left, right, gutterWidth, bandCount, params)
+			if candidate.score > bestScore {
+				bestScore = candidate.score
+			}
+			if ok {
+				candidates = append(candidates, candidate)
+			}
+		}
+	}
+	return candidates, bestScore
+}
+
+func scorePanelRegionCandidate(red, green, blue, luma []float64, width, height, left, right, gutterWidth, bandCount int, params verticalRectangleParams) (verticalRectangleCandidate, bool) {
+	candidate := verticalRectangleCandidate{
+		left:   left,
+		right:  right,
+		source: verticalRectangleCandidateSourcePanelRegion,
+	}
+	if right <= left || left < 0 || right > width {
+		return candidate, false
+	}
+	aspectScore := verticalRectangleAspectScore(float64(right-left)/float64(height), params)
+	if aspectScore <= 0 {
+		return candidate, false
+	}
+
+	hasLeftGutter := left >= gutterWidth
+	hasRightGutter := width-right >= gutterWidth
+	if !hasLeftGutter && !hasRightGutter {
+		return candidate, false
+	}
+
+	oneSided := !hasLeftGutter || !hasRightGutter
+	strongBands := 0
+	totalContrast := 0.0
+	totalBalance := 0.0
+	totalBoundarySupport := 0.0
+	for band := 0; band < bandCount; band++ {
+		y0 := band * height / bandCount
+		y1 := (band + 1) * height / bandCount
+		inside := panelRegionMean(red, green, blue, luma, width, left, right, y0, y1)
+		var contrast float64
+		var boundarySupport float64
+		balance := 1.0
+		switch {
+		case hasLeftGutter && hasRightGutter:
+			leftGutter := panelRegionMean(red, green, blue, luma, width, left-gutterWidth, left, y0, y1)
+			rightGutter := panelRegionMean(red, green, blue, luma, width, right, right+gutterWidth, y0, y1)
+			leftInsideEdge := panelRegionMean(red, green, blue, luma, width, left, minInt(right, left+gutterWidth), y0, y1)
+			rightInsideEdge := panelRegionMean(red, green, blue, luma, width, maxInt(left, right-gutterWidth), right, y0, y1)
+			leftContrast := panelRegionContrast(inside, leftGutter, params)
+			rightContrast := panelRegionContrast(inside, rightGutter, params)
+			contrast = (leftContrast + rightContrast) / 2
+			boundarySupport = (panelRegionContrast(leftInsideEdge, leftGutter, params) + panelRegionContrast(rightInsideEdge, rightGutter, params)) / 2
+			if leftContrast > 0 || rightContrast > 0 {
+				balance = minFloat(leftContrast, rightContrast) / maxFloat(leftContrast, rightContrast)
+			}
+			outsideContrast := panelRegionContrast(leftGutter, rightGutter, params)
+			if contrast > 0 && outsideContrast > contrast*0.6 {
+				outsideAgreement := (contrast * 0.6) / outsideContrast
+				contrast *= outsideAgreement
+				balance *= outsideAgreement
+			}
+		case hasLeftGutter:
+			leftGutter := panelRegionMean(red, green, blue, luma, width, left-gutterWidth, left, y0, y1)
+			leftInsideEdge := panelRegionMean(red, green, blue, luma, width, left, minInt(right, left+gutterWidth), y0, y1)
+			contrast = panelRegionContrast(inside, leftGutter, params) * params.PanelRegionSideCandidateWeight
+			boundarySupport = panelRegionContrast(leftInsideEdge, leftGutter, params) * params.PanelRegionSideCandidateWeight
+		case hasRightGutter:
+			rightGutter := panelRegionMean(red, green, blue, luma, width, right, right+gutterWidth, y0, y1)
+			rightInsideEdge := panelRegionMean(red, green, blue, luma, width, maxInt(left, right-gutterWidth), right, y0, y1)
+			contrast = panelRegionContrast(inside, rightGutter, params) * params.PanelRegionSideCandidateWeight
+			boundarySupport = panelRegionContrast(rightInsideEdge, rightGutter, params) * params.PanelRegionSideCandidateWeight
+		}
+		if contrast >= params.PanelRegionMinBandContrast {
+			strongBands++
+		}
+		totalContrast += contrast
+		totalBalance += balance
+		totalBoundarySupport += boundarySupport
+	}
+
+	coverage := float64(strongBands) / float64(bandCount)
+	meanContrast := totalContrast / float64(bandCount)
+	meanBalance := totalBalance / float64(bandCount)
+	meanBoundarySupport := totalBoundarySupport / float64(bandCount)
+	sideScore := 1.0
+	if oneSided {
+		sideScore = params.PanelRegionSideCandidateWeight
+	}
+	candidate.score = meanContrast * (params.EdgeScoreCoverageBase + coverage) * (0.65 + 0.35*meanBalance) * aspectScore * sideScore
+	if coverage < params.PanelRegionMinCoverage || meanContrast < params.PanelRegionMinMeanContrast || meanBoundarySupport < params.PanelRegionMinBandContrast || candidate.score < params.PanelRegionMinScore {
+		return candidate, false
+	}
+	return candidate, true
+}
+
+type panelRegionColor struct {
+	red   float64
+	green float64
+	blue  float64
+	luma  float64
+}
+
+func panelRegionMean(red, green, blue, luma []float64, width, x0, x1, y0, y1 int) panelRegionColor {
+	if x1 <= x0 || y1 <= y0 {
+		return panelRegionColor{}
+	}
+	var result panelRegionColor
+	for y := y0; y < y1; y++ {
+		row := y * width
+		for x := x0; x < x1; x++ {
+			idx := row + x
+			result.red += red[idx]
+			result.green += green[idx]
+			result.blue += blue[idx]
+			result.luma += luma[idx]
+		}
+	}
+	count := float64((x1 - x0) * (y1 - y0))
+	result.red /= count
+	result.green /= count
+	result.blue /= count
+	result.luma /= count
+	return result
+}
+
+func panelRegionContrast(a, b panelRegionColor, params verticalRectangleParams) float64 {
+	dr := a.red - b.red
+	dg := a.green - b.green
+	db := a.blue - b.blue
+	colorContrast := math.Sqrt(dr*dr+dg*dg+db*db) / math.Sqrt(3)
+	lumaContrast := math.Abs(a.luma - b.luma)
+	return math.Max(lumaContrast, colorContrast*params.ColorContrastWeight)
 }
 
 func hasRepeatingVerticalEdgePattern(candidates []verticalEdgeCandidate, params verticalRectangleParams) bool {
@@ -951,6 +1175,13 @@ func maxInt(a, b int) int {
 
 func maxFloat(a, b float64) float64 {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
 		return a
 	}
 	return b

@@ -162,6 +162,70 @@ func TestVerticalRectangleFocusUsesRegionBoundaryFallback(t *testing.T) {
 	}
 }
 
+func TestVerticalRectangleFocusUsesPanelRegionFallback(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 260, 140))
+	background := color.RGBA{R: 40, G: 48, B: 56, A: 255}
+	fillRect(img, img.Bounds(), background)
+	for y := 0; y < 140; y++ {
+		for x := 82; x < 178; x++ {
+			if (x+y)%19 < 9 {
+				img.Set(x, y, color.RGBA{R: 218, G: 207, B: 188, A: 255})
+			} else {
+				img.Set(x, y, color.RGBA{R: 176, G: 116, B: 92, A: 255})
+			}
+		}
+	}
+
+	red, green, blue, luma, width, height := focusTestSample(img)
+	detection := detectVerticalRectangle(red, green, blue, luma, width, height, panelRegionOnlyParams())
+	if !detection.Detected {
+		t.Fatalf("vertical rectangle focus = %#v, want panel region detection", detection)
+	}
+	if detection.Candidate.source != verticalRectangleCandidateSourcePanelRegion {
+		t.Fatalf("candidate source = %v, want panel region fallback", detection.Candidate.source)
+	}
+	if detection.Focus.X < 48 || detection.Focus.X > 52 || detection.Focus.Y != 50 {
+		t.Fatalf("focus = %d,%d, want center of embedded panel", detection.Focus.X, detection.Focus.Y)
+	}
+}
+
+func TestVerticalRectangleFocusUsesSidePanelRegionFallback(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 220, 140))
+	fillRect(img, img.Bounds(), color.RGBA{R: 42, G: 48, B: 58, A: 255})
+	for y := 0; y < 140; y++ {
+		for x := 0; x < 88; x++ {
+			if (x*2+y)%23 < 11 {
+				img.Set(x, y, color.RGBA{R: 216, G: 210, B: 192, A: 255})
+			} else {
+				img.Set(x, y, color.RGBA{R: 130, G: 84, B: 128, A: 255})
+			}
+		}
+	}
+
+	red, green, blue, luma, width, height := focusTestSample(img)
+	detection := detectVerticalRectangle(red, green, blue, luma, width, height, panelRegionOnlyParams())
+	if !detection.Detected {
+		t.Fatalf("vertical rectangle focus = %#v, want side panel region detection", detection)
+	}
+	if detection.Candidate.source != verticalRectangleCandidateSourcePanelRegion {
+		t.Fatalf("candidate source = %v, want panel region fallback", detection.Candidate.source)
+	}
+	if detection.Focus.X < 18 || detection.Focus.X > 24 || detection.Focus.Y != 50 {
+		t.Fatalf("focus = %d,%d, want center of side embedded panel", detection.Focus.X, detection.Focus.Y)
+	}
+}
+
+func TestVerticalRectangleFocusIgnoresPartialHeightPanelRegion(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 220, 140))
+	fillRect(img, img.Bounds(), color.RGBA{R: 42, G: 48, B: 58, A: 255})
+	fillRect(img, image.Rect(70, 30, 150, 108), color.RGBA{R: 222, G: 214, B: 194, A: 255})
+
+	red, green, blue, luma, width, height := focusTestSample(img)
+	if focus, ok := verticalRectangleFocusWithParams(red, green, blue, luma, width, height, panelRegionOnlyParams()); ok {
+		t.Fatalf("vertical rectangle focus = %#v, want no full-height panel region detection", focus)
+	}
+}
+
 func TestVerticalRectangleFocusIgnoresSmoothWholeImageGradient(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 220, 120))
 	left := color.RGBA{R: 32, G: 38, B: 48, A: 255}
@@ -249,6 +313,16 @@ func blendColor(from, to color.RGBA, amount float64) color.RGBA {
 		B: uint8(math.Round(float64(from.B) + (float64(to.B)-float64(from.B))*amount)),
 		A: 255,
 	}
+}
+
+func panelRegionOnlyParams() verticalRectangleParams {
+	params := defaultVerticalRectangleParams()
+	params.MinMaxEdgeStrength = 2
+	params.RegionBoundaryMinMaxStrength = 2
+	params.PanelRegionMinCoverage = 0.76
+	params.PanelRegionMinMeanContrast = 0.09
+	params.PanelRegionMinScore = 0.12
+	return params
 }
 
 func focusTestSample(img image.Image) ([]float64, []float64, []float64, []float64, int, int) {
