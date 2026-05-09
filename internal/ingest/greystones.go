@@ -154,6 +154,7 @@ func greystonesStartAt(meta string, year int) (time.Time, error) {
 	}
 	for _, layout := range []string{
 		"Monday 2 January 2006 3:04pm",
+		"Monday 2 January 2006 3.04pm",
 		"Monday 2 January 2006 3pm",
 	} {
 		parsed, err := time.ParseInLocation(layout, greystonesDatePart(datePart, year)+" "+strings.ToLower(timePart), loc)

@@ -359,6 +359,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"templates/event_detail.html",
 		"templates/venues.html",
 		"templates/venue_detail.html",
+		"templates/admin.html",
 		"templates/admin_review.html",
 		"templates/admin_review_history.html",
 		"templates/admin_venues.html",
@@ -480,7 +481,7 @@ func (s *Server) SetClockForTesting(clock func() time.Time) {
 }
 
 func (s *Server) hasVenueAdmin() bool {
-	return s.reviewStore != nil || s.importRunStore != nil || s.replayStore != nil
+	return s.reviewStore != nil || s.importRunStore != nil || s.replayStore != nil || s.venueAdminStore() != nil
 }
 
 func (s *Server) venueAdminStore() VenueAdminStore {
@@ -511,6 +512,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleHealthz(w, r)
 	case cleaned == "/readyz":
 		s.handleReadyz(w, r)
+	case cleaned == "/admin":
+		s.handleAdmin(w, r)
 	case cleaned == "/admin/review":
 		s.handleAdminReview(w, r)
 	case cleaned == "/admin/review/history":
@@ -536,6 +539,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
+	if !s.hasVenueAdmin() {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	data := PageData{
+		SiteName:            "Sheffield Live",
+		PageTitle:           "Admin",
+		MetaDescription:     "Admin tools for Sheffield Live.",
+		Active:              "admin",
+		Now:                 s.now(),
+		HasImportHistory:    s.importRunStore != nil,
+		HasImportRunDetail:  s.replayStore != nil,
+		HasReviewStorage:    s.reviewStore != nil,
+		HasVenueAdmin:       s.hasVenueAdmin(),
+		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+	}
+	s.renderPage(w, "templates/admin.html", data)
 }
 
 func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {

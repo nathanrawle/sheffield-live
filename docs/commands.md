@@ -33,6 +33,7 @@ Routes:
 - `GET /events/{slug}` event detail
 - `GET /venues` venue list
 - `GET /venues/{slug}` venue detail
+- `GET /admin` admin landing page
 - `GET /admin/review` open review queue
 - `GET /admin/review/history` read-only resolved and rejected review history
 - `GET /admin/review/{groupID}` review detail

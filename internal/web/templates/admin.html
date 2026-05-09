@@ -1,0 +1,34 @@
+<section class="page-head">
+  <p class="eyebrow">Admin</p>
+  <h1>Admin</h1>
+  <p class="lede">Review staged listings, inspect ingest runs, and validate provisional venues.</p>
+</section>
+
+<section class="section-block">
+  <div class="admin-card-grid">
+    {{if .HasReviewStorage}}
+    <a class="admin-card" href="/admin/review">
+      <span class="admin-card-title">Review queue</span>
+      <span class="admin-card-meta">Resolve duplicate groups and accept or reject new listings.</span>
+    </a>
+    <a class="admin-card" href="/admin/review/history">
+      <span class="admin-card-title">Review history</span>
+      <span class="admin-card-meta">Read resolved and rejected review groups.</span>
+    </a>
+    {{end}}
+
+    {{if .HasImportHistory}}
+    <a class="admin-card" href="/admin/import-runs">
+      <span class="admin-card-title">Import history</span>
+      <span class="admin-card-meta">Inspect recent ingest runs and stored snapshot counts.</span>
+    </a>
+    {{end}}
+
+    {{if .HasVenueAdmin}}
+    <a class="admin-card" href="/admin/venues">
+      <span class="admin-card-title">Provisional venues</span>
+      <span class="admin-card-meta">Review provisional venue rows and validate them when write support is available.</span>
+    </a>
+    {{end}}
+  </div>
+</section>
