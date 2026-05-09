@@ -3111,6 +3111,263 @@ func TestPromoteSingletonReviewGroupIfMissingCreatesProvisionalVenueWhenVenueIsU
 	}
 }
 
+func TestPromoteSingletonReviewGroupIfMissingBackfillsBlankProvisionalVenueAddress(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if _, err := insertVenue(ctx, st.db, domain.Venue{
+		Slug:            "memorial-hall",
+		Name:            "Memorial Hall",
+		ValidationState: domain.ValidationStateProvisional,
+		CoverageKind:    domain.CoverageKindVenue,
+		Origin:          domain.OriginLive,
+	}); err != nil {
+		t.Fatalf("insert blank provisional venue: %v", err)
+	}
+
+	input := review.GroupInput{
+		Title:      "Memorial Hall singleton",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:fixture.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "memorial-hall-1",
+			Name:             "Memorial Hall show",
+			VenueSlug:        "memorial-hall",
+			VenueText:        "Memorial Hall",
+			VenueLocationRaw: "Memorial Hall, Barkers Pool, Sheffield City Centre, Sheffield, S1 2JA",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Missing address venue row should be backfilled.",
+		}},
+	}
+	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input); err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	} else if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+
+	venue, ok := st.VenueBySlug("memorial-hall")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if venue.Address != "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	}
+	if venue.Neighbourhood != "City Centre" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "City Centre")
+	}
+	if venue.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
+	}
+}
+
+func TestPromoteSingletonReviewGroupIfMissingBackfillsAddressOnlyLocationEvidence(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE venues
+		SET address = '',
+			neighbourhood = '',
+			validation_state = ?
+		WHERE slug = ?
+	`, string(domain.ValidationStateProvisional), "yellow-arch"); err != nil {
+		t.Fatalf("blank existing provisional venue: %v", err)
+	}
+
+	input := review.GroupInput{
+		Title:      "Yellow Arch singleton",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:fixture.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "yellow-arch-1",
+			Name:             "Yellow Arch show",
+			VenueSlug:        "yellow-arch",
+			VenueText:        "Yellow Arch Studios",
+			VenueLocationRaw: "Yellow Arch Road, Neepsend, Sheffield, S3 8BX",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Address-only raw evidence should backfill when venue text agrees.",
+		}},
+	}
+	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input); err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	} else if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+
+	venue, ok := st.VenueBySlug("yellow-arch")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if venue.Address != "Yellow Arch Road,\nNeepsend,\nSheffield,\nS3 8BX" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "Yellow Arch Road,\nNeepsend,\nSheffield,\nS3 8BX")
+	}
+	if venue.Neighbourhood != "Neepsend" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
+	}
+}
+
+func TestPromoteSingletonReviewGroupIfMissingDoesNotBackfillConflictingVenueEvidence(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if _, err := insertVenue(ctx, st.db, domain.Venue{
+		Slug:            "memorial-hall",
+		Name:            "Memorial Hall",
+		ValidationState: domain.ValidationStateProvisional,
+		CoverageKind:    domain.CoverageKindVenue,
+		Origin:          domain.OriginLive,
+	}); err != nil {
+		t.Fatalf("insert blank provisional venue: %v", err)
+	}
+
+	input := review.GroupInput{
+		Title:      "Conflicting venue singleton",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:fixture.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "conflicting-venue-1",
+			Name:             "Conflicting venue show",
+			VenueSlug:        "memorial-hall",
+			VenueText:        "Memorial Hall",
+			VenueLocationRaw: "Wrong Hall, 10 Wrong Street, Sheffield City Centre, Sheffield, S1 2JA",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Explicit slug should not allow conflicting raw evidence to backfill the venue.",
+		}},
+	}
+	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input); err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	} else if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+
+	venue, ok := st.VenueBySlug("memorial-hall")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if venue.Address != "" {
+		t.Fatalf("venue address = %q, want empty", venue.Address)
+	}
+	if venue.Neighbourhood != "" {
+		t.Fatalf("venue neighbourhood = %q, want empty", venue.Neighbourhood)
+	}
+}
+
+func TestStageReviewGroupBackfilledAddressMatchesLaterCandidateInSameBatch(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if _, err := insertVenue(ctx, st.db, domain.Venue{
+		Slug:            "memorial-hall",
+		Name:            "Memorial Hall",
+		ValidationState: domain.ValidationStateProvisional,
+		CoverageKind:    domain.CoverageKindVenue,
+		Origin:          domain.OriginLive,
+	}); err != nil {
+		t.Fatalf("insert blank provisional venue: %v", err)
+	}
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeVenueCount := mustCount(t, db, "venues")
+
+	input := review.GroupInput{
+		Title:      "Memorial Hall duplicate candidates",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:fixture.ics",
+		StagingKey: "v1:memorial-hall-address-backfill-batch",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:       "memorial-hall-1",
+				Name:             "Memorial Hall show",
+				VenueSlug:        "memorial-hall",
+				VenueText:        "Memorial Hall",
+				VenueLocationRaw: "Memorial Hall, Barkers Pool, Sheffield City Centre, Sheffield, S1 2JA",
+				StartAt:          "2026-05-10T18:30:00Z",
+				EndAt:            "2026-05-10T22:00:00Z",
+				Status:           "Listed",
+				Description:      "Backfills the existing blank provisional venue.",
+			},
+			{
+				ExternalID:       "memorial-hall-2",
+				Name:             "Memorial Hall address-only show",
+				VenueSlug:        "barkers-pool",
+				VenueText:        "Barkers Pool",
+				VenueLocationRaw: "Barkers Pool, Sheffield City Centre, Sheffield, S1 2JA",
+				StartAt:          "2026-05-11T18:30:00Z",
+				EndAt:            "2026-05-11T22:00:00Z",
+				Status:           "Listed",
+				Description:      "Can only match the existing venue by its newly backfilled address.",
+			},
+		},
+	}
+	result, err := st.StageReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !result.Created {
+		t.Fatal("created = false, want true")
+	}
+
+	venue, ok := st.VenueBySlug("memorial-hall")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if venue.Address != "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
+	}
+	if _, ok := st.VenueBySlug("barkers-pool"); ok {
+		t.Fatal("address-only candidate created duplicate provisional venue")
+	}
+	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
+		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
+	}
+}
+
 func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenVenueEvidenceIsAmbiguous(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")

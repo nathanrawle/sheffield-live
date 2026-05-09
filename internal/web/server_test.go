@@ -1117,6 +1117,43 @@ func TestHomeShowsEmptyStatesWithFixedClock(t *testing.T) {
 	assertContains(t, body, "No more shows listed this week.")
 }
 
+func TestHomeVenueCardsUseAddressFallbackMeta(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore([]domain.Venue{
+		{
+			Slug:          "neighbourhood-room",
+			Name:          "Neighbourhood Room",
+			Address:       "1 Neighbourhood Road, Sheffield",
+			Neighbourhood: "Kelham",
+		},
+		{
+			Slug:    "address-room",
+			Name:    "Address Room",
+			Address: "12 Address Street, Sheffield",
+		},
+		{
+			Slug:    "duplicate-room",
+			Name:    "Duplicate Room",
+			Address: "Duplicate Room, Hidden Lane, Sheffield",
+		},
+		{
+			Slug: "blank-room",
+			Name: "Blank Room",
+		},
+	}, nil))
+
+	body := renderPath(t, server, "/")
+
+	assertContains(t, body, `<span class="venue-title">Neighbourhood Room</span>`)
+	assertContains(t, body, `<span class="venue-meta">Kelham</span>`)
+	assertContains(t, body, `<span class="venue-title">Address Room</span>`)
+	assertContains(t, body, `<span class="venue-meta">12 Address Street</span>`)
+	assertContains(t, body, `<span class="venue-title">Duplicate Room</span>`)
+	assertContains(t, body, `<span class="venue-meta">Hidden Lane</span>`)
+	assertNotContains(t, body, `<span class="venue-meta">Duplicate Room</span>`)
+	assertContains(t, body, `<span class="venue-title">Blank Room</span>
+      <span class="venue-meta"></span>`)
+}
+
 func TestEventsFiltersToday(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/events?window=today")

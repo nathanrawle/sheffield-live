@@ -157,6 +157,20 @@ func ensureProvisionalVenueForCandidateTx(ctx context.Context, tx interface {
 }, matcher *venueMatcher, candidate review.Candidate) (venueMatchResult, error) {
 	match := matcher.matchCandidate(candidate)
 	if match.status != venueMatchNoMatch {
+		if match.status == venueMatchResolved {
+			venue, ok, err := loadVenueBySlug(ctx, tx, match.slug)
+			if err != nil {
+				return venueMatchResult{}, err
+			}
+			if ok {
+				venue, err = backfillProvisionalVenueFromCandidateTx(ctx, tx, venue, candidate)
+				if err != nil {
+					return venueMatchResult{}, err
+				}
+				matcher.indexVenue(venue)
+				match.name = venue.Name
+			}
+		}
 		return match, nil
 	}
 
@@ -167,6 +181,10 @@ func ensureProvisionalVenueForCandidateTx(ctx context.Context, tx interface {
 	if existing, ok, err := loadVenueBySlug(ctx, tx, slug); err != nil {
 		return venueMatchResult{}, err
 	} else if ok {
+		existing, err = backfillProvisionalVenueFromCandidateTx(ctx, tx, existing, candidate)
+		if err != nil {
+			return venueMatchResult{}, err
+		}
 		matcher.indexVenue(existing)
 		return venueMatchResult{status: venueMatchResolved, slug: existing.Slug, name: existing.Name}, nil
 	}
@@ -180,6 +198,112 @@ func ensureProvisionalVenueForCandidateTx(ctx context.Context, tx interface {
 	}
 	matcher.indexVenue(venue)
 	return venueMatchResult{status: venueMatchResolved, slug: venue.Slug, name: venue.Name}, nil
+}
+
+func backfillProvisionalVenueFromCandidateTx(ctx context.Context, tx execer, venue domain.Venue, candidate review.Candidate) (domain.Venue, error) {
+	if venue.ValidationState != domain.ValidationStateProvisional || strings.TrimSpace(candidate.VenueLocationRaw) == "" {
+		return venue, nil
+	}
+	if !candidateLocationEvidenceCanBackfillVenue(candidate, venue) {
+		return venue, nil
+	}
+
+	address := strings.TrimSpace(venue.Address)
+	if address == "" {
+		address = formatProvisionalVenueAddress(venue.Name, candidate.VenueLocationRaw)
+	}
+
+	neighbourhood := strings.TrimSpace(venue.Neighbourhood)
+	if neighbourhood == "" {
+		neighbourhood = provisionalVenueNeighbourhood(candidate.VenueLocationRaw)
+	}
+
+	if address == strings.TrimSpace(venue.Address) && neighbourhood == strings.TrimSpace(venue.Neighbourhood) {
+		return venue, nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE venues
+		SET address = ?,
+			neighbourhood = ?
+		WHERE slug = ?
+			AND validation_state = ?
+	`, address, neighbourhood, venue.Slug, string(domain.ValidationStateProvisional)); err != nil {
+		return domain.Venue{}, err
+	}
+
+	venue.Address = address
+	venue.Neighbourhood = neighbourhood
+	return venue, nil
+}
+
+func candidateLocationEvidenceMatchesVenue(value string, venue domain.Venue) bool {
+	headText := venueLocationHeadText(value)
+	head := normalizedVenueKey(headText)
+	if head == "" {
+		return false
+	}
+	if head == normalizedVenueKey(venue.Name) || head == strings.TrimSpace(venue.Slug) {
+		return true
+	}
+	return false
+}
+
+func candidateLocationEvidenceCanBackfillVenue(candidate review.Candidate, venue domain.Venue) bool {
+	if candidateLocationEvidenceMatchesVenue(candidate.VenueLocationRaw, venue) {
+		return true
+	}
+	if !candidateTextMatchesVenue(candidate.VenueText, venue) {
+		return false
+	}
+	return locationEvidenceHeadLooksAddressLike(candidate.VenueLocationRaw)
+}
+
+func candidateTextMatchesVenue(value string, venue domain.Venue) bool {
+	key := normalizedVenueKey(value)
+	if key == "" {
+		return false
+	}
+	return key == normalizedVenueKey(venue.Name) || key == strings.TrimSpace(venue.Slug)
+}
+
+func locationEvidenceHeadLooksAddressLike(value string) bool {
+	head := strings.ToLower(venueLocationHeadText(value))
+	if head == "" {
+		return false
+	}
+	fields := strings.Fields(head)
+	if len(fields) > 0 {
+		first := strings.Trim(fields[0], ",.")
+		if first != "" {
+			r := rune(first[0])
+			if r >= '0' && r <= '9' {
+				return true
+			}
+		}
+	}
+	addressTokens := map[string]struct{}{
+		"road":    {},
+		"rd":      {},
+		"street":  {},
+		"st":      {},
+		"lane":    {},
+		"avenue":  {},
+		"ave":     {},
+		"drive":   {},
+		"place":   {},
+		"square":  {},
+		"terrace": {},
+		"way":     {},
+		"yard":    {},
+	}
+	for _, field := range fields {
+		field = strings.Trim(field, ".,")
+		if _, ok := addressTokens[field]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveReviewVenueTx(ctx context.Context, tx interface {
@@ -203,9 +327,37 @@ func resolveReviewVenueTx(ctx context.Context, tx interface {
 }
 
 func (m *venueMatcher) indexVenue(venue domain.Venue) {
+	m.removeVenue(venue.Slug)
 	m.add(m.bySlug, venue.Slug, venue)
 	m.add(m.byName, normalizedVenueKey(venue.Name), venue)
 	m.add(m.byAddress, normalizedVenueEvidenceKey(venue.Address), venue)
+}
+
+func (m *venueMatcher) removeVenue(slug string) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return
+	}
+
+	remove := func(index map[string][]domain.Venue) {
+		for key, venues := range index {
+			filtered := venues[:0]
+			for _, venue := range venues {
+				if venue.Slug != slug {
+					filtered = append(filtered, venue)
+				}
+			}
+			if len(filtered) == 0 {
+				delete(index, key)
+				continue
+			}
+			index[key] = filtered
+		}
+	}
+
+	remove(m.bySlug)
+	remove(m.byName)
+	remove(m.byAddress)
 }
 
 func reviewCandidateFromInput(input review.CandidateInput) review.Candidate {

@@ -272,6 +272,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"displayAddress": func(name, value string) string {
 			return formatVenueAddress(name, value)
 		},
+		"venueCardMeta": venueCardMeta,
 		"candidateDisplayLabel": func(candidate review.Candidate) string {
 			if candidate.IsCanonicalSnapshot() {
 				return "Live canonical snapshot"
@@ -378,6 +379,15 @@ func NewServer(deps ServerDeps) (*Server, error) {
 
 func formatMultilineAddress(value string) string {
 	return formatVenueAddress("", value)
+}
+
+func venueCardMeta(name, neighbourhood, address string) string {
+	if neighbourhood = strings.TrimSpace(neighbourhood); neighbourhood != "" {
+		return neighbourhood
+	}
+
+	line, _, _ := strings.Cut(formatVenueAddress(name, address), "\n")
+	return strings.TrimSuffix(strings.TrimSpace(line), ",")
 }
 
 func formatVenueAddress(name, value string) string {
