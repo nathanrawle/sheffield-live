@@ -175,15 +175,18 @@ func reviewStageCandidateInput(catalog *Catalog, report Report, calendar Calenda
 		Status:           reviewStageStatus(candidate.Status),
 		Description:      strings.TrimSpace(candidate.Description),
 		SourceName:       reviewStageSourceName(catalog, report),
-		SourceURL:        reviewStageOfficialSourceURL(report, candidate),
+		SourceURL:        reviewStageOfficialSourceURL(report, calendar, candidate),
 		CalendarURL:      reviewStageCalendarURL(calendar, candidate),
 		Provenance:       reviewStageProvenance(report, calendar, candidate),
 	}
 }
 
-func reviewStageOfficialSourceURL(report Report, candidate EventCandidate) string {
+func reviewStageOfficialSourceURL(report Report, calendar CalendarReport, candidate EventCandidate) string {
 	if candidateURL := strings.TrimSpace(candidate.URL); candidateURL != "" && !IsCalendarURL(candidateURL) {
 		return candidateURL
+	}
+	if calendarURL := strings.TrimSpace(calendar.URL); calendarURL != "" && !IsCalendarURL(calendarURL) {
+		return URLWithTextFragment(calendarURL, candidate.Summary)
 	}
 	sourceURL := strings.TrimSpace(report.SourceURL)
 	if sourceURL == "" || IsCalendarURL(sourceURL) {
