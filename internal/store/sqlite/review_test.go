@@ -1819,6 +1819,73 @@ func TestResolveReviewGroupPublishesCanonicalEvent(t *testing.T) {
 	}
 }
 
+func TestResolveReviewGroupPublishesChosenImage(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
+		Title:      "Image resolve",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:image.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:     "image-1",
+			Name:           "Image Show",
+			VenueSlug:      "sidney-and-matilda",
+			StartAt:        "2026-05-01T19:00:00Z",
+			EndAt:          "2026-05-01T22:00:00Z",
+			Genre:          "Indie",
+			Status:         "Listed",
+			Description:    "First line",
+			ImageURL:       "/media/events/image-show.jpg",
+			ImageSourceURL: "https://example.test/image-show.jpg",
+			ImageAlt:       "Image Show poster",
+			ImageWidth:     1200,
+			ImageHeight:    800,
+			SourceName:     "Fixture ICS",
+			SourceURL:      "https://example.test/image-show",
+			Provenance:     "fixture UID image-1",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	event, ok := st.EventBySlug("live-image-show-sidney-and-matilda-20260501190000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	if got, want := event.ImageURL, "/media/events/image-show.jpg"; got != want {
+		t.Fatalf("image url = %q, want %q", got, want)
+	}
+	if got, want := event.ImageSourceURL, "https://example.test/image-show.jpg"; got != want {
+		t.Fatalf("image source url = %q, want %q", got, want)
+	}
+	if got, want := event.ImageAlt, "Image Show poster"; got != want {
+		t.Fatalf("image alt = %q, want %q", got, want)
+	}
+	if got, want := event.ImageWidth, 1200; got != want {
+		t.Fatalf("image width = %d, want %d", got, want)
+	}
+	if got, want := event.ImageHeight, 800; got != want {
+		t.Fatalf("image height = %d, want %d", got, want)
+	}
+}
+
 func TestSaveReviewDraftChoicesUpsertsPerField(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
