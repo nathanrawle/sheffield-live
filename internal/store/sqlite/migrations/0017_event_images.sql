@@ -1,0 +1,25 @@
+ALTER TABLE events ADD COLUMN image_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE events ADD COLUMN image_source_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE events ADD COLUMN image_alt TEXT NOT NULL DEFAULT '';
+ALTER TABLE events ADD COLUMN image_width INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE events ADD COLUMN image_height INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE review_candidates ADD COLUMN image_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE review_candidates ADD COLUMN image_source_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE review_candidates ADD COLUMN image_alt TEXT NOT NULL DEFAULT '';
+ALTER TABLE review_candidates ADD COLUMN image_width INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE review_candidates ADD COLUMN image_height INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS image_assets (
+  source_url TEXT PRIMARY KEY,
+  public_url TEXT NOT NULL,
+  storage_path TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  width INTEGER NOT NULL DEFAULT 0,
+  height INTEGER NOT NULL DEFAULT 0,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT NOT NULL,
+  copied_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_image_assets_sha256 ON image_assets(sha256);

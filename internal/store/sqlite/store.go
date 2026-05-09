@@ -37,6 +37,7 @@ const (
 	schemaVersionV14  = 14
 	schemaVersionV15  = 15
 	schemaVersionV16  = 16
+	schemaVersionV17  = 17
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -61,6 +62,7 @@ var migrations = []struct {
 	{version: schemaVersionV14, path: "migrations/0014_bootstrap_origin_live.sql"},
 	{version: schemaVersionV15, path: "migrations/0015_event_public_links.sql"},
 	{version: schemaVersionV16, path: "migrations/0016_genres.sql"},
+	{version: schemaVersionV17, path: "migrations/0017_event_images.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -215,6 +217,11 @@ func (s *Store) ListEvents(ctx context.Context) ([]domain.Event, error) {
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -388,6 +395,11 @@ func (s *Store) ListEventsForVenue(ctx context.Context, venueSlug string) ([]dom
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -550,16 +562,22 @@ func insertEvent(ctx context.Context, tx execer, event domain.Event, venueID, so
 			genre,
 			status,
 			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
 			official_listing_url,
 			calendar_url,
 			last_checked_at,
 			origin,
 			publication_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
+		event.ImageURL, event.ImageSourceURL, event.ImageAlt, event.ImageWidth, event.ImageHeight,
 		event.OfficialListingURL,
 		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
@@ -603,6 +621,11 @@ func validate(ctx context.Context, q queryer) error {
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -852,6 +875,11 @@ func loadEventBySlug(ctx context.Context, q queryer, slug string) (domain.Event,
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -998,6 +1026,11 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 		&event.Genre,
 		&event.Status,
 		&event.Description,
+		&event.ImageURL,
+		&event.ImageSourceURL,
+		&event.ImageAlt,
+		&event.ImageWidth,
+		&event.ImageHeight,
 		&event.SourceName,
 		&event.SourceURL,
 		&event.OfficialListingURL,
