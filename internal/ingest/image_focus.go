@@ -124,8 +124,19 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 }
 
 func focusPercent(normalized float64) int {
-	const localFocusStrength = 0.85
-	percent := 50 + (normalized*100-50)*localFocusStrength
+	const (
+		localFocusStrength       = 0.85
+		sideSnapThresholdPercent = 18.0
+	)
+	target := normalized * 100
+	if math.Abs(target-50) >= sideSnapThresholdPercent {
+		if target < 50 {
+			target = 0
+		} else {
+			target = 100
+		}
+	}
+	percent := 50 + (target-50)*localFocusStrength
 	return int(math.Round(percent))
 }
 

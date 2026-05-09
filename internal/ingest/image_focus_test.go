@@ -68,6 +68,27 @@ func TestEstimateImageFocusUsesLocalSaliencyInsteadOfGlobalAverage(t *testing.T)
 	}
 }
 
+func TestFocusPercentSnapsToCentroidSidePastThreshold(t *testing.T) {
+	tests := []struct {
+		name       string
+		normalized float64
+		want       int
+	}{
+		{name: "center stays centered", normalized: 0.5, want: 50},
+		{name: "near center keeps damping", normalized: 0.6, want: 59},
+		{name: "left threshold snaps to damped edge", normalized: 0.31, want: 8},
+		{name: "right threshold snaps to damped edge", normalized: 0.69, want: 93},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := focusPercent(tc.normalized); got != tc.want {
+				t.Fatalf("focusPercent(%v) = %d, want %d", tc.normalized, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEstimateImageFocusDefaultsForFlatImages(t *testing.T) {
 	var body bytes.Buffer
 	img := image.NewRGBA(image.Rect(0, 0, 50, 50))
