@@ -41,6 +41,8 @@ Routes:
 - `GET /admin/import-runs/{id}` read-only import run snapshot metadata
 - `GET /admin/venues` provisional venue queue
 - `GET /admin/venues/{slug}` provisional venue detail
+- `GET /admin/configuration` genre inference configuration
+- `POST /admin/configuration` save, delete, or recompute genre inference rules
 - `POST /admin/venues/{slug}` save provisional venue field edits or validate the venue when venue writes are available
 - `POST /admin/review/{groupID}` review actions
 - `GET /healthz` plain-text health check
@@ -48,6 +50,8 @@ Routes:
 - `GET /static/site.css` embedded stylesheet
 
 The provisional venue queue lists provisional venue rows created from newly detected venue evidence during new-group staging, singleton auto-promotion, or manual review resolution. Detail pages show upcoming linked events. When venue writes are available, they also show editable venue fields and support two POST actions on the same route: save field edits in place or validate the venue and return to the queue. If venue writes are unavailable, provisional venue detail remains read-only and hides those controls.
+
+`/admin/configuration` exposes genre inference rules. Defaults are loaded from `config/genres.yaml`, copied into SQLite, and can be overridden through the admin page. Saving or deleting a rule recomputes stored event genres and refreshes the top-two `events.genre` summary cache.
 
 `/events` query parameters:
 
@@ -78,6 +82,9 @@ Review behavior:
 - ambiguous venue evidence fails closed and leaves the group open
 - canonical-backed duplicate resolution can update the matched live event in place
 - when authoritative source identity and canonical slug match point at different live events, authoritative identity wins
+- resolved review groups can persist secondary-source `genre` and `description` evidence for matching non-selected candidates
+- non-authoritative secondary-source evidence is cumulative; matching candidates use the same venue slug and start time plus a title match after case and whitespace normalization
+- later accepted reviews overwrite matching source/event rows when they provide new non-empty values, but absence does not delete earlier rows
 - singleton groups use accept/reject actions when they were staged instead of auto-promoted
 - `action=accept` resolves a singleton group and publishes one canonical public event
 - `action=rejected` rejects a duplicate or singleton group without publishing

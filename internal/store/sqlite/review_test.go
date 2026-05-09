@@ -1790,8 +1790,8 @@ func TestResolveReviewGroupPublishesCanonicalEvent(t *testing.T) {
 	if !event.End.Equal(time.Date(2026, time.May, 1, 22, 0, 0, 0, time.UTC)) {
 		t.Fatalf("end = %v, want %v", event.End, time.Date(2026, time.May, 1, 22, 0, 0, 0, time.UTC))
 	}
-	if event.Genre != "Indie" {
-		t.Fatalf("genre = %q, want %q", event.Genre, "Indie")
+	if event.Genre != "" {
+		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
 	}
 	if event.Status != "Listed" {
 		t.Fatalf("status = %q, want %q", event.Status, "Listed")
@@ -2123,8 +2123,8 @@ func TestResolveReviewGroupUsesAuthoritativeSourceLinkIdentity(t *testing.T) {
 		t.Fatal("review group not found after resolve")
 	}
 	assertDraftChoice(t, final, review.FieldVenueSlug, candidateID, "sidney-and-matilda")
-	if event.Genre != "Indie" {
-		t.Fatalf("genre = %q, want %q", event.Genre, "Indie")
+	if event.Genre != "" {
+		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
 	}
 	if event.Description != "First line" {
 		t.Fatalf("description = %q, want %q", event.Description, "First line")
@@ -2379,6 +2379,113 @@ func TestResolveReviewGroupAuthoritativePathReconcilesStaleSecondarySourceInfoRo
 
 	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
 		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
+	}
+}
+
+func TestResolveReviewGroupNonAuthoritativePathUpsertsSecondaryDescriptions(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	createGroup := func(title, secondaryDescription string) int64 {
+		t.Helper()
+
+		id, err := st.CreateReviewGroup(ctx, review.GroupInput{
+			Title:      title,
+			SourceName: "Manual review",
+			SourceURL:  "https://reviews.example.test/fusion-night",
+			Candidates: []review.CandidateInput{
+				{
+					ExternalID:  "primary-fusion",
+					Name:        "Fusion Night",
+					VenueSlug:   "leadmill",
+					StartAt:     "2026-06-01T19:00:00Z",
+					EndAt:       "2026-06-01T22:00:00Z",
+					Status:      "Listed",
+					Description: "Jazz from the first source.",
+					SourceName:  "Primary Listings",
+					SourceURL:   "https://primary.example.test/fusion-night",
+				},
+				{
+					ExternalID:  "secondary-fusion",
+					Name:        "  fusion   night  ",
+					VenueSlug:   "leadmill",
+					StartAt:     "2026-06-01T19:00:00Z",
+					EndAt:       "2026-06-01T22:00:00Z",
+					Status:      "Listed",
+					Description: secondaryDescription,
+					SourceName:  "Secondary Listings",
+					SourceURL:   "https://secondary.example.test/fusion-night",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("create review group %q: %v", title, err)
+		}
+		return id
+	}
+
+	resolveGroup := func(groupID int64) {
+		t.Helper()
+
+		group, ok, err := st.LoadReviewGroup(ctx, groupID)
+		if err != nil {
+			t.Fatalf("load review group: %v", err)
+		}
+		if !ok {
+			t.Fatal("review group not found")
+		}
+		if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+			t.Fatalf("resolve review group: %v", err)
+		}
+	}
+
+	firstGroupID := createGroup("Non-authoritative secondary first", "Funk from the second source.")
+	resolveGroup(firstGroupID)
+
+	eventSlug := "live-fusion-night-leadmill-20260601190000"
+	event, ok := st.EventBySlug(eventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", eventSlug)
+	}
+	if event.Genre != "Jazz, Funk" {
+		t.Fatalf("genre = %q, want Jazz, Funk", event.Genre)
+	}
+	if err := st.RecomputeEventGenres(ctx); err != nil {
+		t.Fatalf("recompute event genres: %v", err)
+	}
+	event, ok = st.EventBySlug(eventSlug)
+	if !ok {
+		t.Fatalf("missing recomputed event %q", eventSlug)
+	}
+	if event.Genre != "Jazz, Funk" {
+		t.Fatalf("recomputed genre = %q, want Jazz, Funk", event.Genre)
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	rows := loadSecondarySourceInfoRows(t, db)
+	if got, want := len(rows), 1; got != want {
+		t.Fatalf("secondary source info rows = %d, want %d", got, want)
+	}
+	if rows[0].InfoType != "description" || rows[0].Value != "Funk from the second source." {
+		t.Fatalf("secondary row = %#v, want secondary description", rows[0])
+	}
+
+	secondGroupID := createGroup("Non-authoritative secondary second", "Funk and soul from updated second source.")
+	resolveGroup(secondGroupID)
+
+	rows = loadSecondarySourceInfoRows(t, db)
+	if got, want := len(rows), 1; got != want {
+		t.Fatalf("secondary source info rows after update = %d, want %d", got, want)
+	}
+	if rows[0].InfoType != "description" || rows[0].Value != "Funk and soul from updated second source." {
+		t.Fatalf("updated secondary row = %#v, want updated secondary description", rows[0])
 	}
 }
 
@@ -3642,6 +3749,79 @@ func TestPromoteSingletonReviewGroupIfMissingPublishesNonAuthoritativeSingletonW
 	}
 }
 
+func TestPromoteSingletonReviewGroupIfMissingIgnoresInferredGenreSummaryConflict(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	sourceID := mustEnsureReviewTestSource(t, db)
+	var venueID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+	`, "greystones").Scan(&venueID); err != nil {
+		t.Fatalf("lookup greystones venue: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			last_checked_at,
+			origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "live-roots-night-greystones-20260516193000", venueID, sourceID, "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z", "Jazz, Funk", "Listed", "Jazz and funk from the existing listing.", "2026-05-15T10:00:00Z", string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert existing event: %v", err)
+	}
+	beforeEventCount := mustCount(t, db, "events")
+
+	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:      "The Greystones singleton",
+		SourceName: "The Greystones manual ingest",
+		SourceURL:  "https://www.mygreystones.co.uk/events/",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "greystones-genre-1",
+			Name:        "Roots Night",
+			VenueSlug:   "greystones",
+			StartAt:     "2026-05-16T19:30:00Z",
+			EndAt:       "2026-05-16T22:00:00Z",
+			Genre:       "Jazz",
+			Status:      "Listed",
+			Description: "Jazz and funk from the existing listing.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	if got, want := eventSlug, "live-roots-night-greystones-20260516193000"; got != want {
+		t.Fatalf("event slug = %q, want %q", got, want)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	}
+}
+
 func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenNonAuthoritativeSlugExists(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -4277,8 +4457,8 @@ func TestPromoteSingletonReviewGroupIfMissingUpdatesLinkedEventInPlace(t *testin
 	if event.Status != "Sold out" {
 		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
 	}
-	if event.Genre != "Ambient" {
-		t.Fatalf("genre = %q, want %q", event.Genre, "Ambient")
+	if event.Genre != "" {
+		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
 	}
 	if event.Description != "Updated description" {
 		t.Fatalf("description = %q, want %q", event.Description, "Updated description")
@@ -4528,8 +4708,8 @@ func TestPromoteSingletonReviewGroupIfMissingPreservesCleanDescriptionWhenAuthor
 	if event.Status != "Sold out" {
 		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
 	}
-	if event.Genre != "Ambient" {
-		t.Fatalf("genre = %q, want %q", event.Genre, "Ambient")
+	if event.Genre != "" {
+		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
 	}
 	if event.Description != "Existing clean description." {
 		t.Fatalf("description = %q, want %q", event.Description, "Existing clean description.")

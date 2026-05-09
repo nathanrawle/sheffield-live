@@ -8,6 +8,7 @@
     {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
     {{if and (or .HasImportHistory .HasReviewStorage) .HasVenueAdmin}} · {{end}}
     {{if .HasVenueAdmin}}<a href="/admin/venues">Provisional venues</a>{{end}}
+    {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
   </p>
   {{end}}
 </section>

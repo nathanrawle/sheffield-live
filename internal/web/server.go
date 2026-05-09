@@ -20,6 +20,7 @@ import (
 	"unicode"
 
 	"sheffield-live/internal/domain"
+	"sheffield-live/internal/genre"
 	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/review"
 	"sheffield-live/internal/store"
@@ -38,6 +39,8 @@ type Server struct {
 	replayStore               ingest.ReplayStore
 	importRunReviewGroupStore ImportRunReviewGroupStore
 	secondarySourceStore      EventSecondarySourceInfoStore
+	eventGenreStore           EventGenreStore
+	genreConfigStore          GenreConfigurationStore
 	readyChecker              ReadyChecker
 	localLocation             *time.Location
 	clock                     func() time.Time
@@ -70,6 +73,17 @@ type EventSecondarySourceInfoStore interface {
 	EventSecondarySourceInfoByEventSlug(ctx context.Context, slug string) ([]store.EventSecondarySourceInfo, error)
 }
 
+type EventGenreStore interface {
+	EventGenresByEventSlug(ctx context.Context, slug string) ([]genre.Match, error)
+}
+
+type GenreConfigurationStore interface {
+	ListGenreRules(ctx context.Context) ([]genre.Rule, error)
+	SaveGenreRule(ctx context.Context, input genre.RuleInput) error
+	DeleteGenreRule(ctx context.Context, id int64) error
+	RecomputeEventGenres(ctx context.Context) error
+}
+
 type ReadyChecker interface {
 	Ready(ctx context.Context) error
 }
@@ -81,6 +95,8 @@ type ServerDeps struct {
 	ReplayStore               ingest.ReplayStore
 	ImportRunReviewGroupStore ImportRunReviewGroupStore
 	EventSecondarySourceStore EventSecondarySourceInfoStore
+	EventGenreStore           EventGenreStore
+	GenreConfigurationStore   GenreConfigurationStore
 	ReadyChecker              ReadyChecker
 }
 
@@ -98,6 +114,7 @@ type PageData struct {
 	Areas                    []string
 	Event                    domain.Event
 	EventSecondarySources    []store.EventSecondarySourceInfo
+	EventGenres              []genre.Match
 	Venues                   []domain.Venue
 	Venue                    domain.Venue
 	FeaturedEvent            domain.Event
@@ -112,6 +129,7 @@ type PageData struct {
 	ProvisionalVenues        []ProvisionalVenueRow
 	ImportRunRows            []ImportRunRow
 	ImportRunDetail          ImportRunDetail
+	GenreRules               []genre.Rule
 	LatestImport             *ingest.ImportRunSummary
 	HasImportHistory         bool
 	HasImportRunDetail       bool
@@ -119,6 +137,7 @@ type PageData struct {
 	HasReviewStorage         bool
 	HasVenueAdmin            bool
 	HasVenueAdminWrites      bool
+	HasGenreConfiguration    bool
 	Flash                    string
 }
 
@@ -325,6 +344,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		},
 		"year":            func(t time.Time) string { return t.In(localLocation).Format("2006") },
 		"joinStrings":     func(values []string, sep string) string { return strings.Join(values, sep) },
+		"genreNames":      func(values []genre.Match, sep string) string { return strings.Join(genre.Names(values), sep) },
 		"descriptionHTML": descriptionHTML,
 	}
 
@@ -344,6 +364,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"templates/admin_review_history.html",
 		"templates/admin_venues.html",
 		"templates/admin_venue_detail.html",
+		"templates/admin_configuration.html",
 		"templates/admin_import_runs.html",
 		"templates/admin_import_run_detail.html",
 		"templates/admin_review_detail.html",
@@ -369,6 +390,8 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		replayStore:               deps.ReplayStore,
 		importRunReviewGroupStore: deps.ImportRunReviewGroupStore,
 		secondarySourceStore:      deps.EventSecondarySourceStore,
+		eventGenreStore:           deps.EventGenreStore,
+		genreConfigStore:          deps.GenreConfigurationStore,
 		readyChecker:              deps.ReadyChecker,
 		localLocation:             localLocation,
 		clock:                     func() time.Time { return time.Now().UTC() },
@@ -472,6 +495,10 @@ func (s *Server) canWriteVenueAdmin() bool {
 	return s.venueAdminStore() != nil
 }
 
+func (s *Server) hasGenreConfiguration() bool {
+	return s.genreConfigStore != nil
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cleaned := path.Clean(r.URL.Path)
 	switch {
@@ -493,6 +520,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminReviewHistory(w, r)
 	case cleaned == "/admin/venues":
 		s.handleAdminVenues(w, r)
+	case cleaned == "/admin/configuration":
+		s.handleAdminConfiguration(w, r)
 	case r.URL.Path == "/admin/import-runs":
 		s.handleAdminImportRuns(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/import-runs/"):
@@ -562,18 +591,19 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		flash = "Rejected."
 	}
 	data := PageData{
-		SiteName:            "Sheffield Live",
-		PageTitle:           "Review",
-		MetaDescription:     "Review open staged event candidates.",
-		Active:              "admin-review",
-		Now:                 s.now(),
-		ReviewGroups:        groups,
-		HasImportHistory:    s.importRunStore != nil,
-		HasImportRunDetail:  s.replayStore != nil,
-		HasReviewStorage:    s.reviewStore != nil,
-		HasVenueAdmin:       s.hasVenueAdmin(),
-		HasVenueAdminWrites: s.canWriteVenueAdmin(),
-		Flash:               flash,
+		SiteName:              "Sheffield Live",
+		PageTitle:             "Review",
+		MetaDescription:       "Review open staged event candidates.",
+		Active:                "admin-review",
+		Now:                   s.now(),
+		ReviewGroups:          groups,
+		HasImportHistory:      s.importRunStore != nil,
+		HasImportRunDetail:    s.replayStore != nil,
+		HasReviewStorage:      s.reviewStore != nil,
+		HasVenueAdmin:         s.hasVenueAdmin(),
+		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasGenreConfiguration: s.hasGenreConfiguration(),
+		Flash:                 flash,
 	}
 	if s.importRunStore != nil {
 		latest, err := s.importRunStore.LatestSuccessfulImport(r.Context())
@@ -611,16 +641,17 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 		flash = "Venue validated."
 	}
 	data := PageData{
-		SiteName:            "Sheffield Live",
-		PageTitle:           "Provisional venues",
-		MetaDescription:     "Queue of provisional venue rows awaiting validation.",
-		Now:                 now,
-		HasImportHistory:    s.importRunStore != nil,
-		HasImportRunDetail:  s.replayStore != nil,
-		HasReviewStorage:    s.reviewStore != nil,
-		HasVenueAdmin:       s.hasVenueAdmin(),
-		HasVenueAdminWrites: s.canWriteVenueAdmin(),
-		Flash:               flash,
+		SiteName:              "Sheffield Live",
+		PageTitle:             "Provisional venues",
+		MetaDescription:       "Queue of provisional venue rows awaiting validation.",
+		Now:                   now,
+		HasImportHistory:      s.importRunStore != nil,
+		HasImportRunDetail:    s.replayStore != nil,
+		HasReviewStorage:      s.reviewStore != nil,
+		HasVenueAdmin:         s.hasVenueAdmin(),
+		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasGenreConfiguration: s.hasGenreConfiguration(),
+		Flash:                 flash,
 		ProvisionalVenues: buildProvisionalVenueRows(
 			venues,
 			events,
@@ -629,6 +660,124 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 		),
 	}
 	s.renderPage(w, "templates/admin_venues.html", data)
+}
+
+func (s *Server) handleAdminConfiguration(w http.ResponseWriter, r *http.Request) {
+	if s.genreConfigStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		s.postAdminConfiguration(w, r)
+		return
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rules, err := s.genreConfigStore.ListGenreRules(r.Context())
+	if err != nil {
+		http.Error(w, "load genre rules", http.StatusInternalServerError)
+		return
+	}
+	flash := ""
+	switch {
+	case r.URL.Query().Get("saved") == "1":
+		flash = "Genre rule saved."
+	case r.URL.Query().Get("deleted") == "1":
+		flash = "Genre rule deleted."
+	case r.URL.Query().Get("recomputed") == "1":
+		flash = "Event genres recomputed."
+	}
+	data := PageData{
+		SiteName:              "Sheffield Live",
+		PageTitle:             "Configuration",
+		MetaDescription:       "Admin configuration for genre inference.",
+		Active:                "admin-configuration",
+		Now:                   s.now(),
+		GenreRules:            rules,
+		HasImportHistory:      s.importRunStore != nil,
+		HasImportRunDetail:    s.replayStore != nil,
+		HasReviewStorage:      s.reviewStore != nil,
+		HasVenueAdmin:         s.hasVenueAdmin(),
+		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasGenreConfiguration: s.hasGenreConfiguration(),
+		Flash:                 flash,
+	}
+	s.renderPage(w, "templates/admin_configuration.html", data)
+}
+
+func (s *Server) postAdminConfiguration(w http.ResponseWriter, r *http.Request) {
+	if s.genreConfigStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	action := strings.TrimSpace(r.FormValue("action"))
+	switch action {
+	case "save":
+		input, err := genreRuleInputFromForm(r.Form)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.genreConfigStore.SaveGenreRule(r.Context(), input); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/configuration?saved=1", http.StatusSeeOther)
+	case "delete":
+		id, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
+		if err != nil || id <= 0 {
+			http.Error(w, "genre rule ID is required", http.StatusBadRequest)
+			return
+		}
+		if err := s.genreConfigStore.DeleteGenreRule(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/configuration?deleted=1", http.StatusSeeOther)
+	case "recompute":
+		if err := s.genreConfigStore.RecomputeEventGenres(r.Context()); err != nil {
+			http.Error(w, "recompute event genres", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/configuration?recomputed=1", http.StatusSeeOther)
+	default:
+		http.Error(w, "invalid configuration action", http.StatusBadRequest)
+	}
+}
+
+func genreRuleInputFromForm(form url.Values) (genre.RuleInput, error) {
+	var input genre.RuleInput
+	if rawID := strings.TrimSpace(form.Get("id")); rawID != "" {
+		id, err := strconv.ParseInt(rawID, 10, 64)
+		if err != nil || id <= 0 {
+			return genre.RuleInput{}, fmt.Errorf("invalid genre rule ID")
+		}
+		input.ID = id
+	}
+	input.Key = strings.TrimSpace(form.Get("key"))
+	input.Name = strings.TrimSpace(form.Get("name"))
+	input.MatchType = strings.TrimSpace(form.Get("match_type"))
+	if input.MatchType == "" {
+		input.MatchType = genre.MatchTypePlain
+	}
+	input.Pattern = strings.TrimSpace(form.Get("pattern"))
+	input.Enabled = form.Get("enabled") == "1"
+	if rawSortOrder := strings.TrimSpace(form.Get("sort_order")); rawSortOrder != "" {
+		sortOrder, err := strconv.Atoi(rawSortOrder)
+		if err != nil {
+			return genre.RuleInput{}, fmt.Errorf("invalid sort order")
+		}
+		input.SortOrder = sortOrder
+	}
+	return input, nil
 }
 
 func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request) {
@@ -646,17 +795,18 @@ func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 	data := PageData{
-		SiteName:            "Sheffield Live",
-		PageTitle:           "Review history",
-		MetaDescription:     "Read-only history of resolved and rejected review groups.",
-		Active:              "admin-review",
-		Now:                 s.now(),
-		ReviewHistoryRows:   buildReviewHistoryRows(groups),
-		HasImportHistory:    s.importRunStore != nil,
-		HasImportRunDetail:  s.replayStore != nil,
-		HasReviewStorage:    s.reviewStore != nil,
-		HasVenueAdmin:       s.hasVenueAdmin(),
-		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		SiteName:              "Sheffield Live",
+		PageTitle:             "Review history",
+		MetaDescription:       "Read-only history of resolved and rejected review groups.",
+		Active:                "admin-review",
+		Now:                   s.now(),
+		ReviewHistoryRows:     buildReviewHistoryRows(groups),
+		HasImportHistory:      s.importRunStore != nil,
+		HasImportRunDetail:    s.replayStore != nil,
+		HasReviewStorage:      s.reviewStore != nil,
+		HasVenueAdmin:         s.hasVenueAdmin(),
+		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasGenreConfiguration: s.hasGenreConfiguration(),
 	}
 	s.renderPage(w, "templates/admin_review_history.html", data)
 }
@@ -708,17 +858,18 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 		flash = "Venue saved."
 	}
 	data := PageData{
-		SiteName:            "Sheffield Live",
-		PageTitle:           pageTitle,
-		MetaDescription:     venue.Description,
-		Now:                 s.now(),
-		Venue:               venue,
-		VenueEvents:         sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
-		HasImportHistory:    s.importRunStore != nil,
-		HasReviewStorage:    s.reviewStore != nil,
-		HasVenueAdmin:       s.hasVenueAdmin(),
-		HasVenueAdminWrites: s.canWriteVenueAdmin(),
-		Flash:               flash,
+		SiteName:              "Sheffield Live",
+		PageTitle:             pageTitle,
+		MetaDescription:       venue.Description,
+		Now:                   s.now(),
+		Venue:                 venue,
+		VenueEvents:           sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
+		HasImportHistory:      s.importRunStore != nil,
+		HasReviewStorage:      s.reviewStore != nil,
+		HasVenueAdmin:         s.hasVenueAdmin(),
+		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasGenreConfiguration: s.hasGenreConfiguration(),
+		Flash:                 flash,
 	}
 	s.renderPage(w, "templates/admin_venue_detail.html", data)
 }
@@ -753,6 +904,7 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		HasReviewStorage:         s.reviewStore != nil,
 		HasVenueAdmin:            s.hasVenueAdmin(),
 		HasVenueAdminWrites:      s.canWriteVenueAdmin(),
+		HasGenreConfiguration:    s.hasGenreConfiguration(),
 	}
 	s.renderPage(w, "templates/admin_import_runs.html", data)
 }
@@ -792,16 +944,17 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 	}
 
 	data := PageData{
-		SiteName:            "Sheffield Live",
-		PageTitle:           fmt.Sprintf("Import run #%d", run.ID),
-		MetaDescription:     "Read-only import run snapshot metadata.",
-		Now:                 s.now(),
-		ImportRunDetail:     detail,
-		HasImportHistory:    s.importRunStore != nil,
-		HasImportRunDetail:  s.replayStore != nil,
-		HasReviewStorage:    s.reviewStore != nil,
-		HasVenueAdmin:       s.hasVenueAdmin(),
-		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		SiteName:              "Sheffield Live",
+		PageTitle:             fmt.Sprintf("Import run #%d", run.ID),
+		MetaDescription:       "Read-only import run snapshot metadata.",
+		Now:                   s.now(),
+		ImportRunDetail:       detail,
+		HasImportHistory:      s.importRunStore != nil,
+		HasImportRunDetail:    s.replayStore != nil,
+		HasReviewStorage:      s.reviewStore != nil,
+		HasVenueAdmin:         s.hasVenueAdmin(),
+		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasGenreConfiguration: s.hasGenreConfiguration(),
 	}
 	s.renderPage(w, "templates/admin_import_run_detail.html", data)
 }
@@ -1084,17 +1237,18 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	data := PageData{
-		SiteName:            "Sheffield Live",
-		PageTitle:           group.Title,
-		MetaDescription:     "Review staged event candidates.",
-		Active:              "admin-review",
-		Now:                 s.now(),
-		HasImportHistory:    s.importRunStore != nil,
-		HasImportRunDetail:  s.replayStore != nil,
-		HasReviewStorage:    s.reviewStore != nil,
-		HasVenueAdmin:       s.hasVenueAdmin(),
-		HasVenueAdminWrites: s.canWriteVenueAdmin(),
-		Flash:               flash,
+		SiteName:              "Sheffield Live",
+		PageTitle:             group.Title,
+		MetaDescription:       "Review staged event candidates.",
+		Active:                "admin-review",
+		Now:                   s.now(),
+		HasImportHistory:      s.importRunStore != nil,
+		HasImportRunDetail:    s.replayStore != nil,
+		HasReviewStorage:      s.reviewStore != nil,
+		HasVenueAdmin:         s.hasVenueAdmin(),
+		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasGenreConfiguration: s.hasGenreConfiguration(),
+		Flash:                 flash,
 	}
 	data.ReviewDetail = buildReviewDetail(group)
 	s.renderPage(w, "templates/admin_review_detail.html", data)
@@ -1202,6 +1356,15 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 		}
 		secondarySources = loaded
 	}
+	var eventGenres []genre.Match
+	if s.eventGenreStore != nil {
+		loaded, err := s.eventGenreStore.EventGenresByEventSlug(r.Context(), slug)
+		if err != nil {
+			http.Error(w, "event genres not available", http.StatusInternalServerError)
+			return
+		}
+		eventGenres = loaded
+	}
 	data := PageData{
 		SiteName:              "Sheffield Live",
 		PageTitle:             event.Name,
@@ -1210,6 +1373,7 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 		Now:                   s.now(),
 		Event:                 event,
 		EventSecondarySources: secondarySources,
+		EventGenres:           eventGenres,
 		Venue:                 venue,
 	}
 	s.renderPage(w, "templates/event_detail.html", data)

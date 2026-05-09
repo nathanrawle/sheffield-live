@@ -6,6 +6,7 @@
     {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
     {{if .HasReviewStorage}} · {{end}}
     <a href="/admin/venues">Provisional venues</a>
+    {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
   </p>
 </section>
 

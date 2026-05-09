@@ -26,6 +26,7 @@
       <p>{{dateLong .Event.Start}}</p>
       <p>{{if .Event.HasEnd}}{{timeShort .Event.Start}} to {{timeShort .Event.End}}{{else}}Starts at {{timeShort .Event.Start}}{{end}}</p>
       <p>{{.Event.Genre}} · {{.Event.Status}}</p>
+      {{if .EventGenres}}<p><strong>All genres</strong>: {{genreNames .EventGenres ", "}}</p>{{end}}
     </div>
     <div class="detail-card">
       <h2>Where</h2>

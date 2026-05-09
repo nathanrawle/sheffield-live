@@ -36,6 +36,7 @@ const (
 	schemaVersionV13  = 13
 	schemaVersionV14  = 14
 	schemaVersionV15  = 15
+	schemaVersionV16  = 16
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -59,6 +60,7 @@ var migrations = []struct {
 	{version: schemaVersionV13, path: "migrations/0013_review_candidate_venue_evidence.sql"},
 	{version: schemaVersionV14, path: "migrations/0014_bootstrap_origin_live.sql"},
 	{version: schemaVersionV15, path: "migrations/0015_event_public_links.sql"},
+	{version: schemaVersionV16, path: "migrations/0016_genres.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -157,6 +159,12 @@ func Open(path string, sourceMetadata ...ingest.SourceMetadataLookup) (st *Store
 	}
 	if err := auditCanonicalEqualTimeEnds(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: audit canonical equal-time ends: %w", path, err)
+	}
+	if err := syncGenreDefaultsTx(ctx, tx); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: sync genre defaults: %w", path, err)
+	}
+	if err := backfillEventGenresTx(ctx, tx); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: backfill event genres: %w", path, err)
 	}
 	if err := validate(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: validate store: %w", path, err)
@@ -423,8 +431,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV15 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV15)
+	if version > schemaVersionV16 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV16)
 	}
 
 	for _, migration := range migrations {
@@ -577,6 +585,9 @@ func validate(ctx context.Context, q queryer) error {
 		return err
 	}
 	if err := validateDanglingImportRunReviewGroupRefs(ctx, q); err != nil {
+		return err
+	}
+	if err := validateDanglingEventGenreRefs(ctx, q); err != nil {
 		return err
 	}
 	if err := auditCanonicalEqualTimeEnds(ctx, q); err != nil {

@@ -1,0 +1,68 @@
+<section class="page-head">
+  <p class="eyebrow">Admin</p>
+  <h1>Configuration</h1>
+  <p class="lede">Genre inference rules used to match event descriptions.</p>
+  <p class="review-group-meta">
+    {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if and .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
+    {{if or .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasVenueAdmin}}<a href="/admin/venues">Provisional venues</a>{{end}}
+  </p>
+</section>
+
+{{with .Flash}}
+<section class="section-block">
+  <p class="notice">{{.}}</p>
+</section>
+{{end}}
+
+<section class="section-block">
+  <div class="section-head">
+    <h2>Genre rules</h2>
+    <form method="post" action="/admin/configuration">
+      <input type="hidden" name="action" value="recompute">
+      <button type="submit">Recompute event genres</button>
+    </form>
+  </div>
+  <div class="genre-rule-list">
+    {{range .GenreRules}}
+    <form class="genre-rule-grid" method="post" action="/admin/configuration">
+      <input type="hidden" name="id" value="{{.ID}}">
+      <label><span>Enabled</span><input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}}></label>
+      <label><span>Key</span><input name="key" value="{{.Key}}"></label>
+      <label><span>Name</span><input name="name" value="{{.Name}}"></label>
+      <label>
+        <span>Type</span>
+        <select name="match_type">
+          <option value="plain" {{if eq .MatchType "plain"}}selected{{end}}>plain</option>
+          <option value="regex" {{if eq .MatchType "regex"}}selected{{end}}>regex</option>
+        </select>
+      </label>
+      <label><span>Pattern</span><input name="pattern" value="{{.Pattern}}"></label>
+      <label><span>Order</span><input name="sort_order" value="{{.SortOrder}}" inputmode="numeric"></label>
+      <div class="review-actions">
+        <button type="submit" name="action" value="save">Save</button>
+        <button type="submit" name="action" value="delete">Delete</button>
+      </div>
+    </form>
+    {{else}}
+    <p class="empty-state">No genre rules configured.</p>
+    {{end}}
+    <form class="genre-rule-grid" method="post" action="/admin/configuration">
+      <label><span>Enabled</span><input type="checkbox" name="enabled" value="1" checked></label>
+      <label><span>Key</span><input name="key" placeholder="doom-metal"></label>
+      <label><span>Name</span><input name="name" placeholder="Doom metal"></label>
+      <label>
+        <span>Type</span>
+        <select name="match_type">
+          <option value="plain">plain</option>
+          <option value="regex">regex</option>
+        </select>
+      </label>
+      <label><span>Pattern</span><input name="pattern" placeholder="doom metal"></label>
+      <label><span>Order</span><input name="sort_order" value="0" inputmode="numeric"></label>
+      <div><button type="submit" name="action" value="save">Add</button></div>
+    </form>
+  </div>
+</section>

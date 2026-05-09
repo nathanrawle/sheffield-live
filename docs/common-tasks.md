@@ -126,8 +126,11 @@ Open `/admin/review` in the browser.
 - ambiguous venue evidence fails closed and leaves the group unresolved
 - singleton auto-promotion can now create a provisional venue row immediately for a uniquely new venue
 - rejecting does not publish
+- resolving a duplicate can persist secondary-source genre and description evidence from matching non-selected candidates; matching uses venue slug, start time, and case/whitespace-normalized title
+- non-authoritative secondary evidence is cumulative, so a missing source in a later accepted review is not treated as deletion
 - open `/admin/venues` to inspect provisional venue rows created from newly detected venue evidence
 - open `/admin/venues/{slug}` to inspect one provisional venue and its upcoming linked events
 - when venue writes are available, use `/admin/venues/{slug}` to edit provisional venue fields and then use the separate validate action to mark the venue validated and remove it from the queue
+- open `/admin/configuration` to inspect or edit genre inference rules; saving or deleting a rule recomputes stored event genre rankings
 - the provisional venue queue still does not support venue merge actions
 - open `/admin/review/history` for the 50 newest resolved and rejected groups

@@ -4,7 +4,7 @@
 
 Sheffield Live is a single Go monolith. It serves server-rendered HTML from one SQLite-backed application and keeps the public browsing flow and the manual ingestion flow in the same repository.
 
-`cmd/web` starts the site. `cmd/ingest` handles manual ingestion and review staging. Both binaries load the source catalog from `config/sources` on startup.
+`cmd/web` starts the site. `cmd/ingest` handles manual ingestion and review staging. Both binaries load the source catalog from `config/sources` on startup. Genre inference defaults live in `config/genres.yaml` and are synced into SQLite for runtime admin edits.
 
 ## Packages
 
@@ -45,6 +45,7 @@ The source catalog path is fixed to the repository `config/sources` directory in
 - `/admin/import-runs/{id}`
 - `/admin/venues`
 - `/admin/venues/{slug}`
+- `/admin/configuration`
 - `/healthz`
 - `/readyz`
 - `/static/site.css`
@@ -63,13 +64,15 @@ The source catalog path is fixed to the repository `config/sources` directory in
 Public records live in SQLite and are served from canonical `venues` and `events` rows.
 
 - `Venue` stores slug, name, address, neighbourhood, description, website, validation state, coverage kind, coverage note, and origin
-- `Event` stores slug, name, venue slug, a required UTC start time, an optional UTC end time, genre, status, description, source name, source URL, last checked time, and origin
+- `Event` stores slug, name, venue slug, a required UTC start time, an optional UTC end time, top-two genre summary, status, description, source name, source URL, last checked time, and origin
 
 Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
 Review persistence also stores canonical snapshot rows alongside staged candidates, persists source-derived venue evidence (`venue_text`, `venue_location_raw`), and keeps majority defaults separate from reviewer-edited draft choices. For ICS sources, `venue_location_raw` is parsing evidence rather than a display string: it keeps the unfolded raw `LOCATION` text so later venue derivation can decode ICS escapes before applying the normal comma/newline split.
-Authoritative review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema.
+Review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema. Authoritative resolution reconciles the secondary rows supplied with that authoritative decision. Non-authoritative resolution upserts matching secondary candidates as cumulative evidence, so an omitted source in a later accepted review does not delete previously stored source information. A staged candidate matches the accepted event for secondary evidence when venue slug and start time match and the title matches after case and whitespace normalization.
+Inferred genres are stored as ranked `event_genres` rows. Ranking is calculated across the canonical description plus persisted secondary-source descriptions, using a balanced score from mention frequency and earliest match position. Public summary cards still read `events.genre`, which is refreshed as the top two inferred genres.
 
-The admin UI exposes a landing page, read-only review history, import history, provisional venue queue/detail pages, and per-run snapshot metadata when the backing store implements those read paths. Public venue/event pages and admin provisional venue pages display normalized multiline addresses, including dropping an address first line that duplicates the venue name. The provisional venue queue lists only provisional venues. Detail pages remain read-only when venue admin writes are unavailable, and show save/validate controls only when the backing store exposes provisional venue write capability. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
+The admin UI exposes a landing page, read-only review history, import history, provisional venue queue/detail pages, genre configuration, and per-run snapshot metadata when the backing store implements those read paths. Public venue/event pages and admin provisional venue pages display normalized multiline addresses, including dropping an address first line that duplicates the venue name. The provisional venue queue lists only provisional venues. Detail pages remain read-only when venue admin writes are unavailable, and show save/validate controls only when the backing store exposes provisional venue write capability. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
+
 When the backing store also exposes secondary-source event info, the public event detail page can render alternate `genre` and `description` values grouped by secondary source without altering the canonical event record.
 
 ## Data Lifecycle
@@ -78,6 +81,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 
 - raw snapshots capture fetched source pages and any source-specific secondary payloads such as ICS feeds
 - source metadata and ingest runtime selection come from repo-backed YAML catalog files
+- repo-backed genre defaults are synced into SQLite, where admin changes take precedence and trigger event-genre recomputation
 - replay and review identity depend on stable source identity fields: `key`, `name`, `url`, and `review_stage_source_name`
 - `review_groups.staging_key` has a unique index so staged reruns reuse the same group when the content key matches
 - `import_run_review_groups` records every persisted import-run to review-group link with link time
@@ -103,7 +107,8 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - ambiguous venue evidence fails closed and rolls back the review resolution transaction
 - authoritative review groups resolve through durable `event_source_links` identity before any slug-based fallback
 - authoritative identity takes precedence over canonical slug attachment when they disagree
-- authoritative review groups may also persist secondary-source `genre` and `description` rows keyed by secondary source plus candidate venue, name, and start time
+- review groups may also persist secondary-source `genre` and `description` rows keyed by secondary source plus candidate venue, name, and start time
+- non-authoritative secondary-source rows are cumulative: repeated rows from the same source/event identity overwrite non-empty values, but an absent source in a later accepted review does not delete earlier evidence
 - supporting singleton auto-promotion creates `provisional` live events, does not create authoritative `event_source_links`, and does not create `event_secondary_source_info` rows
 - successful supporting singleton auto-promotion resolves matching stale open singleton groups by `staging_key` and links the current import run to those groups
 - later supporting matches can fill blank live fields but conflicting populated fields stay in review

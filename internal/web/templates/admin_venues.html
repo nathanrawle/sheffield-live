@@ -7,6 +7,7 @@
     {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
     {{if and .HasReviewStorage .HasImportHistory}} · {{end}}
     {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
+    {{if .HasGenreConfiguration}}{{if or .HasReviewStorage .HasImportHistory}} · {{end}}<a href="/admin/configuration">Configuration</a>{{end}}
   </p>
   {{end}}
 </section>
