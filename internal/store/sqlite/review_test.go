@@ -3749,6 +3749,79 @@ func TestPromoteSingletonReviewGroupIfMissingPublishesNonAuthoritativeSingletonW
 	}
 }
 
+func TestPromoteSingletonReviewGroupIfMissingIgnoresInferredGenreSummaryConflict(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	sourceID := mustEnsureReviewTestSource(t, db)
+	var venueID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+	`, "greystones").Scan(&venueID); err != nil {
+		t.Fatalf("lookup greystones venue: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			last_checked_at,
+			origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "live-roots-night-greystones-20260516193000", venueID, sourceID, "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z", "Jazz, Funk", "Listed", "Jazz and funk from the existing listing.", "2026-05-15T10:00:00Z", string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert existing event: %v", err)
+	}
+	beforeEventCount := mustCount(t, db, "events")
+
+	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
+		Title:      "The Greystones singleton",
+		SourceName: "The Greystones manual ingest",
+		SourceURL:  "https://www.mygreystones.co.uk/events/",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "greystones-genre-1",
+			Name:        "Roots Night",
+			VenueSlug:   "greystones",
+			StartAt:     "2026-05-16T19:30:00Z",
+			EndAt:       "2026-05-16T22:00:00Z",
+			Genre:       "Jazz",
+			Status:      "Listed",
+			Description: "Jazz and funk from the existing listing.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	if got, want := eventSlug, "live-roots-night-greystones-20260516193000"; got != want {
+		t.Fatalf("event slug = %q, want %q", got, want)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	}
+}
+
 func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenNonAuthoritativeSlugExists(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")

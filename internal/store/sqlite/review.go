@@ -1158,9 +1158,6 @@ func supportingEventConflict(existing, incoming domain.Event) bool {
 	if strings.TrimSpace(existing.Status) != "" && strings.TrimSpace(incoming.Status) != "" && strings.TrimSpace(existing.Status) != strings.TrimSpace(incoming.Status) {
 		return true
 	}
-	if strings.TrimSpace(existing.Genre) != "" && strings.TrimSpace(incoming.Genre) != "" && strings.TrimSpace(existing.Genre) != strings.TrimSpace(incoming.Genre) {
-		return true
-	}
 	if strings.TrimSpace(existing.Description) != "" && strings.TrimSpace(incoming.Description) != "" && strings.TrimSpace(existing.Description) != strings.TrimSpace(incoming.Description) {
 		return true
 	}
