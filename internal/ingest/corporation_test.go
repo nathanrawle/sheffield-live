@@ -109,13 +109,31 @@ func TestParseCorporationDetailPageUsesStructuredEventData(t *testing.T) {
 	if !strings.Contains(candidate.LocationRaw, "2 Milton St") {
 		t.Fatalf("location raw = %q, want street address", candidate.LocationRaw)
 	}
-	if got, want := candidate.StartAt, "2026-07-16T17:00:00Z"; got != want {
+	if got, want := candidate.StartAt, "2026-07-16T18:00:00Z"; got != want {
 		t.Fatalf("start = %q, want %q", got, want)
 	}
-	if got, want := candidate.EndAt, "2026-07-16T20:30:00Z"; got != want {
+	if got, want := candidate.EndAt, "2026-07-16T21:30:00Z"; got != want {
 		t.Fatalf("end = %q, want %q", got, want)
 	}
 	if !strings.Contains(candidate.Description, "Canadian Whiskey Metal Punk Bastards.") {
 		t.Fatalf("description = %q, want structured description", candidate.Description)
+	}
+}
+
+func TestParseCorporationStructuredDateTimeTreatsOffsetlessTimesAsUTC(t *testing.T) {
+	structured, err := parseCorporationStructuredDateTime("2026-07-16T18:00")
+	if err != nil {
+		t.Fatalf("parse structured datetime: %v", err)
+	}
+	if got, want := formatTime(structured), "2026-07-16T18:00:00Z"; got != want {
+		t.Fatalf("structured datetime = %q, want %q", got, want)
+	}
+
+	legacy, err := parseCorporationDateTime("2026-07-16T18:00")
+	if err != nil {
+		t.Fatalf("parse legacy datetime: %v", err)
+	}
+	if got, want := formatTime(legacy), "2026-07-16T17:00:00Z"; got != want {
+		t.Fatalf("legacy datetime = %q, want %q", got, want)
 	}
 }

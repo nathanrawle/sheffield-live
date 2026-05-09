@@ -95,7 +95,7 @@ func corporationCandidateFromJSONLDNode(pageURL string, node map[string]any) (Ev
 		skip.Reason = "missing event start time"
 		return EventCandidate{}, skip, nil
 	}
-	startAt, err := parseCorporationDateTime(startText)
+	startAt, err := parseCorporationStructuredDateTime(startText)
 	if err != nil {
 		return EventCandidate{}, ParseSkip{}, fmt.Errorf("parse Corporation start time for %q: %w", title, err)
 	}
@@ -105,7 +105,7 @@ func corporationCandidateFromJSONLDNode(pageURL string, node map[string]any) (Ev
 		skip.Reason = "missing event end time"
 		return EventCandidate{}, skip, nil
 	}
-	endAt, err := parseCorporationDateTime(endText)
+	endAt, err := parseCorporationStructuredDateTime(endText)
 	if err != nil {
 		return EventCandidate{}, ParseSkip{}, fmt.Errorf("parse Corporation end time for %q: %w", title, err)
 	}
@@ -276,4 +276,24 @@ func parseCorporationDateTime(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unsupported datetime %q", value)
+}
+
+func parseCorporationStructuredDateTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("missing datetime")
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC(), nil
+	}
+	for _, layout := range []string{
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+	} {
+		parsed, err := time.ParseInLocation(layout, value, time.UTC)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	return parseCorporationDateTime(value)
 }
