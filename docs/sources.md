@@ -21,6 +21,7 @@ Owned-venue authority also lives in the catalog. The catalog is the only place t
 ## Current Flow
 
 Every ingest run fetches the source page and stores a raw source-page snapshot.
+When parser output includes an event image URL, ingest copies the remote image into local media storage, records the copied asset metadata, and carries the copied public URL into review candidates. Image-copy failures are reported as warnings and do not block the ingest.
 
 After that, parsing depends on the source mode:
 
@@ -59,6 +60,7 @@ Add a new Go family only when the source needs new parsing or link-extraction be
 ## Snapshot Payloads
 
 Snapshot payloads are stored as JSON envelopes that contain the response body in base64, response metadata, a captured-body SHA-256, and a truncation flag.
+Copied image files are not snapshot payloads. They are local media assets keyed by source image URL so replay can reuse the copied asset metadata without fetching remote image bytes.
 
 ## Review Staging
 
@@ -84,6 +86,7 @@ When a review group resolves:
 
 - selected review fields map to `internal/domain.Event`
 - event genres are inferred from the selected canonical description plus persisted secondary-source descriptions; all matches are stored as ranked event genre rows and the public event row keeps the top two as its summary genre
+- selected image fields publish copied image URL, original source URL, alt text, and dimensions
 - authoritative groups pin source name and source URL from the persisted authoritative tuple
 - non-authoritative groups let source name and source URL fall back to the review-group source only when the selected field is blank
 - canonical end times may be omitted; unknown canonical ends publish as `events.end_at = NULL`
@@ -98,6 +101,7 @@ When a review group resolves:
 - non-authoritative groups upsert matching secondary-source `genre` and `description` rows as cumulative evidence; matching requires the same venue slug and start time plus a title match after case and whitespace normalization
 - a missing source in a later accepted non-authoritative review does not delete an earlier stored secondary-source row
 - the published event origin is `live`
+- published event images reference copied media assets rather than hotlinking the source site
 - the slug is `live-<slug(name)>-<slug(venue)>-<YYYYMMDDHHMMSS UTC>`
 - canonical-backed non-authoritative duplicate resolution updates the matched live event row in place and recomputes the live slug
 - canonical-backed in-place resolution fails if the recomputed slug already belongs to a different event

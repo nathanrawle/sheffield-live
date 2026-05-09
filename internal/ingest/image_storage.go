@@ -59,9 +59,13 @@ func NewLocalImageStorage(root, urlPrefix string) (*LocalImageStorage, error) {
 	if !strings.HasPrefix(urlPrefix, "/") {
 		urlPrefix = "/" + urlPrefix
 	}
+	urlPrefix = strings.TrimRight(urlPrefix, "/")
+	if urlPrefix == "" {
+		urlPrefix = "/media"
+	}
 	return &LocalImageStorage{
 		root:      root,
-		urlPrefix: strings.TrimRight(urlPrefix, "/"),
+		urlPrefix: urlPrefix,
 		now:       func() time.Time { return time.Now().UTC() },
 	}, nil
 }

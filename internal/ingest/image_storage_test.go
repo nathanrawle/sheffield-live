@@ -48,6 +48,30 @@ func TestLocalImageStorageStoresSupportedImage(t *testing.T) {
 	}
 }
 
+func TestLocalImageStorageNormalizesURLPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		want   string
+	}{
+		{name: "adds leading slash", prefix: "media", want: "/media"},
+		{name: "trims trailing slash", prefix: "/media/", want: "/media"},
+		{name: "root falls back", prefix: "/", want: "/media"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			storage, err := NewLocalImageStorage(t.TempDir(), tc.prefix)
+			if err != nil {
+				t.Fatalf("new local image storage: %v", err)
+			}
+			if storage.urlPrefix != tc.want {
+				t.Fatalf("url prefix = %q, want %q", storage.urlPrefix, tc.want)
+			}
+		})
+	}
+}
+
 func TestLocalImageStorageRejectsUnsupportedContentType(t *testing.T) {
 	storage, err := NewLocalImageStorage(t.TempDir(), "/media")
 	if err != nil {

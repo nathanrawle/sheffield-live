@@ -26,10 +26,13 @@
     <h2>Coming up here</h2>
     <div class="event-list compact">
       {{range .VenueEvents}}
-      <a class="event-card" href="/events/{{.Slug}}">
-        <span class="event-date">{{dateShort .Start}} · {{timeShort .Start}}</span>
-        <span class="event-title">{{.Name}}</span>
-        {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+      <a class="event-card{{if .ImageURL}} has-image{{end}}" href="/events/{{.Slug}}">
+        <span class="event-card-main">
+          <span class="event-date">{{dateShort .Start}} · {{timeShort .Start}}</span>
+          <span class="event-title">{{.Name}}</span>
+          {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+        </span>
+        {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" loading="lazy" decoding="async">{{end}}
       </a>
       {{else}}
       <p class="empty-state">No upcoming shows listed for this venue.</p>

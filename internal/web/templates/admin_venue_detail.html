@@ -123,11 +123,14 @@
   {{if .VenueEvents}}
   <div class="event-list compact">
     {{range .VenueEvents}}
-    <a class="event-card" href="/events/{{.Slug}}">
-      <span class="event-date">{{dateLong .Start}} {{timeShort .Start}}</span>
-      <span class="event-title">{{.Name}}</span>
-      <span class="event-meta">{{if .SourceName}}{{.SourceName}}{{end}}{{if and .SourceName .Origin}} · {{end}}{{if .Origin}}{{originText .Origin}}{{end}}</span>
-      {{with .Description}}<span class="event-meta">{{.}}</span>{{end}}
+    <a class="event-card{{if .ImageURL}} has-image{{end}}" href="/events/{{.Slug}}">
+      <span class="event-card-main">
+        <span class="event-date">{{dateLong .Start}} {{timeShort .Start}}</span>
+        <span class="event-title">{{.Name}}</span>
+        <span class="event-meta">{{if .SourceName}}{{.SourceName}}{{end}}{{if and .SourceName .Origin}} · {{end}}{{if .Origin}}{{originText .Origin}}{{end}}</span>
+        {{with .Description}}<span class="event-meta">{{.}}</span>{{end}}
+      </span>
+      {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" loading="lazy" decoding="async">{{end}}
     </a>
     {{end}}
   </div>

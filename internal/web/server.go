@@ -47,6 +47,8 @@ type Server struct {
 	layout                    *template.Template
 	pages                     map[string]*template.Template
 	fileServer                http.Handler
+	mediaServer               http.Handler
+	mediaURLPrefix            string
 }
 
 type ReviewStore interface {
@@ -98,6 +100,8 @@ type ServerDeps struct {
 	EventGenreStore           EventGenreStore
 	GenreConfigurationStore   GenreConfigurationStore
 	ReadyChecker              ReadyChecker
+	MediaRoot                 string
+	MediaURLPrefix            string
 }
 
 type PageData struct {
@@ -342,6 +346,15 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"originText": func(origin domain.Origin) string {
 			return string(origin)
 		},
+		"eventImageAlt": func(event domain.Event) string {
+			if alt := strings.TrimSpace(event.ImageAlt); alt != "" {
+				return alt
+			}
+			return event.Name
+		},
+		"eventImagePortrait": func(event domain.Event) bool {
+			return event.ImageWidth > 0 && event.ImageHeight > event.ImageWidth
+		},
 		"year":            func(t time.Time) string { return t.In(localLocation).Format("2006") },
 		"joinStrings":     func(values []string, sep string) string { return strings.Join(values, sep) },
 		"genreNames":      func(values []genre.Match, sep string) string { return strings.Join(genre.Names(values), sep) },
@@ -382,6 +395,11 @@ func NewServer(deps ServerDeps) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("static fs: %w", err)
 	}
+	mediaURLPrefix := normalizeMediaURLPrefix(deps.MediaURLPrefix)
+	var mediaServer http.Handler
+	if strings.TrimSpace(deps.MediaRoot) != "" {
+		mediaServer = http.StripPrefix(mediaURLPrefix+"/", http.FileServer(http.Dir(deps.MediaRoot)))
+	}
 
 	return &Server{
 		catalog:                   deps.Catalog,
@@ -398,7 +416,24 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		layout:                    layout,
 		pages:                     pages,
 		fileServer:                http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
+		mediaServer:               mediaServer,
+		mediaURLPrefix:            mediaURLPrefix,
 	}, nil
+}
+
+func normalizeMediaURLPrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "/media"
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix == "" {
+		return "/media"
+	}
+	return prefix
 }
 
 func formatMultilineAddress(value string) string {
@@ -536,6 +571,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleVenueDetail(w, r, strings.TrimPrefix(cleaned, "/venues/"))
 	case cleaned == "/static" || strings.HasPrefix(cleaned, "/static/"):
 		s.fileServer.ServeHTTP(w, r)
+	case s.mediaServer != nil && (cleaned == s.mediaURLPrefix || strings.HasPrefix(cleaned, s.mediaURLPrefix+"/")):
+		if cleaned == s.mediaURLPrefix {
+			http.NotFound(w, r)
+			return
+		}
+		s.mediaServer.ServeHTTP(w, r)
 	default:
 		http.NotFound(w, r)
 	}

@@ -16,6 +16,7 @@ The current scope includes:
 - review-to-public-event publishing
 - server-rendered minimalist UI
 - public browsing for home, events, event detail, venues, and venue detail
+- local-first copied event images for development
 - visible provenance and freshness on records
 - visibly tagged test and dev data
 - curated bootstrap venues and live records that are not tagged
@@ -27,7 +28,7 @@ The current scope includes:
 - automated publishing without review
 - login or auth hardening
 - a recurring scheduler
-- image or media ingestion
+- remote media storage
 - a claim of complete Sheffield coverage
 - a rich JavaScript app or HTMX unless it earns its place
 
