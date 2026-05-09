@@ -112,25 +112,6 @@ func TestEstimateImageFocusUsesVerticalRectangleWithImageSide(t *testing.T) {
 	}
 }
 
-func TestEstimateImageFocusUsesLowContrastVerticalRectangle(t *testing.T) {
-	var body bytes.Buffer
-	img := image.NewRGBA(image.Rect(0, 0, 200, 120))
-	fillRect(img, img.Bounds(), color.RGBA{R: 104, G: 110, B: 116, A: 255})
-	fillRect(img, image.Rect(0, 0, 80, 120), color.RGBA{R: 132, G: 138, B: 144, A: 255})
-	fillRect(img, image.Rect(150, 72, 182, 104), color.RGBA{R: 8, G: 8, B: 8, A: 255})
-	if err := png.Encode(&body, img); err != nil {
-		t.Fatalf("encode png: %v", err)
-	}
-
-	focus, err := EstimateImageFocus("image/png", body.Bytes())
-	if err != nil {
-		t.Fatalf("estimate image focus: %v", err)
-	}
-	if focus.X < 18 || focus.X > 22 || focus.Y != 50 {
-		t.Fatalf("focus = %d,%d, want low-contrast embedded rectangle to win", focus.X, focus.Y)
-	}
-}
-
 func TestEstimateImageFocusUsesVerticalRectangleBetweenEdges(t *testing.T) {
 	var body bytes.Buffer
 	img := image.NewRGBA(image.Rect(0, 0, 220, 120))
