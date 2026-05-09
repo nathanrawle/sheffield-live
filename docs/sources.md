@@ -83,7 +83,7 @@ Rejecting either a duplicate or singleton review does not publish an event.
 When a review group resolves:
 
 - selected review fields map to `internal/domain.Event`
-- event genres are inferred from the selected canonical description plus any staged or stored secondary-source descriptions; all matches are stored as ranked event genre rows and the public event row keeps the top two as its summary genre
+- event genres are inferred from the selected canonical description plus persisted secondary-source descriptions; all matches are stored as ranked event genre rows and the public event row keeps the top two as its summary genre
 - authoritative groups pin source name and source URL from the persisted authoritative tuple
 - non-authoritative groups let source name and source URL fall back to the review-group source only when the selected field is blank
 - canonical end times may be omitted; unknown canonical ends publish as `events.end_at = NULL`
@@ -94,7 +94,8 @@ When a review group resolves:
 - the source row is ensured transactionally
 - authoritative groups resolve through `event_source_links` identity before any slug-based publish path
 - if authoritative identity and canonical slug match point at different live events, authoritative identity wins
-- authoritative groups can also store secondary-source `genre` and `description` rows for explicit non-authoritative candidate sources in the same transaction
+- authoritative groups reconcile secondary-source `genre` and `description` rows for explicit non-authoritative candidate sources in the same transaction
+- non-authoritative groups upsert matching secondary-source `genre` and `description` rows as cumulative evidence; a missing source in a later accepted review does not delete an earlier stored row
 - the published event origin is `live`
 - the slug is `live-<slug(name)>-<slug(venue)>-<YYYYMMDDHHMMSS UTC>`
 - canonical-backed non-authoritative duplicate resolution updates the matched live event row in place and recomputes the live slug

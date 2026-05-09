@@ -60,6 +60,14 @@ Canonical-backed duplicate resolution follows two precedence rules:
 - authoritative source identity wins over canonical slug match when they disagree
 - non-authoritative canonical-backed duplicate resolution updates the matched live event in place rather than publishing a second event
 
+Secondary-source evidence follows these retention rules:
+
+- secondary-source genre and description rows are evidence attached to a canonical event, not replacement canonical fields
+- non-authoritative accepted reviews treat secondary-source evidence as cumulative; a later accepted review that omits a previously seen secondary source does not invalidate or delete that source's stored information
+- a non-authoritative secondary-source row is replaced only when the same source/event identity supplies a new non-empty value
+- authoritative review resolution can reconcile the secondary-source rows supplied with that authoritative decision
+- inferred event genres use the canonical description plus persisted secondary-source descriptions, so absence of a source in one later non-authoritative review is not treated as genre evidence retraction
+
 Venue matching and provisional venue creation follow these rules:
 
 - when a selected staged `venue_slug` already names one existing venue, that exact slug wins even if `venue_text` or `venue_location_raw` point somewhere else
