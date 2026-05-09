@@ -204,6 +204,9 @@ func backfillProvisionalVenueFromCandidateTx(ctx context.Context, tx execer, ven
 	if venue.ValidationState != domain.ValidationStateProvisional || strings.TrimSpace(candidate.VenueLocationRaw) == "" {
 		return venue, nil
 	}
+	if !candidateLocationEvidenceMatchesVenue(candidate.VenueLocationRaw, venue) {
+		return venue, nil
+	}
 
 	address := strings.TrimSpace(venue.Address)
 	if address == "" {
@@ -232,6 +235,14 @@ func backfillProvisionalVenueFromCandidateTx(ctx context.Context, tx execer, ven
 	venue.Address = address
 	venue.Neighbourhood = neighbourhood
 	return venue, nil
+}
+
+func candidateLocationEvidenceMatchesVenue(value string, venue domain.Venue) bool {
+	head := normalizedVenueKey(venueLocationHeadText(value))
+	if head == "" {
+		return false
+	}
+	return head == normalizedVenueKey(venue.Name) || head == strings.TrimSpace(venue.Slug)
 }
 
 func resolveReviewVenueTx(ctx context.Context, tx interface {

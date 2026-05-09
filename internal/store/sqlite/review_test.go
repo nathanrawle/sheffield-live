@@ -3172,6 +3172,64 @@ func TestPromoteSingletonReviewGroupIfMissingBackfillsBlankProvisionalVenueAddre
 	}
 }
 
+func TestPromoteSingletonReviewGroupIfMissingDoesNotBackfillConflictingVenueEvidence(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if _, err := insertVenue(ctx, st.db, domain.Venue{
+		Slug:            "memorial-hall",
+		Name:            "Memorial Hall",
+		ValidationState: domain.ValidationStateProvisional,
+		CoverageKind:    domain.CoverageKindVenue,
+		Origin:          domain.OriginLive,
+	}); err != nil {
+		t.Fatalf("insert blank provisional venue: %v", err)
+	}
+
+	input := review.GroupInput{
+		Title:      "Conflicting venue singleton",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:fixture.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "conflicting-venue-1",
+			Name:             "Conflicting venue show",
+			VenueSlug:        "memorial-hall",
+			VenueText:        "Memorial Hall",
+			VenueLocationRaw: "Wrong Hall, 10 Wrong Street, Sheffield City Centre, Sheffield, S1 2JA",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Explicit slug should not allow conflicting raw evidence to backfill the venue.",
+		}},
+	}
+	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input); err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	} else if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+
+	venue, ok := st.VenueBySlug("memorial-hall")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if venue.Address != "" {
+		t.Fatalf("venue address = %q, want empty", venue.Address)
+	}
+	if venue.Neighbourhood != "" {
+		t.Fatalf("venue neighbourhood = %q, want empty", venue.Neighbourhood)
+	}
+}
+
 func TestStageReviewGroupBackfilledAddressMatchesLaterCandidateInSameBatch(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
