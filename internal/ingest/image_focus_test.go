@@ -30,8 +30,41 @@ func TestEstimateImageFocusFindsHighContrastRegion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("estimate image focus: %v", err)
 	}
-	if focus.X <= 55 || focus.Y <= 55 {
-		t.Fatalf("focus = %d,%d, want lower-right quadrant", focus.X, focus.Y)
+	if focus.X <= 70 || focus.Y <= 70 {
+		t.Fatalf("focus = %d,%d, want strong lower-right focus", focus.X, focus.Y)
+	}
+}
+
+func TestEstimateImageFocusUsesLocalSaliencyInsteadOfGlobalAverage(t *testing.T) {
+	var body bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 120, 80))
+	for y := 0; y < 80; y++ {
+		for x := 0; x < 120; x++ {
+			img.Set(x, y, color.RGBA{R: 170, G: 170, B: 170, A: 255})
+		}
+	}
+	for y := 10; y < 70; y++ {
+		for x := 50; x < 80; x++ {
+			if x == 50 || x == 79 || y == 10 || y == 69 {
+				img.Set(x, y, color.RGBA{R: 145, G: 145, B: 145, A: 255})
+			}
+		}
+	}
+	for y := 24; y < 56; y++ {
+		for x := 8; x < 40; x++ {
+			img.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+
+	focus, err := EstimateImageFocus("image/png", body.Bytes())
+	if err != nil {
+		t.Fatalf("estimate image focus: %v", err)
+	}
+	if focus.X >= 40 {
+		t.Fatalf("focus = %d,%d, want left-side salient region", focus.X, focus.Y)
 	}
 }
 
