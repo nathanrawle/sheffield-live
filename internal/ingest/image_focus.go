@@ -193,74 +193,112 @@ type verticalEdgeCandidate struct {
 }
 
 type verticalRectangleCandidate struct {
-	left  int
-	right int
-	score float64
+	left   int
+	right  int
+	score  float64
+	source verticalRectangleCandidateSource
+}
+
+type verticalRectangleCandidateSource int
+
+const (
+	verticalRectangleCandidateSourceNone verticalRectangleCandidateSource = iota
+	verticalRectangleCandidateSourceEdge
+	verticalRectangleCandidateSourceRegionBoundary
+)
+
+func (source verticalRectangleCandidateSource) String() string {
+	switch source {
+	case verticalRectangleCandidateSourceEdge:
+		return "edge"
+	case verticalRectangleCandidateSourceRegionBoundary:
+		return "region_boundary"
+	default:
+		return ""
+	}
 }
 
 type verticalRectangleParams struct {
-	MaxSample               int
-	MinSampleDimension      int
-	ColorContrastWeight     float64
-	EdgeGroupDistance       int
-	EdgePoolRadius          int
-	MinEdgeCoverage         float64
-	MinEdgeRun              float64
-	MinMeanThresholdRatio   float64
-	EdgeScoreCoverageBase   float64
-	EdgeScoreRunBase        float64
-	EdgeNeighborWeight      float64
-	MinMaxEdgeStrength      float64
-	EdgeThresholdFloor      float64
-	EdgeThresholdMaxRatio   float64
-	EdgeThresholdMeanRatio  float64
-	RepeatingEdgeMinCount   int
-	RepeatingEdgeScoreRatio float64
-	SideRectangleEdgeWeight float64
-	AspectMin               float64
-	AspectMax               float64
-	AspectTargets           []float64
-	AspectDistanceScale     float64
-	AspectScoreFloor        float64
-	AspectScoreRange        float64
+	MaxSample                        int
+	MinSampleDimension               int
+	ColorContrastWeight              float64
+	EdgeGroupDistance                int
+	EdgePoolRadius                   int
+	MinEdgeCoverage                  float64
+	MinEdgeRun                       float64
+	MinMeanThresholdRatio            float64
+	EdgeScoreCoverageBase            float64
+	EdgeScoreRunBase                 float64
+	EdgeNeighborWeight               float64
+	MinMaxEdgeStrength               float64
+	EdgeThresholdFloor               float64
+	EdgeThresholdMaxRatio            float64
+	EdgeThresholdMeanRatio           float64
+	RegionBoundaryStripWidth         int
+	RegionBoundaryBandCount          int
+	RegionBoundaryMinCoverage        float64
+	RegionBoundaryMinRun             float64
+	RegionBoundaryMinMaxStrength     float64
+	RegionBoundaryThresholdFloor     float64
+	RegionBoundaryThresholdMaxRatio  float64
+	RegionBoundaryThresholdMeanRatio float64
+	RepeatingEdgeMinCount            int
+	RepeatingEdgeScoreRatio          float64
+	SideRectangleEdgeWeight          float64
+	AspectMin                        float64
+	AspectMax                        float64
+	AspectTargets                    []float64
+	AspectDistanceScale              float64
+	AspectScoreFloor                 float64
+	AspectScoreRange                 float64
 }
 
 type verticalRectangleDetection struct {
-	Focus                    ImageFocus
-	Detected                 bool
-	Candidate                verticalRectangleCandidate
-	EdgeCandidateCount       int
-	RectangleCandidateCount  int
-	RepeatingPatternRejected bool
-	EdgeThreshold            float64
+	Focus                        ImageFocus
+	Detected                     bool
+	Candidate                    verticalRectangleCandidate
+	EdgeCandidateCount           int
+	RegionBoundaryCandidateCount int
+	RectangleCandidateCount      int
+	RepeatingPatternRejected     bool
+	EdgeThreshold                float64
+	RegionBoundaryThreshold      float64
 }
 
 func defaultVerticalRectangleParams() verticalRectangleParams {
 	return verticalRectangleParams{
-		MaxSample:               128,
-		MinSampleDimension:      24,
-		ColorContrastWeight:     0.85,
-		EdgeGroupDistance:       2,
-		EdgePoolRadius:          1,
-		MinEdgeCoverage:         0.76,
-		MinEdgeRun:              0.68,
-		MinMeanThresholdRatio:   0.9,
-		EdgeScoreCoverageBase:   0.45,
-		EdgeScoreRunBase:        0.45,
-		EdgeNeighborWeight:      0.85,
-		MinMaxEdgeStrength:      0.14,
-		EdgeThresholdFloor:      0.11,
-		EdgeThresholdMaxRatio:   0.36,
-		EdgeThresholdMeanRatio:  3.0,
-		RepeatingEdgeMinCount:   5,
-		RepeatingEdgeScoreRatio: 0.62,
-		SideRectangleEdgeWeight: 0.92,
-		AspectMin:               0.45,
-		AspectMax:               1.90,
-		AspectTargets:           []float64{0.67, 0.71, 0.77, 1.50, 1.78},
-		AspectDistanceScale:     0.45,
-		AspectScoreFloor:        0.55,
-		AspectScoreRange:        0.45,
+		MaxSample:                        128,
+		MinSampleDimension:               24,
+		ColorContrastWeight:              0.85,
+		EdgeGroupDistance:                2,
+		EdgePoolRadius:                   1,
+		MinEdgeCoverage:                  0.76,
+		MinEdgeRun:                       0.68,
+		MinMeanThresholdRatio:            0.9,
+		EdgeScoreCoverageBase:            0.45,
+		EdgeScoreRunBase:                 0.45,
+		EdgeNeighborWeight:               0.85,
+		MinMaxEdgeStrength:               0.14,
+		EdgeThresholdFloor:               0.11,
+		EdgeThresholdMaxRatio:            0.36,
+		EdgeThresholdMeanRatio:           3.0,
+		RegionBoundaryStripWidth:         5,
+		RegionBoundaryBandCount:          24,
+		RegionBoundaryMinCoverage:        0.72,
+		RegionBoundaryMinRun:             0.64,
+		RegionBoundaryMinMaxStrength:     0.12,
+		RegionBoundaryThresholdFloor:     0.055,
+		RegionBoundaryThresholdMaxRatio:  0.26,
+		RegionBoundaryThresholdMeanRatio: 1.85,
+		RepeatingEdgeMinCount:            5,
+		RepeatingEdgeScoreRatio:          0.62,
+		SideRectangleEdgeWeight:          0.92,
+		AspectMin:                        0.45,
+		AspectMax:                        1.90,
+		AspectTargets:                    []float64{0.67, 0.71, 0.77, 1.50, 1.78},
+		AspectDistanceScale:              0.45,
+		AspectScoreFloor:                 0.55,
+		AspectScoreRange:                 0.45,
 	}
 }
 
@@ -290,18 +328,34 @@ func detectVerticalRectangle(red, green, blue, luma []float64, width, height int
 	rawEdgeCandidates := verticalEdgeCandidates(edges, width, height, threshold, params)
 	edgeCandidates := groupedVerticalEdgeCandidates(rawEdgeCandidates, params)
 	result.EdgeCandidateCount = len(edgeCandidates)
-	if len(edgeCandidates) == 0 {
+	if detectVerticalRectangleFromCandidates(edgeCandidates, width, height, params, verticalRectangleCandidateSourceEdge, &result) {
 		return result
 	}
-	if hasRepeatingVerticalEdgePattern(edgeCandidates, params) {
-		result.RepeatingPatternRejected = true
+	if result.RepeatingPatternRejected {
 		return result
 	}
 
-	rectangles := verticalRectangleCandidates(edgeCandidates, width, height, params)
-	result.RectangleCandidateCount = len(rectangles)
+	rawRegionBoundaryCandidates, regionThreshold := verticalRegionBoundaryCandidates(red, green, blue, luma, width, height, params)
+	result.RegionBoundaryThreshold = regionThreshold
+	regionBoundaryCandidates := groupedVerticalEdgeCandidates(rawRegionBoundaryCandidates, params)
+	result.RegionBoundaryCandidateCount = len(regionBoundaryCandidates)
+	detectVerticalRectangleFromCandidates(regionBoundaryCandidates, width, height, params, verticalRectangleCandidateSourceRegionBoundary, &result)
+	return result
+}
+
+func detectVerticalRectangleFromCandidates(candidates []verticalEdgeCandidate, width, height int, params verticalRectangleParams, source verticalRectangleCandidateSource, result *verticalRectangleDetection) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+	if hasRepeatingVerticalEdgePattern(candidates, params) {
+		result.RepeatingPatternRejected = true
+		return false
+	}
+
+	rectangles := verticalRectangleCandidates(candidates, width, height, params, source)
+	result.RectangleCandidateCount += len(rectangles)
 	if len(rectangles) == 0 {
-		return result
+		return false
 	}
 	sort.Slice(rectangles, func(i, j int) bool {
 		return rectangles[i].score > rectangles[j].score
@@ -312,7 +366,7 @@ func detectVerticalRectangle(red, green, blue, luma []float64, width, height int
 	result.Focus = NormalizeImageFocus(int(math.Round(centerX*100)), DefaultImageFocusY)
 	result.Candidate = best
 	result.Detected = true
-	return result
+	return true
 }
 
 func verticalEdgeStrengths(red, green, blue, luma []float64, width, height int, params verticalRectangleParams) []float64 {
@@ -441,6 +495,137 @@ func verticalEdgeThreshold(edges []float64, params verticalRectangleParams) floa
 	return maxFloat(params.EdgeThresholdFloor, maxFloat(maxStrength*params.EdgeThresholdMaxRatio, mean*params.EdgeThresholdMeanRatio))
 }
 
+func verticalRegionBoundaryCandidates(red, green, blue, luma []float64, width, height int, params verticalRectangleParams) ([]verticalEdgeCandidate, float64) {
+	stripWidth := params.RegionBoundaryStripWidth
+	if stripWidth <= 0 {
+		stripWidth = maxInt(2, minInt(8, width/24))
+	}
+	if stripWidth < 1 || width < stripWidth*2+1 {
+		return nil, 0
+	}
+
+	bandCount := params.RegionBoundaryBandCount
+	if bandCount <= 0 || bandCount > height {
+		bandCount = height
+	}
+	if bandCount < 1 {
+		return nil, 0
+	}
+
+	strengths := make([]float64, (width-1)*bandCount)
+	for x := stripWidth; x <= width-stripWidth; x++ {
+		for band := 0; band < bandCount; band++ {
+			y0 := band * height / bandCount
+			y1 := (band + 1) * height / bandCount
+			strengths[(x-1)*bandCount+band] = verticalRegionBoundaryStrength(red, green, blue, luma, width, x, stripWidth, y0, y1, params)
+		}
+	}
+
+	threshold := verticalRegionBoundaryThreshold(strengths, params)
+	if threshold <= 0 {
+		return nil, threshold
+	}
+
+	candidates := make([]verticalEdgeCandidate, 0, width-1)
+	for x := stripWidth; x <= width-stripWidth; x++ {
+		strongBands := 0
+		currentRun := 0
+		longestRun := 0
+		totalStrength := 0.0
+		for band := 0; band < bandCount; band++ {
+			strength := strengths[(x-1)*bandCount+band]
+			totalStrength += strength
+			if strength >= threshold {
+				strongBands++
+				currentRun++
+				if currentRun > longestRun {
+					longestRun = currentRun
+				}
+			} else {
+				currentRun = 0
+			}
+		}
+		coverage := float64(strongBands) / float64(bandCount)
+		run := float64(longestRun) / float64(bandCount)
+		meanStrength := totalStrength / float64(bandCount)
+		if coverage < params.RegionBoundaryMinCoverage || run < params.RegionBoundaryMinRun || meanStrength < threshold*params.MinMeanThresholdRatio {
+			continue
+		}
+		candidates = append(candidates, verticalEdgeCandidate{
+			x:        x,
+			score:    meanStrength * (params.EdgeScoreCoverageBase + coverage) * (params.EdgeScoreRunBase + run),
+			coverage: coverage,
+			run:      run,
+		})
+	}
+	return candidates, threshold
+}
+
+func verticalRegionBoundaryStrength(red, green, blue, luma []float64, width, x, stripWidth, y0, y1 int, params verticalRectangleParams) float64 {
+	if y1 <= y0 {
+		return 0
+	}
+
+	var leftRed, leftGreen, leftBlue, leftLuma float64
+	var rightRed, rightGreen, rightBlue, rightLuma float64
+	for y := y0; y < y1; y++ {
+		row := y * width
+		for sx := x - stripWidth; sx < x; sx++ {
+			idx := row + sx
+			leftRed += red[idx]
+			leftGreen += green[idx]
+			leftBlue += blue[idx]
+			leftLuma += luma[idx]
+		}
+		for sx := x; sx < x+stripWidth; sx++ {
+			idx := row + sx
+			rightRed += red[idx]
+			rightGreen += green[idx]
+			rightBlue += blue[idx]
+			rightLuma += luma[idx]
+		}
+	}
+
+	count := float64((y1 - y0) * stripWidth)
+	if count <= 0 {
+		return 0
+	}
+	leftRed /= count
+	leftGreen /= count
+	leftBlue /= count
+	leftLuma /= count
+	rightRed /= count
+	rightGreen /= count
+	rightBlue /= count
+	rightLuma /= count
+
+	dr := rightRed - leftRed
+	dg := rightGreen - leftGreen
+	db := rightBlue - leftBlue
+	colorContrast := math.Sqrt(dr*dr+dg*dg+db*db) / math.Sqrt(3)
+	lumaContrast := math.Abs(rightLuma - leftLuma)
+	return math.Max(lumaContrast, colorContrast*params.ColorContrastWeight)
+}
+
+func verticalRegionBoundaryThreshold(strengths []float64, params verticalRectangleParams) float64 {
+	if len(strengths) == 0 {
+		return 0
+	}
+	sum := 0.0
+	maxStrength := 0.0
+	for _, strength := range strengths {
+		sum += strength
+		if strength > maxStrength {
+			maxStrength = strength
+		}
+	}
+	if maxStrength < params.RegionBoundaryMinMaxStrength {
+		return 0
+	}
+	mean := sum / float64(len(strengths))
+	return maxFloat(params.RegionBoundaryThresholdFloor, maxFloat(maxStrength*params.RegionBoundaryThresholdMaxRatio, mean*params.RegionBoundaryThresholdMeanRatio))
+}
+
 func hasRepeatingVerticalEdgePattern(candidates []verticalEdgeCandidate, params verticalRectangleParams) bool {
 	if len(candidates) < params.RepeatingEdgeMinCount {
 		return false
@@ -452,24 +637,24 @@ func hasRepeatingVerticalEdgePattern(candidates []verticalEdgeCandidate, params 
 	return byScore[params.RepeatingEdgeMinCount-1].score >= byScore[0].score*params.RepeatingEdgeScoreRatio
 }
 
-func verticalRectangleCandidates(edges []verticalEdgeCandidate, width, height int, params verticalRectangleParams) []verticalRectangleCandidate {
+func verticalRectangleCandidates(edges []verticalEdgeCandidate, width, height int, params verticalRectangleParams, source verticalRectangleCandidateSource) []verticalRectangleCandidate {
 	rectangles := make([]verticalRectangleCandidate, 0, len(edges)*len(edges))
 	for _, edge := range edges {
-		rectangles = appendRectangleCandidate(rectangles, 0, edge.x, edge.score*params.SideRectangleEdgeWeight, width, height, params)
-		rectangles = appendRectangleCandidate(rectangles, edge.x, width, edge.score*params.SideRectangleEdgeWeight, width, height, params)
+		rectangles = appendRectangleCandidate(rectangles, 0, edge.x, edge.score*params.SideRectangleEdgeWeight, width, height, params, source)
+		rectangles = appendRectangleCandidate(rectangles, edge.x, width, edge.score*params.SideRectangleEdgeWeight, width, height, params, source)
 	}
 	for i := 0; i < len(edges); i++ {
 		for j := i + 1; j < len(edges); j++ {
 			left := edges[i]
 			right := edges[j]
 			score := left.score + right.score
-			rectangles = appendRectangleCandidate(rectangles, left.x, right.x, score, width, height, params)
+			rectangles = appendRectangleCandidate(rectangles, left.x, right.x, score, width, height, params, source)
 		}
 	}
 	return rectangles
 }
 
-func appendRectangleCandidate(rectangles []verticalRectangleCandidate, left, right int, edgeScore float64, width, height int, params verticalRectangleParams) []verticalRectangleCandidate {
+func appendRectangleCandidate(rectangles []verticalRectangleCandidate, left, right int, edgeScore float64, width, height int, params verticalRectangleParams, source verticalRectangleCandidateSource) []verticalRectangleCandidate {
 	if right <= left {
 		return rectangles
 	}
@@ -479,9 +664,10 @@ func appendRectangleCandidate(rectangles []verticalRectangleCandidate, left, rig
 		return rectangles
 	}
 	return append(rectangles, verticalRectangleCandidate{
-		left:  left,
-		right: right,
-		score: edgeScore * aspectScore,
+		left:   left,
+		right:  right,
+		score:  edgeScore * aspectScore,
+		source: source,
 	})
 }
 

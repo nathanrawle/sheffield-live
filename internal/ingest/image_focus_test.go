@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"math"
 	"testing"
 )
 
@@ -130,6 +131,53 @@ func TestEstimateImageFocusUsesVerticalRectangleBetweenEdges(t *testing.T) {
 	}
 }
 
+func TestVerticalRectangleFocusUsesRegionBoundaryFallback(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 260, 140))
+	background := color.RGBA{R: 42, G: 48, B: 58, A: 255}
+	poster := color.RGBA{R: 224, G: 216, B: 196, A: 255}
+	fillRect(img, img.Bounds(), background)
+	for y := 0; y < 140; y++ {
+		for x := 80; x < 200; x++ {
+			switch {
+			case x < 116:
+				img.Set(x, y, blendColor(background, poster, float64(x-80)/36))
+			case x >= 164:
+				img.Set(x, y, blendColor(poster, background, float64(x-164)/36))
+			default:
+				img.Set(x, y, poster)
+			}
+		}
+	}
+
+	red, green, blue, luma, width, height := focusTestSample(img)
+	detection := detectVerticalRectangle(red, green, blue, luma, width, height, defaultVerticalRectangleParams())
+	if !detection.Detected {
+		t.Fatalf("vertical rectangle focus = %#v, want soft region boundary rectangle detection", detection)
+	}
+	if detection.Candidate.source != verticalRectangleCandidateSourceRegionBoundary {
+		t.Fatalf("candidate source = %v, want region boundary fallback", detection.Candidate.source)
+	}
+	if detection.Focus.X < 50 || detection.Focus.X > 58 || detection.Focus.Y != 50 {
+		t.Fatalf("focus = %d,%d, want center of soft embedded rectangle", detection.Focus.X, detection.Focus.Y)
+	}
+}
+
+func TestVerticalRectangleFocusIgnoresSmoothWholeImageGradient(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 220, 120))
+	left := color.RGBA{R: 32, G: 38, B: 48, A: 255}
+	right := color.RGBA{R: 226, G: 218, B: 204, A: 255}
+	for y := 0; y < 120; y++ {
+		for x := 0; x < 220; x++ {
+			img.Set(x, y, blendColor(left, right, float64(x)/219))
+		}
+	}
+
+	red, green, blue, luma, width, height := focusTestSample(img)
+	if focus, ok := verticalRectangleFocus(red, green, blue, luma, width, height); ok {
+		t.Fatalf("vertical rectangle focus = %#v, want no embedded rectangle in smooth gradient", focus)
+	}
+}
+
 func TestVerticalRectangleFocusIgnoresPartialHeightEdges(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 180, 120))
 	fillRect(img, img.Bounds(), color.RGBA{R: 60, G: 70, B: 82, A: 255})
@@ -185,6 +233,21 @@ func fillRect(img *image.RGBA, rect image.Rectangle, c color.RGBA) {
 		for x := rect.Min.X; x < rect.Max.X; x++ {
 			img.Set(x, y, c)
 		}
+	}
+}
+
+func blendColor(from, to color.RGBA, amount float64) color.RGBA {
+	if amount < 0 {
+		amount = 0
+	}
+	if amount > 1 {
+		amount = 1
+	}
+	return color.RGBA{
+		R: uint8(math.Round(float64(from.R) + (float64(to.R)-float64(from.R))*amount)),
+		G: uint8(math.Round(float64(from.G) + (float64(to.G)-float64(from.G))*amount)),
+		B: uint8(math.Round(float64(from.B) + (float64(to.B)-float64(from.B))*amount)),
+		A: 255,
 	}
 }
 

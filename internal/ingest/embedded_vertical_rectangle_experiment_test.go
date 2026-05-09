@@ -179,10 +179,13 @@ func verticalRectangleGridRowHeader() []string {
 		"candidate_aspect",
 		"candidate_width_fraction",
 		"candidate_score",
+		"candidate_source",
 		"edge_candidate_count",
+		"region_boundary_candidate_count",
 		"rectangle_candidate_count",
 		"repeating_pattern_rejected",
 		"edge_threshold",
+		"region_boundary_threshold",
 		"error",
 		"param_edge_pool_radius",
 		"param_edge_threshold_max_ratio",
@@ -258,9 +261,12 @@ func runVerticalRectangleExperimentImage(repoRoot, experimentID string, variant 
 		"",
 		"",
 		"",
+		"",
+		"0",
 		"0",
 		"0",
 		"false",
+		"",
 		"",
 		"",
 		strconv.Itoa(variant.edgePoolRadius),
@@ -272,7 +278,7 @@ func runVerticalRectangleExperimentImage(repoRoot, experimentID string, variant 
 
 	file, err := os.Open(imagePath)
 	if err != nil {
-		row[23] = err.Error()
+		row[26] = err.Error()
 		outcome.hasError = true
 		return row, outcome
 	}
@@ -280,7 +286,7 @@ func runVerticalRectangleExperimentImage(repoRoot, experimentID string, variant 
 
 	img, _, err := image.Decode(file)
 	if err != nil {
-		row[23] = err.Error()
+		row[26] = err.Error()
 		outcome.hasError = true
 		return row, outcome
 	}
@@ -310,11 +316,14 @@ func runVerticalRectangleExperimentImage(repoRoot, experimentID string, variant 
 		row[16] = formatExperimentFloat(outcome.candidateAspect)
 		row[17] = formatExperimentFloat(outcome.candidateWidthFraction)
 		row[18] = formatExperimentFloat(detection.Candidate.score)
+		row[19] = detection.Candidate.source.String()
 	}
-	row[19] = strconv.Itoa(detection.EdgeCandidateCount)
-	row[20] = strconv.Itoa(detection.RectangleCandidateCount)
-	row[21] = strconv.FormatBool(detection.RepeatingPatternRejected)
-	row[22] = formatExperimentFloat(detection.EdgeThreshold)
+	row[20] = strconv.Itoa(detection.EdgeCandidateCount)
+	row[21] = strconv.Itoa(detection.RegionBoundaryCandidateCount)
+	row[22] = strconv.Itoa(detection.RectangleCandidateCount)
+	row[23] = strconv.FormatBool(detection.RepeatingPatternRejected)
+	row[24] = formatExperimentFloat(detection.EdgeThreshold)
+	row[25] = formatExperimentFloat(detection.RegionBoundaryThreshold)
 
 	return row, outcome
 }
