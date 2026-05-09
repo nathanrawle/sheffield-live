@@ -40,6 +40,8 @@ Routes:
 - `GET /admin/import-runs/{id}` read-only import run snapshot metadata
 - `GET /admin/venues` provisional venue queue
 - `GET /admin/venues/{slug}` provisional venue detail
+- `GET /admin/configuration` genre inference configuration
+- `POST /admin/configuration` save, delete, or recompute genre inference rules
 - `POST /admin/venues/{slug}` save provisional venue field edits or validate the venue when venue writes are available
 - `POST /admin/review/{groupID}` review actions
 - `GET /healthz` plain-text health check
@@ -47,6 +49,8 @@ Routes:
 - `GET /static/site.css` embedded stylesheet
 
 The provisional venue queue lists provisional venue rows created from newly detected venue evidence during new-group staging, singleton auto-promotion, or manual review resolution. Detail pages show upcoming linked events. When venue writes are available, they also show editable venue fields and support two POST actions on the same route: save field edits in place or validate the venue and return to the queue. If venue writes are unavailable, provisional venue detail remains read-only and hides those controls.
+
+`/admin/configuration` exposes genre inference rules. Defaults are loaded from `config/genres.yaml`, copied into SQLite, and can be overridden through the admin page. Saving or deleting a rule recomputes stored event genres and refreshes the top-two `events.genre` summary cache.
 
 `/events` query parameters:
 

@@ -8,6 +8,7 @@
     {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
     {{if or .HasReviewStorage .HasImportHistory}} · {{end}}
     <a href="/admin/venues">Provisional venues</a>
+    {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
   </p>
   {{with .LatestImport}}
   <p class="review-group-meta">Latest successful import: {{if $.HasImportRunDetail}}<a href="/admin/import-runs/{{.ID}}">run #{{.ID}}</a>{{else}}run #{{.ID}}{{end}} · {{.Status}} · {{snapshotCountLabel .SnapshotCount}}{{with .FinishedAt}} · finished {{dateShortPtr .}} {{timeShortPtr .}}{{end}}</p>

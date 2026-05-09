@@ -83,6 +83,7 @@ Rejecting either a duplicate or singleton review does not publish an event.
 When a review group resolves:
 
 - selected review fields map to `internal/domain.Event`
+- event genres are inferred from the selected canonical description plus any staged or stored secondary-source descriptions; all matches are stored as ranked event genre rows and the public event row keeps the top two as its summary genre
 - authoritative groups pin source name and source URL from the persisted authoritative tuple
 - non-authoritative groups let source name and source URL fall back to the review-group source only when the selected field is blank
 - canonical end times may be omitted; unknown canonical ends publish as `events.end_at = NULL`

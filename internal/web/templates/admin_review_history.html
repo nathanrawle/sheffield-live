@@ -11,6 +11,9 @@
   {{if .HasVenueAdmin}}
   <p class="review-group-meta"><a href="/admin/venues">Provisional venues</a></p>
   {{end}}
+  {{if .HasGenreConfiguration}}
+  <p class="review-group-meta"><a href="/admin/configuration">Configuration</a></p>
+  {{end}}
 </section>
 
 <section class="section-block">

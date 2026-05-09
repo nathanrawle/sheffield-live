@@ -1,0 +1,156 @@
+rules:
+  - key: jazz
+    name: Jazz
+    match_type: plain
+    pattern: jazz
+    sort_order: 10
+  - key: folk
+    name: Folk
+    match_type: plain
+    pattern: folk
+    sort_order: 20
+  - key: acoustic
+    name: Acoustic
+    match_type: plain
+    pattern: acoustic
+    sort_order: 30
+  - key: singer-songwriter
+    name: Singer-songwriter
+    match_type: regex
+    pattern: singer[- ]songwriter
+    sort_order: 40
+  - key: rock
+    name: Rock
+    match_type: plain
+    pattern: rock
+    sort_order: 50
+  - key: indie
+    name: Indie
+    match_type: plain
+    pattern: indie
+    sort_order: 60
+  - key: punk
+    name: Punk
+    match_type: plain
+    pattern: punk
+    sort_order: 70
+  - key: post-punk
+    name: Post-punk
+    match_type: regex
+    pattern: post[- ]punk
+    sort_order: 80
+  - key: metal
+    name: Metal
+    match_type: plain
+    pattern: metal
+    sort_order: 90
+  - key: hardcore
+    name: Hardcore
+    match_type: plain
+    pattern: hardcore
+    sort_order: 100
+  - key: pop
+    name: Pop
+    match_type: plain
+    pattern: pop
+    sort_order: 110
+  - key: hip-hop
+    name: Hip hop
+    match_type: regex
+    pattern: hip[- ]hop
+    sort_order: 120
+  - key: rap
+    name: Rap
+    match_type: plain
+    pattern: rap
+    sort_order: 130
+  - key: grime
+    name: Grime
+    match_type: plain
+    pattern: grime
+    sort_order: 140
+  - key: electronic
+    name: Electronic
+    match_type: plain
+    pattern: electronic
+    sort_order: 150
+  - key: house
+    name: House
+    match_type: plain
+    pattern: house
+    sort_order: 160
+  - key: techno
+    name: Techno
+    match_type: plain
+    pattern: techno
+    sort_order: 170
+  - key: drum-and-bass
+    name: Drum and bass
+    match_type: regex
+    pattern: (dnb|d&b|drum\s*(and|&)\s*bass)
+    sort_order: 180
+  - key: soul
+    name: Soul
+    match_type: plain
+    pattern: soul
+    sort_order: 190
+  - key: funk
+    name: Funk
+    match_type: plain
+    pattern: funk
+    sort_order: 200
+  - key: blues
+    name: Blues
+    match_type: plain
+    pattern: blues
+    sort_order: 210
+  - key: reggae
+    name: Reggae
+    match_type: plain
+    pattern: reggae
+    sort_order: 220
+  - key: ska
+    name: Ska
+    match_type: plain
+    pattern: ska
+    sort_order: 230
+  - key: country
+    name: Country
+    match_type: plain
+    pattern: country
+    sort_order: 240
+  - key: roots
+    name: Roots
+    match_type: plain
+    pattern: roots
+    sort_order: 250
+  - key: americana
+    name: Americana
+    match_type: plain
+    pattern: americana
+    sort_order: 260
+  - key: classical
+    name: Classical
+    match_type: plain
+    pattern: classical
+    sort_order: 270
+  - key: experimental
+    name: Experimental
+    match_type: plain
+    pattern: experimental
+    sort_order: 280
+  - key: ambient
+    name: Ambient
+    match_type: plain
+    pattern: ambient
+    sort_order: 290
+  - key: tribute
+    name: Tribute
+    match_type: plain
+    pattern: tribute
+    sort_order: 300
+  - key: dj
+    name: DJ
+    match_type: regex
+    pattern: \bDJs?\b
+    sort_order: 310

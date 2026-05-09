@@ -1097,6 +1097,110 @@ func TestSQLiteEventDetailOmitsSecondarySourceInfoWhenNoneExists(t *testing.T) {
 	assertContains(t, body, "Primary source")
 }
 
+func TestSQLiteEventDetailRendersAllInferredGenres(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	sourceID := mustInsertAdminSource(t, db, "Primary source", "https://example.test/primary-genres")
+	mustInsertAdminEvent(
+		t,
+		db,
+		sourceID,
+		"inferred-genre-event",
+		"leadmill",
+		"Inferred Genre Event",
+		fixtureLocalTime(2026, time.May, 8, 19, 30),
+		fixtureLocalTime(2026, time.May, 8, 22, 30),
+		"Jazz, rock and experimental jazz.",
+	)
+	if err := st.RecomputeEventGenres(context.Background()); err != nil {
+		t.Fatalf("recompute event genres: %v", err)
+	}
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/events/inferred-genre-event")
+	assertContains(t, body, "All genres")
+	assertContains(t, body, "Jazz, Rock, Experimental")
+	assertContains(t, body, "Jazz, Rock · Listed")
+}
+
+func TestSQLiteAdminConfigurationListsAndSavesGenreRules(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/configuration")
+	assertContains(t, body, "Genre rules")
+	assertContains(t, body, "jazz")
+	assertContains(t, body, "regex")
+
+	form := url.Values{}
+	form.Set("action", "save")
+	form.Set("key", "doom-metal")
+	form.Set("name", "Doom metal")
+	form.Set("match_type", "plain")
+	form.Set("pattern", "doom metal")
+	form.Set("enabled", "1")
+	form.Set("sort_order", "320")
+	req := httptest.NewRequest(http.MethodPost, "/admin/configuration", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/configuration?saved=1" {
+		t.Fatalf("Location = %q, want saved redirect", location)
+	}
+
+	body = renderPath(t, server, "/admin/configuration?saved=1")
+	assertContains(t, body, "Genre rule saved.")
+	assertContains(t, body, "Doom metal")
+
+	badForm := url.Values{}
+	badForm.Set("action", "save")
+	badForm.Set("key", "broken")
+	badForm.Set("name", "Broken")
+	badForm.Set("match_type", "regex")
+	badForm.Set("pattern", "[")
+	req = httptest.NewRequest(http.MethodPost, "/admin/configuration", strings.NewReader(badForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	assertContains(t, rr.Body.String(), "invalid regex")
+}
+
 func TestHomeShowsTodayAndThisWeekWithFixedClock(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/")
@@ -3453,6 +3557,12 @@ func testServerDeps(value any) ServerDeps {
 	}
 	if secondarySourceStore, ok := value.(EventSecondarySourceInfoStore); ok {
 		deps.EventSecondarySourceStore = secondarySourceStore
+	}
+	if eventGenreStore, ok := value.(EventGenreStore); ok {
+		deps.EventGenreStore = eventGenreStore
+	}
+	if genreConfigStore, ok := value.(GenreConfigurationStore); ok {
+		deps.GenreConfigurationStore = genreConfigStore
 	}
 	if readyChecker, ok := value.(ReadyChecker); ok {
 		deps.ReadyChecker = readyChecker

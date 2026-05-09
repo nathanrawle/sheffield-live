@@ -47,6 +47,8 @@ func run() error {
 		ReplayStore:               st,
 		ImportRunReviewGroupStore: st,
 		EventSecondarySourceStore: st,
+		EventGenreStore:           st,
+		GenreConfigurationStore:   st,
 		ReadyChecker:              st,
 	})
 	if err != nil {

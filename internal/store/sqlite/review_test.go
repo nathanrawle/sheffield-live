@@ -1790,8 +1790,8 @@ func TestResolveReviewGroupPublishesCanonicalEvent(t *testing.T) {
 	if !event.End.Equal(time.Date(2026, time.May, 1, 22, 0, 0, 0, time.UTC)) {
 		t.Fatalf("end = %v, want %v", event.End, time.Date(2026, time.May, 1, 22, 0, 0, 0, time.UTC))
 	}
-	if event.Genre != "Indie" {
-		t.Fatalf("genre = %q, want %q", event.Genre, "Indie")
+	if event.Genre != "" {
+		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
 	}
 	if event.Status != "Listed" {
 		t.Fatalf("status = %q, want %q", event.Status, "Listed")
@@ -2123,8 +2123,8 @@ func TestResolveReviewGroupUsesAuthoritativeSourceLinkIdentity(t *testing.T) {
 		t.Fatal("review group not found after resolve")
 	}
 	assertDraftChoice(t, final, review.FieldVenueSlug, candidateID, "sidney-and-matilda")
-	if event.Genre != "Indie" {
-		t.Fatalf("genre = %q, want %q", event.Genre, "Indie")
+	if event.Genre != "" {
+		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
 	}
 	if event.Description != "First line" {
 		t.Fatalf("description = %q, want %q", event.Description, "First line")
@@ -4277,8 +4277,8 @@ func TestPromoteSingletonReviewGroupIfMissingUpdatesLinkedEventInPlace(t *testin
 	if event.Status != "Sold out" {
 		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
 	}
-	if event.Genre != "Ambient" {
-		t.Fatalf("genre = %q, want %q", event.Genre, "Ambient")
+	if event.Genre != "" {
+		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
 	}
 	if event.Description != "Updated description" {
 		t.Fatalf("description = %q, want %q", event.Description, "Updated description")
@@ -4528,8 +4528,8 @@ func TestPromoteSingletonReviewGroupIfMissingPreservesCleanDescriptionWhenAuthor
 	if event.Status != "Sold out" {
 		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
 	}
-	if event.Genre != "Ambient" {
-		t.Fatalf("genre = %q, want %q", event.Genre, "Ambient")
+	if event.Genre != "" {
+		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
 	}
 	if event.Description != "Existing clean description." {
 		t.Fatalf("description = %q, want %q", event.Description, "Existing clean description.")

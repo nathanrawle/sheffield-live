@@ -290,7 +290,11 @@ func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context
 	if err != nil {
 		return "", false, err
 	}
-	if _, err := insertEventTx(ctx, tx, event, venueID, sourceID); err != nil {
+	eventID, err := insertEventTx(ctx, tx, event, venueID, sourceID)
+	if err != nil {
+		return "", false, err
+	}
+	if err := refreshEventGenresTx(ctx, tx, eventID, event.Description, nil, now); err != nil {
 		return "", false, err
 	}
 	if err := resolveMatchingOpenNonAuthoritativeSingletonReviewGroupsTx(ctx, tx, input, now); err != nil {
@@ -854,8 +858,17 @@ func maybeAutoResolveDuplicateReviewGroupTx(ctx context.Context, tx interface {
 			if err := upsertEventSecondarySourceInfoTx(ctx, tx, record.ID, authoritative, staged, now); err != nil {
 				return false, "", "", err
 			}
-		} else if err := upsertEventTx(ctx, tx, event); err != nil {
-			return false, "", "", err
+			if err := refreshEventGenresTx(ctx, tx, record.ID, record.Event.Description, reviewCandidateDescriptions(staged), now); err != nil {
+				return false, "", "", err
+			}
+		} else {
+			record, err := upsertEventTx(ctx, tx, event)
+			if err != nil {
+				return false, "", "", err
+			}
+			if err := refreshEventGenresTx(ctx, tx, record.ID, record.Event.Description, reviewCandidateDescriptions(staged), now); err != nil {
+				return false, "", "", err
+			}
 		}
 		if err := markReviewGroupResolvedTx(ctx, tx, groupID, now); err != nil {
 			return false, "", "", err
@@ -958,6 +971,16 @@ func stagedReviewCandidates(candidates []review.Candidate) []review.Candidate {
 		}
 	}
 	return staged
+}
+
+func reviewCandidateDescriptions(candidates []review.Candidate) []string {
+	descriptions := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if description := strings.TrimSpace(candidate.Description); description != "" {
+			descriptions = append(descriptions, description)
+		}
+	}
+	return descriptions
 }
 
 func exactCanonicalDuplicate(candidates []review.Candidate) bool {
@@ -1150,7 +1173,7 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 	}
 	updated.LastChecked = incoming.LastChecked.UTC()
 
-	_, err := tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE events
 		SET end_at = ?,
 			genre = ?,
@@ -1160,8 +1183,10 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 			calendar_url = ?,
 			last_checked_at = ?
 		WHERE id = ?
-	`, nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, updated.OfficialListingURL, updated.CalendarURL, formatRFC3339UTC(updated.LastChecked), existing.ID)
-	return err
+	`, nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, updated.OfficialListingURL, updated.CalendarURL, formatRFC3339UTC(updated.LastChecked), existing.ID); err != nil {
+		return err
+	}
+	return refreshEventGenresTx(ctx, tx, existing.ID, updated.Description, nil, incoming.LastChecked)
 }
 
 type DescriptionRepairReport struct {
@@ -1267,6 +1292,9 @@ func (s *Store) repairAuthoritativeEventDescription(ctx context.Context, incomin
 		SET description = ?
 		WHERE id = ?
 	`, incoming.Description, record.ID); err != nil {
+		return descriptionRepairResult{}, err
+	}
+	if err := refreshEventGenresTx(ctx, tx, record.ID, incoming.Description, nil, time.Now().UTC()); err != nil {
 		return descriptionRepairResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1477,6 +1505,9 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 		if err := ensureEventSourceLinkTx(ctx, tx, linked.ID, sourceID, sourceEventKey, now); err != nil {
 			return eventRecord{}, false, err
 		}
+		if err := refreshEventGenresTx(ctx, tx, linked.ID, updated.Description, nil, now); err != nil {
+			return eventRecord{}, false, err
+		}
 		return eventRecord{ID: linked.ID, Event: updated}, true, nil
 	}
 
@@ -1488,6 +1519,9 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 			return eventRecord{}, false, err
 		}
 		if err := ensureEventSourceLinkTx(ctx, tx, legacy.ID, sourceID, sourceEventKey, now); err != nil {
+			return eventRecord{}, false, err
+		}
+		if err := refreshEventGenresTx(ctx, tx, legacy.ID, updated.Description, nil, now); err != nil {
 			return eventRecord{}, false, err
 		}
 		return eventRecord{ID: legacy.ID, Event: updated}, true, nil
@@ -1505,6 +1539,9 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 		if err := ensureEventSourceLinkTx(ctx, tx, matched.ID, sourceID, sourceEventKey, now); err != nil {
 			return eventRecord{}, false, err
 		}
+		if err := refreshEventGenresTx(ctx, tx, matched.ID, updated.Description, nil, now); err != nil {
+			return eventRecord{}, false, err
+		}
 		return eventRecord{ID: matched.ID, Event: updated}, true, nil
 	}
 
@@ -1513,6 +1550,9 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 		return eventRecord{}, false, err
 	}
 	if err := ensureEventSourceLinkTx(ctx, tx, eventID, sourceID, sourceEventKey, now); err != nil {
+		return eventRecord{}, false, err
+	}
+	if err := refreshEventGenresTx(ctx, tx, eventID, event.Description, nil, now); err != nil {
 		return eventRecord{}, false, err
 	}
 	return eventRecord{ID: eventID, Event: event}, true, nil
@@ -2603,6 +2643,9 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		if err := upsertEventSecondarySourceInfoTx(ctx, tx, canonicalRecord.ID, authoritative, stagedReviewCandidates(candidates), now); err != nil {
 			return err
 		}
+		if err := refreshEventGenresTx(ctx, tx, canonicalRecord.ID, canonicalRecord.Event.Description, reviewCandidateDescriptions(stagedReviewCandidates(candidates)), now); err != nil {
+			return err
+		}
 		if hasCanonicalCandidate && canonicalCandidate.CanonicalEventID > 0 && canonicalCandidate.CanonicalEventID != canonicalRecord.ID {
 			// The authoritative target wins when it disagrees with the canonical slug match.
 		}
@@ -2610,8 +2653,15 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		if err := updateCanonicalMatchedEventTx(ctx, tx, canonicalCandidate.CanonicalEventID, event); err != nil {
 			return err
 		}
+		if err := refreshEventGenresTx(ctx, tx, canonicalCandidate.CanonicalEventID, event.Description, reviewCandidateDescriptions(stagedReviewCandidates(candidates)), now); err != nil {
+			return err
+		}
 	} else {
-		if err := upsertEventTx(ctx, tx, event); err != nil {
+		record, err := upsertEventTx(ctx, tx, event)
+		if err != nil {
+			return err
+		}
+		if err := refreshEventGenresTx(ctx, tx, record.ID, record.Event.Description, reviewCandidateDescriptions(stagedReviewCandidates(candidates)), now); err != nil {
 			return err
 		}
 	}
@@ -3406,19 +3456,19 @@ func slugFromText(value string) string {
 func upsertEventTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, event domain.Event) error {
+}, event domain.Event) (eventRecord, error) {
 	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
 	if err != nil {
-		return err
+		return eventRecord{}, err
 	}
 	if !ok {
-		return fmt.Errorf("venue %q not found", event.VenueSlug)
+		return eventRecord{}, fmt.Errorf("venue %q not found", event.VenueSlug)
 	}
 	sourceID, err := ensureSourceTx(ctx, tx, event.SourceName, event.SourceURL)
 	if err != nil {
-		return err
+		return eventRecord{}, err
 	}
-	_, err = tx.ExecContext(ctx, `
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO events (
 			slug,
 			venue_id,
@@ -3457,8 +3507,17 @@ func upsertEventTx(ctx context.Context, tx interface {
 		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
 		string(event.Origin),
-		string(normalizedPublicationState(event.PublicationState)))
-	return err
+		string(normalizedPublicationState(event.PublicationState))); err != nil {
+		return eventRecord{}, err
+	}
+	record, ok, err := loadEventRecordBySlugTx(ctx, tx, event.Slug)
+	if err != nil {
+		return eventRecord{}, err
+	}
+	if !ok {
+		return eventRecord{}, fmt.Errorf("event %q not found after upsert", event.Slug)
+	}
+	return record, nil
 }
 
 func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {

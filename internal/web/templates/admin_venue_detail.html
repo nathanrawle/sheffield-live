@@ -7,6 +7,7 @@
     {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
     {{if or .HasReviewStorage .HasImportHistory}} · {{end}}
     <a href="/admin/venues">Back to provisional venues</a>
+    {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
   </p>
 </section>
 
