@@ -39,6 +39,7 @@ func TestRoutes(t *testing.T) {
 		{name: "venues", path: "/venues", code: http.StatusOK, body: "Sheffield rooms"},
 		{name: "venue detail", path: "/venues/leadmill", code: http.StatusOK, body: "Leadmill"},
 		{name: "static css", path: "/static/site.css", code: http.StatusOK, body: "color-scheme"},
+		{name: "admin missing", path: "/admin", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "admin import history missing", path: "/admin/import-runs", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "admin review history missing", path: "/admin/review/history", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "healthz", path: "/healthz", code: http.StatusOK, body: "ok"},
@@ -100,6 +101,75 @@ func TestAdminReviewOmitsLatestImportWithoutImportHistoryStore(t *testing.T) {
 	assertContains(t, body, "Review queue")
 	assertNotContains(t, body, "Latest successful import")
 	assertNotContains(t, body, `href="/admin/import-runs"`)
+}
+
+func TestAdminLandingPageLinksAvailableAdminTools(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin")
+	assertContains(t, body, "Admin")
+	assertContains(t, body, `href="/admin/review"`)
+	assertContains(t, body, `href="/admin/review/history"`)
+	assertContains(t, body, `href="/admin/import-runs"`)
+	assertContains(t, body, `href="/admin/venues"`)
+}
+
+func TestAdminLandingPageOmitsUnsupportedAdminTools(t *testing.T) {
+	server, err := NewServer(testServerDeps(importHistoryOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin")
+	assertContains(t, body, `href="/admin/import-runs"`)
+	assertContains(t, body, `href="/admin/venues"`)
+	assertNotContains(t, body, `href="/admin/review"`)
+	assertNotContains(t, body, `href="/admin/review/history"`)
+}
+
+func TestAdminLandingPageRejectsPost(t *testing.T) {
+	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin", strings.NewReader(""))
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
+	}
+}
+
+func TestPublicPagesDoNotLinkToAdmin(t *testing.T) {
+	server := mustFixtureServer(t)
+
+	for _, path := range []string{
+		"/",
+		"/events",
+		"/events/tonight-leadmill",
+		"/venues",
+		"/venues/leadmill",
+	} {
+		body := renderPath(t, server, path)
+		assertNotContains(t, body, `href="/admin`)
+	}
 }
 
 func TestSQLiteStoreSmoke(t *testing.T) {
