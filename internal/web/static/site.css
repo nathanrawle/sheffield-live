@@ -323,6 +323,7 @@ a:focus-visible {
   min-height: 5.75rem;
   border-radius: 6px;
   object-fit: cover;
+  object-position: var(--image-focus-x, 50%) var(--image-focus-y, 50%);
   background: var(--surface-soft);
 }
 

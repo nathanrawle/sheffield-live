@@ -42,6 +42,7 @@ type ingestCommandConfig struct {
 	reviewTitle        string
 	stageReviewGroups  bool
 	repairDescriptions bool
+	backfillImageFocus bool
 	importRunID        int64
 	imageFetcher       ingest.Fetcher
 	imageStorage       ingest.ImageStorage
@@ -122,6 +123,9 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 	fixtureMode := strings.TrimSpace(cfg.reviewICSFixture) != ""
 	if fixtureMode {
 		return createReviewGroupFromFixture(context.Background(), st, stdout, cfg.reviewICSFixture, cfg.reviewTitle)
+	}
+	if cfg.backfillImageFocus {
+		return runImageFocusBackfill(context.Background(), st, stdout, env("MEDIA_ROOT", "./data/media"))
 	}
 
 	if cfg.limit < 1 || cfg.limit > ingest.MaxLimit {
@@ -229,6 +233,7 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	fs.Var(&canonicalStage, "stage-review-groups", "stage ingest candidates into admin review groups")
 	fs.Var(&aliasStage, "stage-review", "stage ingest candidates into admin review groups")
 	fs.BoolVar(&cfg.repairDescriptions, "repair-descriptions", false, "repair existing event descriptions from ingest candidates without staging or promotion")
+	fs.BoolVar(&cfg.backfillImageFocus, "backfill-image-focus", false, "recompute focus points for copied local images and update stored image metadata")
 	fs.Int64Var(&cfg.importRunID, "import-run-id", 0, "replay an existing import run from stored snapshots")
 
 	if err := fs.Parse(args); err != nil {
@@ -291,6 +296,26 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 		source := strings.TrimSpace(cfg.source)
 		if source != ingest.DefaultSource && source != ingest.CafeNo9Source {
 			return ingestCommandConfig{}, errors.New("-repair-descriptions supports only -source sidney-and-matilda or -source cafe-no-9")
+		}
+	}
+	if cfg.backfillImageFocus {
+		if cfg.allSources {
+			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -all-sources are mutually exclusive")
+		}
+		if sourceFlag.set {
+			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -source are mutually exclusive")
+		}
+		if cfg.importRunID > 0 {
+			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -import-run-id are mutually exclusive")
+		}
+		if strings.TrimSpace(cfg.reviewICSFixture) != "" {
+			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -review-ics-fixture are mutually exclusive")
+		}
+		if cfg.stageReviewGroups {
+			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -stage-review-groups are mutually exclusive")
+		}
+		if cfg.repairDescriptions {
+			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -repair-descriptions are mutually exclusive")
 		}
 	}
 	return cfg, nil
@@ -392,6 +417,14 @@ type manualIngestReport struct {
 type descriptionRepairRunReport struct {
 	Report            ingest.Report                  `json:"report"`
 	DescriptionRepair sqlite.DescriptionRepairReport `json:"description_repair"`
+}
+
+type imageFocusBackfillReport struct {
+	Updated        int      `json:"updated"`
+	Defaulted      int      `json:"defaulted"`
+	MissingFiles   int      `json:"missing_files"`
+	DecodeFailures int      `json:"decode_failures"`
+	Errors         []string `json:"errors,omitempty"`
 }
 
 type manualRunExecution struct {
@@ -525,6 +558,61 @@ func runDescriptionRepair(ctx context.Context, st *sqlite.Store, stdout io.Write
 		return err
 	}
 	return runErr
+}
+
+func runImageFocusBackfill(ctx context.Context, st *sqlite.Store, stdout io.Writer, mediaRoot string) error {
+	assets, err := st.ListImageAssets(ctx)
+	if err != nil {
+		return err
+	}
+	report := imageFocusBackfillReport{}
+	for _, asset := range assets {
+		assetPath, err := localMediaAssetPath(mediaRoot, asset.StoragePath)
+		if err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("%s: %v", asset.SourceURL, err))
+			continue
+		}
+		body, err := os.ReadFile(assetPath)
+		if errors.Is(err, os.ErrNotExist) {
+			report.MissingFiles++
+			continue
+		}
+		if err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("%s: read image: %v", asset.SourceURL, err))
+			continue
+		}
+		focus, err := ingest.EstimateImageFocus(asset.ContentType, body)
+		if err != nil {
+			report.Defaulted++
+			if !errors.Is(err, ingest.ErrImageFocusUnsupported) && !errors.Is(err, ingest.ErrImageFocusNoSignal) {
+				report.DecodeFailures++
+			}
+		}
+		if err := st.UpdateImageAssetFocus(ctx, asset.SourceURL, focus); err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("%s: update focus: %v", asset.SourceURL, err))
+			continue
+		}
+		report.Updated++
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(report)
+}
+
+func localMediaAssetPath(mediaRoot, storagePath string) (string, error) {
+	mediaRoot = strings.TrimSpace(mediaRoot)
+	if mediaRoot == "" {
+		return "", errors.New("media root is required")
+	}
+	storagePath = strings.TrimSpace(storagePath)
+	if storagePath == "" {
+		return "", errors.New("storage path is required")
+	}
+	clean := filepath.Clean(filepath.FromSlash(storagePath))
+	if clean == "." || clean == ".." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid storage path %q", storagePath)
+	}
+	return filepath.Join(mediaRoot, clean), nil
 }
 
 func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer) error {

@@ -100,6 +100,8 @@ type Candidate struct {
 	ImageAlt         string
 	ImageWidth       int
 	ImageHeight      int
+	ImageFocusX      int
+	ImageFocusY      int
 	SourceName       string
 	SourceURL        string
 	CalendarURL      string
@@ -136,6 +138,8 @@ type CandidateInput struct {
 	ImageAlt         string
 	ImageWidth       int
 	ImageHeight      int
+	ImageFocusX      int
+	ImageFocusY      int
 	SourceName       string
 	SourceURL        string
 	CalendarURL      string

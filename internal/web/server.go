@@ -355,6 +355,10 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"eventImagePortrait": func(event domain.Event) bool {
 			return event.ImageWidth > 0 && event.ImageHeight > event.ImageWidth
 		},
+		"imageFocusStyle": func(x, y int) template.CSS {
+			focus := ingest.NormalizeImageFocus(x, y)
+			return template.CSS(fmt.Sprintf("--image-focus-x: %d%%; --image-focus-y: %d%%;", focus.X, focus.Y))
+		},
 		"year":            func(t time.Time) string { return t.In(localLocation).Format("2006") },
 		"joinStrings":     func(values []string, sep string) string { return strings.Join(values, sep) },
 		"genreNames":      func(values []genre.Match, sep string) string { return strings.Join(genre.Names(values), sep) },

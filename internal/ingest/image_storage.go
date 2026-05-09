@@ -27,6 +27,8 @@ type ImageAsset struct {
 	ContentType string
 	Width       int
 	Height      int
+	FocusX      int
+	FocusY      int
 	Bytes       int64
 	SHA256      string
 	CopiedAt    time.Time
@@ -95,6 +97,7 @@ func (s *LocalImageStorage) StoreImage(ctx context.Context, sourceURL string, re
 	if err != nil {
 		return ImageAsset{}, err
 	}
+	focus := BestEffortImageFocus(contentType, result.Body)
 
 	sum := sha256.Sum256(result.Body)
 	sha := hex.EncodeToString(sum[:])
@@ -113,6 +116,8 @@ func (s *LocalImageStorage) StoreImage(ctx context.Context, sourceURL string, re
 		ContentType: contentType,
 		Width:       width,
 		Height:      height,
+		FocusX:      focus.X,
+		FocusY:      focus.Y,
 		Bytes:       int64(len(result.Body)),
 		SHA256:      sha,
 		CopiedAt:    s.now(),

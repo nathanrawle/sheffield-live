@@ -43,6 +43,9 @@ func TestLocalImageStorageStoresSupportedImage(t *testing.T) {
 	if got, want := asset.Height, 2; got != want {
 		t.Fatalf("height = %d, want %d", got, want)
 	}
+	if asset.FocusX == 0 || asset.FocusY == 0 {
+		t.Fatalf("focus = %d,%d, want populated focus", asset.FocusX, asset.FocusY)
+	}
 	if _, err := os.Stat(storage.root + "/" + asset.StoragePath); err != nil {
 		t.Fatalf("stored file stat: %v", err)
 	}

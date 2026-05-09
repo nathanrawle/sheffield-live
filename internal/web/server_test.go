@@ -1488,6 +1488,8 @@ func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
 			ImageAlt:    "Poster Show artwork",
 			ImageWidth:  1200,
 			ImageHeight: 800,
+			ImageFocusX: 35,
+			ImageFocusY: 65,
 			SourceName:  "Fixture listings",
 			SourceURL:   "https://example.test/poster-show",
 			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
@@ -1507,7 +1509,7 @@ func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := renderPath(t, server, tc.path)
 			assertContains(t, body, tc.cardClass)
-			assertContains(t, body, `<img class="event-card-image" src="/media/events/poster.jpg" alt="Poster Show artwork" loading="lazy" decoding="async">`)
+			assertContains(t, body, `<img class="event-card-image" src="/media/events/poster.jpg" alt="Poster Show artwork" style="--image-focus-x: 35%; --image-focus-y: 65%;" loading="lazy" decoding="async">`)
 		})
 	}
 }

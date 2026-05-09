@@ -68,13 +68,13 @@ The source catalog path is fixed to the repository `config/sources` directory in
 Public records live in SQLite and are served from canonical `venues` and `events` rows.
 
 - `Venue` stores slug, name, address, neighbourhood, description, website, validation state, coverage kind, coverage note, and origin
-- `Event` stores slug, name, venue slug, a required UTC start time, an optional UTC end time, top-two genre summary, status, description, copied image URL/source/alt/dimensions, source name, source URL, last checked time, and origin
+- `Event` stores slug, name, venue slug, a required UTC start time, an optional UTC end time, top-two genre summary, status, description, copied image URL/source/alt/dimensions/focus, source name, source URL, last checked time, and origin
 
 Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
 Review persistence also stores canonical snapshot rows alongside staged candidates, persists source-derived venue evidence (`venue_text`, `venue_location_raw`), and keeps majority defaults separate from reviewer-edited draft choices. For ICS sources, `venue_location_raw` is parsing evidence rather than a display string: it keeps the unfolded raw `LOCATION` text so later venue derivation can decode ICS escapes before applying the normal comma/newline split.
 Review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema. Authoritative resolution reconciles the secondary rows supplied with that authoritative decision. Non-authoritative resolution upserts matching secondary candidates as cumulative evidence, so an omitted source in a later accepted review does not delete previously stored source information. A staged candidate matches the accepted event for secondary evidence when venue slug and start time match and the title matches after case and whitespace normalization.
 Inferred genres are stored as ranked `event_genres` rows. Ranking is calculated across the canonical description plus persisted secondary-source descriptions, using a balanced score from mention frequency and earliest match position. Public summary cards still read `events.genre`, which is refreshed as the top two inferred genres.
-Copied image assets are tracked separately by source URL and storage path so replay can reuse previously copied files without fetching the image again.
+Copied image assets are tracked separately by source URL and storage path, including a best-effort focus point for cropped display, so replay can reuse previously copied files without fetching the image again.
 
 The admin UI exposes a landing page, read-only review history, import history, provisional venue queue/detail pages, genre configuration, and per-run snapshot metadata when the backing store implements those read paths. Public venue/event pages and admin provisional venue pages display normalized multiline addresses, including dropping an address first line that duplicates the venue name. The provisional venue queue lists only provisional venues. Detail pages remain read-only when venue admin writes are unavailable, and show save/validate controls only when the backing store exposes provisional venue write capability. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
 
@@ -85,7 +85,7 @@ When the backing store also exposes secondary-source event info, the public even
 Raw source snapshots feed review groups, and review resolution publishes canonical public events.
 
 - raw snapshots capture fetched source pages and any source-specific secondary payloads such as ICS feeds
-- live ingest extracts source image URLs where the parser can identify event artwork, copies supported remote images into local media storage, and stores image metadata on review candidates
+- live ingest extracts source image URLs where the parser can identify event artwork, copies supported remote images into local media storage, estimates a best-effort image focus point for cropped display, and stores image metadata on review candidates
 - image-copy failures are non-fatal ingest warnings; candidates still stage or publish without an image
 - replay uses existing image-asset metadata by source URL instead of fetching remote image bytes
 - source metadata and ingest runtime selection come from repo-backed YAML catalog files

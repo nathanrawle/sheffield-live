@@ -85,4 +85,7 @@ func applyImageAssetToCandidate(candidate *EventCandidate, asset ImageAsset) {
 	candidate.ImageSourceURL = strings.TrimSpace(asset.SourceURL)
 	candidate.ImageWidth = asset.Width
 	candidate.ImageHeight = asset.Height
+	focus := NormalizeImageFocus(asset.FocusX, asset.FocusY)
+	candidate.ImageFocusX = focus.X
+	candidate.ImageFocusY = focus.Y
 }

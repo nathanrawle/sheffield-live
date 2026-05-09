@@ -38,6 +38,7 @@ const (
 	schemaVersionV15  = 15
 	schemaVersionV16  = 16
 	schemaVersionV17  = 17
+	schemaVersionV18  = 18
 	rfc3339Timestamp  = time.RFC3339
 	foreignKeysPragma = "PRAGMA foreign_keys = ON"
 )
@@ -63,6 +64,7 @@ var migrations = []struct {
 	{version: schemaVersionV15, path: "migrations/0015_event_public_links.sql"},
 	{version: schemaVersionV16, path: "migrations/0016_genres.sql"},
 	{version: schemaVersionV17, path: "migrations/0017_event_images.sql"},
+	{version: schemaVersionV18, path: "migrations/0018_image_focus.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -222,6 +224,8 @@ func (s *Store) ListEvents(ctx context.Context) ([]domain.Event, error) {
 			e.image_alt,
 			e.image_width,
 			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -400,6 +404,8 @@ func (s *Store) ListEventsForVenue(ctx context.Context, venueSlug string) ([]dom
 			e.image_alt,
 			e.image_width,
 			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -443,8 +449,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV16 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV16)
+	if version > schemaVersionV17 {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV17)
 	}
 
 	for _, migration := range migrations {
@@ -567,17 +573,21 @@ func insertEvent(ctx context.Context, tx execer, event domain.Event, venueID, so
 			image_alt,
 			image_width,
 			image_height,
+			image_focus_x,
+			image_focus_y,
 			official_listing_url,
 			calendar_url,
 			last_checked_at,
 			origin,
 			publication_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
 		event.ImageURL, event.ImageSourceURL, event.ImageAlt, event.ImageWidth, event.ImageHeight,
+		normalizedImageFocusValue(event.ImageFocusX),
+		normalizedImageFocusValue(event.ImageFocusY),
 		event.OfficialListingURL,
 		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
@@ -626,6 +636,8 @@ func validate(ctx context.Context, q queryer) error {
 			e.image_alt,
 			e.image_width,
 			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -880,6 +892,8 @@ func loadEventBySlug(ctx context.Context, q queryer, slug string) (domain.Event,
 			e.image_alt,
 			e.image_width,
 			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -962,6 +976,14 @@ func appendUniqueString(values []string, candidate string) []string {
 	return append(values, candidate)
 }
 
+func normalizedImageFocus(x, y int) ingest.ImageFocus {
+	return ingest.NormalizeImageFocus(x, y)
+}
+
+func normalizedImageFocusValue(value int) int {
+	return ingest.NormalizeImageFocusValue(value)
+}
+
 type decoratedEventLinks struct {
 	officialListingURL string
 	calendarURL        string
@@ -1031,6 +1053,8 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 		&event.ImageAlt,
 		&event.ImageWidth,
 		&event.ImageHeight,
+		&event.ImageFocusX,
+		&event.ImageFocusY,
 		&event.SourceName,
 		&event.SourceURL,
 		&event.OfficialListingURL,
@@ -1058,6 +1082,9 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 	event.Start = start
 	event.End = end
 	event.LastChecked = lastChecked
+	focus := normalizedImageFocus(event.ImageFocusX, event.ImageFocusY)
+	event.ImageFocusX = focus.X
+	event.ImageFocusY = focus.Y
 	event.Origin = domain.Origin(origin)
 	event.PublicationState = normalizedPublicationState(domain.PublicationState(publicationState))
 	if err := event.ValidateCanonical(); err != nil {

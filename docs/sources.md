@@ -21,7 +21,7 @@ Owned-venue authority also lives in the catalog. The catalog is the only place t
 ## Current Flow
 
 Every ingest run fetches the source page and stores a raw source-page snapshot.
-When parser output includes an event image URL, ingest copies the remote image into local media storage, records the copied asset metadata, and carries the copied public URL into review candidates. Image-copy failures are reported as warnings and do not block the ingest.
+When parser output includes an event image URL, ingest copies the remote image into local media storage, records the copied asset metadata, estimates a best-effort focus point for cropped card display, and carries the copied public URL into review candidates. Image-copy failures are reported as warnings and do not block the ingest.
 
 After that, parsing depends on the source mode:
 
@@ -60,7 +60,7 @@ Add a new Go family only when the source needs new parsing or link-extraction be
 ## Snapshot Payloads
 
 Snapshot payloads are stored as JSON envelopes that contain the response body in base64, response metadata, a captured-body SHA-256, and a truncation flag.
-Copied image files are not snapshot payloads. They are local media assets keyed by source image URL so replay can reuse the copied asset metadata without fetching remote image bytes.
+Copied image files are not snapshot payloads. They are local media assets keyed by source image URL so replay can reuse the copied asset metadata, including focus point, without fetching remote image bytes.
 
 ## Review Staging
 

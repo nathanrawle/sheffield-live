@@ -18,6 +18,8 @@ type EventCandidate struct {
 	ImageAlt       string `json:"image_alt,omitempty"`
 	ImageWidth     int    `json:"image_width,omitempty"`
 	ImageHeight    int    `json:"image_height,omitempty"`
+	ImageFocusX    int    `json:"image_focus_x,omitempty"`
+	ImageFocusY    int    `json:"image_focus_y,omitempty"`
 	Status         string `json:"status,omitempty"`
 	StartAt        string `json:"start_at"`
 	EndAt          string `json:"end_at,omitempty"`

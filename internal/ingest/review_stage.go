@@ -141,6 +141,8 @@ func reviewStageCandidateFingerprint(candidate review.CandidateInput) string {
 	writeReviewStageHashPart(sum, candidate.ImageAlt)
 	writeReviewStageHashPart(sum, fmt.Sprintf("%d", candidate.ImageWidth))
 	writeReviewStageHashPart(sum, fmt.Sprintf("%d", candidate.ImageHeight))
+	writeReviewStageHashPart(sum, fmt.Sprintf("%d", candidate.ImageFocusX))
+	writeReviewStageHashPart(sum, fmt.Sprintf("%d", candidate.ImageFocusY))
 	return hex.EncodeToString(sum.Sum(nil))
 }
 
@@ -184,6 +186,8 @@ func reviewStageCandidateInput(catalog *Catalog, report Report, calendar Calenda
 		ImageAlt:         strings.TrimSpace(candidate.ImageAlt),
 		ImageWidth:       candidate.ImageWidth,
 		ImageHeight:      candidate.ImageHeight,
+		ImageFocusX:      candidate.ImageFocusX,
+		ImageFocusY:      candidate.ImageFocusY,
 		SourceName:       reviewStageSourceName(catalog, report),
 		SourceURL:        reviewStageOfficialSourceURL(report, calendar, candidate),
 		CalendarURL:      reviewStageCalendarURL(calendar, candidate),

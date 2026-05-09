@@ -62,7 +62,7 @@ The Greystones also uses the same pattern:
 go run ./cmd/ingest -source the-greystones -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
-Sidney & Matilda snapshots the source page, linked ICS payloads, and linked event detail pages; ICS remains authoritative for identity and times, while detail pages enrich blank descriptions. Cafe No. 9 snapshots the WeGotTickets organiser pages plus event detail pages and enriches descriptions from detail-page event information. Yellow Arch snapshots the source page plus candidate detail pages, and uses detail-page event content to enrich descriptions without adding those detail URLs to report links. Leadmill snapshots the source page plus linked ICS payloads. Jazz at The Lescar snapshots only the source page and parses candidates directly from that page. The Greystones and Corporation snapshot the source page plus linked detail pages. Ingest also copies supported source images into local media storage when an event image URL is available; set `MEDIA_ROOT` and `MEDIA_URL_PREFIX` to change the local storage path or public URL prefix. `-limit` caps linked ICS or linked detail-page fetches and parsed source-page candidates for direct source-page parsers. All commands print a JSON report.
+Sidney & Matilda snapshots the source page, linked ICS payloads, and linked event detail pages; ICS remains authoritative for identity and times, while detail pages enrich blank descriptions. Cafe No. 9 snapshots the WeGotTickets organiser pages plus event detail pages and enriches descriptions from detail-page event information. Yellow Arch snapshots the source page plus candidate detail pages, and uses detail-page event content to enrich descriptions without adding those detail URLs to report links. Leadmill snapshots the source page plus linked ICS payloads. Jazz at The Lescar snapshots only the source page and parses candidates directly from that page. The Greystones and Corporation snapshot the source page plus linked detail pages. Ingest also copies supported source images into local media storage when an event image URL is available and stores a best-effort focus point for card crops; set `MEDIA_ROOT` and `MEDIA_URL_PREFIX` to change the local storage path or public URL prefix. `-limit` caps linked ICS or linked detail-page fetches and parsed source-page candidates for direct source-page parsers. All commands print a JSON report.
 Use `-contact you@example.com` to override the contact detail in the derived default user agent, or `-contact none` to suppress contact info entirely.
 
 ## Stage review groups after ingest
@@ -83,6 +83,14 @@ go run ./cmd/ingest -import-run-id 42 -limit 20 -stage-review-groups
 This rebuilds the report from stored snapshots without using the network. Reruns are safe and reuse existing groups when the staged content matches, eligible singletons may auto-promote instead of creating a review group, and eligible duplicate groups may auto-resolve into closed review history. Omit `-stage-review-groups` if you only want the replay report.
 Replay auto-detects whether the stored run used linked ICS extraction or direct source-page parsing.
 Replay reuses existing copied image-asset metadata by source URL and does not fetch remote image bytes.
+
+## Backfill image focus metadata
+
+```bash
+go run ./cmd/ingest -backfill-image-focus
+```
+
+This reads existing copied image files from `MEDIA_ROOT`, recomputes focus metadata, and updates copied asset, review candidate, and event rows. Use it after migrating an existing local development database that already has copied images.
 
 ## Repair existing descriptions only
 

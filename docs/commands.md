@@ -143,6 +143,7 @@ Live ingest:
 - Corporation snapshots the source page, discovers linked event detail pages, snapshots those pages, and parses candidates from the detail-page HTML
 - parses candidates, skips, and errors
 - copies supported event images into local media storage when a source image URL is available; failures are reported as warnings and do not fail the ingest
+- stores a best-effort image focus point for copied event images so card crops can prefer the most visually interesting area
 - writes `sources`, `import_runs`, and `snapshots`
 - prints a JSON report to stdout
 - batch mode continues after per-source failures but returns non-zero if any source run fails
@@ -194,6 +195,14 @@ Description repair:
 - does not stage review groups, auto-promote events, create new events, or mutate non-description event fields
 - emits `description_repair` with `description_repaired`, `description_unchanged`, `description_skipped`, and repaired event slugs
 - mutually exclusive with `-stage-review-groups`, `-all-sources`, and `-review-ics-fixture`
+
+Image focus backfill:
+
+- primary flag: `-backfill-image-focus`
+- reads existing local copied image files from `MEDIA_ROOT`
+- recomputes image focus metadata on `image_assets`, `review_candidates`, and `events`
+- emits `updated`, `defaulted`, `missing_files`, `decode_failures`, and any per-asset errors
+- mutually exclusive with live ingest, replay, review fixture creation, review staging, and description repair
 
 Offline review fixture:
 

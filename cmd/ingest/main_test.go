@@ -6,6 +6,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -1332,6 +1335,68 @@ func TestRunWithArgsReplayLeadmillUsesStoredSourcePath(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsBackfillsImageFocus(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	mediaRoot := filepath.Join(t.TempDir(), "media")
+	imagePath := filepath.Join(mediaRoot, "events", "poster.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("make media dir: %v", err)
+	}
+	if err := os.WriteFile(imagePath, focusFixturePNG(t), 0o644); err != nil {
+		t.Fatalf("write fixture image: %v", err)
+	}
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/poster.png",
+		PublicURL:   "/media/events/poster.png",
+		StoragePath: "events/poster.png",
+		ContentType: "image/png",
+		FocusX:      50,
+		FocusY:      50,
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	t.Setenv("MEDIA_ROOT", mediaRoot)
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "-backfill-image-focus"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("backfill image focus: %v", err)
+	}
+
+	var report imageFocusBackfillReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode backfill output: %v", err)
+	}
+	if report.Updated != 1 || report.Defaulted != 0 || report.MissingFiles != 0 || report.DecodeFailures != 0 {
+		t.Fatalf("backfill report = %#v, want one clean update", report)
+	}
+
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+	asset, ok, err := st.LoadImageAsset(ctx, "https://example.test/poster.png")
+	if err != nil {
+		t.Fatalf("load image asset: %v", err)
+	}
+	if !ok {
+		t.Fatal("image asset not found")
+	}
+	if asset.FocusX <= 55 || asset.FocusY <= 55 {
+		t.Fatalf("focus = %d,%d, want lower-right quadrant", asset.FocusX, asset.FocusY)
+	}
+}
+
 func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	runID := seedReplayRunForCLIWithNoLinks(t, path)
@@ -2188,6 +2253,28 @@ func countRows(t *testing.T, db *sql.DB, table string) int {
 		t.Fatalf("count %s: %v", table, err)
 	}
 	return count
+}
+
+func focusFixturePNG(t *testing.T) []byte {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	for y := 0; y < 100; y++ {
+		for x := 0; x < 100; x++ {
+			img.Set(x, y, color.RGBA{R: 180, G: 180, B: 180, A: 255})
+		}
+	}
+	for y := 70; y < 90; y++ {
+		for x := 70; x < 90; x++ {
+			img.Set(x, y, color.RGBA{A: 255})
+		}
+	}
+
+	var body bytes.Buffer
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("encode focus fixture image: %v", err)
+	}
+	return body.Bytes()
 }
 
 func mustReplaySnapshotPayload(t *testing.T, result ingest.FetchResult, mutate func(*ingest.SnapshotEnvelope)) string {

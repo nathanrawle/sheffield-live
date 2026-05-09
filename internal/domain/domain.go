@@ -53,6 +53,8 @@ type Event struct {
 	ImageAlt           string
 	ImageWidth         int
 	ImageHeight        int
+	ImageFocusX        int
+	ImageFocusY        int
 	SourceName         string
 	SourceURL          string
 	OfficialListingURL string
