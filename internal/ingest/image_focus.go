@@ -296,7 +296,7 @@ func verticalEdgeCandidates(edges []float64, width, height int) []verticalEdgeCa
 		coverage := float64(strongRows) / float64(height)
 		run := float64(longestRun) / float64(height)
 		meanStrength := totalStrength / float64(height)
-		if coverage < 0.76 || run < 0.68 || meanStrength < threshold*0.9 {
+		if coverage < 0.76 || run < 0.68 || meanStrength < threshold*0.75 {
 			continue
 		}
 		candidates = append(candidates, verticalEdgeCandidate{
@@ -333,11 +333,11 @@ func verticalEdgeThreshold(edges []float64) float64 {
 			maxStrength = edge
 		}
 	}
-	if maxStrength < 0.14 {
+	if maxStrength < 0.08 {
 		return 0
 	}
 	mean := sum / float64(len(edges))
-	return maxFloat(0.11, maxFloat(maxStrength*0.36, mean*3.0))
+	return maxFloat(0.07, minFloat(maxStrength*0.22, mean*2.4))
 }
 
 func hasRepeatingVerticalEdgePattern(candidates []verticalEdgeCandidate) bool {
@@ -655,6 +655,13 @@ func maxInt(a, b int) int {
 
 func maxFloat(a, b float64) float64 {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
 		return a
 	}
 	return b
