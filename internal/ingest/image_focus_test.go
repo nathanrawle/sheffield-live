@@ -97,6 +97,64 @@ func TestEstimateImageFocusPrioritizesSkinToneRegion(t *testing.T) {
 	}
 }
 
+func TestEstimateImageFocusPrioritizesSepiaSkinToneRange(t *testing.T) {
+	var body bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 120, 80))
+	for y := 0; y < 80; y++ {
+		for x := 0; x < 120; x++ {
+			img.Set(x, y, color.RGBA{R: 96, G: 75, B: 50, A: 255})
+		}
+	}
+	for y := 24; y < 56; y++ {
+		for x := 8; x < 40; x++ {
+			img.Set(x, y, color.RGBA{R: 35, G: 28, B: 20, A: 255})
+		}
+		for x := 82; x < 114; x++ {
+			img.Set(x, y, color.RGBA{R: 184, G: 142, B: 100, A: 255})
+		}
+	}
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+
+	focus, err := EstimateImageFocus("image/png", body.Bytes())
+	if err != nil {
+		t.Fatalf("estimate image focus: %v", err)
+	}
+	if focus.X <= 60 {
+		t.Fatalf("focus = %d,%d, want sepia skin-tone range on right", focus.X, focus.Y)
+	}
+}
+
+func TestEstimateImageFocusPrioritizesGrayscaleSkinToneRange(t *testing.T) {
+	var body bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 120, 80))
+	for y := 0; y < 80; y++ {
+		for x := 0; x < 120; x++ {
+			img.Set(x, y, color.RGBA{R: 95, G: 95, B: 95, A: 255})
+		}
+	}
+	for y := 24; y < 56; y++ {
+		for x := 8; x < 40; x++ {
+			img.Set(x, y, color.RGBA{R: 12, G: 12, B: 12, A: 255})
+		}
+		for x := 82; x < 114; x++ {
+			img.Set(x, y, color.RGBA{R: 158, G: 158, B: 158, A: 255})
+		}
+	}
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+
+	focus, err := EstimateImageFocus("image/png", body.Bytes())
+	if err != nil {
+		t.Fatalf("estimate image focus: %v", err)
+	}
+	if focus.X <= 60 {
+		t.Fatalf("focus = %d,%d, want grayscale skin-tone range on right", focus.X, focus.Y)
+	}
+}
+
 func TestFocusPercentSnapsToCentroidSidePastThreshold(t *testing.T) {
 	tests := []struct {
 		name       string

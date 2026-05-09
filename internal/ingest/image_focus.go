@@ -86,7 +86,8 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 	sampleWidth, sampleHeight := focusSampleSize(width, height)
 	luma := make([]float64, sampleWidth*sampleHeight)
 	saturation := make([]float64, sampleWidth*sampleHeight)
-	skinTone := make([]float64, sampleWidth*sampleHeight)
+	chromaticSkinTone := make([]float64, sampleWidth*sampleHeight)
+	var grayLikePixels, sepiaLikePixels int
 	for y := 0; y < sampleHeight; y++ {
 		srcY := bounds.Min.Y + minInt(height-1, y*height/sampleHeight)
 		for x := 0; x < sampleWidth; x++ {
@@ -99,12 +100,20 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 			luma[idx] = 0.2126*r + 0.7152*g + 0.0722*b
 			maxChannel := math.Max(r, math.Max(g, b))
 			minChannel := math.Min(r, math.Min(g, b))
+			hue := rgbHueDegrees(r, g, b, maxChannel, minChannel)
 			if maxChannel > 0 {
 				saturation[idx] = (maxChannel - minChannel) / maxChannel
 			}
-			skinTone[idx] = skinToneScore(r, g, b)
+			if saturation[idx] < 0.08 {
+				grayLikePixels++
+			}
+			if sepiaToneScore(hue, saturation[idx], luma[idx]) > 0.4 {
+				sepiaLikePixels++
+			}
+			chromaticSkinTone[idx] = chromaticSkinToneScore(r, g, b, hue, maxChannel, minChannel)
 		}
 	}
+	toneProfile := imageToneProfileForSample(sampleWidth*sampleHeight, grayLikePixels, sepiaLikePixels)
 
 	saliency := make([]float64, sampleWidth*sampleHeight)
 	for y := 0; y < sampleHeight; y++ {
@@ -116,9 +125,10 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 			down := luma[minInt(sampleHeight-1, y+1)*sampleWidth+x]
 			contrast := math.Hypot(right-left, down-up)
 			if contrast > 0 {
-				saliency[idx] = contrast * (1 + 0.7*saturation[idx]) * (1 + 2.0*skinTone[idx])
+				skinTone := maxFloat(chromaticSkinTone[idx], monochromeSkinToneScore(luma[idx], saturation[idx], toneProfile))
+				base := contrast * (1 + 0.7*saturation[idx])
+				saliency[idx] = (base + 0.18*skinTone) * (1 + 7.0*skinTone)
 			}
-			saliency[idx] += 0.09 * skinTone[idx]
 		}
 	}
 
@@ -162,13 +172,27 @@ func focusPercent(normalized float64) int {
 	return int(math.Round(percent))
 }
 
-func skinToneScore(r, g, b float64) float64 {
-	maxChannel := math.Max(r, math.Max(g, b))
-	minChannel := math.Min(r, math.Min(g, b))
+type imageToneProfile struct {
+	grayscale float64
+	sepia     float64
+}
+
+func imageToneProfileForSample(pixelCount, grayLikePixels, sepiaLikePixels int) imageToneProfile {
+	if pixelCount <= 0 {
+		return imageToneProfile{}
+	}
+	grayFraction := float64(grayLikePixels) / float64(pixelCount)
+	sepiaFraction := float64(sepiaLikePixels) / float64(pixelCount)
+	return imageToneProfile{
+		grayscale: clampFloat((grayFraction-0.68)/0.24, 0, 1),
+		sepia:     clampFloat((sepiaFraction-0.42)/0.32, 0, 1),
+	}
+}
+
+func chromaticSkinToneScore(r, g, b, hue, maxChannel, minChannel float64) float64 {
 	if maxChannel < 0.14 || maxChannel-minChannel < 0.035 {
 		return 0
 	}
-	hue := rgbHueDegrees(r, g, b, maxChannel, minChannel)
 	if hue > 70 && hue < 335 {
 		return 0
 	}
@@ -185,6 +209,26 @@ func skinToneScore(r, g, b float64) float64 {
 	warmthScore := clampFloat((r-b+0.08)/0.36, 0, 1)
 	saturationScore := 1 - math.Min(1, math.Abs(saturation-0.38)/0.44)
 	return hueScore * warmthScore * saturationScore
+}
+
+func monochromeSkinToneScore(luma, saturation float64, profile imageToneProfile) float64 {
+	if profile.grayscale <= 0 && profile.sepia <= 0 {
+		return 0
+	}
+	lumaScore := 1 - math.Min(1, math.Abs(luma-0.56)/0.34)
+	grayScore := profile.grayscale * lumaScore * (1 - clampFloat((saturation-0.12)/0.18, 0, 1))
+	sepiaScore := profile.sepia * lumaScore * (1 - math.Min(1, math.Abs(saturation-0.24)/0.34))
+	return maxFloat(grayScore, sepiaScore)
+}
+
+func sepiaToneScore(hue, saturation, luma float64) float64 {
+	if saturation < 0.04 || saturation > 0.58 || luma < 0.08 || luma > 0.92 {
+		return 0
+	}
+	hueDistance := math.Min(math.Abs(hue-34), math.Min(math.Abs(hue+360-34), math.Abs(hue-360-34)))
+	hueScore := 1 - math.Min(1, hueDistance/34)
+	saturationScore := 1 - math.Min(1, math.Abs(saturation-0.22)/0.36)
+	return hueScore * saturationScore
 }
 
 func rgbHueDegrees(r, g, b, maxChannel, minChannel float64) float64 {
@@ -295,6 +339,13 @@ func minInt(a, b int) int {
 }
 
 func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxFloat(a, b float64) float64 {
 	if a > b {
 		return a
 	}
