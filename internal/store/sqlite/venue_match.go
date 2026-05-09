@@ -204,7 +204,7 @@ func backfillProvisionalVenueFromCandidateTx(ctx context.Context, tx execer, ven
 	if venue.ValidationState != domain.ValidationStateProvisional || strings.TrimSpace(candidate.VenueLocationRaw) == "" {
 		return venue, nil
 	}
-	if !candidateLocationEvidenceMatchesVenue(candidate.VenueLocationRaw, venue) {
+	if !candidateLocationEvidenceCanBackfillVenue(candidate, venue) {
 		return venue, nil
 	}
 
@@ -238,11 +238,72 @@ func backfillProvisionalVenueFromCandidateTx(ctx context.Context, tx execer, ven
 }
 
 func candidateLocationEvidenceMatchesVenue(value string, venue domain.Venue) bool {
-	head := normalizedVenueKey(venueLocationHeadText(value))
+	headText := venueLocationHeadText(value)
+	head := normalizedVenueKey(headText)
 	if head == "" {
 		return false
 	}
-	return head == normalizedVenueKey(venue.Name) || head == strings.TrimSpace(venue.Slug)
+	if head == normalizedVenueKey(venue.Name) || head == strings.TrimSpace(venue.Slug) {
+		return true
+	}
+	return false
+}
+
+func candidateLocationEvidenceCanBackfillVenue(candidate review.Candidate, venue domain.Venue) bool {
+	if candidateLocationEvidenceMatchesVenue(candidate.VenueLocationRaw, venue) {
+		return true
+	}
+	if !candidateTextMatchesVenue(candidate.VenueText, venue) {
+		return false
+	}
+	return locationEvidenceHeadLooksAddressLike(candidate.VenueLocationRaw)
+}
+
+func candidateTextMatchesVenue(value string, venue domain.Venue) bool {
+	key := normalizedVenueKey(value)
+	if key == "" {
+		return false
+	}
+	return key == normalizedVenueKey(venue.Name) || key == strings.TrimSpace(venue.Slug)
+}
+
+func locationEvidenceHeadLooksAddressLike(value string) bool {
+	head := strings.ToLower(venueLocationHeadText(value))
+	if head == "" {
+		return false
+	}
+	fields := strings.Fields(head)
+	if len(fields) > 0 {
+		first := strings.Trim(fields[0], ",.")
+		if first != "" {
+			r := rune(first[0])
+			if r >= '0' && r <= '9' {
+				return true
+			}
+		}
+	}
+	addressTokens := map[string]struct{}{
+		"road":    {},
+		"rd":      {},
+		"street":  {},
+		"st":      {},
+		"lane":    {},
+		"avenue":  {},
+		"ave":     {},
+		"drive":   {},
+		"place":   {},
+		"square":  {},
+		"terrace": {},
+		"way":     {},
+		"yard":    {},
+	}
+	for _, field := range fields {
+		field = strings.Trim(field, ".,")
+		if _, ok := addressTokens[field]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveReviewVenueTx(ctx context.Context, tx interface {

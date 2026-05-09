@@ -3172,6 +3172,64 @@ func TestPromoteSingletonReviewGroupIfMissingBackfillsBlankProvisionalVenueAddre
 	}
 }
 
+func TestPromoteSingletonReviewGroupIfMissingBackfillsAddressOnlyLocationEvidence(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	if _, err := st.db.ExecContext(ctx, `
+		UPDATE venues
+		SET address = '',
+			neighbourhood = '',
+			validation_state = ?
+		WHERE slug = ?
+	`, string(domain.ValidationStateProvisional), "yellow-arch"); err != nil {
+		t.Fatalf("blank existing provisional venue: %v", err)
+	}
+
+	input := review.GroupInput{
+		Title:      "Yellow Arch singleton",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:fixture.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "yellow-arch-1",
+			Name:             "Yellow Arch show",
+			VenueSlug:        "yellow-arch",
+			VenueText:        "Yellow Arch Studios",
+			VenueLocationRaw: "Yellow Arch Road, Neepsend, Sheffield, S3 8BX",
+			StartAt:          "2026-05-10T18:30:00Z",
+			EndAt:            "2026-05-10T22:00:00Z",
+			Status:           "Listed",
+			Description:      "Address-only raw evidence should backfill when venue text agrees.",
+		}},
+	}
+	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input); err != nil {
+		t.Fatalf("promote singleton review group: %v", err)
+	} else if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+
+	venue, ok := st.VenueBySlug("yellow-arch")
+	if !ok {
+		t.Fatal("provisional venue not found")
+	}
+	if venue.Address != "Yellow Arch Road,\nNeepsend,\nSheffield,\nS3 8BX" {
+		t.Fatalf("venue address = %q, want %q", venue.Address, "Yellow Arch Road,\nNeepsend,\nSheffield,\nS3 8BX")
+	}
+	if venue.Neighbourhood != "Neepsend" {
+		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
+	}
+}
+
 func TestPromoteSingletonReviewGroupIfMissingDoesNotBackfillConflictingVenueEvidence(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
