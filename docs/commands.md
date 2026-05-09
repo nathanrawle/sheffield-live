@@ -83,7 +83,8 @@ Review behavior:
 - canonical-backed duplicate resolution can update the matched live event in place
 - when authoritative source identity and canonical slug match point at different live events, authoritative identity wins
 - resolved review groups can persist secondary-source `genre` and `description` evidence for matching non-selected candidates
-- non-authoritative secondary-source evidence is cumulative; later accepted reviews overwrite matching source/event rows when they provide new non-empty values, but absence does not delete earlier rows
+- non-authoritative secondary-source evidence is cumulative; matching candidates use the same venue slug and start time plus a title match after case and whitespace normalization
+- later accepted reviews overwrite matching source/event rows when they provide new non-empty values, but absence does not delete earlier rows
 - singleton groups use accept/reject actions when they were staged instead of auto-promoted
 - `action=accept` resolves a singleton group and publishes one canonical public event
 - `action=rejected` rejects a duplicate or singleton group without publishing

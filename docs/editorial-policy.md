@@ -64,6 +64,7 @@ Secondary-source evidence follows these retention rules:
 
 - secondary-source genre and description rows are evidence attached to a canonical event, not replacement canonical fields
 - non-authoritative accepted reviews treat secondary-source evidence as cumulative; a later accepted review that omits a previously seen secondary source does not invalidate or delete that source's stored information
+- a staged candidate can contribute secondary-source evidence to the accepted event when its venue slug and start time match and its title matches after trimming, case folding, and whitespace normalization
 - a non-authoritative secondary-source row is replaced only when the same source/event identity supplies a new non-empty value
 - authoritative review resolution can reconcile the secondary-source rows supplied with that authoritative decision
 - inferred event genres use the canonical description plus persisted secondary-source descriptions, so absence of a source in one later non-authoritative review is not treated as genre evidence retraction

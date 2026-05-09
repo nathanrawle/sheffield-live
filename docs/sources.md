@@ -95,7 +95,8 @@ When a review group resolves:
 - authoritative groups resolve through `event_source_links` identity before any slug-based publish path
 - if authoritative identity and canonical slug match point at different live events, authoritative identity wins
 - authoritative groups reconcile secondary-source `genre` and `description` rows for explicit non-authoritative candidate sources in the same transaction
-- non-authoritative groups upsert matching secondary-source `genre` and `description` rows as cumulative evidence; a missing source in a later accepted review does not delete an earlier stored row
+- non-authoritative groups upsert matching secondary-source `genre` and `description` rows as cumulative evidence; matching requires the same venue slug and start time plus a title match after case and whitespace normalization
+- a missing source in a later accepted non-authoritative review does not delete an earlier stored secondary-source row
 - the published event origin is `live`
 - the slug is `live-<slug(name)>-<slug(venue)>-<YYYYMMDDHHMMSS UTC>`
 - canonical-backed non-authoritative duplicate resolution updates the matched live event row in place and recomputes the live slug
