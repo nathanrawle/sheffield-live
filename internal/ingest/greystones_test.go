@@ -107,3 +107,30 @@ func TestParseTheGreystonesMonthPageParsesAugustDate(t *testing.T) {
 		t.Fatalf("start = %q, want %q", got, want)
 	}
 }
+
+func TestParseTheGreystonesMonthPageParsesDottedTimes(t *testing.T) {
+	result := ParseTheGreystonesMonthPage("https://www.mygreystones.co.uk/august/", []byte(`
+		<html><body>
+		<h1>AUGUST 2026</h1>
+		<h1>SONGS FROM THE BACK OF A RUSTY UTE</h1>
+		<h4><span>Thursday 20th August / 7.45pm / £18</span></h4>
+		<p>Show description.</p>
+		<h1>OPEN MIC NIGHT</h1>
+		<h4><span>Monday 24th August / 7.30pm / Free</span></h4>
+		<p>Show description.</p>
+		</body></html>
+	`))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := result.Candidates[0].StartAt, "2026-08-20T18:45:00Z"; got != want {
+		t.Fatalf("first start = %q, want %q", got, want)
+	}
+	if got, want := result.Candidates[1].StartAt, "2026-08-24T18:30:00Z"; got != want {
+		t.Fatalf("second start = %q, want %q", got, want)
+	}
+}
