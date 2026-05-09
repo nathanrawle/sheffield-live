@@ -4,29 +4,53 @@ package ingest
 
 import (
 	"encoding/csv"
+	"fmt"
 	"image"
 	"image/color"
-	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-type verticalRectangleExperimentParam struct {
-	name    string
-	integer bool
-	value   func(verticalRectangleParams) float64
-	set     func(*verticalRectangleParams, float64)
+type verticalRectangleExperimentVariant struct {
+	name                  string
+	edgePoolRadius        int
+	edgeThresholdMaxRatio float64
+	minEdgeRun            float64
+	minEdgeCoverage       float64
+	params                verticalRectangleParams
 }
 
-type verticalRectangleExperimentVariant struct {
-	name             string
-	changedParameter string
-	change           string
-	params           verticalRectangleParams
+type verticalRectangleExperimentImage struct {
+	label    string
+	filename string
+}
+
+type verticalRectangleExperimentOutcome struct {
+	label                  string
+	detected               bool
+	candidateAspect        float64
+	candidateWidthFraction float64
+	candidateScore         float64
+	hasCandidateGeometry   bool
+	hasError               bool
+}
+
+type verticalRectangleExperimentSummary struct {
+	variant            verticalRectangleExperimentVariant
+	truePositives      int
+	falsePositives     int
+	trueNegatives      int
+	falseNegatives     int
+	positiveTotal      int
+	negativeTotal      int
+	candidateAspects   []float64
+	candidateFractions []float64
+	candidateScores    []float64
 }
 
 type verticalRectangleExperimentSample struct {
@@ -40,26 +64,105 @@ type verticalRectangleExperimentSample struct {
 
 func TestEmbeddedVerticalRectangleExperiment(t *testing.T) {
 	repoRoot := findExperimentRepoRoot(t)
-	filenames := readEmbeddedPortraitFilenames(t, filepath.Join(repoRoot, ".notes", "embedded-portrait-images.md"))
+	inputs := append(
+		experimentImages("positive", readExperimentFilenames(t, filepath.Join(repoRoot, ".notes", "embedded-portrait-images.md"))),
+		experimentImages("negative", readExperimentFilenames(t, filepath.Join(repoRoot, ".notes", "negative-control-images.md")))...,
+	)
 	experimentID := time.Now().UTC().Format("20060102T150405Z")
 	outputDir := filepath.Join(repoRoot, ".notes", "experiments", "embedded-vertical-rectangle-parsing")
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		t.Fatalf("create experiment output dir: %v", err)
 	}
-	outputPath := filepath.Join(outputDir, experimentID+"-embedded-vertical-rectangle-parsing.csv")
 
-	file, err := os.Create(outputPath)
+	rowPath := filepath.Join(outputDir, experimentID+"-embedded-vertical-rectangle-grid-rows.csv")
+	summaryPath := filepath.Join(outputDir, experimentID+"-embedded-vertical-rectangle-grid-summary.csv")
+	summaries := runVerticalRectangleGridExperiment(t, repoRoot, experimentID, rowPath, inputs)
+	writeVerticalRectangleGridSummary(t, summaryPath, experimentID, summaries)
+
+	t.Logf("wrote embedded vertical rectangle grid rows to %s", rowPath)
+	t.Logf("wrote embedded vertical rectangle grid summary to %s", summaryPath)
+}
+
+func runVerticalRectangleGridExperiment(t *testing.T, repoRoot, experimentID, rowPath string, inputs []verticalRectangleExperimentImage) []verticalRectangleExperimentSummary {
+	t.Helper()
+	file, err := os.Create(rowPath)
 	if err != nil {
-		t.Fatalf("create experiment csv: %v", err)
+		t.Fatalf("create experiment row csv: %v", err)
 	}
 	defer file.Close()
 
 	writer := csv.NewWriter(file)
-	header := append([]string{
+	if err := writer.Write(verticalRectangleGridRowHeader()); err != nil {
+		t.Fatalf("write row csv header: %v", err)
+	}
+
+	var summaries []verticalRectangleExperimentSummary
+	for _, variant := range verticalRectangleGridVariants() {
+		summary := verticalRectangleExperimentSummary{variant: variant}
+		for _, input := range inputs {
+			row, outcome := runVerticalRectangleExperimentImage(repoRoot, experimentID, variant, input)
+			if err := writer.Write(row); err != nil {
+				t.Fatalf("write row csv row: %v", err)
+			}
+			summary.add(outcome)
+		}
+		summaries = append(summaries, summary)
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		t.Fatalf("flush row csv: %v", err)
+	}
+	return summaries
+}
+
+func writeVerticalRectangleGridSummary(t *testing.T, summaryPath, experimentID string, summaries []verticalRectangleExperimentSummary) {
+	t.Helper()
+	file, err := os.Create(summaryPath)
+	if err != nil {
+		t.Fatalf("create experiment summary csv: %v", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	if err := writer.Write([]string{
 		"experiment_id",
 		"variant_name",
-		"changed_parameter",
-		"change",
+		"param_edge_pool_radius",
+		"param_edge_threshold_max_ratio",
+		"param_min_edge_run",
+		"param_min_edge_coverage",
+		"true_positives",
+		"false_positives",
+		"true_negatives",
+		"false_negatives",
+		"positive_total",
+		"negative_total",
+		"accuracy",
+		"precision",
+		"recall",
+		"f1",
+		"median_candidate_aspect",
+		"median_candidate_width_fraction",
+		"median_candidate_score",
+	}); err != nil {
+		t.Fatalf("write summary csv header: %v", err)
+	}
+	for _, summary := range summaries {
+		if err := writer.Write(summary.row(experimentID)); err != nil {
+			t.Fatalf("write summary csv row: %v", err)
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		t.Fatalf("flush summary csv: %v", err)
+	}
+}
+
+func verticalRectangleGridRowHeader() []string {
+	return []string{
+		"experiment_id",
+		"variant_name",
+		"label",
 		"image_filename",
 		"image_path",
 		"image_width",
@@ -67,85 +170,87 @@ func TestEmbeddedVerticalRectangleExperiment(t *testing.T) {
 		"sample_width",
 		"sample_height",
 		"detected",
+		"is_correct",
 		"focus_x",
 		"focus_y",
 		"candidate_left",
 		"candidate_right",
 		"candidate_center_x",
 		"candidate_aspect",
+		"candidate_width_fraction",
 		"candidate_score",
 		"edge_candidate_count",
 		"rectangle_candidate_count",
 		"repeating_pattern_rejected",
 		"edge_threshold",
 		"error",
-	}, verticalRectangleExperimentParamHeaders()...)
-	if err := writer.Write(header); err != nil {
-		t.Fatalf("write csv header: %v", err)
+		"param_edge_pool_radius",
+		"param_edge_threshold_max_ratio",
+		"param_min_edge_run",
+		"param_min_edge_coverage",
 	}
-
-	for _, variant := range verticalRectangleExperimentVariants() {
-		for _, filename := range filenames {
-			row := runVerticalRectangleExperimentImage(repoRoot, experimentID, variant, filename)
-			if err := writer.Write(row); err != nil {
-				t.Fatalf("write csv row: %v", err)
-			}
-		}
-	}
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		t.Fatalf("flush csv: %v", err)
-	}
-
-	t.Logf("wrote embedded vertical rectangle experiment to %s", outputPath)
 }
 
-func verticalRectangleExperimentVariants() []verticalRectangleExperimentVariant {
-	baseline := cloneVerticalRectangleParams(defaultVerticalRectangleParams())
-	variants := []verticalRectangleExperimentVariant{{
-		name:   "baseline",
-		change: "baseline",
-		params: baseline,
-	}}
-	for _, definition := range verticalRectangleExperimentParams() {
-		for _, change := range []string{"increase_50", "decrease_50"} {
-			params := cloneVerticalRectangleParams(baseline)
-			value := definition.value(params)
-			switch change {
-			case "increase_50":
-				value *= 1.5
-			case "decrease_50":
-				value *= 0.5
+func verticalRectangleGridVariants() []verticalRectangleExperimentVariant {
+	poolRadii := []int{0, 1, 2}
+	thresholdRatios := []float64{0.18, 0.24, 0.30, 0.36}
+	minRuns := []float64{0.40, 0.55, 0.68}
+	minCoverages := []float64{0.50, 0.65, 0.76}
+
+	var variants []verticalRectangleExperimentVariant
+	for _, poolRadius := range poolRadii {
+		for _, thresholdRatio := range thresholdRatios {
+			for _, minRun := range minRuns {
+				for _, minCoverage := range minCoverages {
+					params := cloneVerticalRectangleParams(defaultVerticalRectangleParams())
+					params.EdgePoolRadius = poolRadius
+					params.EdgeThresholdMaxRatio = thresholdRatio
+					params.MinEdgeRun = minRun
+					params.MinEdgeCoverage = minCoverage
+					variants = append(variants, verticalRectangleExperimentVariant{
+						name:                  verticalRectangleGridVariantName(poolRadius, thresholdRatio, minRun, minCoverage),
+						edgePoolRadius:        poolRadius,
+						edgeThresholdMaxRatio: thresholdRatio,
+						minEdgeRun:            minRun,
+						minEdgeCoverage:       minCoverage,
+						params:                params,
+					})
+				}
 			}
-			if definition.integer {
-				value = math.Max(1, math.Round(value))
-			}
-			definition.set(&params, value)
-			variants = append(variants, verticalRectangleExperimentVariant{
-				name:             definition.name + "_" + change,
-				changedParameter: definition.name,
-				change:           change,
-				params:           params,
-			})
 		}
 	}
 	return variants
 }
 
-func runVerticalRectangleExperimentImage(repoRoot, experimentID string, variant verticalRectangleExperimentVariant, filename string) []string {
-	imagePath := filepath.Join(repoRoot, "data", "media", "events", filename)
+func verticalRectangleGridVariantName(poolRadius int, thresholdRatio, minRun, minCoverage float64) string {
+	return fmt.Sprintf(
+		"pool%d_threshold%s_run%s_coverage%s",
+		poolRadius,
+		experimentNameFloat(thresholdRatio),
+		experimentNameFloat(minRun),
+		experimentNameFloat(minCoverage),
+	)
+}
+
+func experimentNameFloat(value float64) string {
+	return strings.ReplaceAll(strconv.FormatFloat(value, 'f', 2, 64), ".", "p")
+}
+
+func runVerticalRectangleExperimentImage(repoRoot, experimentID string, variant verticalRectangleExperimentVariant, input verticalRectangleExperimentImage) ([]string, verticalRectangleExperimentOutcome) {
+	imagePath := filepath.Join(repoRoot, "data", "media", "events", input.filename)
 	row := []string{
 		experimentID,
 		variant.name,
-		variant.changedParameter,
-		variant.change,
-		filename,
+		input.label,
+		input.filename,
 		imagePath,
 		"",
 		"",
 		"",
 		"",
 		"false",
+		"false",
+		"",
 		"",
 		"",
 		"",
@@ -158,45 +263,137 @@ func runVerticalRectangleExperimentImage(repoRoot, experimentID string, variant 
 		"false",
 		"",
 		"",
+		strconv.Itoa(variant.edgePoolRadius),
+		formatExperimentFloat(variant.edgeThresholdMaxRatio),
+		formatExperimentFloat(variant.minEdgeRun),
+		formatExperimentFloat(variant.minEdgeCoverage),
 	}
+	outcome := verticalRectangleExperimentOutcome{label: input.label}
 
 	file, err := os.Open(imagePath)
 	if err != nil {
-		row[22] = err.Error()
-		return append(row, verticalRectangleExperimentParamValues(variant.params)...)
+		row[23] = err.Error()
+		outcome.hasError = true
+		return row, outcome
 	}
 	defer file.Close()
 
 	img, _, err := image.Decode(file)
 	if err != nil {
-		row[22] = err.Error()
-		return append(row, verticalRectangleExperimentParamValues(variant.params)...)
+		row[23] = err.Error()
+		outcome.hasError = true
+		return row, outcome
 	}
 	bounds := img.Bounds()
-	row[6] = strconv.Itoa(bounds.Dx())
-	row[7] = strconv.Itoa(bounds.Dy())
+	row[5] = strconv.Itoa(bounds.Dx())
+	row[6] = strconv.Itoa(bounds.Dy())
 
 	sample := sampleVerticalRectangleExperimentImage(img, variant.params.MaxSample)
-	row[8] = strconv.Itoa(sample.width)
-	row[9] = strconv.Itoa(sample.height)
+	row[7] = strconv.Itoa(sample.width)
+	row[8] = strconv.Itoa(sample.height)
 
 	detection := detectVerticalRectangle(sample.red, sample.green, sample.blue, sample.luma, sample.width, sample.height, variant.params)
-	row[10] = strconv.FormatBool(detection.Detected)
+	outcome.detected = detection.Detected
+	row[9] = strconv.FormatBool(detection.Detected)
+	row[10] = strconv.FormatBool(outcome.isCorrect())
 	row[11] = strconv.Itoa(detection.Focus.X)
 	row[12] = strconv.Itoa(detection.Focus.Y)
 	if detection.Detected {
+		candidateWidth := detection.Candidate.right - detection.Candidate.left
+		outcome.candidateAspect = float64(candidateWidth) / float64(sample.height)
+		outcome.candidateWidthFraction = float64(candidateWidth) / float64(sample.width)
+		outcome.candidateScore = detection.Candidate.score
+		outcome.hasCandidateGeometry = true
 		row[13] = strconv.Itoa(detection.Candidate.left)
 		row[14] = strconv.Itoa(detection.Candidate.right)
 		row[15] = formatExperimentFloat((float64(detection.Candidate.left) + float64(detection.Candidate.right)) / 2)
-		row[16] = formatExperimentFloat(float64(detection.Candidate.right-detection.Candidate.left) / float64(sample.height))
-		row[17] = formatExperimentFloat(detection.Candidate.score)
+		row[16] = formatExperimentFloat(outcome.candidateAspect)
+		row[17] = formatExperimentFloat(outcome.candidateWidthFraction)
+		row[18] = formatExperimentFloat(detection.Candidate.score)
 	}
-	row[18] = strconv.Itoa(detection.EdgeCandidateCount)
-	row[19] = strconv.Itoa(detection.RectangleCandidateCount)
-	row[20] = strconv.FormatBool(detection.RepeatingPatternRejected)
-	row[21] = formatExperimentFloat(detection.EdgeThreshold)
+	row[19] = strconv.Itoa(detection.EdgeCandidateCount)
+	row[20] = strconv.Itoa(detection.RectangleCandidateCount)
+	row[21] = strconv.FormatBool(detection.RepeatingPatternRejected)
+	row[22] = formatExperimentFloat(detection.EdgeThreshold)
 
-	return append(row, verticalRectangleExperimentParamValues(variant.params)...)
+	return row, outcome
+}
+
+func (outcome verticalRectangleExperimentOutcome) isCorrect() bool {
+	if outcome.hasError {
+		return false
+	}
+	switch outcome.label {
+	case "positive":
+		return outcome.detected
+	case "negative":
+		return !outcome.detected
+	default:
+		return false
+	}
+}
+
+func (summary *verticalRectangleExperimentSummary) add(outcome verticalRectangleExperimentOutcome) {
+	if outcome.label == "positive" {
+		summary.positiveTotal++
+		if outcome.detected && !outcome.hasError {
+			summary.truePositives++
+		} else {
+			summary.falseNegatives++
+		}
+	} else {
+		summary.negativeTotal++
+		if outcome.detected && !outcome.hasError {
+			summary.falsePositives++
+		} else if !outcome.hasError {
+			summary.trueNegatives++
+		} else {
+			summary.falsePositives++
+		}
+	}
+	if outcome.hasCandidateGeometry {
+		summary.candidateAspects = append(summary.candidateAspects, outcome.candidateAspect)
+		summary.candidateFractions = append(summary.candidateFractions, outcome.candidateWidthFraction)
+		summary.candidateScores = append(summary.candidateScores, outcome.candidateScore)
+	}
+}
+
+func (summary verticalRectangleExperimentSummary) row(experimentID string) []string {
+	precision := safeRatio(summary.truePositives, summary.truePositives+summary.falsePositives)
+	recall := safeRatio(summary.truePositives, summary.positiveTotal)
+	f1 := 0.0
+	if precision+recall > 0 {
+		f1 = 2 * precision * recall / (precision + recall)
+	}
+	return []string{
+		experimentID,
+		summary.variant.name,
+		strconv.Itoa(summary.variant.edgePoolRadius),
+		formatExperimentFloat(summary.variant.edgeThresholdMaxRatio),
+		formatExperimentFloat(summary.variant.minEdgeRun),
+		formatExperimentFloat(summary.variant.minEdgeCoverage),
+		strconv.Itoa(summary.truePositives),
+		strconv.Itoa(summary.falsePositives),
+		strconv.Itoa(summary.trueNegatives),
+		strconv.Itoa(summary.falseNegatives),
+		strconv.Itoa(summary.positiveTotal),
+		strconv.Itoa(summary.negativeTotal),
+		formatExperimentFloat(safeRatio(summary.truePositives+summary.trueNegatives, summary.positiveTotal+summary.negativeTotal)),
+		formatExperimentFloat(precision),
+		formatExperimentFloat(recall),
+		formatExperimentFloat(f1),
+		formatOptionalExperimentFloat(medianExperimentValue(summary.candidateAspects)),
+		formatOptionalExperimentFloat(medianExperimentValue(summary.candidateFractions)),
+		formatOptionalExperimentFloat(medianExperimentValue(summary.candidateScores)),
+	}
+}
+
+func experimentImages(label string, filenames []string) []verticalRectangleExperimentImage {
+	images := make([]verticalRectangleExperimentImage, 0, len(filenames))
+	for _, filename := range filenames {
+		images = append(images, verticalRectangleExperimentImage{label: label, filename: filename})
+	}
+	return images
 }
 
 func sampleVerticalRectangleExperimentImage(img image.Image, maxSample int) verticalRectangleExperimentSample {
@@ -230,78 +427,18 @@ func sampleVerticalRectangleExperimentImage(img image.Image, maxSample int) vert
 	return sample
 }
 
-func verticalRectangleExperimentParamHeaders() []string {
-	definitions := verticalRectangleExperimentParams()
-	headers := make([]string, 0, len(definitions))
-	for _, definition := range definitions {
-		headers = append(headers, "param_"+definition.name)
-	}
-	return headers
-}
-
-func verticalRectangleExperimentParamValues(params verticalRectangleParams) []string {
-	definitions := verticalRectangleExperimentParams()
-	values := make([]string, 0, len(definitions))
-	for _, definition := range definitions {
-		value := definition.value(params)
-		if definition.integer {
-			values = append(values, strconv.Itoa(int(value)))
-			continue
-		}
-		values = append(values, formatExperimentFloat(value))
-	}
-	return values
-}
-
-func verticalRectangleExperimentParams() []verticalRectangleExperimentParam {
-	definitions := []verticalRectangleExperimentParam{
-		{name: "max_sample", integer: true, value: func(p verticalRectangleParams) float64 { return float64(p.MaxSample) }, set: func(p *verticalRectangleParams, v float64) { p.MaxSample = int(v) }},
-		{name: "min_sample_dimension", integer: true, value: func(p verticalRectangleParams) float64 { return float64(p.MinSampleDimension) }, set: func(p *verticalRectangleParams, v float64) { p.MinSampleDimension = int(v) }},
-		{name: "color_contrast_weight", value: func(p verticalRectangleParams) float64 { return p.ColorContrastWeight }, set: func(p *verticalRectangleParams, v float64) { p.ColorContrastWeight = v }},
-		{name: "edge_group_distance", integer: true, value: func(p verticalRectangleParams) float64 { return float64(p.EdgeGroupDistance) }, set: func(p *verticalRectangleParams, v float64) { p.EdgeGroupDistance = int(v) }},
-		{name: "min_edge_coverage", value: func(p verticalRectangleParams) float64 { return p.MinEdgeCoverage }, set: func(p *verticalRectangleParams, v float64) { p.MinEdgeCoverage = v }},
-		{name: "min_edge_run", value: func(p verticalRectangleParams) float64 { return p.MinEdgeRun }, set: func(p *verticalRectangleParams, v float64) { p.MinEdgeRun = v }},
-		{name: "min_mean_threshold_ratio", value: func(p verticalRectangleParams) float64 { return p.MinMeanThresholdRatio }, set: func(p *verticalRectangleParams, v float64) { p.MinMeanThresholdRatio = v }},
-		{name: "edge_score_coverage_base", value: func(p verticalRectangleParams) float64 { return p.EdgeScoreCoverageBase }, set: func(p *verticalRectangleParams, v float64) { p.EdgeScoreCoverageBase = v }},
-		{name: "edge_score_run_base", value: func(p verticalRectangleParams) float64 { return p.EdgeScoreRunBase }, set: func(p *verticalRectangleParams, v float64) { p.EdgeScoreRunBase = v }},
-		{name: "edge_neighbor_weight", value: func(p verticalRectangleParams) float64 { return p.EdgeNeighborWeight }, set: func(p *verticalRectangleParams, v float64) { p.EdgeNeighborWeight = v }},
-		{name: "min_max_edge_strength", value: func(p verticalRectangleParams) float64 { return p.MinMaxEdgeStrength }, set: func(p *verticalRectangleParams, v float64) { p.MinMaxEdgeStrength = v }},
-		{name: "edge_threshold_floor", value: func(p verticalRectangleParams) float64 { return p.EdgeThresholdFloor }, set: func(p *verticalRectangleParams, v float64) { p.EdgeThresholdFloor = v }},
-		{name: "edge_threshold_max_ratio", value: func(p verticalRectangleParams) float64 { return p.EdgeThresholdMaxRatio }, set: func(p *verticalRectangleParams, v float64) { p.EdgeThresholdMaxRatio = v }},
-		{name: "edge_threshold_mean_ratio", value: func(p verticalRectangleParams) float64 { return p.EdgeThresholdMeanRatio }, set: func(p *verticalRectangleParams, v float64) { p.EdgeThresholdMeanRatio = v }},
-		{name: "repeating_edge_min_count", integer: true, value: func(p verticalRectangleParams) float64 { return float64(p.RepeatingEdgeMinCount) }, set: func(p *verticalRectangleParams, v float64) { p.RepeatingEdgeMinCount = int(v) }},
-		{name: "repeating_edge_score_ratio", value: func(p verticalRectangleParams) float64 { return p.RepeatingEdgeScoreRatio }, set: func(p *verticalRectangleParams, v float64) { p.RepeatingEdgeScoreRatio = v }},
-		{name: "side_rectangle_edge_weight", value: func(p verticalRectangleParams) float64 { return p.SideRectangleEdgeWeight }, set: func(p *verticalRectangleParams, v float64) { p.SideRectangleEdgeWeight = v }},
-		{name: "aspect_min", value: func(p verticalRectangleParams) float64 { return p.AspectMin }, set: func(p *verticalRectangleParams, v float64) { p.AspectMin = v }},
-		{name: "aspect_max", value: func(p verticalRectangleParams) float64 { return p.AspectMax }, set: func(p *verticalRectangleParams, v float64) { p.AspectMax = v }},
-		{name: "aspect_distance_scale", value: func(p verticalRectangleParams) float64 { return p.AspectDistanceScale }, set: func(p *verticalRectangleParams, v float64) { p.AspectDistanceScale = v }},
-		{name: "aspect_score_floor", value: func(p verticalRectangleParams) float64 { return p.AspectScoreFloor }, set: func(p *verticalRectangleParams, v float64) { p.AspectScoreFloor = v }},
-		{name: "aspect_score_range", value: func(p verticalRectangleParams) float64 { return p.AspectScoreRange }, set: func(p *verticalRectangleParams, v float64) { p.AspectScoreRange = v }},
-	}
-	for i := range defaultVerticalRectangleParams().AspectTargets {
-		targetIndex := i
-		definitions = append(definitions, verticalRectangleExperimentParam{
-			name: "aspect_target_" + strconv.Itoa(targetIndex),
-			value: func(p verticalRectangleParams) float64 {
-				return p.AspectTargets[targetIndex]
-			},
-			set: func(p *verticalRectangleParams, v float64) {
-				p.AspectTargets[targetIndex] = v
-			},
-		})
-	}
-	return definitions
-}
-
-func readEmbeddedPortraitFilenames(t *testing.T, path string) []string {
+func readExperimentFilenames(t *testing.T, path string) []string {
 	t.Helper()
 	content, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read embedded portrait list: %v", err)
+		t.Fatalf("read experiment image list: %v", err)
 	}
 	var filenames []string
 	for _, line := range strings.Split(string(content), "\n") {
 		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "-") {
+			continue
+		}
 		line = strings.TrimPrefix(line, "-")
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -331,6 +468,33 @@ func findExperimentRepoRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
+}
+
+func safeRatio(numerator, denominator int) float64 {
+	if denominator == 0 {
+		return 0
+	}
+	return float64(numerator) / float64(denominator)
+}
+
+func medianExperimentValue(values []float64) (float64, bool) {
+	if len(values) == 0 {
+		return 0, false
+	}
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	middle := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return sorted[middle], true
+	}
+	return (sorted[middle-1] + sorted[middle]) / 2, true
+}
+
+func formatOptionalExperimentFloat(value float64, ok bool) string {
+	if !ok {
+		return ""
+	}
+	return formatExperimentFloat(value)
 }
 
 func formatExperimentFloat(value float64) string {

@@ -203,6 +203,7 @@ type verticalRectangleParams struct {
 	MinSampleDimension      int
 	ColorContrastWeight     float64
 	EdgeGroupDistance       int
+	EdgePoolRadius          int
 	MinEdgeCoverage         float64
 	MinEdgeRun              float64
 	MinMeanThresholdRatio   float64
@@ -240,6 +241,7 @@ func defaultVerticalRectangleParams() verticalRectangleParams {
 		MinSampleDimension:      24,
 		ColorContrastWeight:     0.85,
 		EdgeGroupDistance:       2,
+		EdgePoolRadius:          1,
 		MinEdgeCoverage:         0.76,
 		MinEdgeRun:              0.68,
 		MinMeanThresholdRatio:   0.9,
@@ -399,13 +401,23 @@ func verticalEdgeCandidates(edges []float64, width, height int, threshold float6
 }
 
 func verticalEdgeStrengthAt(edges []float64, boundaryCount, x, y int, params verticalRectangleParams) float64 {
-	idx := y*boundaryCount + x - 1
-	strength := edges[idx]
-	if x > 1 {
-		strength = math.Max(strength, edges[idx-1]*params.EdgeNeighborWeight)
-	}
-	if x < boundaryCount {
-		strength = math.Max(strength, edges[idx+1]*params.EdgeNeighborWeight)
+	radius := maxInt(0, params.EdgePoolRadius)
+	strength := 0.0
+	for offset := -radius; offset <= radius; offset++ {
+		edgeX := x + offset
+		if edgeX < 1 || edgeX > boundaryCount {
+			continue
+		}
+		distance := offset
+		if distance < 0 {
+			distance = -distance
+		}
+		weight := 1.0
+		if distance > 0 {
+			weight = math.Pow(params.EdgeNeighborWeight, float64(distance))
+		}
+		idx := y*boundaryCount + edgeX - 1
+		strength = math.Max(strength, edges[idx]*weight)
 	}
 	return strength
 }
