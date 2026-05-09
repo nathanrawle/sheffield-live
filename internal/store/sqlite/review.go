@@ -187,6 +187,10 @@ func (s *Store) promoteAuthoritativeSingletonReviewGroupIfMissing(ctx context.Co
 	if err != nil {
 		return "", false, nil
 	}
+	if authoritative, ok := reviewGroupInputAuthoritativeSource(input); ok {
+		event.SourceName = authoritative.SourceName
+		event.SourceURL = authoritative.SourceURL
+	}
 	event = s.decorateEventForPublish(event)
 	event.PublicationState = domain.PublicationStateReviewed
 
