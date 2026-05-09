@@ -87,6 +87,7 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 	luma := make([]float64, sampleWidth*sampleHeight)
 	saturation := make([]float64, sampleWidth*sampleHeight)
 	chromaticSkinTone := make([]float64, sampleWidth*sampleHeight)
+	skinTone := make([]float64, sampleWidth*sampleHeight)
 	var grayLikePixels, sepiaLikePixels int
 	for y := 0; y < sampleHeight; y++ {
 		srcY := bounds.Min.Y + minInt(height-1, y*height/sampleHeight)
@@ -115,22 +116,24 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 	}
 	toneProfile := imageToneProfileForSample(sampleWidth*sampleHeight, grayLikePixels, sepiaLikePixels)
 
-	saliency := make([]float64, sampleWidth*sampleHeight)
+	fineSaliency := make([]float64, sampleWidth*sampleHeight)
 	for y := 0; y < sampleHeight; y++ {
 		for x := 0; x < sampleWidth; x++ {
 			idx := y*sampleWidth + x
+			skinTone[idx] = maxFloat(chromaticSkinTone[idx], monochromeSkinToneScore(luma[idx], saturation[idx], toneProfile))
 			left := luma[y*sampleWidth+maxInt(0, x-1)]
 			right := luma[y*sampleWidth+minInt(sampleWidth-1, x+1)]
 			up := luma[maxInt(0, y-1)*sampleWidth+x]
 			down := luma[minInt(sampleHeight-1, y+1)*sampleWidth+x]
 			contrast := math.Hypot(right-left, down-up)
 			if contrast > 0 {
-				skinTone := maxFloat(chromaticSkinTone[idx], monochromeSkinToneScore(luma[idx], saturation[idx], toneProfile))
 				base := contrast * (1 + 0.7*saturation[idx])
-				saliency[idx] = base * (1 + 2.0*skinTone)
+				fineSaliency[idx] = base * (1 + 2.0*skinTone[idx])
 			}
 		}
 	}
+	coarseSaliency := coarseBlobSaliency(luma, saturation, skinTone, sampleWidth, sampleHeight)
+	saliency := combineFineAndCoarseSaliency(fineSaliency, coarseSaliency)
 
 	total, weightedX, weightedY := mostSalientFocusWindow(saliency, sampleWidth, sampleHeight)
 	if total <= 0.000001 {
@@ -170,6 +173,87 @@ func focusPercent(normalized float64) int {
 	}
 	percent := 50 + (target-50)*localFocusStrength
 	return int(math.Round(percent))
+}
+
+func coarseBlobSaliency(luma, saturation, skinTone []float64, width, height int) []float64 {
+	minDimension := minInt(width, height)
+	localRadius := maxInt(2, minDimension/18)
+	surroundRadius := maxInt(localRadius+2, minDimension/5)
+	localLuma := boxBlur(luma, width, height, localRadius)
+	surroundLuma := boxBlur(luma, width, height, surroundRadius)
+	localSaturation := boxBlur(saturation, width, height, localRadius)
+	surroundSaturation := boxBlur(saturation, width, height, surroundRadius)
+	localSkinTone := boxBlur(skinTone, width, height, localRadius)
+
+	coarse := make([]float64, width*height)
+	for i := range coarse {
+		blobContrast := math.Abs(localLuma[i]-surroundLuma[i]) + 0.35*math.Abs(localSaturation[i]-surroundSaturation[i])
+		if blobContrast > 0 {
+			coarse[i] = blobContrast * (1 + 1.8*localSkinTone[i])
+		}
+	}
+	return coarse
+}
+
+func boxBlur(values []float64, width, height, radius int) []float64 {
+	integral := saliencyIntegral(values, width, height)
+	blurred := make([]float64, width*height)
+	for y := 0; y < height; y++ {
+		y0 := maxInt(0, y-radius)
+		y1 := minInt(height, y+radius+1)
+		for x := 0; x < width; x++ {
+			x0 := maxInt(0, x-radius)
+			x1 := minInt(width, x+radius+1)
+			area := float64((x1 - x0) * (y1 - y0))
+			blurred[y*width+x] = saliencyWindowSum(integral, width, x0, y0, x1, y1) / area
+		}
+	}
+	return blurred
+}
+
+func combineFineAndCoarseSaliency(fine, coarse []float64) []float64 {
+	fineMax := maxSaliency(fine)
+	coarseMax := maxSaliency(coarse)
+	if fineMax <= 0 {
+		return coarse
+	}
+	if coarseMax <= 0 {
+		return fine
+	}
+	spread := saliencySpread(fine)
+	fineWeight := 1 - 0.45*spread
+	coarseWeight := 0.35 + 0.75*spread
+	combined := make([]float64, len(fine))
+	for i := range combined {
+		combined[i] = fineWeight*(fine[i]/fineMax) + coarseWeight*(coarse[i]/coarseMax)
+	}
+	return combined
+}
+
+func saliencySpread(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var total, squares float64
+	for _, value := range values {
+		total += value
+		squares += value * value
+	}
+	if total <= 0 || squares <= 0 {
+		return 0
+	}
+	effectiveFraction := total * total / (squares * float64(len(values)))
+	return clampFloat((effectiveFraction-0.12)/0.34, 0, 1)
+}
+
+func maxSaliency(values []float64) float64 {
+	maxValue := 0.0
+	for _, value := range values {
+		if value > maxValue {
+			maxValue = value
+		}
+	}
+	return maxValue
 }
 
 type imageToneProfile struct {

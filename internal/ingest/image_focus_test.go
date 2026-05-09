@@ -68,6 +68,32 @@ func TestEstimateImageFocusUsesLocalSaliencyInsteadOfGlobalAverage(t *testing.T)
 	}
 }
 
+func TestEstimateImageFocusUsesCoarseBlobForEdgeNoisyBackground(t *testing.T) {
+	var body bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 160, 120))
+	for y := 0; y < 120; y++ {
+		for x := 0; x < 160; x++ {
+			img.Set(x, y, color.RGBA{R: 155, G: 130, B: 102, A: 255})
+			if (x+2*y)%17 == 0 || (2*x-y+160)%23 == 0 || (x-y+120)%19 == 0 {
+				img.Set(x, y, color.RGBA{R: 54, G: 38, B: 27, A: 255})
+			}
+		}
+	}
+	fillEllipse(img, 80, 68, 23, 35, color.RGBA{R: 58, G: 82, B: 104, A: 255})
+	fillEllipse(img, 80, 36, 13, 14, color.RGBA{R: 184, G: 122, B: 82, A: 255})
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+
+	focus, err := EstimateImageFocus("image/png", body.Bytes())
+	if err != nil {
+		t.Fatalf("estimate image focus: %v", err)
+	}
+	if focus.X < 40 || focus.X > 60 || focus.Y < 35 || focus.Y > 70 {
+		t.Fatalf("focus = %d,%d, want centered human figure", focus.X, focus.Y)
+	}
+}
+
 func TestEstimateImageFocusPrioritizesSkinToneRegion(t *testing.T) {
 	skin := chromaticSkinToneScore(0.72, 0.48, 0.32, rgbHueDegrees(0.72, 0.48, 0.32, 0.72, 0.32), 0.72, 0.32)
 	blue := chromaticSkinToneScore(0.08, 0.27, 0.94, rgbHueDegrees(0.08, 0.27, 0.94, 0.94, 0.08), 0.94, 0.08)
@@ -76,6 +102,18 @@ func TestEstimateImageFocusPrioritizesSkinToneRegion(t *testing.T) {
 	}
 	if blue != 0 {
 		t.Fatalf("blue score = %v, want 0", blue)
+	}
+}
+
+func fillEllipse(img *image.RGBA, centerX, centerY, radiusX, radiusY int, c color.RGBA) {
+	for y := centerY - radiusY; y <= centerY+radiusY; y++ {
+		for x := centerX - radiusX; x <= centerX+radiusX; x++ {
+			dx := float64(x-centerX) / float64(radiusX)
+			dy := float64(y-centerY) / float64(radiusY)
+			if dx*dx+dy*dy <= 1 {
+				img.Set(x, y, c)
+			}
+		}
 	}
 }
 
