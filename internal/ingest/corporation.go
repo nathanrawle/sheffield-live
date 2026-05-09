@@ -58,6 +58,77 @@ func ParseCorporationDetailPage(pageURL string, raw []byte) ParseResult {
 }
 
 func corporationCandidateFromPage(pageURL string, raw []byte) (EventCandidate, ParseSkip, error) {
+	if candidate, skip, found, err := corporationCandidateFromStructuredData(pageURL, raw); found || err != nil {
+		return candidate, skip, err
+	}
+	return corporationCandidateFromLegacyPage(pageURL, raw)
+}
+
+func corporationCandidateFromStructuredData(pageURL string, raw []byte) (EventCandidate, ParseSkip, bool, error) {
+	matches := yellowArchJSONLDPattern.FindAllSubmatch(raw, -1)
+	for _, match := range matches {
+		nodes, found, err := parseYellowArchJSONLDScript(match[1])
+		if err != nil || !found {
+			continue
+		}
+		for _, node := range nodes {
+			candidate, skip, err := corporationCandidateFromJSONLDNode(pageURL, node)
+			return candidate, skip, true, err
+		}
+	}
+	return EventCandidate{}, ParseSkip{}, false, nil
+}
+
+func corporationCandidateFromJSONLDNode(pageURL string, node map[string]any) (EventCandidate, ParseSkip, error) {
+	detailURL := strings.TrimSpace(pageURL)
+	skip := ParseSkip{UID: detailURL}
+
+	title := yellowArchJSONString(node["name"])
+	skip.Summary = title
+	if title == "" {
+		skip.Reason = "missing event title"
+		return EventCandidate{}, skip, nil
+	}
+
+	startText := yellowArchJSONString(node["startDate"])
+	if startText == "" {
+		skip.Reason = "missing event start time"
+		return EventCandidate{}, skip, nil
+	}
+	startAt, err := parseCorporationStructuredDateTime(startText)
+	if err != nil {
+		return EventCandidate{}, ParseSkip{}, fmt.Errorf("parse Corporation start time for %q: %w", title, err)
+	}
+
+	endText := yellowArchJSONString(node["endDate"])
+	if endText == "" {
+		skip.Reason = "missing event end time"
+		return EventCandidate{}, skip, nil
+	}
+	endAt, err := parseCorporationStructuredDateTime(endText)
+	if err != nil {
+		return EventCandidate{}, ParseSkip{}, fmt.Errorf("parse Corporation end time for %q: %w", title, err)
+	}
+
+	location := yellowArchLocationName(node["location"])
+	if location == "" {
+		location = "Corporation"
+	}
+
+	return EventCandidate{
+		UID:         detailURL,
+		Summary:     title,
+		Description: semanticDescriptionText(yellowArchJSONString(node["description"])),
+		Location:    location,
+		LocationRaw: corporationLocationRaw(node["location"]),
+		URL:         detailURL,
+		Status:      "Listed",
+		StartAt:     formatTime(startAt),
+		EndAt:       formatTime(endAt),
+	}, ParseSkip{}, nil
+}
+
+func corporationCandidateFromLegacyPage(pageURL string, raw []byte) (EventCandidate, ParseSkip, error) {
 	detailURL := strings.TrimSpace(pageURL)
 	skip := ParseSkip{UID: detailURL}
 
@@ -90,6 +161,43 @@ func corporationCandidateFromPage(pageURL string, raw []byte) (EventCandidate, P
 		StartAt:     formatTime(startAt),
 		EndAt:       formatTime(endAt),
 	}, ParseSkip{}, nil
+}
+
+func corporationLocationRaw(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return yellowArchJSONString(typed)
+	case map[string]any:
+		name := yellowArchJSONString(typed["name"])
+		address := corporationAddressText(typed["address"])
+		switch {
+		case name == "":
+			return address
+		case address == "":
+			return name
+		default:
+			return name + ", " + address
+		}
+	default:
+		return ""
+	}
+}
+
+func corporationAddressText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return yellowArchJSONString(typed)
+	case map[string]any:
+		parts := make([]string, 0, 5)
+		for _, key := range []string{"streetAddress", "addressLocality", "addressRegion", "postalCode", "addressCountry"} {
+			if part := yellowArchJSONString(typed[key]); part != "" {
+				parts = append(parts, part)
+			}
+		}
+		return strings.Join(parts, ", ")
+	default:
+		return ""
+	}
 }
 
 func corporationDetailURL(base *url.URL, raw string) (string, bool) {
@@ -157,6 +265,8 @@ func parseCorporationDateTime(value string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	for _, layout := range []string{
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
 		"2006-01-02 15:04:05",
 		"2006-01-02 15:04",
 	} {
@@ -166,4 +276,24 @@ func parseCorporationDateTime(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unsupported datetime %q", value)
+}
+
+func parseCorporationStructuredDateTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("missing datetime")
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC(), nil
+	}
+	for _, layout := range []string{
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+	} {
+		parsed, err := time.ParseInLocation(layout, value, time.UTC)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	return parseCorporationDateTime(value)
 }
