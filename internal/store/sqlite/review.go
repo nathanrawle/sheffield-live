@@ -3180,14 +3180,19 @@ func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 	rows := make([]eventSecondarySourceInfoRow, 0, len(candidates)*2)
 	for _, candidate := range candidates {
 		sourceName := strings.TrimSpace(candidate.SourceName)
-		sourceURL := strings.TrimSpace(candidate.CalendarURL)
-		if sourceURL == "" {
-			sourceURL = strings.TrimSpace(candidate.SourceURL)
+		sourceURL := strings.TrimSpace(candidate.SourceURL)
+		calendarURL := strings.TrimSpace(candidate.CalendarURL)
+		authoritativeMatchURL := sourceURL
+		if calendarURL != "" {
+			authoritativeMatchURL = calendarURL
+		}
+		if sourceName == "" || sourceURL == "" {
+			sourceURL = calendarURL
 		}
 		if sourceName == "" || sourceURL == "" {
 			continue
 		}
-		if sourceName == authoritative.SourceName && sourceURL == authoritative.SourceURL {
+		if sourceName == authoritative.SourceName && authoritativeMatchURL == authoritative.SourceURL {
 			continue
 		}
 

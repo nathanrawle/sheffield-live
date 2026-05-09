@@ -2231,6 +2231,54 @@ func TestResolveReviewGroupAuthoritativePathCreatesSecondarySourceInfoRows(t *te
 	}
 }
 
+func TestResolveReviewGroupAuthoritativePathPreservesSecondaryDetailURLWhenCalendarURLExists(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative secondary detail")
+	db := mustRawDB(t, path)
+	defer db.Close()
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET calendar_url = ?
+		WHERE group_id = ? AND position = 1
+	`, "https://secondary.example.test/feed.ics", groupID); err != nil {
+		t.Fatalf("set secondary calendar url: %v", err)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	event, ok := st.EventBySlug("live-utc-show-sidney-and-matilda-20260501190000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	secondary, err := st.EventSecondarySourceInfoByEventSlug(ctx, event.Slug)
+	if err != nil {
+		t.Fatalf("load secondary source info: %v", err)
+	}
+	if got, want := len(secondary), 1; got != want {
+		t.Fatalf("secondary source groups = %d, want %d", got, want)
+	}
+	if got, want := secondary[0].SourceURL, "https://example.test/utc-show"; got != want {
+		t.Fatalf("secondary source url = %q, want %q", got, want)
+	}
+}
+
 func TestResolveReviewGroupAuthoritativePathUpsertsSecondarySourceInfoRows(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
