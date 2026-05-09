@@ -2382,6 +2382,113 @@ func TestResolveReviewGroupAuthoritativePathReconcilesStaleSecondarySourceInfoRo
 	}
 }
 
+func TestResolveReviewGroupNonAuthoritativePathUpsertsSecondaryDescriptions(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	createGroup := func(title, secondaryDescription string) int64 {
+		t.Helper()
+
+		id, err := st.CreateReviewGroup(ctx, review.GroupInput{
+			Title:      title,
+			SourceName: "Manual review",
+			SourceURL:  "https://reviews.example.test/fusion-night",
+			Candidates: []review.CandidateInput{
+				{
+					ExternalID:  "primary-fusion",
+					Name:        "Fusion Night",
+					VenueSlug:   "leadmill",
+					StartAt:     "2026-06-01T19:00:00Z",
+					EndAt:       "2026-06-01T22:00:00Z",
+					Status:      "Listed",
+					Description: "Jazz from the first source.",
+					SourceName:  "Primary Listings",
+					SourceURL:   "https://primary.example.test/fusion-night",
+				},
+				{
+					ExternalID:  "secondary-fusion",
+					Name:        "Fusion Night",
+					VenueSlug:   "leadmill",
+					StartAt:     "2026-06-01T19:00:00Z",
+					EndAt:       "2026-06-01T22:00:00Z",
+					Status:      "Listed",
+					Description: secondaryDescription,
+					SourceName:  "Secondary Listings",
+					SourceURL:   "https://secondary.example.test/fusion-night",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("create review group %q: %v", title, err)
+		}
+		return id
+	}
+
+	resolveGroup := func(groupID int64) {
+		t.Helper()
+
+		group, ok, err := st.LoadReviewGroup(ctx, groupID)
+		if err != nil {
+			t.Fatalf("load review group: %v", err)
+		}
+		if !ok {
+			t.Fatal("review group not found")
+		}
+		if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+			t.Fatalf("resolve review group: %v", err)
+		}
+	}
+
+	firstGroupID := createGroup("Non-authoritative secondary first", "Funk from the second source.")
+	resolveGroup(firstGroupID)
+
+	eventSlug := "live-fusion-night-leadmill-20260601190000"
+	event, ok := st.EventBySlug(eventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", eventSlug)
+	}
+	if event.Genre != "Jazz, Funk" {
+		t.Fatalf("genre = %q, want Jazz, Funk", event.Genre)
+	}
+	if err := st.RecomputeEventGenres(ctx); err != nil {
+		t.Fatalf("recompute event genres: %v", err)
+	}
+	event, ok = st.EventBySlug(eventSlug)
+	if !ok {
+		t.Fatalf("missing recomputed event %q", eventSlug)
+	}
+	if event.Genre != "Jazz, Funk" {
+		t.Fatalf("recomputed genre = %q, want Jazz, Funk", event.Genre)
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	rows := loadSecondarySourceInfoRows(t, db)
+	if got, want := len(rows), 1; got != want {
+		t.Fatalf("secondary source info rows = %d, want %d", got, want)
+	}
+	if rows[0].InfoType != "description" || rows[0].Value != "Funk from the second source." {
+		t.Fatalf("secondary row = %#v, want secondary description", rows[0])
+	}
+
+	secondGroupID := createGroup("Non-authoritative secondary second", "Funk and soul from updated second source.")
+	resolveGroup(secondGroupID)
+
+	rows = loadSecondarySourceInfoRows(t, db)
+	if got, want := len(rows), 1; got != want {
+		t.Fatalf("secondary source info rows after update = %d, want %d", got, want)
+	}
+	if rows[0].InfoType != "description" || rows[0].Value != "Funk and soul from updated second source." {
+		t.Fatalf("updated secondary row = %#v, want updated secondary description", rows[0])
+	}
+}
+
 func TestSaveReviewDraftRejectsCandidateFromAnotherGroup(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))

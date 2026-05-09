@@ -855,10 +855,11 @@ func maybeAutoResolveDuplicateReviewGroupTx(ctx context.Context, tx interface {
 			if !applied {
 				return false, "", "", fmt.Errorf("venue %q not found", event.VenueSlug)
 			}
-			if err := upsertEventSecondarySourceInfoTx(ctx, tx, record.ID, authoritative, staged, now); err != nil {
+			matchingStaged := reviewCandidatesMatchingEvent(staged, record.Event)
+			if err := replaceEventSecondarySourceInfoTx(ctx, tx, record.ID, authoritative, matchingStaged, now); err != nil {
 				return false, "", "", err
 			}
-			if err := refreshEventGenresTx(ctx, tx, record.ID, record.Event.Description, reviewCandidateDescriptions(staged), now); err != nil {
+			if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, record.ID, record.Event.Description, now); err != nil {
 				return false, "", "", err
 			}
 		} else {
@@ -866,7 +867,11 @@ func maybeAutoResolveDuplicateReviewGroupTx(ctx context.Context, tx interface {
 			if err != nil {
 				return false, "", "", err
 			}
-			if err := refreshEventGenresTx(ctx, tx, record.ID, record.Event.Description, reviewCandidateDescriptions(staged), now); err != nil {
+			matchingStaged := reviewCandidatesMatchingEvent(staged, record.Event)
+			if err := upsertEventSecondarySourceInfoTx(ctx, tx, record.ID, primarySourceIdentity(record.Event), matchingStaged, now); err != nil {
+				return false, "", "", err
+			}
+			if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, record.ID, record.Event.Description, now); err != nil {
 				return false, "", "", err
 			}
 		}
@@ -973,14 +978,28 @@ func stagedReviewCandidates(candidates []review.Candidate) []review.Candidate {
 	return staged
 }
 
-func reviewCandidateDescriptions(candidates []review.Candidate) []string {
-	descriptions := make([]string, 0, len(candidates))
+func reviewCandidatesMatchingEvent(candidates []review.Candidate, event domain.Event) []review.Candidate {
+	matching := make([]review.Candidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if description := strings.TrimSpace(candidate.Description); description != "" {
-			descriptions = append(descriptions, description)
+		if reviewCandidateMatchesEvent(candidate, event) {
+			matching = append(matching, candidate)
 		}
 	}
-	return descriptions
+	return matching
+}
+
+func reviewCandidateMatchesEvent(candidate review.Candidate, event domain.Event) bool {
+	if strings.TrimSpace(candidate.Name) != strings.TrimSpace(event.Name) {
+		return false
+	}
+	if strings.TrimSpace(candidate.VenueSlug) != strings.TrimSpace(event.VenueSlug) {
+		return false
+	}
+	start, err := parseRFC3339UTC(strings.TrimSpace(candidate.StartAt))
+	if err != nil {
+		return false
+	}
+	return start.UTC().Equal(event.Start.UTC())
 }
 
 func exactCanonicalDuplicate(candidates []review.Candidate) bool {
@@ -2629,6 +2648,7 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	}
 	event = s.decorateEventForPublish(event)
 	canonicalCandidate, hasCanonicalCandidate := canonicalSnapshotCandidate(candidates)
+	staged := stagedReviewCandidates(candidates)
 	if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
 		event.SourceName = authoritative.SourceName
 		event.SourceURL = authoritative.SourceURL
@@ -2640,10 +2660,11 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		if !applied {
 			return fmt.Errorf("venue %q not found", event.VenueSlug)
 		}
-		if err := upsertEventSecondarySourceInfoTx(ctx, tx, canonicalRecord.ID, authoritative, stagedReviewCandidates(candidates), now); err != nil {
+		matchingStaged := reviewCandidatesMatchingEvent(staged, canonicalRecord.Event)
+		if err := replaceEventSecondarySourceInfoTx(ctx, tx, canonicalRecord.ID, authoritative, matchingStaged, now); err != nil {
 			return err
 		}
-		if err := refreshEventGenresTx(ctx, tx, canonicalRecord.ID, canonicalRecord.Event.Description, reviewCandidateDescriptions(stagedReviewCandidates(candidates)), now); err != nil {
+		if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, canonicalRecord.ID, canonicalRecord.Event.Description, now); err != nil {
 			return err
 		}
 		if hasCanonicalCandidate && canonicalCandidate.CanonicalEventID > 0 && canonicalCandidate.CanonicalEventID != canonicalRecord.ID {
@@ -2653,7 +2674,11 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		if err := updateCanonicalMatchedEventTx(ctx, tx, canonicalCandidate.CanonicalEventID, event); err != nil {
 			return err
 		}
-		if err := refreshEventGenresTx(ctx, tx, canonicalCandidate.CanonicalEventID, event.Description, reviewCandidateDescriptions(stagedReviewCandidates(candidates)), now); err != nil {
+		matchingStaged := reviewCandidatesMatchingEvent(staged, event)
+		if err := upsertEventSecondarySourceInfoTx(ctx, tx, canonicalCandidate.CanonicalEventID, primarySourceIdentity(event), matchingStaged, now); err != nil {
+			return err
+		}
+		if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, canonicalCandidate.CanonicalEventID, event.Description, now); err != nil {
 			return err
 		}
 	} else {
@@ -2661,7 +2686,11 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		if err != nil {
 			return err
 		}
-		if err := refreshEventGenresTx(ctx, tx, record.ID, record.Event.Description, reviewCandidateDescriptions(stagedReviewCandidates(candidates)), now); err != nil {
+		matchingStaged := reviewCandidatesMatchingEvent(staged, record.Event)
+		if err := upsertEventSecondarySourceInfoTx(ctx, tx, record.ID, primarySourceIdentity(record.Event), matchingStaged, now); err != nil {
+			return err
+		}
+		if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, record.ID, record.Event.Description, now); err != nil {
 			return err
 		}
 	}
@@ -3220,10 +3249,20 @@ func authoritativeLinkFromStoredReviewCandidate(group review.Group, candidate re
 	}, true
 }
 
+func replaceEventSecondarySourceInfoTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, eventID int64, primary reviewGroupAuthoritativeLink, candidates []review.Candidate, now time.Time) error {
+	if err := deleteEventSecondarySourceInfoForEventTx(ctx, tx, eventID); err != nil {
+		return err
+	}
+	return upsertEventSecondarySourceInfoTx(ctx, tx, eventID, primary, candidates, now)
+}
+
 func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, eventID int64, authoritative reviewGroupAuthoritativeLink, candidates []review.Candidate, now time.Time) error {
+}, eventID int64, primary reviewGroupAuthoritativeLink, candidates []review.Candidate, now time.Time) error {
 	if eventID <= 0 {
 		return errors.New("secondary source info event ID is required")
 	}
@@ -3242,7 +3281,7 @@ func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 		if sourceName == "" || sourceURL == "" {
 			continue
 		}
-		if sourceName == authoritative.SourceName && authoritativeMatchURL == authoritative.SourceURL {
+		if sourceName == primary.SourceName && authoritativeMatchURL == primary.SourceURL {
 			continue
 		}
 
@@ -3272,15 +3311,30 @@ func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 			})
 		}
 	}
-	if err := deleteEventSecondarySourceInfoForEventTx(ctx, tx, eventID); err != nil {
-		return err
-	}
 	for _, row := range rows {
 		if err := upsertEventSecondarySourceInfoRowTx(ctx, tx, row); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func primarySourceIdentity(event domain.Event) reviewGroupAuthoritativeLink {
+	return reviewGroupAuthoritativeLink{
+		SourceName: strings.TrimSpace(event.SourceName),
+		SourceURL:  strings.TrimSpace(event.SourceURL),
+	}
+}
+
+func refreshEventGenresFromStoredDescriptionsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, eventID int64, canonicalDescription string, now time.Time) error {
+	secondaryDescriptions, err := loadSecondaryDescriptionsForEventIDTx(ctx, tx, eventID)
+	if err != nil {
+		return err
+	}
+	return refreshEventGenresTx(ctx, tx, eventID, canonicalDescription, secondaryDescriptions, now)
 }
 
 type eventSecondarySourceInfoRow struct {
