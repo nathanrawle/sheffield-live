@@ -1,7 +1,12 @@
 package ingest
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"sheffield-live/internal/review"
 )
@@ -220,6 +225,47 @@ func TestReviewGroupsFromReportStagingKeyIgnoresTitleNotesSourceMetadataAndProve
 	changed.Candidates[0].SourceName = "Candidate source B"
 	changed.Candidates[0].SourceURL = "https://candidate.example.test/changed"
 	changed.Candidates[0].Provenance = "fixture UID different"
+
+	if got, want := reviewStageStagingKey(base), reviewStageStagingKey(changed); got != want {
+		t.Fatalf("staging key = %q, want %q", got, want)
+	}
+}
+
+func TestReviewGroupsFromReportStagingKeyIgnoresCandidateImageFields(t *testing.T) {
+	base := review.GroupInput{
+		Title:      "Title",
+		SourceName: "Fixture ICS",
+		SourceURL:  "https://source.example.test/original",
+		Notes:      "notes",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:     "candidate-a",
+				Name:           "Candidate A",
+				VenueSlug:      "leadmill",
+				StartAt:        "2026-05-01T19:00:00Z",
+				EndAt:          "2026-05-01T22:00:00Z",
+				Genre:          "Indie",
+				Status:         "Listed",
+				Description:    "Description",
+				ImageURL:       "https://example.test/one.jpg",
+				ImageSourceURL: "https://example.test/source-one.jpg",
+				ImageAlt:       "Poster one",
+				ImageWidth:     320,
+				ImageHeight:    180,
+				ImageFocusX:    10,
+				ImageFocusY:    90,
+			},
+		},
+	}
+	changed := base
+	changed.Candidates = append([]review.CandidateInput(nil), base.Candidates...)
+	changed.Candidates[0].ImageURL = "https://example.test/two.jpg"
+	changed.Candidates[0].ImageSourceURL = "https://example.test/source-two.jpg"
+	changed.Candidates[0].ImageAlt = "Poster two"
+	changed.Candidates[0].ImageWidth = 640
+	changed.Candidates[0].ImageHeight = 360
+	changed.Candidates[0].ImageFocusX = 0
+	changed.Candidates[0].ImageFocusY = 0
 
 	if got, want := reviewStageStagingKey(base), reviewStageStagingKey(changed); got != want {
 		t.Fatalf("staging key = %q, want %q", got, want)
@@ -691,4 +737,250 @@ func assertCandidateNames(t *testing.T, candidates []review.CandidateInput, want
 			t.Fatalf("candidate %d name = %q, want %q", i, candidate.Name, want[i])
 		}
 	}
+}
+
+func TestCopyCandidateImagesRefetchesCachedAssetWhenLiveFetchSucceeds(t *testing.T) {
+	ctx := context.Background()
+	store := &testCandidateImageStore{
+		asset: ImageAsset{
+			SourceURL:   "https://example.test/cached.jpg",
+			PublicURL:   "https://cdn.example.test/cached.jpg",
+			StoragePath: "events/cached.jpg",
+			ContentType: "image/jpeg",
+			Width:       100,
+			Height:      80,
+			FocusX:      11,
+			FocusY:      22,
+		},
+		loadOK: true,
+	}
+	fetcher := &testCandidateImageFetcher{
+		result: FetchResult{
+			URL:         "https://example.test/cached.jpg",
+			StatusCode:  http.StatusOK,
+			ContentType: "image/jpeg",
+			Body:        []byte("fresh-body"),
+		},
+	}
+	storage := &testCandidateImageStorage{
+		asset: ImageAsset{
+			SourceURL:   "https://example.test/cached.jpg",
+			PublicURL:   "https://cdn.example.test/fresh.jpg",
+			StoragePath: "events/fresh.jpg",
+			ContentType: "image/jpeg",
+			Width:       120,
+			Height:      90,
+			FocusX:      0,
+			FocusY:      125,
+		},
+	}
+
+	candidates, warnings := copyCandidateImages(ctx, store, fetcher, storage, []EventCandidate{
+		{
+			Summary:        "Poster night",
+			ImageSourceURL: "https://example.test/cached.jpg",
+		},
+	})
+
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if got, want := len(fetcher.calls), 1; got != want {
+		t.Fatalf("fetch calls = %d, want %d", got, want)
+	}
+	if got, want := len(storage.calls), 1; got != want {
+		t.Fatalf("store calls = %d, want %d", got, want)
+	}
+	if got, want := len(store.loadCalls), 1; got != want {
+		t.Fatalf("load calls = %d, want %d", got, want)
+	}
+	if got, want := len(store.savedAssets), 1; got != want {
+		t.Fatalf("saved assets = %d, want %d", got, want)
+	}
+	if got, want := candidates[0].ImageURL, "https://cdn.example.test/fresh.jpg"; got != want {
+		t.Fatalf("image url = %q, want %q", got, want)
+	}
+	if got, want := candidates[0].ImageWidth, 120; got != want {
+		t.Fatalf("image width = %d, want %d", got, want)
+	}
+	if got, want := candidates[0].ImageHeight, 90; got != want {
+		t.Fatalf("image height = %d, want %d", got, want)
+	}
+	if got, want := candidates[0].ImageFocusX, 0; got != want {
+		t.Fatalf("image focus x = %d, want %d", got, want)
+	}
+	if got, want := candidates[0].ImageFocusY, 100; got != want {
+		t.Fatalf("image focus y = %d, want %d", got, want)
+	}
+}
+
+func TestCopyCandidateImagesFallsBackToCachedAssetOnLiveFailures(t *testing.T) {
+	tests := []struct {
+		name          string
+		configure     func(fetcher *testCandidateImageFetcher, storage *testCandidateImageStorage, store *testCandidateImageStore)
+		wantWarning   string
+		wantImageURL  string
+		wantFocusY    int
+		wantSaveCount int
+	}{
+		{
+			name: "fetch failure",
+			configure: func(fetcher *testCandidateImageFetcher, storage *testCandidateImageStorage, store *testCandidateImageStore) {
+				fetcher.err = errors.New("fetch failed")
+			},
+			wantWarning:   "fetch image",
+			wantImageURL:  "https://cdn.example.test/cached.jpg",
+			wantFocusY:    22,
+			wantSaveCount: 0,
+		},
+		{
+			name: "store failure",
+			configure: func(fetcher *testCandidateImageFetcher, storage *testCandidateImageStorage, store *testCandidateImageStore) {
+				storage.err = errors.New("store failed")
+			},
+			wantWarning:   "store image",
+			wantImageURL:  "https://cdn.example.test/cached.jpg",
+			wantFocusY:    22,
+			wantSaveCount: 0,
+		},
+		{
+			name: "save failure",
+			configure: func(fetcher *testCandidateImageFetcher, storage *testCandidateImageStorage, store *testCandidateImageStore) {
+				store.saveErr = errors.New("save failed")
+			},
+			wantWarning:   "save image asset",
+			wantImageURL:  "https://cdn.example.test/cached.jpg",
+			wantFocusY:    22,
+			wantSaveCount: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &testCandidateImageStore{
+				asset: ImageAsset{
+					SourceURL:   "https://example.test/cached.jpg",
+					PublicURL:   "https://cdn.example.test/cached.jpg",
+					StoragePath: "events/cached.jpg",
+					ContentType: "image/jpeg",
+					Width:       100,
+					Height:      80,
+					FocusX:      11,
+					FocusY:      22,
+				},
+				loadOK: true,
+			}
+			fetcher := &testCandidateImageFetcher{
+				result: FetchResult{
+					URL:         "https://example.test/cached.jpg",
+					StatusCode:  http.StatusOK,
+					ContentType: "image/jpeg",
+					Body:        []byte("fresh-body"),
+				},
+			}
+			storage := &testCandidateImageStorage{
+				asset: ImageAsset{
+					SourceURL:   "https://example.test/cached.jpg",
+					PublicURL:   "https://cdn.example.test/fresh.jpg",
+					StoragePath: "events/fresh.jpg",
+					ContentType: "image/jpeg",
+					Width:       120,
+					Height:      90,
+					FocusX:      0,
+					FocusY:      125,
+				},
+			}
+			tc.configure(fetcher, storage, store)
+
+			candidates, warnings := copyCandidateImages(ctx, store, fetcher, storage, []EventCandidate{
+				{
+					Summary:        "Poster night",
+					ImageSourceURL: "https://example.test/cached.jpg",
+				},
+			})
+
+			if len(warnings) != 1 {
+				t.Fatalf("warnings = %v, want 1 warning", warnings)
+			}
+			if !strings.Contains(warnings[0], tc.wantWarning) {
+				t.Fatalf("warning = %q, want contains %q", warnings[0], tc.wantWarning)
+			}
+			if got, want := candidates[0].ImageURL, tc.wantImageURL; got != want {
+				t.Fatalf("image url = %q, want %q", got, want)
+			}
+			if got, want := candidates[0].ImageFocusY, tc.wantFocusY; got != want {
+				t.Fatalf("image focus y = %d, want %d", got, want)
+			}
+			if got, want := len(store.savedAssets), tc.wantSaveCount; got != want {
+				t.Fatalf("saved assets = %d, want %d", got, want)
+			}
+		})
+	}
+}
+
+type testCandidateImageStore struct {
+	asset       ImageAsset
+	loadOK      bool
+	loadErr     error
+	saveErr     error
+	loadCalls   []string
+	savedAssets []ImageAsset
+}
+
+func (s *testCandidateImageStore) LoadImageAsset(_ context.Context, sourceURL string) (ImageAsset, bool, error) {
+	s.loadCalls = append(s.loadCalls, sourceURL)
+	if s.loadErr != nil {
+		return ImageAsset{}, false, s.loadErr
+	}
+	return s.asset, s.loadOK, nil
+}
+
+func (s *testCandidateImageStore) SaveImageAsset(_ context.Context, asset ImageAsset) error {
+	s.savedAssets = append(s.savedAssets, asset)
+	return s.saveErr
+}
+
+func (s *testCandidateImageStore) EnsureSource(context.Context, string, string) (int64, error) {
+	return 0, nil
+}
+
+func (s *testCandidateImageStore) CreateImportRun(context.Context, string, string) (int64, time.Time, error) {
+	return 0, time.Time{}, nil
+}
+
+func (s *testCandidateImageStore) CreateSnapshot(context.Context, int64, *int64, time.Time, string) (int64, time.Time, error) {
+	return 0, time.Time{}, nil
+}
+
+func (s *testCandidateImageStore) FinishImportRun(context.Context, int64, string, string) (time.Time, error) {
+	return time.Time{}, nil
+}
+
+type testCandidateImageFetcher struct {
+	calls  []string
+	result FetchResult
+	err    error
+}
+
+func (f *testCandidateImageFetcher) Fetch(_ context.Context, url string) (FetchResult, error) {
+	f.calls = append(f.calls, url)
+	if f.err != nil {
+		return FetchResult{}, f.err
+	}
+	return f.result, nil
+}
+
+type testCandidateImageStorage struct {
+	calls []string
+	asset ImageAsset
+	err   error
+}
+
+func (s *testCandidateImageStorage) StoreImage(_ context.Context, sourceURL string, result FetchResult) (ImageAsset, error) {
+	s.calls = append(s.calls, sourceURL)
+	if s.err != nil {
+		return ImageAsset{}, s.err
+	}
+	return s.asset, nil
 }

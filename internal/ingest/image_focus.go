@@ -56,6 +56,13 @@ func NormalizeExplicitImageFocusValue(value int) int {
 	return value
 }
 
+func normalizeEstimatedImageFocus(x, y int) ImageFocus {
+	return ImageFocus{
+		X: NormalizeExplicitImageFocusValue(x),
+		Y: NormalizeExplicitImageFocusValue(y),
+	}
+}
+
 func BestEffortImageFocus(contentType string, body []byte) ImageFocus {
 	focus, err := EstimateImageFocus(contentType, body)
 	if err != nil {
@@ -150,7 +157,7 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 		return DefaultImageFocus(), ErrImageFocusNoSignal
 	}
 
-	return NormalizeImageFocus(
+	return normalizeEstimatedImageFocus(
 		focusPercent(weightedX/total),
 		focusPercent(weightedY/total),
 	), nil
@@ -413,7 +420,7 @@ func detectVerticalRectangleFromCandidates(candidates []verticalEdgeCandidate, r
 
 	best := rectangles[0]
 	centerX := (float64(best.left) + float64(best.right)) / 2 / float64(width)
-	result.Focus = NormalizeImageFocus(int(math.Round(centerX*100)), DefaultImageFocusY)
+	result.Focus = normalizeEstimatedImageFocus(int(math.Round(centerX*100)), DefaultImageFocusY)
 	result.Candidate = best
 	result.Detected = true
 	return true
@@ -430,7 +437,7 @@ func detectVerticalRectangleFromRectangles(rectangles []verticalRectangleCandida
 
 	best := rectangles[0]
 	centerX := (float64(best.left) + float64(best.right)) / 2 / float64(width)
-	result.Focus = NormalizeImageFocus(int(math.Round(centerX*100)), DefaultImageFocusY)
+	result.Focus = normalizeEstimatedImageFocus(int(math.Round(centerX*100)), DefaultImageFocusY)
 	result.Candidate = best
 	result.Detected = true
 	return true

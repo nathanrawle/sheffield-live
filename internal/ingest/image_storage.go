@@ -20,6 +20,11 @@ import (
 	"time"
 )
 
+const (
+	maxImageDimension = 8192
+	maxImagePixels    = 40_000_000
+)
+
 type ImageAsset struct {
 	SourceURL   string
 	PublicURL   string
@@ -97,7 +102,13 @@ func (s *LocalImageStorage) StoreImage(ctx context.Context, sourceURL string, re
 	if err != nil {
 		return ImageAsset{}, err
 	}
-	focus := BestEffortImageFocus(contentType, result.Body)
+	if width <= 0 || height <= 0 {
+		return ImageAsset{}, fmt.Errorf("image dimensions are invalid: %dx%d", width, height)
+	}
+	focus := DefaultImageFocus()
+	if width <= maxImageDimension && height <= maxImageDimension && int64(width)*int64(height) <= maxImagePixels {
+		focus = BestEffortImageFocus(contentType, result.Body)
+	}
 
 	sum := sha256.Sum256(result.Body)
 	sha := hex.EncodeToString(sum[:])
@@ -125,16 +136,61 @@ func (s *LocalImageStorage) StoreImage(ctx context.Context, sourceURL string, re
 }
 
 func writeFileIfMissing(path string, body []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if errors.Is(err, os.ErrExist) {
-		return nil
+	if existing, err := os.ReadFile(path); err == nil {
+		if bytes.Equal(existing, body) {
+			return nil
+		}
+		return fmt.Errorf("existing file %q does not match image body", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
+
+	dir := filepath.Dir(path)
+	tempFile, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	_, err = file.Write(body)
-	return err
+	tempPath := tempFile.Name()
+	defer func() {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
+	}()
+
+	if _, err := tempFile.Write(body); err != nil {
+		return err
+	}
+	if err := tempFile.Chmod(0o644); err != nil {
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+
+	return publishTempFileIfMissing(tempPath, path, body)
+}
+
+func publishTempFileIfMissing(tempPath, path string, body []byte) error {
+	if err := os.Link(tempPath, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			existing, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if bytes.Equal(existing, body) {
+				return nil
+			}
+			return fmt.Errorf("existing file %q does not match image body", path)
+		}
+		return err
+	}
+	final, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(final, body) {
+		return nil
+	}
+	return fmt.Errorf("published file %q does not match image body", path)
 }
 
 func validateRemoteImageURL(raw string) error {

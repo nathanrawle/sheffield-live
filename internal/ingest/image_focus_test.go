@@ -502,3 +502,9 @@ func TestNormalizeImageFocusDefaultsZeroAndClamps(t *testing.T) {
 		t.Fatalf("explicit value focus = %d, want edge 0", got)
 	}
 }
+
+func TestNormalizeEstimatedImageFocusPreservesExplicitZero(t *testing.T) {
+	if focus := normalizeEstimatedImageFocus(0, 0); focus != (ImageFocus{X: 0, Y: 0}) {
+		t.Fatalf("focus = %#v, want explicit zero to remain zero", focus)
+	}
+}

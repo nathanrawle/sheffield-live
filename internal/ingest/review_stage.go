@@ -127,7 +127,7 @@ func reviewStageStagingKey(group review.GroupInput) string {
 
 func reviewStageCandidateFingerprint(candidate review.CandidateInput) string {
 	sum := sha256.New()
-	writeReviewStageHashPart(sum, "review-stage-candidate:v1")
+	writeReviewStageHashPart(sum, "review-stage-candidate:v2")
 	writeReviewStageHashPart(sum, candidate.ExternalID)
 	writeReviewStageHashPart(sum, candidate.Name)
 	writeReviewStageHashPart(sum, candidate.VenueSlug)
@@ -136,13 +136,6 @@ func reviewStageCandidateFingerprint(candidate review.CandidateInput) string {
 	writeReviewStageHashPart(sum, candidate.Genre)
 	writeReviewStageHashPart(sum, candidate.Status)
 	writeReviewStageHashPart(sum, candidate.Description)
-	writeReviewStageHashPart(sum, candidate.ImageURL)
-	writeReviewStageHashPart(sum, candidate.ImageSourceURL)
-	writeReviewStageHashPart(sum, candidate.ImageAlt)
-	writeReviewStageHashPart(sum, fmt.Sprintf("%d", candidate.ImageWidth))
-	writeReviewStageHashPart(sum, fmt.Sprintf("%d", candidate.ImageHeight))
-	writeReviewStageHashPart(sum, fmt.Sprintf("%d", candidate.ImageFocusX))
-	writeReviewStageHashPart(sum, fmt.Sprintf("%d", candidate.ImageFocusY))
 	return hex.EncodeToString(sum.Sum(nil))
 }
 
