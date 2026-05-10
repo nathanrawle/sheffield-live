@@ -402,7 +402,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 	mediaURLPrefix := normalizeMediaURLPrefix(deps.MediaURLPrefix)
 	var mediaServer http.Handler
 	if strings.TrimSpace(deps.MediaRoot) != "" {
-		mediaServer = http.StripPrefix(mediaURLPrefix+"/", http.FileServer(http.Dir(deps.MediaRoot)))
+		mediaServer = http.StripPrefix(mediaURLPrefix+"/", http.FileServer(fileSystemRejectingDirectories{base: http.Dir(deps.MediaRoot)}))
 	}
 
 	return &Server{
@@ -438,6 +438,28 @@ func normalizeMediaURLPrefix(prefix string) string {
 		return "/media"
 	}
 	return prefix
+}
+
+type fileSystemRejectingDirectories struct {
+	base http.FileSystem
+}
+
+func (fsys fileSystemRejectingDirectories) Open(name string) (http.File, error) {
+	file, err := fsys.base.Open(name)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if info.IsDir() {
+		_ = file.Close()
+		return nil, fs.ErrNotExist
+	}
+	return file, nil
 }
 
 func formatMultilineAddress(value string) string {

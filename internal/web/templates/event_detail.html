@@ -7,7 +7,7 @@
     </div>
     {{if .Event.ImageURL}}
     <figure class="event-detail-media">
-      <img src="{{.Event.ImageURL}}" alt="{{eventImageAlt .Event}}" loading="eager" decoding="async">
+      <img src="{{.Event.ImageURL}}" alt="{{eventImageAlt .Event}}" style="{{imageFocusStyle .Event.ImageFocusX .Event.ImageFocusY}}" loading="eager" decoding="async">
     </figure>
     {{end}}
     <div class="event-detail-copy">

@@ -119,6 +119,15 @@ func TestMediaRouteServesLocalFiles(t *testing.T) {
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("directory status = %d, want %d", rr.Code, http.StatusNotFound)
 	}
+
+	for _, path := range []string{"/media/events", "/media/events/"} {
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		rr = httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("path %s status = %d, want %d", path, rr.Code, http.StatusNotFound)
+		}
+	}
 }
 
 func TestNewServerRejectsMissingEventVenue(t *testing.T) {
@@ -1538,6 +1547,8 @@ func TestEventDetailRendersHeroAndPortraitImages(t *testing.T) {
 				ImageAlt:    "Landscape Show poster",
 				ImageWidth:  1600,
 				ImageHeight: 900,
+				ImageFocusX: 25,
+				ImageFocusY: 75,
 				SourceName:  "Fixture listings",
 				SourceURL:   "https://example.test/landscape-show",
 				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
@@ -1555,6 +1566,8 @@ func TestEventDetailRendersHeroAndPortraitImages(t *testing.T) {
 				ImageURL:    "/media/events/portrait.jpg",
 				ImageWidth:  800,
 				ImageHeight: 1200,
+				ImageFocusX: 60,
+				ImageFocusY: 40,
 				SourceName:  "Fixture listings",
 				SourceURL:   "https://example.test/portrait-show",
 				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
@@ -1565,11 +1578,11 @@ func TestEventDetailRendersHeroAndPortraitImages(t *testing.T) {
 
 	landscapeBody := renderPath(t, server, "/events/landscape-show")
 	assertContains(t, landscapeBody, `<header class="event-detail-head hero-image">`)
-	assertContains(t, landscapeBody, `<img src="/media/events/landscape.jpg" alt="Landscape Show poster" loading="eager" decoding="async">`)
+	assertContains(t, landscapeBody, `<img src="/media/events/landscape.jpg" alt="Landscape Show poster" style="--image-focus-x: 25%; --image-focus-y: 75%;" loading="eager" decoding="async">`)
 
 	portraitBody := renderPath(t, server, "/events/portrait-show")
 	assertContains(t, portraitBody, `<header class="event-detail-head portrait-image">`)
-	assertContains(t, portraitBody, `<img src="/media/events/portrait.jpg" alt="Portrait Show" loading="eager" decoding="async">`)
+	assertContains(t, portraitBody, `<img src="/media/events/portrait.jpg" alt="Portrait Show" style="--image-focus-x: 60%; --image-focus-y: 40%;" loading="eager" decoding="async">`)
 }
 
 func TestVenueDetailShowsEmptyState(t *testing.T) {
