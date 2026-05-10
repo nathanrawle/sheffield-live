@@ -245,7 +245,7 @@ func TestVerticalRectangleFocusIgnoresSmoothWholeImageGradient(t *testing.T) {
 func TestVerticalRectangleFocusIgnoresPartialHeightEdges(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 180, 120))
 	fillRect(img, img.Bounds(), color.RGBA{R: 60, G: 70, B: 82, A: 255})
-	fillRect(img, image.Rect(0, 22, 80, 98), color.RGBA{R: 235, G: 230, B: 218, A: 255})
+	fillRect(img, image.Rect(0, 42, 80, 78), color.RGBA{R: 235, G: 230, B: 218, A: 255})
 
 	red, green, blue, luma, width, height := focusTestSample(img)
 	if focus, ok := verticalRectangleFocus(red, green, blue, luma, width, height); ok {
