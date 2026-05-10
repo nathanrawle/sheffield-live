@@ -424,7 +424,7 @@ func TestEstimateImageFocusPrioritizesGrayscaleSkinToneRange(t *testing.T) {
 	}
 }
 
-func TestFocusPercentSnapsToCentroidSidePastThreshold(t *testing.T) {
+func TestFocusPercentDampsCentroidOffset(t *testing.T) {
 	tests := []struct {
 		name       string
 		normalized float64
@@ -433,10 +433,10 @@ func TestFocusPercentSnapsToCentroidSidePastThreshold(t *testing.T) {
 		{name: "center stays centered", normalized: 0.5, want: 50},
 		{name: "close to center stays centered", normalized: 0.54, want: 50},
 		{name: "near center keeps damping", normalized: 0.6, want: 59},
-		{name: "left threshold snaps to damped edge", normalized: 0.31, want: 8},
-		{name: "right threshold snaps to damped edge", normalized: 0.69, want: 93},
-		{name: "far left snaps to edge", normalized: 0.16, want: 0},
-		{name: "far right snaps to edge", normalized: 0.84, want: 100},
+		{name: "left side stays damped", normalized: 0.31, want: 34},
+		{name: "right side stays damped", normalized: 0.69, want: 66},
+		{name: "far left avoids edge snap", normalized: 0.16, want: 21},
+		{name: "far right avoids edge snap", normalized: 0.84, want: 79},
 	}
 
 	for _, tc := range tests {
