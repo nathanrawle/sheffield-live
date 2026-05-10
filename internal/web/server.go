@@ -357,7 +357,14 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		},
 		"imageFocusStyle": func(x, y int) template.CSS {
 			focus := ingest.NormalizeImageFocus(x, y)
-			return template.CSS(fmt.Sprintf("--image-focus-x: %d%%; --image-focus-y: %d%%;", focus.X, focus.Y))
+			return imageFocusStyle(focus)
+		},
+		"eventCardImageFocusStyle": func(event domain.Event) template.CSS {
+			focus := ingest.NormalizeImageFocus(event.ImageFocusX, event.ImageFocusY)
+			return imageFocusStyle(ingest.ImageFocus{
+				X: cardCropFocusValue(focus.X),
+				Y: cardCropFocusValue(focus.Y),
+			})
 		},
 		"year":            func(t time.Time) string { return t.In(localLocation).Format("2006") },
 		"joinStrings":     func(values []string, sep string) string { return strings.Join(values, sep) },
@@ -1947,6 +1954,29 @@ func httpStatusDisplay(status string, statusCode int) string {
 		return strconv.Itoa(statusCode)
 	}
 	return ""
+}
+
+func imageFocusStyle(focus ingest.ImageFocus) template.CSS {
+	return template.CSS(fmt.Sprintf("--image-focus-x: %d%%; --image-focus-y: %d%%;", focus.X, focus.Y))
+}
+
+func cardCropFocusValue(value int) int {
+	const cropFocusStrength = 2
+	offset := value - ingest.DefaultImageFocusX
+	if offset == 0 {
+		return ingest.DefaultImageFocusX
+	}
+	return clampInt(ingest.DefaultImageFocusX+offset*cropFocusStrength, 0, 100)
+}
+
+func clampInt(value, minValue, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 func buildReviewDetail(group review.Group) ReviewDetail {

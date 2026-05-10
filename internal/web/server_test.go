@@ -1509,8 +1509,27 @@ func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := renderPath(t, server, tc.path)
 			assertContains(t, body, tc.cardClass)
-			assertContains(t, body, `<img class="event-card-image" src="/media/events/poster.jpg" alt="Poster Show artwork" style="--image-focus-x: 35%; --image-focus-y: 65%;" loading="lazy" decoding="async">`)
+			assertContains(t, body, `<img class="event-card-image" src="/media/events/poster.jpg" alt="Poster Show artwork" style="--image-focus-x: 20%; --image-focus-y: 80%;" loading="lazy" decoding="async">`)
 		})
+	}
+}
+
+func TestCardCropFocusValueAmplifiesAwayFromCenter(t *testing.T) {
+	tests := []struct {
+		value int
+		want  int
+	}{
+		{value: 0, want: 0},
+		{value: 35, want: 20},
+		{value: 50, want: 50},
+		{value: 60, want: 70},
+		{value: 75, want: 100},
+		{value: 100, want: 100},
+	}
+	for _, tc := range tests {
+		if got := cardCropFocusValue(tc.value); got != tc.want {
+			t.Fatalf("cardCropFocusValue(%d) = %d, want %d", tc.value, got, tc.want)
+		}
 	}
 }
 
