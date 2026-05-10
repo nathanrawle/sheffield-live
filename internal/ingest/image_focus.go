@@ -323,7 +323,7 @@ func defaultVerticalRectangleParams() verticalRectangleParams {
 		PanelRegionMinCoverage:           0.96,
 		PanelRegionMinMeanContrast:       0.16,
 		PanelRegionMinBoundarySupport:    0.14,
-		PanelRegionMinScore:              0.12,
+		PanelRegionMinScore:              0.60,
 		PanelRegionOutsideAgreementRatio: 0.60,
 		PanelRegionSideCandidateWeight:   0.82,
 		RepeatingEdgeMinCount:            5,
