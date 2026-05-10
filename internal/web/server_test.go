@@ -1523,6 +1523,41 @@ func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
 	}
 }
 
+func TestEventCardsPreserveExplicitTopLeftImageFocus(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{{
+			Slug:        "top-left-poster-show",
+			Name:        "Top Left Poster Show",
+			VenueSlug:   "leadmill",
+			Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+			End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "Poster description.",
+			ImageURL:    "/media/events/top-left-poster.jpg",
+			ImageWidth:  1200,
+			ImageHeight: 800,
+			ImageFocusX: 0,
+			ImageFocusY: 0,
+			SourceName:  "Fixture listings",
+			SourceURL:   "https://example.test/top-left-poster-show",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			Origin:      domain.OriginLive,
+		}},
+	))
+
+	body := renderPath(t, server, "/")
+	assertContains(t, body, `<img class="event-card-image" src="/media/events/top-left-poster.jpg" alt="Top Left Poster Show" style="--image-focus-x: 0%; --image-focus-y: 0%;" loading="lazy" decoding="async">`)
+}
+
 func TestEventDetailRendersHeroAndPortraitImages(t *testing.T) {
 	server := mustClockedServer(t, store.NewStore(
 		[]domain.Venue{{

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"time"
 )
 
@@ -67,20 +69,52 @@ func NewHTTPFetcherWithMaxBodyBytes(timeout time.Duration, userAgent string, max
 }
 
 func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, error) {
+	return f.fetch(ctx, rawURL, f.client)
+}
+
+func (f *HTTPFetcher) FetchWithURLValidator(ctx context.Context, rawURL string, validate func(string) error) (FetchResult, error) {
 	if f == nil {
 		return FetchResult{}, errors.New("fetcher is nil")
 	}
 	if f.client == nil {
 		return FetchResult{}, errors.New("fetcher client is nil")
 	}
+	if validate != nil {
+		if err := validate(rawURL); err != nil {
+			return FetchResult{URL: rawURL, CapturedAt: time.Now().UTC()}, err
+		}
+	}
+	client := *f.client
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if validate != nil {
+			if err := validate(req.URL.String()); err != nil {
+				return err
+			}
+		}
+		req.Header.Set("User-Agent", f.userAgent)
+		return nil
+	}
+	client.Transport = restrictedRemoteTransport(f.client.Transport)
+	return f.fetch(ctx, rawURL, &client)
+}
 
+func (f *HTTPFetcher) fetch(ctx context.Context, rawURL string, client *http.Client) (FetchResult, error) {
+	if f == nil {
+		return FetchResult{}, errors.New("fetcher is nil")
+	}
+	if client == nil {
+		return FetchResult{}, errors.New("fetcher client is nil")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return FetchResult{}, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("User-Agent", f.userAgent)
 
-	resp, err := f.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return FetchResult{URL: rawURL, CapturedAt: time.Now().UTC()}, fmt.Errorf("fetch %s: %w", rawURL, err)
 	}
@@ -102,6 +136,74 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, er
 		Truncated:     truncated,
 		CapturedAt:    time.Now().UTC(),
 	}, nil
+}
+
+func restrictedRemoteTransport(base http.RoundTripper) http.RoundTripper {
+	var transport *http.Transport
+	if base == nil {
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	} else if t, ok := base.(*http.Transport); ok {
+		transport = t.Clone()
+	} else {
+		return base
+	}
+	transport.Proxy = nil
+	transport.DialContext = publicRemoteDialContext
+	return transport
+}
+
+func publicRemoteDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRemoteHost(host); err != nil {
+		return nil, err
+	}
+	var dialer net.Dialer
+	if ip := net.ParseIP(host); ip != nil {
+		return dialer.DialContext(ctx, network, address)
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("resolve %s: no addresses", host)
+	}
+	for _, addr := range addrs {
+		parsed, ok := netipAddr(addr.IP)
+		if !ok {
+			return nil, fmt.Errorf("resolve %s: invalid address %q", host, addr.IP.String())
+		}
+		if err := validateRemoteAddr(parsed); err != nil {
+			return nil, fmt.Errorf("resolve %s: %w", host, err)
+		}
+	}
+	var lastErr error
+	for _, addr := range addrs {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addr.IP.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func netipAddr(ip net.IP) (netip.Addr, bool) {
+	if ip4 := ip.To4(); ip4 != nil {
+		var addr [4]byte
+		copy(addr[:], ip4)
+		return netip.AddrFrom4(addr), true
+	}
+	ip16 := ip.To16()
+	if ip16 == nil {
+		return netip.Addr{}, false
+	}
+	var addr [16]byte
+	copy(addr[:], ip16)
+	return netip.AddrFrom16(addr), true
 }
 
 func readBounded(r io.Reader, maxBytes int64) ([]byte, bool, error) {

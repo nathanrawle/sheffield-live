@@ -599,6 +599,96 @@ func TestStageReviewGroupRestagingOpenGroupPopulatesAndRefreshesAuthoritativeTup
 	}
 }
 
+func TestStageReviewGroupRestagingOpenGroupRefreshesImageFields(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	input := review.GroupInput{
+		Title:      "Image restage",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:image-restage.ics",
+		StagingKey: "v1:image-restage",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "shared-image-uid",
+			Name:        "Image Restage Show",
+			VenueSlug:   "sidney-and-matilda",
+			StartAt:     "2026-05-01T19:00:00Z",
+			EndAt:       "2026-05-01T22:00:00Z",
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "First description",
+			SourceName:  "Fixture ICS",
+			SourceURL:   "https://example.test/image-restage",
+			Provenance:  "fixture UID shared-image-uid",
+		}},
+	}
+
+	stageResult, err := st.StageReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	groupID := stageResult.ID
+	withImage := input
+	withImage.Candidates[0].ImageURL = "/media/events/restaged.jpg"
+	withImage.Candidates[0].ImageSourceURL = "https://example.test/restaged.jpg"
+	withImage.Candidates[0].ImageAlt = "Restaged poster"
+	withImage.Candidates[0].ImageWidth = 1200
+	withImage.Candidates[0].ImageHeight = 800
+	withImage.Candidates[0].ImageFocusX = 25
+	withImage.Candidates[0].ImageFocusY = 75
+
+	reused, err := st.StageReviewGroup(ctx, withImage)
+	if err != nil {
+		t.Fatalf("restage review group with image: %v", err)
+	}
+	if reused.Created || reused.ID != groupID {
+		t.Fatalf("restaged result = %#v, want reused group %d", reused, groupID)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if got := len(group.Candidates); got != 1 {
+		t.Fatalf("candidates = %d, want 1", got)
+	}
+	candidate := group.Candidates[0]
+	if candidate.ImageURL != "/media/events/restaged.jpg" ||
+		candidate.ImageSourceURL != "https://example.test/restaged.jpg" ||
+		candidate.ImageAlt != "Restaged poster" ||
+		candidate.ImageWidth != 1200 ||
+		candidate.ImageHeight != 800 ||
+		candidate.ImageFocusX != 25 ||
+		candidate.ImageFocusY != 75 {
+		t.Fatalf("candidate image fields = %q,%q,%q,%d,%d,%d,%d, want restaged image", candidate.ImageURL, candidate.ImageSourceURL, candidate.ImageAlt, candidate.ImageWidth, candidate.ImageHeight, candidate.ImageFocusX, candidate.ImageFocusY)
+	}
+
+	reused, err = st.StageReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("restage review group with blank image: %v", err)
+	}
+	if reused.Created || reused.ID != groupID {
+		t.Fatalf("blank restaged result = %#v, want reused group %d", reused, groupID)
+	}
+	group, ok, err = st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after blank restage")
+	}
+	if got := group.Candidates[0].ImageURL; got != "/media/events/restaged.jpg" {
+		t.Fatalf("image url after blank restage = %q, want preserved image", got)
+	}
+}
+
 func TestStageReviewGroupReusesClosedMatchingGroupWithoutReopening(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -1980,6 +2070,106 @@ func TestSaveReviewDraftChoicesUpsertsPerField(t *testing.T) {
 	if storedCandidateID != group.Candidates[1].ID {
 		t.Fatalf("stored draft candidate = %d, want %d", storedCandidateID, group.Candidates[1].ID)
 	}
+}
+
+func TestResolveReviewGroupCanonicalMatchPreservesExistingImageWhenChosenImageBlank(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	sourceID := mustEnsureReviewTestSource(t, st.db)
+	venueID := lookupStoreVenueID(t, st.db, "leadmill")
+	slug := "live-canonical-image-show-leadmill-20260501190000"
+	res, err := st.db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
+			last_checked_at,
+			origin,
+			publication_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, "Canonical Image Show", "2026-05-01T19:00:00Z", "2026-05-01T22:00:00Z", "Indie", "Listed", "Existing description", "/media/events/original-canonical.jpg", "https://example.test/original-canonical.jpg", "Original canonical poster", 1200, 800, 20, 80, "2026-05-09T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed))
+	if err != nil {
+		t.Fatalf("insert canonical event: %v", err)
+	}
+	eventID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("event id: %v", err)
+	}
+
+	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
+		Title:      "Canonical image preserve",
+		SourceName: "Review test source",
+		SourceURL:  "https://example.test/review-test",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "blank-image-candidate",
+				Name:        "Canonical Image Show",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-01T19:00:00Z",
+				EndAt:       "2026-05-01T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Updated description",
+				SourceName:  "Review test source",
+				SourceURL:   "https://example.test/review-test",
+				Provenance:  "blank image candidate",
+			},
+			{
+				CanonicalEventID: eventID,
+				Name:             "Canonical Image Show",
+				VenueSlug:        "leadmill",
+				StartAt:          "2026-05-01T19:00:00Z",
+				EndAt:            "2026-05-01T22:00:00Z",
+				Genre:            "Indie",
+				Status:           "Listed",
+				Description:      "Existing description",
+				ImageURL:         "/media/events/original-canonical.jpg",
+				ImageSourceURL:   "https://example.test/original-canonical.jpg",
+				ImageAlt:         "Original canonical poster",
+				ImageWidth:       1200,
+				ImageHeight:      800,
+				ImageFocusX:      20,
+				ImageFocusY:      80,
+				SourceName:       "Review test source",
+				SourceURL:        "https://example.test/review-test",
+				Provenance:       "Canonical live event snapshot",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	assertEventImageFields(t, st.db, slug, "/media/events/original-canonical.jpg", "https://example.test/original-canonical.jpg", "Original canonical poster", 1200, 800, 20, 80)
 }
 
 func TestResolveReviewGroupPublishesSingletonEventWithSourceFallback(t *testing.T) {

@@ -356,7 +356,10 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			return event.ImageWidth > 0 && event.ImageHeight > event.ImageWidth
 		},
 		"imageFocusStyle": func(x, y int) template.CSS {
-			focus := ingest.NormalizeImageFocus(x, y)
+			focus := ingest.ImageFocus{
+				X: ingest.NormalizeExplicitImageFocusValue(x),
+				Y: ingest.NormalizeExplicitImageFocusValue(y),
+			}
 			return template.CSS(fmt.Sprintf("--image-focus-x: %d%%; --image-focus-y: %d%%;", focus.X, focus.Y))
 		},
 		"year":            func(t time.Time) string { return t.In(localLocation).Format("2006") },

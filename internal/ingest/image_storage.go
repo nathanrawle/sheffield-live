@@ -12,6 +12,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path"
@@ -106,7 +107,7 @@ func (s *LocalImageStorage) StoreImage(ctx context.Context, sourceURL string, re
 		return ImageAsset{}, fmt.Errorf("image dimensions are invalid: %dx%d", width, height)
 	}
 	focus := DefaultImageFocus()
-	if width <= maxImageDimension && height <= maxImageDimension && int64(width)*int64(height) <= maxImagePixels {
+	if imageWithinFocusLimits(width, height) {
 		focus = BestEffortImageFocus(contentType, result.Body)
 	}
 
@@ -204,11 +205,43 @@ func validateRemoteImageURL(raw string) error {
 	if parsed.Host == "" {
 		return errors.New("image URL host is required")
 	}
+	if err := validateRemoteHost(parsed.Hostname()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func imageWithinFocusLimits(width, height int) bool {
+	if width <= 0 || height <= 0 {
+		return false
+	}
+	return width <= maxImageDimension && height <= maxImageDimension && int64(width)*int64(height) <= maxImagePixels
+}
+
+func validateRemoteHost(host string) error {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return errors.New("image URL host is required")
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return fmt.Errorf("image URL host %q is not allowed", host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return validateRemoteAddr(addr)
+	}
+	return nil
+}
+
+func validateRemoteAddr(addr netip.Addr) error {
+	addr = addr.Unmap()
+	if addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() {
+		return fmt.Errorf("image URL address %q is not allowed", addr.String())
+	}
 	return nil
 }
 
 func imageContentTypeAndExt(header string, body []byte) (string, string, error) {
-	contentType := strings.ToLower(strings.TrimSpace(strings.Split(header, ";")[0]))
+	contentType := normalizedImageContentType(header)
 	if contentType == "" || contentType == "application/octet-stream" {
 		contentType = strings.ToLower(http.DetectContentType(body))
 	}

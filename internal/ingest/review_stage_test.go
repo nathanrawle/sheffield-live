@@ -919,6 +919,46 @@ func TestCopyCandidateImagesFallsBackToCachedAssetOnLiveFailures(t *testing.T) {
 	}
 }
 
+func TestCopyCandidateImagesRejectsPrivateRedirectTargets(t *testing.T) {
+	ctx := context.Background()
+	store := &testCandidateImageStore{}
+	fetcher := &testCandidateImageFetcher{
+		redirectURL: "http://127.0.0.1/private-image.jpg",
+		result: FetchResult{
+			URL:         "https://example.test/poster.jpg",
+			StatusCode:  http.StatusOK,
+			ContentType: "image/jpeg",
+			Body:        []byte("image-body"),
+		},
+	}
+	storage := &testCandidateImageStorage{
+		asset: ImageAsset{
+			SourceURL: "https://example.test/poster.jpg",
+			PublicURL: "/media/events/poster.jpg",
+		},
+	}
+
+	candidates, warnings := copyCandidateImages(ctx, store, fetcher, storage, []EventCandidate{
+		{
+			Summary:        "Private redirect poster",
+			ImageSourceURL: "https://example.test/poster.jpg",
+		},
+	})
+
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want one warning", warnings)
+	}
+	if !strings.Contains(warnings[0], "127.0.0.1") {
+		t.Fatalf("warning = %q, want rejected loopback target", warnings[0])
+	}
+	if got := len(storage.calls); got != 0 {
+		t.Fatalf("storage calls = %d, want 0", got)
+	}
+	if got := candidates[0].ImageURL; got != "" {
+		t.Fatalf("image url = %q, want blank", got)
+	}
+}
+
 type testCandidateImageStore struct {
 	asset       ImageAsset
 	loadOK      bool
@@ -958,9 +998,10 @@ func (s *testCandidateImageStore) FinishImportRun(context.Context, int64, string
 }
 
 type testCandidateImageFetcher struct {
-	calls  []string
-	result FetchResult
-	err    error
+	calls       []string
+	redirectURL string
+	result      FetchResult
+	err         error
 }
 
 func (f *testCandidateImageFetcher) Fetch(_ context.Context, url string) (FetchResult, error) {
@@ -969,6 +1010,20 @@ func (f *testCandidateImageFetcher) Fetch(_ context.Context, url string) (FetchR
 		return FetchResult{}, f.err
 	}
 	return f.result, nil
+}
+
+func (f *testCandidateImageFetcher) FetchWithURLValidator(ctx context.Context, url string, validate func(string) error) (FetchResult, error) {
+	if validate != nil {
+		if err := validate(url); err != nil {
+			return FetchResult{}, err
+		}
+		if f.redirectURL != "" {
+			if err := validate(f.redirectURL); err != nil {
+				return FetchResult{}, err
+			}
+		}
+	}
+	return f.Fetch(ctx, url)
 }
 
 type testCandidateImageStorage struct {

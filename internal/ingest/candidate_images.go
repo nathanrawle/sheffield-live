@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+type URLValidatingFetcher interface {
+	FetchWithURLValidator(ctx context.Context, url string, validate func(string) error) (FetchResult, error)
+}
+
 func copyCandidateImages(ctx context.Context, st Store, fetcher Fetcher, storage ImageStorage, candidates []EventCandidate) ([]EventCandidate, []string) {
 	if len(candidates) == 0 {
 		return candidates, nil
@@ -39,7 +43,7 @@ func copyCandidateImages(ctx context.Context, st Store, fetcher Fetcher, storage
 			}
 			continue
 		}
-		result, err := fetcher.Fetch(ctx, sourceURL)
+		result, err := fetchRemoteImage(ctx, fetcher, sourceURL)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("fetch image for %q: %v", updated[i].Summary, err))
 			if hasCachedAsset {
@@ -67,6 +71,13 @@ func copyCandidateImages(ctx context.Context, st Store, fetcher Fetcher, storage
 		applyImageAssetToCandidate(&updated[i], asset)
 	}
 	return updated, warnings
+}
+
+func fetchRemoteImage(ctx context.Context, fetcher Fetcher, sourceURL string) (FetchResult, error) {
+	if validatingFetcher, ok := fetcher.(URLValidatingFetcher); ok {
+		return validatingFetcher.FetchWithURLValidator(ctx, sourceURL, validateRemoteImageURL)
+	}
+	return fetcher.Fetch(ctx, sourceURL)
 }
 
 func attachExistingCandidateImages(ctx context.Context, st any, candidates []EventCandidate) []EventCandidate {

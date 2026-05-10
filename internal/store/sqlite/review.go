@@ -463,13 +463,39 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 		existingCandidate := existingBucket[0]
 		incomingVenueText := strings.TrimSpace(incomingCandidate.VenueText)
 		incomingVenueLocationRaw := strings.TrimSpace(incomingCandidate.VenueLocationRaw)
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE review_candidates
-			SET venue_text = ?,
-				venue_location_raw = ?
-			WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
-		`, incomingVenueText, incomingVenueLocationRaw, existingCandidate.ID, groupID); err != nil {
-			return nil, err
+		if strings.TrimSpace(incomingCandidate.ImageURL) != "" {
+			if _, err := tx.ExecContext(ctx, `
+					UPDATE review_candidates
+					SET venue_text = ?,
+						venue_location_raw = ?,
+						image_url = ?,
+						image_source_url = ?,
+						image_alt = ?,
+						image_width = ?,
+						image_height = ?,
+						image_focus_x = ?,
+						image_focus_y = ?
+					WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
+				`, incomingVenueText, incomingVenueLocationRaw,
+				strings.TrimSpace(incomingCandidate.ImageURL),
+				strings.TrimSpace(incomingCandidate.ImageSourceURL),
+				strings.TrimSpace(incomingCandidate.ImageAlt),
+				incomingCandidate.ImageWidth,
+				incomingCandidate.ImageHeight,
+				normalizedImageFocusValue(incomingCandidate.ImageFocusX),
+				normalizedImageFocusValue(incomingCandidate.ImageFocusY),
+				existingCandidate.ID, groupID); err != nil {
+				return nil, err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+					UPDATE review_candidates
+					SET venue_text = ?,
+						venue_location_raw = ?
+					WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
+				`, incomingVenueText, incomingVenueLocationRaw, existingCandidate.ID, groupID); err != nil {
+				return nil, err
+			}
 		}
 		if reviewCandidateNeedsProvisionalVenueBackfill(existingCandidate, incomingVenueText, incomingVenueLocationRaw) {
 			existingCandidate.VenueSlug = strings.TrimSpace(incomingCandidate.VenueSlug)
@@ -3771,6 +3797,7 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 	} else if ok && conflict.ID != eventID {
 		return fmt.Errorf("review event slug %q already belongs to a different event", event.Slug)
 	}
+	incomingImageURL := strings.TrimSpace(event.ImageURL)
 	_, err = tx.ExecContext(ctx, `
 		UPDATE events
 		SET slug = ?,
@@ -3782,13 +3809,13 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 			genre = ?,
 			status = ?,
 			description = ?,
-			image_url = ?,
-			image_source_url = ?,
-			image_alt = ?,
-			image_width = ?,
-			image_height = ?,
-			image_focus_x = ?,
-			image_focus_y = ?,
+			image_url = CASE WHEN ? = '' THEN image_url ELSE ? END,
+			image_source_url = CASE WHEN ? = '' THEN image_source_url ELSE ? END,
+			image_alt = CASE WHEN ? = '' THEN image_alt ELSE ? END,
+			image_width = CASE WHEN ? = '' THEN image_width ELSE ? END,
+			image_height = CASE WHEN ? = '' THEN image_height ELSE ? END,
+			image_focus_x = CASE WHEN ? = '' THEN image_focus_x ELSE ? END,
+			image_focus_y = CASE WHEN ? = '' THEN image_focus_y ELSE ? END,
 			official_listing_url = ?,
 			calendar_url = ?,
 			last_checked_at = ?,
@@ -3799,9 +3826,13 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
-		event.ImageURL, event.ImageSourceURL, event.ImageAlt, event.ImageWidth, event.ImageHeight,
-		normalizedImageFocusValue(event.ImageFocusX),
-		normalizedImageFocusValue(event.ImageFocusY),
+		incomingImageURL, incomingImageURL,
+		incomingImageURL, strings.TrimSpace(event.ImageSourceURL),
+		incomingImageURL, strings.TrimSpace(event.ImageAlt),
+		incomingImageURL, event.ImageWidth,
+		incomingImageURL, event.ImageHeight,
+		incomingImageURL, normalizedImageFocusValue(event.ImageFocusX),
+		incomingImageURL, normalizedImageFocusValue(event.ImageFocusY),
 		event.OfficialListingURL,
 		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),

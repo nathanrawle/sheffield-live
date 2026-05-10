@@ -17,6 +17,7 @@ const (
 
 var (
 	ErrImageFocusUnsupported = errors.New("image focus unsupported")
+	ErrImageFocusTooLarge    = errors.New("image focus image too large")
 	ErrImageFocusNoSignal    = errors.New("image focus has no saliency signal")
 )
 
@@ -71,8 +72,20 @@ func BestEffortImageFocus(contentType string, body []byte) ImageFocus {
 	return focus
 }
 
+func EstimateImageFocusWithinLimits(contentType string, body []byte) (ImageFocus, error) {
+	contentType = normalizedImageContentType(contentType)
+	width, height, err := imageDimensions(contentType, body)
+	if err != nil {
+		return DefaultImageFocus(), err
+	}
+	if !imageWithinFocusLimits(width, height) {
+		return DefaultImageFocus(), ErrImageFocusTooLarge
+	}
+	return EstimateImageFocus(contentType, body)
+}
+
 func EstimateImageFocus(contentType string, body []byte) (ImageFocus, error) {
-	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	contentType = normalizedImageContentType(contentType)
 	if contentType == "image/webp" {
 		return DefaultImageFocus(), ErrImageFocusUnsupported
 	}
@@ -81,6 +94,10 @@ func EstimateImageFocus(contentType string, body []byte) (ImageFocus, error) {
 		return DefaultImageFocus(), err
 	}
 	return estimateDecodedImageFocus(img)
+}
+
+func normalizedImageContentType(contentType string) string {
+	return strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 }
 
 func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {

@@ -581,10 +581,10 @@ func runImageFocusBackfill(ctx context.Context, st *sqlite.Store, stdout io.Writ
 			report.Errors = append(report.Errors, fmt.Sprintf("%s: read image: %v", asset.SourceURL, err))
 			continue
 		}
-		focus, err := ingest.EstimateImageFocus(asset.ContentType, body)
+		focus, err := ingest.EstimateImageFocusWithinLimits(asset.ContentType, body)
 		if err != nil {
 			report.Defaulted++
-			if !errors.Is(err, ingest.ErrImageFocusUnsupported) && !errors.Is(err, ingest.ErrImageFocusNoSignal) {
+			if !errors.Is(err, ingest.ErrImageFocusUnsupported) && !errors.Is(err, ingest.ErrImageFocusTooLarge) && !errors.Is(err, ingest.ErrImageFocusNoSignal) {
 				report.DecodeFailures++
 			}
 		}
