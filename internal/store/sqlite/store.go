@@ -977,7 +977,13 @@ func appendUniqueString(values []string, candidate string) []string {
 }
 
 func normalizedImageFocus(x, y int) ingest.ImageFocus {
-	return ingest.NormalizeImageFocus(x, y)
+	if x == 0 && y == 0 {
+		return ingest.ImageFocus{}
+	}
+	return ingest.ImageFocus{
+		X: ingest.NormalizeExplicitImageFocusValue(x),
+		Y: ingest.NormalizeExplicitImageFocusValue(y),
+	}
 }
 
 func normalizedImageFocusValue(value int) int {

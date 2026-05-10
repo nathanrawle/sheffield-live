@@ -47,7 +47,7 @@ func (s *Store) LoadImageAsset(ctx context.Context, sourceURL string) (ingest.Im
 	if err != nil {
 		return ingest.ImageAsset{}, false, err
 	}
-	focus := ingest.NormalizeImageFocus(asset.FocusX, asset.FocusY)
+	focus := explicitImageFocus(asset.FocusX, asset.FocusY)
 	asset.FocusX = focus.X
 	asset.FocusY = focus.Y
 	asset.CopiedAt = parsed
@@ -65,7 +65,7 @@ func (s *Store) SaveImageAsset(ctx context.Context, asset ingest.ImageAsset) err
 	if asset.CopiedAt.IsZero() {
 		asset.CopiedAt = time.Now().UTC()
 	}
-	focus := ingest.NormalizeImageFocus(asset.FocusX, asset.FocusY)
+	focus := explicitImageFocus(asset.FocusX, asset.FocusY)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO image_assets (
 			source_url,
@@ -131,7 +131,7 @@ func (s *Store) ListImageAssets(ctx context.Context) ([]ingest.ImageAsset, error
 		if err != nil {
 			return nil, err
 		}
-		focus := ingest.NormalizeImageFocus(asset.FocusX, asset.FocusY)
+		focus := explicitImageFocus(asset.FocusX, asset.FocusY)
 		asset.FocusX = focus.X
 		asset.FocusY = focus.Y
 		asset.CopiedAt = parsed
@@ -151,7 +151,7 @@ func (s *Store) UpdateImageAssetFocus(ctx context.Context, sourceURL string, foc
 	if sourceURL == "" {
 		return errors.New("image asset source URL is required")
 	}
-	focus = ingest.NormalizeImageFocus(focus.X, focus.Y)
+	focus = explicitImageFocus(focus.X, focus.Y)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -179,4 +179,11 @@ func (s *Store) UpdateImageAssetFocus(ctx context.Context, sourceURL string, foc
 		return err
 	}
 	return tx.Commit()
+}
+
+func explicitImageFocus(x, y int) ingest.ImageFocus {
+	return ingest.ImageFocus{
+		X: ingest.NormalizeExplicitImageFocusValue(x),
+		Y: ingest.NormalizeExplicitImageFocusValue(y),
+	}
 }

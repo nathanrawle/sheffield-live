@@ -5416,6 +5416,265 @@ func fullReviewChoices(t *testing.T, group review.Group) []review.DraftChoiceInp
 	return choices
 }
 
+func TestLoadEventAndReviewCandidatePreserveExplicitZeroZeroFocus(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	sourceID := mustEnsureReviewTestSource(t, st.db)
+	venueID := lookupStoreVenueID(t, st.db, "leadmill")
+	eventSlug := "zero-focus-event"
+	if _, err := st.db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
+			last_checked_at,
+			origin,
+			publication_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, eventSlug, venueID, sourceID, "Zero Focus Event", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Zero focus description", "", "", "", 0, 0, 0, 0, "2026-05-09T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed)); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	event, ok, err := loadEventBySlug(ctx, st.db, eventSlug)
+	if err != nil {
+		t.Fatalf("load event: %v", err)
+	}
+	if !ok {
+		t.Fatal("event not found")
+	}
+	if event.ImageFocusX != 0 || event.ImageFocusY != 0 {
+		t.Fatalf("event focus = %d,%d, want 0,0", event.ImageFocusX, event.ImageFocusY)
+	}
+
+	groupID := mustInsertReviewGroupRow(t, st.db, `
+		INSERT INTO review_groups (
+			title,
+			source_name,
+			source_url,
+			status,
+			notes,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "Zero focus review", "Review test source", "https://example.test/review-test", review.StatusOpen, "", "2026-05-09T10:00:00Z", "2026-05-09T10:00:00Z")
+	candidateRes, err := st.db.Exec(`
+		INSERT INTO review_candidates (
+			group_id,
+			position,
+			external_id,
+			name,
+			venue_slug,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
+			source_name,
+			source_url,
+			provenance
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, groupID, 1, "", "Zero Focus Candidate", "leadmill", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Zero focus description", "", "", "", 0, 0, 0, 0, "Review test source", "https://example.test/review-test", "")
+	if err != nil {
+		t.Fatalf("insert review candidate: %v", err)
+	}
+	candidateID, err := candidateRes.LastInsertId()
+	if err != nil {
+		t.Fatalf("review candidate id: %v", err)
+	}
+
+	candidate, ok, err := loadReviewCandidate(ctx, st.db, groupID, candidateID)
+	if err != nil {
+		t.Fatalf("load review candidate: %v", err)
+	}
+	if !ok {
+		t.Fatal("review candidate not found")
+	}
+	if candidate.ImageFocusX != 0 || candidate.ImageFocusY != 0 {
+		t.Fatalf("candidate focus = %d,%d, want 0,0", candidate.ImageFocusX, candidate.ImageFocusY)
+	}
+}
+
+func TestUpsertEventTxPreservesExistingImageFieldsWhenImageURLBlank(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	sourceID := mustEnsureReviewTestSource(t, st.db)
+	venueID := lookupStoreVenueID(t, st.db, "leadmill")
+	slug := "review-upsert-blank-image"
+	if _, err := st.db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
+			last_checked_at,
+			origin,
+			publication_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, "Original name", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Original description", "/media/events/original.jpg", "https://example.test/original.jpg", "Original alt", 640, 360, 25, 75, "2026-05-09T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed)); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if err := upsertEventTx(ctx, tx, domain.Event{
+		Slug:             slug,
+		Name:             "Updated name",
+		VenueSlug:        "leadmill",
+		Start:            time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC),
+		End:              time.Date(2026, time.May, 10, 22, 0, 0, 0, time.UTC),
+		Genre:            "Indie",
+		Status:           "Listed",
+		Description:      "Updated description",
+		ImageURL:         "",
+		ImageSourceURL:   "",
+		ImageAlt:         "",
+		ImageWidth:       0,
+		ImageHeight:      0,
+		ImageFocusX:      0,
+		ImageFocusY:      0,
+		SourceName:       "Review test source",
+		SourceURL:        "https://example.test/review-test",
+		LastChecked:      time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+		Origin:           domain.OriginLive,
+		PublicationState: domain.PublicationStateReviewed,
+	}); err != nil {
+		t.Fatalf("upsert event: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit transaction: %v", err)
+	}
+
+	assertEventImageFields(t, st.db, slug, "/media/events/original.jpg", "https://example.test/original.jpg", "Original alt", 640, 360, 25, 75)
+}
+
+func TestUpsertEventTxReplacesImageFieldsWhenImageURLNonEmpty(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	sourceID := mustEnsureReviewTestSource(t, st.db)
+	venueID := lookupStoreVenueID(t, st.db, "leadmill")
+	slug := "review-upsert-replace-image"
+	if _, err := st.db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
+			last_checked_at,
+			origin,
+			publication_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, "Original name", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Original description", "/media/events/original.jpg", "https://example.test/original.jpg", "Original alt", 640, 360, 25, 75, "2026-05-09T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed)); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if err := upsertEventTx(ctx, tx, domain.Event{
+		Slug:             slug,
+		Name:             "Updated name",
+		VenueSlug:        "leadmill",
+		Start:            time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC),
+		End:              time.Date(2026, time.May, 10, 22, 0, 0, 0, time.UTC),
+		Genre:            "Indie",
+		Status:           "Listed",
+		Description:      "Updated description",
+		ImageURL:         "/media/events/replaced.jpg",
+		ImageSourceURL:   "https://example.test/replaced.jpg",
+		ImageAlt:         "Replaced alt",
+		ImageWidth:       1200,
+		ImageHeight:      800,
+		ImageFocusX:      0,
+		ImageFocusY:      0,
+		SourceName:       "Review test source",
+		SourceURL:        "https://example.test/review-test",
+		LastChecked:      time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+		Origin:           domain.OriginLive,
+		PublicationState: domain.PublicationStateReviewed,
+	}); err != nil {
+		t.Fatalf("upsert event: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit transaction: %v", err)
+	}
+
+	assertEventImageFields(t, st.db, slug, "/media/events/replaced.jpg", "https://example.test/replaced.jpg", "Replaced alt", 1200, 800, 0, 0)
+}
+
 func assertDraftChoice(t *testing.T, group review.Group, field review.Field, candidateID int64, value string) {
 	t.Helper()
 
@@ -5431,6 +5690,23 @@ func assertDraftChoice(t *testing.T, group review.Group, field review.Field, can
 	}
 	if choice.UpdatedAt.IsZero() {
 		t.Fatalf("%s updated_at is zero", field)
+	}
+}
+
+func assertEventImageFields(t *testing.T, db *sql.DB, slug, wantURL, wantSourceURL, wantAlt string, wantWidth, wantHeight, wantFocusX, wantFocusY int) {
+	t.Helper()
+
+	var gotURL, gotSourceURL, gotAlt string
+	var gotWidth, gotHeight, gotFocusX, gotFocusY int
+	if err := db.QueryRow(`
+		SELECT image_url, image_source_url, image_alt, image_width, image_height, image_focus_x, image_focus_y
+		FROM events
+		WHERE slug = ?
+	`, slug).Scan(&gotURL, &gotSourceURL, &gotAlt, &gotWidth, &gotHeight, &gotFocusX, &gotFocusY); err != nil {
+		t.Fatalf("scan event image fields: %v", err)
+	}
+	if gotURL != wantURL || gotSourceURL != wantSourceURL || gotAlt != wantAlt || gotWidth != wantWidth || gotHeight != wantHeight || gotFocusX != wantFocusX || gotFocusY != wantFocusY {
+		t.Fatalf("event image fields = %q,%q,%q,%d,%d,%d,%d, want %q,%q,%q,%d,%d,%d,%d", gotURL, gotSourceURL, gotAlt, gotWidth, gotHeight, gotFocusX, gotFocusY, wantURL, wantSourceURL, wantAlt, wantWidth, wantHeight, wantFocusX, wantFocusY)
 	}
 }
 
