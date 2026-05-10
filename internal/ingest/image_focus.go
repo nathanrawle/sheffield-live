@@ -197,6 +197,7 @@ type verticalRectangleCandidate struct {
 	right               int
 	score               float64
 	source              verticalRectangleCandidateSource
+	contentScore        float64
 	coverage            float64
 	meanContrast        float64
 	meanBoundarySupport float64
@@ -252,6 +253,7 @@ type verticalRectangleParams struct {
 	RegionBoundaryThresholdFloor     float64
 	RegionBoundaryThresholdMaxRatio  float64
 	RegionBoundaryThresholdMeanRatio float64
+	RectangleContentScoreWeight      float64
 	PanelRegionBandCount             int
 	PanelRegionGutterWidth           int
 	PanelRegionStep                  int
@@ -315,6 +317,7 @@ func defaultVerticalRectangleParams() verticalRectangleParams {
 		RegionBoundaryThresholdFloor:     0.055,
 		RegionBoundaryThresholdMaxRatio:  0.32,
 		RegionBoundaryThresholdMeanRatio: 1.85,
+		RectangleContentScoreWeight:      0.45,
 		PanelRegionBandCount:             12,
 		PanelRegionGutterWidth:           8,
 		PanelRegionStep:                  4,
@@ -364,7 +367,7 @@ func detectVerticalRectangle(red, green, blue, luma []float64, width, height int
 	rawEdgeCandidates := verticalEdgeCandidates(edges, width, height, threshold, params)
 	edgeCandidates := groupedVerticalEdgeCandidates(rawEdgeCandidates, params)
 	result.EdgeCandidateCount = len(edgeCandidates)
-	if detectVerticalRectangleFromCandidates(edgeCandidates, width, height, params, verticalRectangleCandidateSourceEdge, &result) {
+	if detectVerticalRectangleFromCandidates(edgeCandidates, red, green, blue, luma, width, height, params, verticalRectangleCandidateSourceEdge, &result) {
 		return result
 	}
 	if result.RepeatingPatternRejected {
@@ -375,7 +378,7 @@ func detectVerticalRectangle(red, green, blue, luma []float64, width, height int
 	result.RegionBoundaryThreshold = regionThreshold
 	regionBoundaryCandidates := groupedVerticalEdgeCandidates(rawRegionBoundaryCandidates, params)
 	result.RegionBoundaryCandidateCount = len(regionBoundaryCandidates)
-	if detectVerticalRectangleFromCandidates(regionBoundaryCandidates, width, height, params, verticalRectangleCandidateSourceRegionBoundary, &result) {
+	if detectVerticalRectangleFromCandidates(regionBoundaryCandidates, red, green, blue, luma, width, height, params, verticalRectangleCandidateSourceRegionBoundary, &result) {
 		return result
 	}
 
@@ -390,7 +393,7 @@ func detectVerticalRectangle(red, green, blue, luma []float64, width, height int
 	return result
 }
 
-func detectVerticalRectangleFromCandidates(candidates []verticalEdgeCandidate, width, height int, params verticalRectangleParams, source verticalRectangleCandidateSource, result *verticalRectangleDetection) bool {
+func detectVerticalRectangleFromCandidates(candidates []verticalEdgeCandidate, red, green, blue, luma []float64, width, height int, params verticalRectangleParams, source verticalRectangleCandidateSource, result *verticalRectangleDetection) bool {
 	if len(candidates) == 0 {
 		return false
 	}
@@ -399,7 +402,7 @@ func detectVerticalRectangleFromCandidates(candidates []verticalEdgeCandidate, w
 		return false
 	}
 
-	rectangles := verticalRectangleCandidates(candidates, width, height, params, source)
+	rectangles := verticalRectangleCandidates(candidates, red, green, blue, luma, width, height, params, source)
 	result.RectangleCandidateCount += len(rectangles)
 	if len(rectangles) == 0 {
 		return false
@@ -889,24 +892,24 @@ func hasRepeatingVerticalEdgePattern(candidates []verticalEdgeCandidate, params 
 	return byScore[params.RepeatingEdgeMinCount-1].score >= byScore[0].score*params.RepeatingEdgeScoreRatio
 }
 
-func verticalRectangleCandidates(edges []verticalEdgeCandidate, width, height int, params verticalRectangleParams, source verticalRectangleCandidateSource) []verticalRectangleCandidate {
+func verticalRectangleCandidates(edges []verticalEdgeCandidate, red, green, blue, luma []float64, width, height int, params verticalRectangleParams, source verticalRectangleCandidateSource) []verticalRectangleCandidate {
 	rectangles := make([]verticalRectangleCandidate, 0, len(edges)*len(edges))
 	for _, edge := range edges {
-		rectangles = appendRectangleCandidate(rectangles, 0, edge.x, edge.score*params.SideRectangleEdgeWeight, width, height, params, source)
-		rectangles = appendRectangleCandidate(rectangles, edge.x, width, edge.score*params.SideRectangleEdgeWeight, width, height, params, source)
+		rectangles = appendRectangleCandidate(rectangles, 0, edge.x, edge.score*params.SideRectangleEdgeWeight, red, green, blue, luma, width, height, params, source)
+		rectangles = appendRectangleCandidate(rectangles, edge.x, width, edge.score*params.SideRectangleEdgeWeight, red, green, blue, luma, width, height, params, source)
 	}
 	for i := 0; i < len(edges); i++ {
 		for j := i + 1; j < len(edges); j++ {
 			left := edges[i]
 			right := edges[j]
 			score := left.score + right.score
-			rectangles = appendRectangleCandidate(rectangles, left.x, right.x, score, width, height, params, source)
+			rectangles = appendRectangleCandidate(rectangles, left.x, right.x, score, red, green, blue, luma, width, height, params, source)
 		}
 	}
 	return rectangles
 }
 
-func appendRectangleCandidate(rectangles []verticalRectangleCandidate, left, right int, edgeScore float64, width, height int, params verticalRectangleParams, source verticalRectangleCandidateSource) []verticalRectangleCandidate {
+func appendRectangleCandidate(rectangles []verticalRectangleCandidate, left, right int, edgeScore float64, red, green, blue, luma []float64, width, height int, params verticalRectangleParams, source verticalRectangleCandidateSource) []verticalRectangleCandidate {
 	if right <= left {
 		return rectangles
 	}
@@ -915,12 +918,67 @@ func appendRectangleCandidate(rectangles []verticalRectangleCandidate, left, rig
 	if aspectScore <= 0 {
 		return rectangles
 	}
+	contentScore := rectangleContentScore(red, green, blue, luma, width, height, left, right)
 	return append(rectangles, verticalRectangleCandidate{
-		left:   left,
-		right:  right,
-		score:  edgeScore * aspectScore,
-		source: source,
+		left:         left,
+		right:        right,
+		score:        edgeScore * aspectScore * (1 + params.RectangleContentScoreWeight*contentScore),
+		source:       source,
+		contentScore: contentScore,
 	})
+}
+
+func rectangleContentScore(red, green, blue, luma []float64, width, height, left, right int) float64 {
+	if width <= 0 || height <= 0 || right <= left || left < 0 || right > width || len(luma) != width*height || len(red) != len(luma) || len(green) != len(luma) || len(blue) != len(luma) {
+		return 0
+	}
+
+	var lumaSum, saturationSum float64
+	count := float64((right - left) * height)
+	for y := 0; y < height; y++ {
+		row := y * width
+		for x := left; x < right; x++ {
+			idx := row + x
+			lumaSum += luma[idx]
+			maxChannel := math.Max(red[idx], math.Max(green[idx], blue[idx]))
+			minChannel := math.Min(red[idx], math.Min(green[idx], blue[idx]))
+			if maxChannel > 0 {
+				saturationSum += (maxChannel - minChannel) / maxChannel
+			}
+		}
+	}
+	meanLuma := lumaSum / count
+	meanSaturation := saturationSum / count
+
+	var lumaVariance float64
+	activeGradientPixels := 0
+	gradientPixels := 0
+	for y := 0; y < height; y++ {
+		row := y * width
+		for x := left; x < right; x++ {
+			idx := row + x
+			delta := luma[idx] - meanLuma
+			lumaVariance += delta * delta
+			if x <= 0 || x >= width-1 || y <= 0 || y >= height-1 {
+				continue
+			}
+			gradientPixels++
+			gradient := math.Hypot(luma[row+x+1]-luma[row+x-1], luma[(y+1)*width+x]-luma[(y-1)*width+x])
+			if gradient > 0.05 {
+				activeGradientPixels++
+			}
+		}
+	}
+	lumaStd := math.Sqrt(lumaVariance / count)
+	activeGradientFraction := 0.0
+	if gradientPixels > 0 {
+		activeGradientFraction = float64(activeGradientPixels) / float64(gradientPixels)
+	}
+
+	lumaScore := clampFloat((lumaStd-0.06)/0.22, 0, 1)
+	saturationScore := clampFloat((meanSaturation-0.03)/0.25, 0, 1)
+	gradientScore := clampFloat((activeGradientFraction-0.06)/0.28, 0, 1)
+	return 0.40*lumaScore + 0.25*saturationScore + 0.35*gradientScore
 }
 
 func verticalRectangleAspectScore(aspect float64, params verticalRectangleParams) float64 {

@@ -131,6 +131,48 @@ func TestEstimateImageFocusUsesVerticalRectangleBetweenEdges(t *testing.T) {
 	}
 }
 
+func TestEstimateImageFocusPrefersPhotoSideOverSparseTextSide(t *testing.T) {
+	var body bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 240, 120))
+	fillRect(img, img.Bounds(), color.RGBA{R: 242, G: 240, B: 234, A: 255})
+
+	for _, rect := range []image.Rectangle{
+		image.Rect(18, 16, 42, 18),
+		image.Rect(18, 23, 76, 25),
+		image.Rect(18, 30, 90, 32),
+		image.Rect(40, 76, 108, 78),
+		image.Rect(48, 84, 96, 86),
+	} {
+		fillRect(img, rect, color.RGBA{A: 255})
+	}
+
+	fillRect(img, image.Rect(120, 0, 240, 120), color.RGBA{R: 92, G: 88, B: 80, A: 255})
+	for y := 0; y < 120; y++ {
+		for x := 120; x < 240; x++ {
+			if (x*7+y*11)%23 < 10 {
+				img.Set(x, y, color.RGBA{R: 72, G: 84, B: 78, A: 255})
+			}
+			if y > 78 {
+				img.Set(x, y, color.RGBA{R: 32, G: 28, B: 24, A: 255})
+			}
+		}
+	}
+	fillEllipse(img, 144, 50, 16, 21, color.RGBA{R: 184, G: 122, B: 82, A: 255})
+	fillEllipse(img, 194, 52, 18, 23, color.RGBA{R: 188, G: 128, B: 86, A: 255})
+	fillRect(img, image.Rect(136, 72, 210, 118), color.RGBA{R: 24, G: 24, B: 24, A: 255})
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+
+	focus, err := EstimateImageFocus("image/png", body.Bytes())
+	if err != nil {
+		t.Fatalf("estimate image focus: %v", err)
+	}
+	if focus.X < 60 || focus.Y != 50 {
+		t.Fatalf("focus = %d,%d, want photo side preferred over sparse text side", focus.X, focus.Y)
+	}
+}
+
 func TestVerticalRectangleFocusUsesRegionBoundaryFallback(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 260, 140))
 	background := color.RGBA{R: 42, G: 48, B: 58, A: 255}
