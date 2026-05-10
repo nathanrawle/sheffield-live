@@ -2,7 +2,10 @@ module sheffield-live
 
 go 1.25.0
 
-require modernc.org/sqlite v1.49.1
+require (
+	github.com/esimov/pigo v1.4.6
+	modernc.org/sqlite v1.49.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
