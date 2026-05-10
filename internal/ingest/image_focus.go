@@ -164,18 +164,14 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 }
 
 func focusPercent(normalized float64) int {
-	const (
-		localFocusStrength  = 0.85
-		centerHoldThreshold = 5.0
-	)
+	const centerHoldThreshold = 5.0
 	target := normalized * 100
 	offset := target - 50
 	absOffset := math.Abs(offset)
 	if absOffset <= centerHoldThreshold {
 		return 50
 	}
-	percent := 50 + offset*localFocusStrength
-	return int(math.Round(percent))
+	return int(math.Round(target))
 }
 
 type verticalEdgeCandidate struct {
