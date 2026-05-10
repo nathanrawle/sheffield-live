@@ -32,7 +32,7 @@
           <span class="event-title">{{.Name}}</span>
           {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
         </span>
-        {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{eventCardImageFocusStyle .}}" loading="lazy" decoding="async">{{end}}
+        {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async">{{end}}
       </a>
       {{else}}
       <p class="empty-state">No upcoming shows listed for this venue.</p>

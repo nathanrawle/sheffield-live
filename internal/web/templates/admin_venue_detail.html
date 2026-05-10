@@ -130,7 +130,7 @@
         <span class="event-meta">{{if .SourceName}}{{.SourceName}}{{end}}{{if and .SourceName .Origin}} · {{end}}{{if .Origin}}{{originText .Origin}}{{end}}</span>
         {{with .Description}}<span class="event-meta">{{.}}</span>{{end}}
       </span>
-      {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{eventCardImageFocusStyle .}}" loading="lazy" decoding="async">{{end}}
+      {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async">{{end}}
     </a>
     {{end}}
   </div>
