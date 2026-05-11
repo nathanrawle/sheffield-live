@@ -453,6 +453,13 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if version > schemaVersionCurrent {
 		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionCurrent)
 	}
+	if err := reconcileRebasedEventImageMigrations(ctx, tx, version); err != nil {
+		return err
+	}
+	version, err = schemaVersion(ctx, tx)
+	if err != nil {
+		return err
+	}
 
 	for _, migration := range migrations {
 		if migration.version <= version {
@@ -473,6 +480,120 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func reconcileRebasedEventImageMigrations(ctx context.Context, tx *sql.Tx, version int) error {
+	// During the event-image branch rebase, main claimed v16 for genre tables,
+	// while the branch had already used v16/v17 for image and focus columns.
+	// Local development DBs can therefore have image schema recorded as v16/v17
+	// without having the genre schema or current v18 focus migration row.
+	if version >= schemaVersionV16 {
+		ok, err := genreSchemaExists(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if err := applyMigrationSQL(ctx, tx, "migrations/0016_genres.sql"); err != nil {
+				return err
+			}
+		}
+	}
+	if version < schemaVersionV17 {
+		ok, err := eventImageSchemaExists(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := recordMigrationApplied(ctx, tx, schemaVersionV17); err != nil {
+				return err
+			}
+		}
+	}
+	if version < schemaVersionV18 {
+		ok, err := imageFocusSchemaExists(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := recordMigrationApplied(ctx, tx, schemaVersionV18); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func applyMigrationSQL(ctx context.Context, tx *sql.Tx, path string) error {
+	migrationSQL, err := readMigration(path)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, migrationSQL)
+	return err
+}
+
+func recordMigrationApplied(ctx context.Context, tx execer, version int) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+		VALUES (?, ?)
+	`, version, time.Now().UTC().Format(rfc3339Timestamp))
+	return err
+}
+
+func genreSchemaExists(ctx context.Context, q queryer) (bool, error) {
+	for _, table := range []string{"genre_rules", "event_genres"} {
+		exists, err := tableExists(ctx, q, table)
+		if err != nil || !exists {
+			return exists, err
+		}
+	}
+	return true, nil
+}
+
+func eventImageSchemaExists(ctx context.Context, q queryer) (bool, error) {
+	checks := []struct {
+		table  string
+		column string
+	}{
+		{table: "events", column: "image_url"},
+		{table: "events", column: "image_source_url"},
+		{table: "events", column: "image_alt"},
+		{table: "events", column: "image_width"},
+		{table: "events", column: "image_height"},
+		{table: "review_candidates", column: "image_url"},
+		{table: "review_candidates", column: "image_source_url"},
+		{table: "review_candidates", column: "image_alt"},
+		{table: "review_candidates", column: "image_width"},
+		{table: "review_candidates", column: "image_height"},
+	}
+	for _, check := range checks {
+		exists, err := columnExists(ctx, q, check.table, check.column)
+		if err != nil || !exists {
+			return exists, err
+		}
+	}
+	return tableExists(ctx, q, "image_assets")
+}
+
+func imageFocusSchemaExists(ctx context.Context, q queryer) (bool, error) {
+	checks := []struct {
+		table  string
+		column string
+	}{
+		{table: "events", column: "image_focus_x"},
+		{table: "events", column: "image_focus_y"},
+		{table: "review_candidates", column: "image_focus_x"},
+		{table: "review_candidates", column: "image_focus_y"},
+		{table: "image_assets", column: "focus_x"},
+		{table: "image_assets", column: "focus_y"},
+	}
+	for _, check := range checks {
+		exists, err := columnExists(ctx, q, check.table, check.column)
+		if err != nil || !exists {
+			return exists, err
+		}
+	}
+	return true, nil
 }
 
 func bootstrapIfEmpty(ctx context.Context, tx *sql.Tx) error {
@@ -800,6 +921,33 @@ func tableExists(ctx context.Context, q queryer, table string) (bool, error) {
 	default:
 		return true, nil
 	}
+}
+
+func columnExists(ctx context.Context, q queryer, table, column string) (bool, error) {
+	rows, err := q.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var typeName string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func loadVenues(ctx context.Context, q queryer) ([]domain.Venue, error) {
