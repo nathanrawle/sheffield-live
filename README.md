@@ -8,7 +8,7 @@ Run it:
 go run ./cmd/web
 ```
 
-Defaults: `ADDR=:8080` and `DB_PATH=./data/sheffield-live.db`.
+Defaults: `ADDR=:8080`, `DB_PATH=./data/sheffield-live.db`, `LOG_LEVEL=info`, and `LOG_FORMAT=text`.
 
 Current surface:
 
@@ -32,5 +32,6 @@ Docs:
 
 - [Command reference](docs/commands.md)
 - [Common tasks](docs/common-tasks.md)
+- [Logging](docs/logging.md)
 - [Source catalog](docs/source-catalog.md)
 - [Architecture](docs/architecture.md) and [sources](docs/sources.md)
