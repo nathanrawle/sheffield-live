@@ -19,6 +19,8 @@ Environment:
 - `DB_PATH` defaults to `./data/sheffield-live.db`
 - `MEDIA_ROOT` defaults to `./data/media`
 - `MEDIA_URL_PREFIX` defaults to `/media`
+- `LOG_LEVEL` defaults to `info`; supported values are `debug`, `info`, `warn`, and `error`
+- `LOG_FORMAT` defaults to `text`; supported values are `text` and `json`
 
 Behavior:
 
@@ -26,6 +28,7 @@ Behavior:
 - validates the opened store once before serving
 - serves server-rendered HTML
 - serves copied local media files from `MEDIA_ROOT` under `MEDIA_URL_PREFIX`
+- logs startup, request, readiness, and internal error events to stderr
 - uses `modernc.org/sqlite`
 - requires writable storage for the database path
 
@@ -117,6 +120,7 @@ Defaults:
 - `-limit` defaults to `20`
 - `-timeout` defaults to `10s`
 - `-db` overrides `DB_PATH`
+- logs are written to stderr; stdout remains the JSON report stream
 
 Validation:
 

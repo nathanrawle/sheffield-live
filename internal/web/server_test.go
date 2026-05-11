@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -18,6 +19,7 @@ import (
 
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
+	"sheffield-live/internal/logging"
 	"sheffield-live/internal/review"
 	"sheffield-live/internal/store"
 	sqlitestore "sheffield-live/internal/store/sqlite"
@@ -62,6 +64,66 @@ func TestRoutes(t *testing.T) {
 				t.Fatalf("body missing %q in %q", tc.body, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestRequestLoggingCapturesOperationalFields(t *testing.T) {
+	var logs bytes.Buffer
+	logger, err := logging.NewLogger(&logs, logging.Config{})
+	if err != nil {
+		t.Fatalf("new logger: %v", err)
+	}
+	deps := testServerDeps(store.NewSeedStore())
+	deps.Logger = logger
+	server, err := NewServer(deps)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.Header.Set("User-Agent", "test-agent")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	got := logs.String()
+	for _, want := range []string{
+		`msg="http request"`,
+		`method=GET`,
+		`path=/events`,
+		`status=200`,
+		`user_agent=test-agent`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("logs = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestRequestLoggingSkipsSuccessfulHealthChecks(t *testing.T) {
+	var logs bytes.Buffer
+	logger, err := logging.NewLogger(&logs, logging.Config{})
+	if err != nil {
+		t.Fatalf("new logger: %v", err)
+	}
+	deps := testServerDeps(store.NewSeedStore())
+	deps.Logger = logger
+	server, err := NewServer(deps)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if got := logs.String(); got != "" {
+		t.Fatalf("logs = %q, want none", got)
 	}
 }
 
@@ -1775,6 +1837,42 @@ func TestReadyzReturnsServiceUnavailableWhenReadinessFails(t *testing.T) {
 
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestReadyzLogsReadinessFailure(t *testing.T) {
+	var logs bytes.Buffer
+	logger, err := logging.NewLogger(&logs, logging.Config{})
+	if err != nil {
+		t.Fatalf("new logger: %v", err)
+	}
+	server, err := NewServer(ServerDeps{
+		Catalog:      store.NewSeedStore(),
+		ReadyChecker: failingReadyChecker{},
+		Logger:       logger,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusServiceUnavailable)
+	}
+	got := logs.String()
+	for _, want := range []string{
+		`msg="readiness check failed"`,
+		`error="not ready"`,
+		`msg="http request"`,
+		`path=/readyz`,
+		`status=503`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("logs = %q, want %q", got, want)
+		}
 	}
 }
 

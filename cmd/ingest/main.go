@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,13 +16,19 @@ import (
 	"time"
 
 	"sheffield-live/internal/ingest"
+	"sheffield-live/internal/logging"
 	"sheffield-live/internal/review"
 	"sheffield-live/internal/store/sqlite"
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	logger, err := logging.NewLoggerFromEnv(os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "configure logging: %v\n", err)
+		os.Exit(1)
+	}
+	if err := runWithArgsAndLogger(os.Args[1:], os.Stdout, os.Stderr, logger); err != nil {
+		logger.Error("ingest exited", "error", err)
 		os.Exit(1)
 	}
 }
@@ -91,7 +98,28 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 	if stderr == nil {
 		stderr = io.Discard
 	}
+	logger, err := logging.NewLoggerFromEnv(stderr)
+	if err != nil {
+		return err
+	}
+	return runWithArgsAndLogger(args, stdout, stderr, logger)
+}
 
+func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.Logger) (err error) {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	if logger == nil {
+		logger, err = logging.NewLoggerFromEnv(stderr)
+		if err != nil {
+			return err
+		}
+	} else {
+		logger = logging.EnsureLogger(logger)
+	}
 	cfg, err := parseIngestArgs(args)
 	if err != nil {
 		return err
@@ -105,6 +133,26 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		path = "./data/sheffield-live.db"
 	}
 
+	started := time.Now()
+	summary := newIngestLogSummary(cfg, path)
+	logger.Info("ingest starting", summary.startAttrs()...)
+	defer func() {
+		if summary.Status == "" {
+			if err != nil {
+				summary.Status = "failed"
+			} else {
+				summary.Status = "succeeded"
+			}
+		}
+		attrs := summary.finishAttrs(time.Since(started))
+		if err != nil {
+			attrs = append(attrs, "error", err)
+			logger.Error("ingest finished", attrs...)
+			return
+		}
+		logger.Info("ingest finished", attrs...)
+	}()
+
 	catalog, err := ingest.LoadRepoCatalog()
 	if err != nil {
 		return err
@@ -116,7 +164,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 	}
 	defer func() {
 		if closeErr := st.Close(); closeErr != nil {
-			fmt.Fprintf(stderr, "close sqlite store: %v\n", closeErr)
+			logger.Error("close sqlite store", "error", closeErr)
 		}
 	}()
 
@@ -144,7 +192,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		if err := configureImageIngest(&cfg); err != nil {
 			return err
 		}
-		return runAllSources(context.Background(), st, fetcher, catalog, cfg, stdout)
+		return runAllSources(context.Background(), st, fetcher, catalog, cfg, stdout, logger, &summary)
 	}
 
 	var result manualRunExecution
@@ -153,6 +201,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 			Limit: cfg.limit,
 		})
 		if cfg.repairDescriptions {
+			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
 			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
 		}
 		result = manualRunExecution{Report: report, Err: runErr}
@@ -178,6 +227,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 				Source: cfg.source,
 				Limit:  cfg.limit,
 			})
+			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
 			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
 		}
 		if err := configureImageIngest(&cfg); err != nil {
@@ -185,6 +235,7 @@ func runWithArgs(args []string, stdout, stderr io.Writer) error {
 		}
 		result = runSingleManualSource(context.Background(), st, fetcher, catalog, cfg, cfg.source)
 	}
+	summary.applyManualRun(result)
 	return encodeManualRunResult(stdout, cfg.stageReviewGroups, result)
 }
 
@@ -433,6 +484,23 @@ type manualRunExecution struct {
 	Err         error
 }
 
+type ingestLogSummary struct {
+	Mode                  string
+	DBPath                string
+	Source                string
+	AllSources            bool
+	StageReviewGroups     bool
+	ImportRunID           int64
+	Status                string
+	Totals                ingest.ReportTotals
+	SourceCount           int
+	FailedSourceCount     int
+	ReviewGroupsCreated   int
+	ReviewGroupsReused    int
+	AutoPromoted          int
+	DuplicateAutoResolved int
+}
+
 type batchManualIngestReport struct {
 	Results []batchManualIngestResult `json:"results"`
 }
@@ -479,6 +547,94 @@ type reviewStageDuplicateAutoResolvedReport struct {
 	ReviewGroupID      int64  `json:"review_group_id"`
 	CandidateCount     int    `json:"candidate_count"`
 	CanonicalEventSlug string `json:"canonical_event_slug,omitempty"`
+}
+
+func newIngestLogSummary(cfg ingestCommandConfig, dbPath string) ingestLogSummary {
+	return ingestLogSummary{
+		Mode:              ingestMode(cfg),
+		DBPath:            dbPath,
+		Source:            cfg.source,
+		AllSources:        cfg.allSources,
+		StageReviewGroups: cfg.stageReviewGroups,
+		ImportRunID:       cfg.importRunID,
+	}
+}
+
+func ingestMode(cfg ingestCommandConfig) string {
+	switch {
+	case strings.TrimSpace(cfg.reviewICSFixture) != "":
+		return "review_fixture"
+	case cfg.backfillImageFocus:
+		return "image_focus_backfill"
+	case cfg.allSources:
+		return "all_sources"
+	case cfg.repairDescriptions && cfg.importRunID > 0:
+		return "description_repair_replay"
+	case cfg.repairDescriptions:
+		return "description_repair_live"
+	case cfg.importRunID > 0:
+		return "replay"
+	default:
+		return "live"
+	}
+}
+
+func (s ingestLogSummary) startAttrs() []any {
+	return []any{
+		"mode", s.Mode,
+		"source", s.Source,
+		"all_sources", s.AllSources,
+		"import_run_id", s.ImportRunID,
+		"stage_review_groups", s.StageReviewGroups,
+		"db_path", s.DBPath,
+	}
+}
+
+func (s ingestLogSummary) finishAttrs(duration time.Duration) []any {
+	attrs := []any{
+		"mode", s.Mode,
+		"source", s.Source,
+		"all_sources", s.AllSources,
+		"import_run_id", s.ImportRunID,
+		"status", s.Status,
+		"duration", duration,
+		"links", s.Totals.Links,
+		"snapshots", s.Totals.Snapshots,
+		"candidates", s.Totals.Candidates,
+		"skips", s.Totals.Skips,
+		"errors", s.Totals.Errors,
+	}
+	if s.SourceCount > 0 {
+		attrs = append(attrs,
+			"sources", s.SourceCount,
+			"failed_sources", s.FailedSourceCount,
+		)
+	}
+	if s.StageReviewGroups {
+		attrs = append(attrs,
+			"review_groups_created", s.ReviewGroupsCreated,
+			"review_groups_reused", s.ReviewGroupsReused,
+			"auto_promoted", s.AutoPromoted,
+			"duplicate_auto_resolved", s.DuplicateAutoResolved,
+		)
+	}
+	return attrs
+}
+
+func (s *ingestLogSummary) applyManualRun(result manualRunExecution) {
+	if s == nil {
+		return
+	}
+	s.Source = result.Report.Source
+	s.ImportRunID = result.Report.ImportRunID
+	s.Status = result.Report.Status
+	s.Totals = result.Report.Totals
+	if result.ReviewStage != nil {
+		s.ReviewGroupsCreated = result.ReviewStage.GroupsCreated
+		s.ReviewGroupsReused = result.ReviewStage.GroupsReused
+		s.AutoPromoted = result.ReviewStage.AutoPromotedCount
+		s.DuplicateAutoResolved = result.ReviewStage.DuplicateAutoResolvedCount
+	}
 }
 
 func reviewStageForReport(ctx context.Context, st reviewStageStore, catalog *ingest.Catalog, report ingest.Report, runErr error) (reviewStageReport, error) {
@@ -615,9 +771,11 @@ func localMediaAssetPath(mediaRoot, storagePath string) (string, error) {
 	return filepath.Join(mediaRoot, clean), nil
 }
 
-func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer) error {
+func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
+	logger = logging.EnsureLogger(logger)
 	results := make([]batchManualIngestResult, 0, len(catalog.Keys()))
 	var failed bool
+	failedSources := 0
 	for _, source := range catalog.Keys() {
 		result := runSingleManualSource(ctx, st, fetcher, catalog, cfg, source)
 		batchResult := batchManualIngestResult{
@@ -631,8 +789,32 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 		if result.Err != nil {
 			batchResult.Error = result.Err.Error()
 			failed = true
+			failedSources++
 		}
 		results = append(results, batchResult)
+		logIngestSourceFinished(logger, source, result)
+	}
+	if summary != nil {
+		summary.Source = ""
+		summary.Status = "succeeded"
+		summary.SourceCount = len(results)
+		summary.FailedSourceCount = failedSources
+		if failed {
+			summary.Status = "failed"
+		}
+		for _, result := range results {
+			summary.Totals.Links += result.Report.Totals.Links
+			summary.Totals.Snapshots += result.Report.Totals.Snapshots
+			summary.Totals.Candidates += result.Report.Totals.Candidates
+			summary.Totals.Skips += result.Report.Totals.Skips
+			summary.Totals.Errors += result.Report.Totals.Errors
+			if result.ReviewStage != nil {
+				summary.ReviewGroupsCreated += result.ReviewStage.GroupsCreated
+				summary.ReviewGroupsReused += result.ReviewStage.GroupsReused
+				summary.AutoPromoted += result.ReviewStage.AutoPromotedCount
+				summary.DuplicateAutoResolved += result.ReviewStage.DuplicateAutoResolvedCount
+			}
+		}
 	}
 
 	encoder := json.NewEncoder(stdout)
@@ -644,6 +826,33 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 		return errors.New("one or more source ingests failed")
 	}
 	return nil
+}
+
+func logIngestSourceFinished(logger *slog.Logger, source string, result manualRunExecution) {
+	attrs := []any{
+		"source", source,
+		"import_run_id", result.Report.ImportRunID,
+		"status", result.Report.Status,
+		"links", result.Report.Totals.Links,
+		"snapshots", result.Report.Totals.Snapshots,
+		"candidates", result.Report.Totals.Candidates,
+		"skips", result.Report.Totals.Skips,
+		"errors", result.Report.Totals.Errors,
+	}
+	if result.ReviewStage != nil {
+		attrs = append(attrs,
+			"review_groups_created", result.ReviewStage.GroupsCreated,
+			"review_groups_reused", result.ReviewStage.GroupsReused,
+			"auto_promoted", result.ReviewStage.AutoPromotedCount,
+			"duplicate_auto_resolved", result.ReviewStage.DuplicateAutoResolvedCount,
+		)
+	}
+	if result.Err != nil {
+		attrs = append(attrs, "error", result.Err)
+		logger.Warn("ingest source finished", attrs...)
+		return
+	}
+	logger.Info("ingest source finished", attrs...)
 }
 
 func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, catalog *ingest.Catalog, report ingest.Report) (reviewStageReport, error) {

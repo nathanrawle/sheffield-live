@@ -27,9 +27,12 @@ The app uses SQLite through `modernc.org/sqlite`.
 `DB_PATH` defaults to `./data/sheffield-live.db`.
 `MEDIA_ROOT` defaults to `./data/media`.
 `MEDIA_URL_PREFIX` defaults to `/media`.
+`LOG_LEVEL` defaults to `info` and accepts `debug`, `info`, `warn`, or `error`.
+`LOG_FORMAT` defaults to `text` and accepts `text` or `json`.
 
 The database path must point to writable storage because the application creates or updates the SQLite file on startup.
 The media root must point to writable storage when ingest copies event images. The current implementation stores files locally for development; the storage interface is intentionally small so a later cloud bucket implementation can replace it without changing parsers or review publishing.
+Both entrypoints use standard-library structured logging to stderr. `cmd/web` logs startup, requests, readiness failures, and internal errors. `cmd/ingest` keeps stdout reserved for JSON reports and logs lifecycle summaries to stderr.
 
 The source catalog path is fixed to the repository `config/sources` directory in v1. It is not a runtime flag yet.
 

@@ -2,26 +2,51 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 
 	"sheffield-live/internal/ingest"
+	"sheffield-live/internal/logging"
 	"sheffield-live/internal/store/sqlite"
 	"sheffield-live/internal/web"
 )
 
 func main() {
-	if err := run(); err != nil {
-		log.Fatal(err)
+	logger, err := logging.NewLoggerFromEnv(os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "configure logging: %v\n", err)
+		os.Exit(1)
+	}
+	if err := runWithLogger(logger); err != nil {
+		logger.Error("web exited", "error", err)
+		os.Exit(1)
 	}
 }
 
 func run() error {
+	logger, err := logging.NewLoggerFromEnv(os.Stderr)
+	if err != nil {
+		return err
+	}
+	return runWithLogger(logger)
+}
+
+func runWithLogger(logger *slog.Logger) error {
+	logger = logging.EnsureLogger(logger)
+
 	addr := env("ADDR", ":8080")
 	dbPath := env("DB_PATH", "./data/sheffield-live.db")
 	mediaRoot := env("MEDIA_ROOT", "./data/media")
 	mediaURLPrefix := env("MEDIA_URL_PREFIX", "/media")
+
+	logger.Info("web starting",
+		"addr", addr,
+		"db_path", dbPath,
+		"media_root", mediaRoot,
+		"media_url_prefix", mediaURLPrefix,
+	)
 
 	sourceCatalog, err := ingest.LoadRepoCatalog()
 	if err != nil {
@@ -34,7 +59,7 @@ func run() error {
 	}
 	defer func() {
 		if closeErr := st.Close(); closeErr != nil {
-			log.Printf("close sqlite store: %v", closeErr)
+			logger.Error("close sqlite store", "error", closeErr)
 		}
 	}()
 
@@ -54,12 +79,13 @@ func run() error {
 		ReadyChecker:              st,
 		MediaRoot:                 mediaRoot,
 		MediaURLPrefix:            mediaURLPrefix,
+		Logger:                    logger,
 	})
 	if err != nil {
 		return err
 	}
 
-	log.Printf("listening on %s", addr)
+	logger.Info("web listening", "addr", addr)
 	if err := http.ListenAndServe(addr, server); err != nil {
 		return err
 	}

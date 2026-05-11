@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -22,6 +23,7 @@ import (
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/genre"
 	"sheffield-live/internal/ingest"
+	"sheffield-live/internal/logging"
 	"sheffield-live/internal/review"
 	"sheffield-live/internal/store"
 )
@@ -49,6 +51,7 @@ type Server struct {
 	fileServer                http.Handler
 	mediaServer               http.Handler
 	mediaURLPrefix            string
+	logger                    *slog.Logger
 }
 
 type ReviewStore interface {
@@ -102,6 +105,7 @@ type ServerDeps struct {
 	ReadyChecker              ReadyChecker
 	MediaRoot                 string
 	MediaURLPrefix            string
+	Logger                    *slog.Logger
 }
 
 type PageData struct {
@@ -425,6 +429,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		fileServer:                http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
 		mediaServer:               mediaServer,
 		mediaURLPrefix:            mediaURLPrefix,
+		logger:                    logging.EnsureLogger(deps.Logger),
 	}, nil
 }
 
@@ -564,6 +569,24 @@ func (s *Server) hasGenreConfiguration() bool {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	recorder := &responseLogWriter{ResponseWriter: w, status: http.StatusOK}
+	s.routeHTTP(recorder, r)
+
+	if shouldLogRequest(r.URL.Path, recorder.status) {
+		s.log().Info("http request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", recorder.status,
+			"bytes", recorder.bytes,
+			"duration", time.Since(start),
+			"remote_addr", r.RemoteAddr,
+			"user_agent", r.UserAgent(),
+		)
+	}
+}
+
+func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 	cleaned := path.Clean(r.URL.Path)
 	switch {
 	case cleaned == "/":
@@ -611,6 +634,63 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type responseLogWriter struct {
+	http.ResponseWriter
+	status      int
+	bytes       int
+	wroteHeader bool
+}
+
+func (w *responseLogWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *responseLogWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.status = status
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *responseLogWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(body)
+	w.bytes += n
+	return n, err
+}
+
+func shouldLogRequest(requestPath string, status int) bool {
+	cleaned := path.Clean(requestPath)
+	if (cleaned == "/healthz" || cleaned == "/readyz") && status < http.StatusInternalServerError {
+		return false
+	}
+	return true
+}
+
+func (s *Server) log() *slog.Logger {
+	if s == nil {
+		return logging.NopLogger()
+	}
+	return logging.EnsureLogger(s.logger)
+}
+
+func (s *Server) logRequestError(r *http.Request, message string, err error, attrs ...any) {
+	if err == nil {
+		return
+	}
+	fields := []any{
+		"method", r.Method,
+		"path", r.URL.Path,
+		"error", err,
+	}
+	fields = append(fields, attrs...)
+	s.log().Error(message, fields...)
+}
+
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	if !s.hasVenueAdmin() {
 		http.NotFound(w, r)
@@ -646,6 +726,7 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 	}
 	groups, err := s.reviewStore.ListOpenReviewGroups(r.Context())
 	if err != nil {
+		s.logRequestError(r, "load review groups", err)
 		http.Error(w, "load review groups", http.StatusInternalServerError)
 		return
 	}
@@ -678,6 +759,7 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 	if s.importRunStore != nil {
 		latest, err := s.importRunStore.LatestSuccessfulImport(r.Context())
 		if err != nil {
+			s.logRequestError(r, "load latest import run", err)
 			http.Error(w, "load latest import run", http.StatusInternalServerError)
 			return
 		}
@@ -697,11 +779,13 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 	}
 	venues, err := s.catalog.ListVenues(r.Context())
 	if err != nil {
+		s.logRequestError(r, "load venues", err)
 		http.Error(w, "load venues", http.StatusInternalServerError)
 		return
 	}
 	events, err := s.catalog.ListEvents(r.Context())
 	if err != nil {
+		s.logRequestError(r, "load events", err)
 		http.Error(w, "load events", http.StatusInternalServerError)
 		return
 	}
@@ -749,6 +833,7 @@ func (s *Server) handleAdminConfiguration(w http.ResponseWriter, r *http.Request
 
 	rules, err := s.genreConfigStore.ListGenreRules(r.Context())
 	if err != nil {
+		s.logRequestError(r, "load genre rules", err)
 		http.Error(w, "load genre rules", http.StatusInternalServerError)
 		return
 	}
@@ -814,6 +899,7 @@ func (s *Server) postAdminConfiguration(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/admin/configuration?deleted=1", http.StatusSeeOther)
 	case "recompute":
 		if err := s.genreConfigStore.RecomputeEventGenres(r.Context()); err != nil {
+			s.logRequestError(r, "recompute event genres", err)
 			http.Error(w, "recompute event genres", http.StatusInternalServerError)
 			return
 		}
@@ -861,6 +947,7 @@ func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request
 	}
 	groups, err := s.reviewStore.ListClosedReviewGroups(r.Context(), adminReviewHistoryLimit)
 	if err != nil {
+		s.logRequestError(r, "load review history", err)
 		http.Error(w, "load review history", http.StatusInternalServerError)
 		return
 	}
@@ -903,6 +990,7 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 
 	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), slug)
 	if err != nil {
+		s.logRequestError(r, "load venue", err, "venue_slug", slug)
 		http.Error(w, "load venue", http.StatusInternalServerError)
 		return
 	}
@@ -913,6 +1001,7 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 
 	events, err := s.catalog.ListEventsForVenue(r.Context(), slug)
 	if err != nil {
+		s.logRequestError(r, "load venue events", err, "venue_slug", slug)
 		http.Error(w, "load venue events", http.StatusInternalServerError)
 		return
 	}
@@ -955,11 +1044,13 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	importRuns, err := s.importRunStore.ListImportRuns(r.Context(), 20)
 	if err != nil {
+		s.logRequestError(r, "load import runs", err)
 		http.Error(w, "load import runs", http.StatusInternalServerError)
 		return
 	}
 	importRunRows, err := buildImportRunRows(r.Context(), importRuns, s.importRunReviewGroupStore)
 	if err != nil {
+		s.logRequestError(r, "load import run review groups", err)
 		http.Error(w, "load import run review groups", http.StatusInternalServerError)
 		return
 	}
@@ -1000,6 +1091,7 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 			http.NotFound(w, r)
 			return
 		}
+		s.logRequestError(r, "load import run", err, "import_run_id", runID)
 		http.Error(w, "load import run", http.StatusInternalServerError)
 		return
 	}
@@ -1007,6 +1099,7 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 	if s.importRunReviewGroupStore != nil {
 		groups, err := s.importRunReviewGroupStore.ListReviewGroupsForImportRun(r.Context(), run.ID)
 		if err != nil {
+			s.logRequestError(r, "load import run review groups", err, "import_run_id", run.ID)
 			http.Error(w, "load import run review groups", http.StatusInternalServerError)
 			return
 		}
@@ -1042,6 +1135,7 @@ func (s *Server) postAdminVenueDecision(w http.ResponseWriter, r *http.Request, 
 	action := strings.TrimSpace(r.FormValue("action"))
 	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), slug)
 	if err != nil {
+		s.logRequestError(r, "load venue", err, "venue_slug", slug)
 		http.Error(w, "load venue", http.StatusInternalServerError)
 		return
 	}
@@ -1138,6 +1232,7 @@ func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request,
 
 	group, ok, err := s.reviewStore.LoadReviewGroup(r.Context(), groupID)
 	if err != nil {
+		s.logRequestError(r, "load review group", err, "review_group_id", groupID)
 		http.Error(w, "load review group", http.StatusInternalServerError)
 		return
 	}
@@ -1299,6 +1394,7 @@ func groupCandidateExists(candidates []review.Candidate, candidateID int64) bool
 func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request, groupID int64, flash string) {
 	group, ok, err := s.reviewStore.LoadReviewGroup(r.Context(), groupID)
 	if err != nil {
+		s.logRequestError(r, "load review group", err, "review_group_id", groupID)
 		http.Error(w, "load review group", http.StatusInternalServerError)
 		return
 	}
@@ -1328,11 +1424,13 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	venues, err := s.catalog.ListVenues(r.Context())
 	if err != nil {
+		s.logRequestError(r, "load venues", err)
 		http.Error(w, "load venues", http.StatusInternalServerError)
 		return
 	}
 	events, err := s.catalog.ListEvents(r.Context())
 	if err != nil {
+		s.logRequestError(r, "load events", err)
 		http.Error(w, "load events", http.StatusInternalServerError)
 		return
 	}
@@ -1367,11 +1465,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	venues, err := s.catalog.ListVenues(r.Context())
 	if err != nil {
+		s.logRequestError(r, "load venues", err)
 		http.Error(w, "load venues", http.StatusInternalServerError)
 		return
 	}
 	events, err := s.catalog.ListEvents(r.Context())
 	if err != nil {
+		s.logRequestError(r, "load events", err)
 		http.Error(w, "load events", http.StatusInternalServerError)
 		return
 	}
@@ -1400,6 +1500,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug string) {
 	event, ok, err := s.catalog.LoadEventBySlug(r.Context(), slug)
 	if err != nil {
+		s.logRequestError(r, "load event", err, "event_slug", slug)
 		http.Error(w, "load event", http.StatusInternalServerError)
 		return
 	}
@@ -1409,10 +1510,12 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 	}
 	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), event.VenueSlug)
 	if err != nil {
+		s.logRequestError(r, "load event venue", err, "event_slug", slug, "venue_slug", event.VenueSlug)
 		http.Error(w, "load event venue", http.StatusInternalServerError)
 		return
 	}
 	if !ok {
+		s.log().Error("event venue not found", "event_slug", slug, "venue_slug", event.VenueSlug)
 		http.Error(w, "event venue not found", http.StatusInternalServerError)
 		return
 	}
@@ -1421,6 +1524,7 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 	if s.secondarySourceStore != nil {
 		loaded, err := s.secondarySourceStore.EventSecondarySourceInfoByEventSlug(r.Context(), slug)
 		if err != nil {
+			s.logRequestError(r, "load event secondary source info", err, "event_slug", slug)
 			http.Error(w, "event secondary source info not available", http.StatusInternalServerError)
 			return
 		}
@@ -1430,6 +1534,7 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 	if s.eventGenreStore != nil {
 		loaded, err := s.eventGenreStore.EventGenresByEventSlug(r.Context(), slug)
 		if err != nil {
+			s.logRequestError(r, "load event genres", err, "event_slug", slug)
 			http.Error(w, "event genres not available", http.StatusInternalServerError)
 			return
 		}
@@ -1480,6 +1585,7 @@ func eventWithPublicLinks(event domain.Event, venue domain.Venue) domain.Event {
 func (s *Server) handleVenues(w http.ResponseWriter, r *http.Request) {
 	venues, err := s.catalog.ListVenues(r.Context())
 	if err != nil {
+		s.logRequestError(r, "load venues", err)
 		http.Error(w, "load venues", http.StatusInternalServerError)
 		return
 	}
@@ -1497,6 +1603,7 @@ func (s *Server) handleVenues(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVenueDetail(w http.ResponseWriter, r *http.Request, slug string) {
 	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), slug)
 	if err != nil {
+		s.logRequestError(r, "load venue", err, "venue_slug", slug)
 		http.Error(w, "load venue", http.StatusInternalServerError)
 		return
 	}
@@ -1507,6 +1614,7 @@ func (s *Server) handleVenueDetail(w http.ResponseWriter, r *http.Request, slug 
 	now := s.now()
 	events, err := s.catalog.ListEventsForVenue(r.Context(), slug)
 	if err != nil {
+		s.logRequestError(r, "load venue events", err, "venue_slug", slug)
 		http.Error(w, "load venue events", http.StatusInternalServerError)
 		return
 	}
@@ -1531,6 +1639,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if s.readyChecker != nil {
 		if err := s.readyChecker.Ready(r.Context()); err != nil {
+			s.logRequestError(r, "readiness check failed", err)
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
 		}
@@ -1543,12 +1652,14 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderPage(w http.ResponseWriter, pageKey string, data PageData) {
 	page, ok := s.pages[pageKey]
 	if !ok {
+		s.log().Error("template not found", "page", pageKey)
 		http.Error(w, "template not found", http.StatusInternalServerError)
 		return
 	}
 
 	var pageBuf bytes.Buffer
 	if err := page.ExecuteTemplate(&pageBuf, filepath.Base(pageKey), data); err != nil {
+		s.log().Error("render page", "page", pageKey, "error", err)
 		http.Error(w, "render page", http.StatusInternalServerError)
 		return
 	}
@@ -1557,6 +1668,7 @@ func (s *Server) renderPage(w http.ResponseWriter, pageKey string, data PageData
 
 	var layoutBuf bytes.Buffer
 	if err := s.layout.ExecuteTemplate(&layoutBuf, "layout.html", data); err != nil {
+		s.log().Error("render layout", "page", pageKey, "error", err)
 		http.Error(w, "render layout", http.StatusInternalServerError)
 		return
 	}

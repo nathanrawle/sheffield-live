@@ -1556,6 +1556,70 @@ func TestRunWithArgsAllSourcesRunsInRegistryOrder(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsLogsToStderrAndKeepsStdoutJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: 7,
+			StartedAt:   "2026-04-24T10:00:00Z",
+			FinishedAt:  "2026-04-24T10:01:00Z",
+			Status:      "succeeded",
+			Limit:       opts.Limit,
+			Totals: ingest.ReportTotals{
+				Links:      2,
+				Snapshots:  3,
+				Candidates: 4,
+				Skips:      1,
+			},
+		}, nil
+	}
+
+	if err := runWithArgs([]string{"-db", path, "-http-user-agent", "agent"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runWithArgs: %v", err)
+	}
+
+	var got ingest.Report
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON report: %v; output %q", err, stdout.String())
+	}
+	if got.ImportRunID != 7 {
+		t.Fatalf("import run id = %d, want 7", got.ImportRunID)
+	}
+	if strings.Contains(stdout.String(), "ingest starting") || strings.Contains(stdout.String(), "ingest finished") {
+		t.Fatalf("stdout contains logs: %q", stdout.String())
+	}
+
+	logs := stderr.String()
+	for _, want := range []string{
+		`msg="ingest starting"`,
+		`msg="ingest finished"`,
+		`mode=live`,
+		`source=sidney-and-matilda`,
+		`import_run_id=7`,
+		`status=succeeded`,
+		`candidates=4`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("stderr logs = %q, want %q", logs, want)
+		}
+	}
+}
+
 func TestRunWithArgsUsesDerivedDefaultUserAgent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
