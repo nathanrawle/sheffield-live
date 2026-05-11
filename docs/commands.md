@@ -17,12 +17,15 @@ Environment:
 
 - `ADDR` defaults to `:8080`
 - `DB_PATH` defaults to `./data/sheffield-live.db`
+- `MEDIA_ROOT` defaults to `./data/media`
+- `MEDIA_URL_PREFIX` defaults to `/media`
 
 Behavior:
 
 - opens and bootstraps the SQLite database on startup
 - validates the opened store once before serving
 - serves server-rendered HTML
+- serves copied local media files from `MEDIA_ROOT` under `MEDIA_URL_PREFIX`
 - uses `modernc.org/sqlite`
 - requires writable storage for the database path
 
@@ -48,6 +51,7 @@ Routes:
 - `GET /healthz` plain-text health check
 - `GET /readyz` plain-text readiness check backed by a cheap store probe
 - `GET /static/site.css` embedded stylesheet
+- `GET /media/{path}` copied event media when `MEDIA_ROOT` is configured
 
 The provisional venue queue lists provisional venue rows created from newly detected venue evidence during new-group staging, singleton auto-promotion, or manual review resolution. Detail pages show upcoming linked events. When venue writes are available, they also show editable venue fields and support two POST actions on the same route: save field edits in place or validate the venue and return to the queue. If venue writes are unavailable, provisional venue detail remains read-only and hides those controls.
 
@@ -138,6 +142,8 @@ Live ingest:
 - Yellow Arch snapshots the source page, parses embedded JSON-LD event data from that page, then snapshots candidate detail pages for description enrichment
 - Corporation snapshots the source page, discovers linked event detail pages, snapshots those pages, and parses candidates from the detail-page HTML
 - parses candidates, skips, and errors
+- copies supported event images into local media storage when a source image URL is available; failures are reported as warnings and do not fail the ingest
+- stores a best-effort image focus point for copied event images so card crops can prefer the most visually interesting area
 - writes `sources`, `import_runs`, and `snapshots`
 - prints a JSON report to stdout
 - batch mode continues after per-source failures but returns non-zero if any source run fails
@@ -152,6 +158,7 @@ Replay:
 - refuses missing or ambiguous snapshot matches
 - auto-detects the source from stored page snapshot metadata
 - reconstructs source-specific extraction from stored source page snapshots
+- reuses previously copied image assets by source URL and does not fetch remote image bytes
 - Sidney & Matilda replays source-page extraction to ICS links and matching ICS snapshots by URL and final URL
 - Leadmill replays source-page extraction to the linked official iCal feed and reapplies the same `Live` plus Sheffield filter from stored ICS snapshots
 - Yellow Arch replays candidate parsing from the stored source page snapshot and replays stored detail-page snapshots for description enrichment without network access
@@ -188,6 +195,14 @@ Description repair:
 - does not stage review groups, auto-promote events, create new events, or mutate non-description event fields
 - emits `description_repair` with `description_repaired`, `description_unchanged`, `description_skipped`, and repaired event slugs
 - mutually exclusive with `-stage-review-groups`, `-all-sources`, and `-review-ics-fixture`
+
+Image focus backfill:
+
+- primary flag: `-backfill-image-focus`
+- reads existing local copied image files from `MEDIA_ROOT`
+- recomputes image focus metadata on `image_assets`, `review_candidates`, and `events`
+- emits `updated`, `defaulted`, `missing_files`, `decode_failures`, and any per-asset errors
+- mutually exclusive with live ingest, replay, review fixture creation, review staging, and description repair
 
 Offline review fixture:
 

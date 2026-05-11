@@ -48,6 +48,13 @@ type Event struct {
 	Genre              string
 	Status             string
 	Description        string
+	ImageURL           string
+	ImageSourceURL     string
+	ImageAlt           string
+	ImageWidth         int
+	ImageHeight        int
+	ImageFocusX        int
+	ImageFocusY        int
 	SourceName         string
 	SourceURL          string
 	OfficialListingURL string

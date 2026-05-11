@@ -25,8 +25,11 @@ The app uses SQLite through `modernc.org/sqlite`.
 
 `ADDR` defaults to `:8080`.
 `DB_PATH` defaults to `./data/sheffield-live.db`.
+`MEDIA_ROOT` defaults to `./data/media`.
+`MEDIA_URL_PREFIX` defaults to `/media`.
 
 The database path must point to writable storage because the application creates or updates the SQLite file on startup.
+The media root must point to writable storage when ingest copies event images. The current implementation stores files locally for development; the storage interface is intentionally small so a later cloud bucket implementation can replace it without changing parsers or review publishing.
 
 The source catalog path is fixed to the repository `config/sources` directory in v1. It is not a runtime flag yet.
 
@@ -49,6 +52,7 @@ The source catalog path is fixed to the repository `config/sources` directory in
 - `/healthz`
 - `/readyz`
 - `/static/site.css`
+- `/media/{path}` when `MEDIA_ROOT` is configured
 
 ## Request Flow
 
@@ -64,22 +68,26 @@ The source catalog path is fixed to the repository `config/sources` directory in
 Public records live in SQLite and are served from canonical `venues` and `events` rows.
 
 - `Venue` stores slug, name, address, neighbourhood, description, website, validation state, coverage kind, coverage note, and origin
-- `Event` stores slug, name, venue slug, a required UTC start time, an optional UTC end time, top-two genre summary, status, description, source name, source URL, last checked time, and origin
+- `Event` stores slug, name, venue slug, a required UTC start time, an optional UTC end time, top-two genre summary, status, description, copied image URL/source/alt/dimensions/focus, source name, source URL, last checked time, and origin
 
 Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
 Review persistence also stores canonical snapshot rows alongside staged candidates, persists source-derived venue evidence (`venue_text`, `venue_location_raw`), and keeps majority defaults separate from reviewer-edited draft choices. For ICS sources, `venue_location_raw` is parsing evidence rather than a display string: it keeps the unfolded raw `LOCATION` text so later venue derivation can decode ICS escapes before applying the normal comma/newline split.
 Review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema. Authoritative resolution reconciles the secondary rows supplied with that authoritative decision. Non-authoritative resolution upserts matching secondary candidates as cumulative evidence, so an omitted source in a later accepted review does not delete previously stored source information. A staged candidate matches the accepted event for secondary evidence when venue slug and start time match and the title matches after case and whitespace normalization.
 Inferred genres are stored as ranked `event_genres` rows. Ranking is calculated across the canonical description plus persisted secondary-source descriptions, using a balanced score from mention frequency and earliest match position. Public summary cards still read `events.genre`, which is refreshed as the top two inferred genres.
+Copied image assets are tracked separately by source URL and storage path, including a best-effort focus point for cropped display, so replay can reuse previously copied files without fetching the image again.
 
 The admin UI exposes a landing page, read-only review history, import history, provisional venue queue/detail pages, genre configuration, and per-run snapshot metadata when the backing store implements those read paths. Public venue/event pages and admin provisional venue pages display normalized multiline addresses, including dropping an address first line that duplicates the venue name. The provisional venue queue lists only provisional venues. Detail pages remain read-only when venue admin writes are unavailable, and show save/validate controls only when the backing store exposes provisional venue write capability. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
 
-When the backing store also exposes secondary-source event info, the public event detail page can render alternate `genre` and `description` values grouped by secondary source without altering the canonical event record.
+When the backing store also exposes secondary-source event info, the public event detail page can render alternate `genre` and `description` values grouped by secondary source without altering the canonical event record. Public event cards render an available image on the right, and event detail renders landscape images as a top hero or tall images beside the description on wide screens.
 
 ## Data Lifecycle
 
 Raw source snapshots feed review groups, and review resolution publishes canonical public events.
 
 - raw snapshots capture fetched source pages and any source-specific secondary payloads such as ICS feeds
+- live ingest extracts source image URLs where the parser can identify event artwork, copies supported remote images into local media storage, estimates a best-effort image focus point for cropped display, and stores image metadata on review candidates
+- image-copy failures are non-fatal ingest warnings; candidates still stage or publish without an image
+- replay uses existing image-asset metadata by source URL instead of fetching remote image bytes
 - source metadata and ingest runtime selection come from repo-backed YAML catalog files
 - repo-backed genre defaults are synced into SQLite, where admin changes take precedence and trigger event-genre recomputation
 - replay and review identity depend on stable source identity fields: `key`, `name`, `url`, and `review_stage_source_name`
@@ -116,6 +124,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - the source row is ensured
 - the published event uses live origin
 - canonical `events.end_at` may be `NULL` when the authoritative end time is unknown
+- canonical event images are copied asset URLs, not hotlinks to source sites
 - the live slug is deterministic and derived from name, venue, and UTC time
 - canonical-backed duplicate resolution can update a matched live event in place and rejects slug collisions with other event IDs
 - venue coverage semantics are data-backed; most venues are full-venue coverage, while The Lescar is marked program-only with a UI note even when Jazz at The Lescar singletons auto-publish

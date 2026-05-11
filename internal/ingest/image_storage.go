@@ -1,0 +1,326 @@
+package ingest
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+const (
+	maxImageDimension = 8192
+	maxImagePixels    = 40_000_000
+)
+
+type ImageAsset struct {
+	SourceURL   string
+	PublicURL   string
+	StoragePath string
+	ContentType string
+	Width       int
+	Height      int
+	FocusX      int
+	FocusY      int
+	Bytes       int64
+	SHA256      string
+	CopiedAt    time.Time
+}
+
+type ImageAssetStore interface {
+	LoadImageAsset(ctx context.Context, sourceURL string) (ImageAsset, bool, error)
+	SaveImageAsset(ctx context.Context, asset ImageAsset) error
+}
+
+type ImageStorage interface {
+	StoreImage(ctx context.Context, sourceURL string, result FetchResult) (ImageAsset, error)
+}
+
+type LocalImageStorage struct {
+	root      string
+	urlPrefix string
+	now       func() time.Time
+}
+
+func NewLocalImageStorage(root, urlPrefix string) (*LocalImageStorage, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil, errors.New("media root is required")
+	}
+	urlPrefix = strings.TrimSpace(urlPrefix)
+	if urlPrefix == "" {
+		return nil, errors.New("media URL prefix is required")
+	}
+	if !strings.HasPrefix(urlPrefix, "/") {
+		urlPrefix = "/" + urlPrefix
+	}
+	urlPrefix = strings.TrimRight(urlPrefix, "/")
+	if urlPrefix == "" {
+		urlPrefix = "/media"
+	}
+	return &LocalImageStorage{
+		root:      root,
+		urlPrefix: urlPrefix,
+		now:       func() time.Time { return time.Now().UTC() },
+	}, nil
+}
+
+func (s *LocalImageStorage) StoreImage(ctx context.Context, sourceURL string, result FetchResult) (ImageAsset, error) {
+	if s == nil {
+		return ImageAsset{}, errors.New("image storage is nil")
+	}
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" {
+		return ImageAsset{}, errors.New("source image URL is required")
+	}
+	if err := validateRemoteImageURL(sourceURL); err != nil {
+		return ImageAsset{}, err
+	}
+	if result.Truncated {
+		return ImageAsset{}, errors.New("image response exceeded size limit")
+	}
+	if !statusIsOK(result.StatusCode) {
+		return ImageAsset{}, fmt.Errorf("image returned HTTP %d", result.StatusCode)
+	}
+	contentType, ext, err := imageContentTypeAndExt(result.ContentType, result.Body)
+	if err != nil {
+		return ImageAsset{}, err
+	}
+	width, height, err := imageDimensions(contentType, result.Body)
+	if err != nil {
+		return ImageAsset{}, err
+	}
+	if width <= 0 || height <= 0 {
+		return ImageAsset{}, fmt.Errorf("image dimensions are invalid: %dx%d", width, height)
+	}
+	focus := DefaultImageFocus()
+	if imageWithinFocusLimits(width, height) {
+		focus = BestEffortImageFocus(contentType, result.Body)
+	}
+
+	sum := sha256.Sum256(result.Body)
+	sha := hex.EncodeToString(sum[:])
+	storagePath := path.Join("events", sha+ext)
+	absolutePath := filepath.Join(s.root, filepath.FromSlash(storagePath))
+	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
+		return ImageAsset{}, err
+	}
+	if err := writeFileIfMissing(absolutePath, result.Body); err != nil {
+		return ImageAsset{}, err
+	}
+	return ImageAsset{
+		SourceURL:   sourceURL,
+		PublicURL:   s.urlPrefix + "/" + storagePath,
+		StoragePath: storagePath,
+		ContentType: contentType,
+		Width:       width,
+		Height:      height,
+		FocusX:      focus.X,
+		FocusY:      focus.Y,
+		Bytes:       int64(len(result.Body)),
+		SHA256:      sha,
+		CopiedAt:    s.now(),
+	}, nil
+}
+
+func writeFileIfMissing(path string, body []byte) error {
+	if existing, err := os.ReadFile(path); err == nil {
+		if bytes.Equal(existing, body) {
+			return nil
+		}
+		return fmt.Errorf("existing file %q does not match image body", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	tempFile, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := tempFile.Name()
+	defer func() {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
+	}()
+
+	if _, err := tempFile.Write(body); err != nil {
+		return err
+	}
+	if err := tempFile.Chmod(0o644); err != nil {
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+
+	return publishTempFileIfMissing(tempPath, path, body)
+}
+
+func publishTempFileIfMissing(tempPath, path string, body []byte) error {
+	if err := os.Link(tempPath, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			existing, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if bytes.Equal(existing, body) {
+				return nil
+			}
+			return fmt.Errorf("existing file %q does not match image body", path)
+		}
+		return err
+	}
+	final, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(final, body) {
+		return nil
+	}
+	return fmt.Errorf("published file %q does not match image body", path)
+}
+
+func validateRemoteImageURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("unsupported image URL scheme %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return errors.New("image URL host is required")
+	}
+	if err := validateRemoteHost(parsed.Hostname()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func imageWithinFocusLimits(width, height int) bool {
+	if width <= 0 || height <= 0 {
+		return false
+	}
+	return width <= maxImageDimension && height <= maxImageDimension && int64(width)*int64(height) <= maxImagePixels
+}
+
+func validateRemoteHost(host string) error {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return errors.New("image URL host is required")
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return fmt.Errorf("image URL host %q is not allowed", host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return validateRemoteAddr(addr)
+	}
+	return nil
+}
+
+func validateRemoteAddr(addr netip.Addr) error {
+	addr = addr.Unmap()
+	if addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() {
+		return fmt.Errorf("image URL address %q is not allowed", addr.String())
+	}
+	return nil
+}
+
+func imageContentTypeAndExt(header string, body []byte) (string, string, error) {
+	contentType := normalizedImageContentType(header)
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = strings.ToLower(http.DetectContentType(body))
+	}
+	switch contentType {
+	case "image/jpeg":
+		return contentType, ".jpg", nil
+	case "image/png":
+		return contentType, ".png", nil
+	case "image/gif":
+		return contentType, ".gif", nil
+	case "image/webp":
+		return contentType, ".webp", nil
+	default:
+		return "", "", fmt.Errorf("unsupported image content type %q", contentType)
+	}
+}
+
+func imageDimensions(contentType string, body []byte) (int, int, error) {
+	if contentType == "image/webp" {
+		return webPDimensions(body)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(body))
+	if err != nil {
+		return 0, 0, err
+	}
+	return cfg.Width, cfg.Height, nil
+}
+
+func webPDimensions(body []byte) (int, int, error) {
+	if len(body) < 20 || string(body[0:4]) != "RIFF" || string(body[8:12]) != "WEBP" {
+		return 0, 0, errors.New("invalid WebP header")
+	}
+	for offset := 12; offset+8 <= len(body); {
+		chunkType := string(body[offset : offset+4])
+		chunkSize := int(littleEndian32(body[offset+4 : offset+8]))
+		payload := offset + 8
+		if chunkSize < 0 || payload+chunkSize > len(body) {
+			return 0, 0, errors.New("invalid WebP chunk size")
+		}
+		chunk := body[payload : payload+chunkSize]
+		switch chunkType {
+		case "VP8X":
+			if len(chunk) < 10 {
+				return 0, 0, errors.New("invalid VP8X chunk")
+			}
+			width := 1 + int(littleEndian24(chunk[4:7]))
+			height := 1 + int(littleEndian24(chunk[7:10]))
+			return width, height, nil
+		case "VP8L":
+			if len(chunk) < 5 || chunk[0] != 0x2f {
+				return 0, 0, errors.New("invalid VP8L chunk")
+			}
+			width := 1 + int(uint16(chunk[1])|uint16(chunk[2]&0x3f)<<8)
+			height := 1 + int(uint16(chunk[2]&0xc0)>>6|uint16(chunk[3])<<2|uint16(chunk[4]&0x0f)<<10)
+			return width, height, nil
+		case "VP8 ":
+			if len(chunk) < 10 || chunk[3] != 0x9d || chunk[4] != 0x01 || chunk[5] != 0x2a {
+				return 0, 0, errors.New("invalid VP8 chunk")
+			}
+			width := int(littleEndian16(chunk[6:8]) & 0x3fff)
+			height := int(littleEndian16(chunk[8:10]) & 0x3fff)
+			return width, height, nil
+		}
+		offset = payload + chunkSize
+		if chunkSize%2 == 1 {
+			offset++
+		}
+	}
+	return 0, 0, errors.New("missing WebP image chunk")
+}
+
+func littleEndian16(b []byte) uint16 {
+	return uint16(b[0]) | uint16(b[1])<<8
+}
+
+func littleEndian24(b []byte) uint32 {
+	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16
+}
+
+func littleEndian32(b []byte) uint32 {
+	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+}

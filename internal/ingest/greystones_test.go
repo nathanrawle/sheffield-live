@@ -47,6 +47,9 @@ func TestParseTheGreystonesMonthPage(t *testing.T) {
 	if got, want := first.URL, "https://tickets.example.test/furrow"; got != want {
 		t.Fatalf("url = %q, want %q", got, want)
 	}
+	if got, want := first.ImageSourceURL, "https://www.mygreystones.co.uk/april/furrow.jpg"; got != want {
+		t.Fatalf("image source url = %q, want %q", got, want)
+	}
 	if got, want := first.Status, "Listed"; got != want {
 		t.Fatalf("status = %q, want %q", got, want)
 	}
@@ -63,6 +66,9 @@ func TestParseTheGreystonesMonthPage(t *testing.T) {
 	}
 	if got, want := second.StartAt, "2026-04-30T19:00:00Z"; got != want {
 		t.Fatalf("start = %q, want %q", got, want)
+	}
+	if got, want := second.ImageSourceURL, "https://www.mygreystones.co.uk/april/john.jpg"; got != want {
+		t.Fatalf("image source url = %q, want %q", got, want)
 	}
 }
 

@@ -11,11 +11,13 @@ The product is a small, readable Sheffield live-music browser that answers three
 The current scope includes:
 
 - SQLite persistence with curated bootstrap venues
-- manual Sidney & Matilda ingest
+- manual ingest from the configured source catalog
 - review staging
 - review-to-public-event publishing
+- narrow singleton auto-promotion when source and matching rules allow it
 - server-rendered minimalist UI
 - public browsing for home, events, event detail, venues, and venue detail
+- local-first copied event images for development
 - visible provenance and freshness on records
 - visibly tagged test and dev data
 - curated bootstrap venues and live records that are not tagged
@@ -24,10 +26,10 @@ The current scope includes:
 ## Non-Goals
 
 - broad source coverage
-- automated publishing without review
+- broad automated publishing without review
 - login or auth hardening
 - a recurring scheduler
-- image or media ingestion
+- remote media storage
 - a claim of complete Sheffield coverage
 - a rich JavaScript app or HTMX unless it earns its place
 

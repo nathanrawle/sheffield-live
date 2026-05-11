@@ -20,25 +20,28 @@ import (
 )
 
 const (
-	defaultPath       = "./data/sheffield-live.db"
-	schemaVersionV1   = 1
-	schemaVersionV2   = 2
-	schemaVersionV3   = 3
-	schemaVersionV4   = 4
-	schemaVersionV5   = 5
-	schemaVersionV6   = 6
-	schemaVersionV7   = 7
-	schemaVersionV8   = 8
-	schemaVersionV9   = 9
-	schemaVersionV10  = 10
-	schemaVersionV11  = 11
-	schemaVersionV12  = 12
-	schemaVersionV13  = 13
-	schemaVersionV14  = 14
-	schemaVersionV15  = 15
-	schemaVersionV16  = 16
-	rfc3339Timestamp  = time.RFC3339
-	foreignKeysPragma = "PRAGMA foreign_keys = ON"
+	defaultPath          = "./data/sheffield-live.db"
+	schemaVersionV1      = 1
+	schemaVersionV2      = 2
+	schemaVersionV3      = 3
+	schemaVersionV4      = 4
+	schemaVersionV5      = 5
+	schemaVersionV6      = 6
+	schemaVersionV7      = 7
+	schemaVersionV8      = 8
+	schemaVersionV9      = 9
+	schemaVersionV10     = 10
+	schemaVersionV11     = 11
+	schemaVersionV12     = 12
+	schemaVersionV13     = 13
+	schemaVersionV14     = 14
+	schemaVersionV15     = 15
+	schemaVersionV16     = 16
+	schemaVersionV17     = 17
+	schemaVersionV18     = 18
+	schemaVersionCurrent = schemaVersionV18
+	rfc3339Timestamp     = time.RFC3339
+	foreignKeysPragma    = "PRAGMA foreign_keys = ON"
 )
 
 var migrations = []struct {
@@ -61,6 +64,8 @@ var migrations = []struct {
 	{version: schemaVersionV14, path: "migrations/0014_bootstrap_origin_live.sql"},
 	{version: schemaVersionV15, path: "migrations/0015_event_public_links.sql"},
 	{version: schemaVersionV16, path: "migrations/0016_genres.sql"},
+	{version: schemaVersionV17, path: "migrations/0017_event_images.sql"},
+	{version: schemaVersionV18, path: "migrations/0018_image_focus.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -215,6 +220,13 @@ func (s *Store) ListEvents(ctx context.Context) ([]domain.Event, error) {
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -388,6 +400,13 @@ func (s *Store) ListEventsForVenue(ctx context.Context, venueSlug string) ([]dom
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -431,8 +450,15 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV16 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV16)
+	if version > schemaVersionCurrent {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionCurrent)
+	}
+	if err := reconcileRebasedEventImageMigrations(ctx, tx, version); err != nil {
+		return err
+	}
+	version, err = schemaVersion(ctx, tx)
+	if err != nil {
+		return err
 	}
 
 	for _, migration := range migrations {
@@ -454,6 +480,120 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func reconcileRebasedEventImageMigrations(ctx context.Context, tx *sql.Tx, version int) error {
+	// During the event-image branch rebase, main claimed v16 for genre tables,
+	// while the branch had already used v16/v17 for image and focus columns.
+	// Local development DBs can therefore have image schema recorded as v16/v17
+	// without having the genre schema or current v18 focus migration row.
+	if version >= schemaVersionV16 {
+		ok, err := genreSchemaExists(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if err := applyMigrationSQL(ctx, tx, "migrations/0016_genres.sql"); err != nil {
+				return err
+			}
+		}
+	}
+	if version < schemaVersionV17 {
+		ok, err := eventImageSchemaExists(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := recordMigrationApplied(ctx, tx, schemaVersionV17); err != nil {
+				return err
+			}
+		}
+	}
+	if version < schemaVersionV18 {
+		ok, err := imageFocusSchemaExists(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := recordMigrationApplied(ctx, tx, schemaVersionV18); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func applyMigrationSQL(ctx context.Context, tx *sql.Tx, path string) error {
+	migrationSQL, err := readMigration(path)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, migrationSQL)
+	return err
+}
+
+func recordMigrationApplied(ctx context.Context, tx execer, version int) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+		VALUES (?, ?)
+	`, version, time.Now().UTC().Format(rfc3339Timestamp))
+	return err
+}
+
+func genreSchemaExists(ctx context.Context, q queryer) (bool, error) {
+	for _, table := range []string{"genre_rules", "event_genres"} {
+		exists, err := tableExists(ctx, q, table)
+		if err != nil || !exists {
+			return exists, err
+		}
+	}
+	return true, nil
+}
+
+func eventImageSchemaExists(ctx context.Context, q queryer) (bool, error) {
+	checks := []struct {
+		table  string
+		column string
+	}{
+		{table: "events", column: "image_url"},
+		{table: "events", column: "image_source_url"},
+		{table: "events", column: "image_alt"},
+		{table: "events", column: "image_width"},
+		{table: "events", column: "image_height"},
+		{table: "review_candidates", column: "image_url"},
+		{table: "review_candidates", column: "image_source_url"},
+		{table: "review_candidates", column: "image_alt"},
+		{table: "review_candidates", column: "image_width"},
+		{table: "review_candidates", column: "image_height"},
+	}
+	for _, check := range checks {
+		exists, err := columnExists(ctx, q, check.table, check.column)
+		if err != nil || !exists {
+			return exists, err
+		}
+	}
+	return tableExists(ctx, q, "image_assets")
+}
+
+func imageFocusSchemaExists(ctx context.Context, q queryer) (bool, error) {
+	checks := []struct {
+		table  string
+		column string
+	}{
+		{table: "events", column: "image_focus_x"},
+		{table: "events", column: "image_focus_y"},
+		{table: "review_candidates", column: "image_focus_x"},
+		{table: "review_candidates", column: "image_focus_y"},
+		{table: "image_assets", column: "focus_x"},
+		{table: "image_assets", column: "focus_y"},
+	}
+	for _, check := range checks {
+		exists, err := columnExists(ctx, q, check.table, check.column)
+		if err != nil || !exists {
+			return exists, err
+		}
+	}
+	return true, nil
 }
 
 func bootstrapIfEmpty(ctx context.Context, tx *sql.Tx) error {
@@ -550,16 +690,26 @@ func insertEvent(ctx context.Context, tx execer, event domain.Event, venueID, so
 			genre,
 			status,
 			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
 			official_listing_url,
 			calendar_url,
 			last_checked_at,
 			origin,
 			publication_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
+		event.ImageURL, event.ImageSourceURL, event.ImageAlt, event.ImageWidth, event.ImageHeight,
+		normalizedImageFocusValue(event.ImageFocusX),
+		normalizedImageFocusValue(event.ImageFocusY),
 		event.OfficialListingURL,
 		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
@@ -603,6 +753,13 @@ func validate(ctx context.Context, q queryer) error {
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -766,6 +923,33 @@ func tableExists(ctx context.Context, q queryer, table string) (bool, error) {
 	}
 }
 
+func columnExists(ctx context.Context, q queryer, table, column string) (bool, error) {
+	rows, err := q.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var typeName string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
 func loadVenues(ctx context.Context, q queryer) ([]domain.Venue, error) {
 	rows, err := q.QueryContext(ctx, `
 		SELECT slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin
@@ -852,6 +1036,13 @@ func loadEventBySlug(ctx context.Context, q queryer, slug string) (domain.Event,
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -934,6 +1125,20 @@ func appendUniqueString(values []string, candidate string) []string {
 	return append(values, candidate)
 }
 
+func normalizedImageFocus(x, y int) ingest.ImageFocus {
+	if x == 0 && y == 0 {
+		return ingest.ImageFocus{}
+	}
+	return ingest.ImageFocus{
+		X: ingest.NormalizeExplicitImageFocusValue(x),
+		Y: ingest.NormalizeExplicitImageFocusValue(y),
+	}
+}
+
+func normalizedImageFocusValue(value int) int {
+	return ingest.NormalizeExplicitImageFocusValue(value)
+}
+
 type decoratedEventLinks struct {
 	officialListingURL string
 	calendarURL        string
@@ -998,6 +1203,13 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 		&event.Genre,
 		&event.Status,
 		&event.Description,
+		&event.ImageURL,
+		&event.ImageSourceURL,
+		&event.ImageAlt,
+		&event.ImageWidth,
+		&event.ImageHeight,
+		&event.ImageFocusX,
+		&event.ImageFocusY,
 		&event.SourceName,
 		&event.SourceURL,
 		&event.OfficialListingURL,
@@ -1025,6 +1237,9 @@ func scanEvent(rows *sql.Rows) (domain.Event, error) {
 	event.Start = start
 	event.End = end
 	event.LastChecked = lastChecked
+	focus := normalizedImageFocus(event.ImageFocusX, event.ImageFocusY)
+	event.ImageFocusX = focus.X
+	event.ImageFocusY = focus.Y
 	event.Origin = domain.Origin(origin)
 	event.PublicationState = normalizedPublicationState(domain.PublicationState(publicationState))
 	if err := event.ValidateCanonical(); err != nil {

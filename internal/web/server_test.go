@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -61,6 +62,71 @@ func TestRoutes(t *testing.T) {
 				t.Fatalf("body missing %q in %q", tc.body, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestNormalizeMediaURLPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		want   string
+	}{
+		{name: "default", prefix: "", want: "/media"},
+		{name: "adds leading slash", prefix: "assets", want: "/assets"},
+		{name: "trims trailing slash", prefix: "/assets/", want: "/assets"},
+		{name: "root falls back", prefix: "/", want: "/media"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeMediaURLPrefix(tc.prefix); got != tc.want {
+				t.Fatalf("prefix = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMediaRouteServesLocalFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "events"), 0o755); err != nil {
+		t.Fatalf("make media dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "events", "poster.jpg"), []byte("poster bytes"), 0o644); err != nil {
+		t.Fatalf("write media file: %v", err)
+	}
+
+	deps := testServerDeps(store.NewSeedStore())
+	deps.MediaRoot = root
+	deps.MediaURLPrefix = "media"
+	server, err := NewServer(deps)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/media/events/poster.jpg", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if rr.Body.String() != "poster bytes" {
+		t.Fatalf("body = %q, want media file bytes", rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/media", nil)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("directory status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+
+	for _, path := range []string{"/media/events", "/media/events/"} {
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		rr = httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("path %s status = %d, want %d", path, rr.Code, http.StatusNotFound)
+		}
 	}
 }
 
@@ -1408,6 +1474,152 @@ func TestEventsUnknownVenueBehavesLikeAllVenues(t *testing.T) {
 	assertNotContains(t, body, "No shows match these filters.")
 }
 
+func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{{
+			Slug:        "poster-show",
+			Name:        "Poster Show",
+			VenueSlug:   "leadmill",
+			Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+			End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "Poster description.",
+			ImageURL:    "/media/events/poster.jpg",
+			ImageAlt:    "Poster Show artwork",
+			ImageWidth:  1200,
+			ImageHeight: 800,
+			ImageFocusX: 35,
+			ImageFocusY: 65,
+			SourceName:  "Fixture listings",
+			SourceURL:   "https://example.test/poster-show",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			Origin:      domain.OriginLive,
+		}},
+	))
+
+	for _, tc := range []struct {
+		name      string
+		path      string
+		cardClass string
+	}{
+		{name: "home", path: "/", cardClass: `class="event-card has-image"`},
+		{name: "events", path: "/events?window=today", cardClass: `class="event-card wide has-image"`},
+		{name: "venue", path: "/venues/leadmill", cardClass: `class="event-card has-image"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := renderPath(t, server, tc.path)
+			assertContains(t, body, tc.cardClass)
+			assertContains(t, body, `<img class="event-card-image" src="/media/events/poster.jpg" alt="Poster Show artwork" style="--image-focus-x: 35%; --image-focus-y: 65%;" loading="lazy" decoding="async">`)
+		})
+	}
+}
+
+func TestEventCardsPreserveExplicitTopLeftImageFocus(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{{
+			Slug:        "top-left-poster-show",
+			Name:        "Top Left Poster Show",
+			VenueSlug:   "leadmill",
+			Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+			End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "Poster description.",
+			ImageURL:    "/media/events/top-left-poster.jpg",
+			ImageWidth:  1200,
+			ImageHeight: 800,
+			ImageFocusX: 0,
+			ImageFocusY: 0,
+			SourceName:  "Fixture listings",
+			SourceURL:   "https://example.test/top-left-poster-show",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			Origin:      domain.OriginLive,
+		}},
+	))
+
+	body := renderPath(t, server, "/")
+	assertContains(t, body, `<img class="event-card-image" src="/media/events/top-left-poster.jpg" alt="Top Left Poster Show" style="--image-focus-x: 0%; --image-focus-y: 0%;" loading="lazy" decoding="async">`)
+}
+
+func TestEventDetailRendersHeroAndPortraitImages(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:        "landscape-show",
+				Name:        "Landscape Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+				End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Landscape description.",
+				ImageURL:    "/media/events/landscape.jpg",
+				ImageAlt:    "Landscape Show poster",
+				ImageWidth:  1600,
+				ImageHeight: 900,
+				ImageFocusX: 25,
+				ImageFocusY: 75,
+				SourceName:  "Fixture listings",
+				SourceURL:   "https://example.test/landscape-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:      domain.OriginLive,
+			},
+			{
+				Slug:        "portrait-show",
+				Name:        "Portrait Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 20, 20, 0),
+				End:         fixtureLocalTime(2026, time.April, 20, 22, 0),
+				Genre:       "Rock",
+				Status:      "Listed",
+				Description: "Portrait description.",
+				ImageURL:    "/media/events/portrait.jpg",
+				ImageWidth:  800,
+				ImageHeight: 1200,
+				ImageFocusX: 60,
+				ImageFocusY: 40,
+				SourceName:  "Fixture listings",
+				SourceURL:   "https://example.test/portrait-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:      domain.OriginLive,
+			},
+		},
+	))
+
+	landscapeBody := renderPath(t, server, "/events/landscape-show")
+	assertContains(t, landscapeBody, `<header class="event-detail-head hero-image">`)
+	assertContains(t, landscapeBody, `<img src="/media/events/landscape.jpg" alt="Landscape Show poster" style="--image-focus-x: 25%; --image-focus-y: 75%;" loading="eager" decoding="async">`)
+
+	portraitBody := renderPath(t, server, "/events/portrait-show")
+	assertContains(t, portraitBody, `<header class="event-detail-head portrait-image">`)
+	assertContains(t, portraitBody, `<img src="/media/events/portrait.jpg" alt="Portrait Show" style="--image-focus-x: 60%; --image-focus-y: 40%;" loading="eager" decoding="async">`)
+}
+
 func TestVenueDetailShowsEmptyState(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/venues/empty-room")
@@ -1615,6 +1827,7 @@ func TestAdminReviewListDetailAndSave(t *testing.T) {
 	form.Set("choice_genre", strconvFormatInt(group.Candidates[1].ID))
 	form.Set("choice_status", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_description", strconvFormatInt(group.Candidates[1].ID))
+	form.Set("choice_image_url", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_source_name", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_source_url", strconvFormatInt(group.Candidates[1].ID))
 	form.Set("action", "save")
@@ -2433,6 +2646,7 @@ func TestAdminReviewResolveRedirectsAndRemovesFromQueue(t *testing.T) {
 	form.Set("choice_genre", strconvFormatInt(group.Candidates[1].ID))
 	form.Set("choice_status", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_description", strconvFormatInt(group.Candidates[1].ID))
+	form.Set("choice_image_url", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_source_name", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_source_url", strconvFormatInt(group.Candidates[1].ID))
 
@@ -2653,6 +2867,7 @@ func TestAdminReviewClosedGroupIsReadOnlyAndRejectsPost(t *testing.T) {
 		{Field: review.FieldGenre, CandidateID: group.Candidates[1].ID},
 		{Field: review.FieldStatus, CandidateID: group.Candidates[0].ID},
 		{Field: review.FieldDescription, CandidateID: group.Candidates[1].ID},
+		{Field: review.FieldImageURL, CandidateID: group.Candidates[0].ID},
 		{Field: review.FieldSourceName, CandidateID: group.Candidates[0].ID},
 		{Field: review.FieldSourceURL, CandidateID: group.Candidates[1].ID},
 	}); err != nil {

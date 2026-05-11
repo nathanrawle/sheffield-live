@@ -116,15 +116,17 @@ func corporationCandidateFromJSONLDNode(pageURL string, node map[string]any) (Ev
 	}
 
 	return EventCandidate{
-		UID:         detailURL,
-		Summary:     title,
-		Description: semanticDescriptionText(yellowArchJSONString(node["description"])),
-		Location:    location,
-		LocationRaw: corporationLocationRaw(node["location"]),
-		URL:         detailURL,
-		Status:      "Listed",
-		StartAt:     formatTime(startAt),
-		EndAt:       formatTime(endAt),
+		UID:            detailURL,
+		Summary:        title,
+		Description:    semanticDescriptionText(yellowArchJSONString(node["description"])),
+		Location:       location,
+		LocationRaw:    corporationLocationRaw(node["location"]),
+		URL:            detailURL,
+		ImageSourceURL: resolveImageSourceURL(pageURL, jsonLDImageURL(node["image"])),
+		ImageAlt:       title,
+		Status:         "Listed",
+		StartAt:        formatTime(startAt),
+		EndAt:          formatTime(endAt),
 	}, ParseSkip{}, nil
 }
 
@@ -152,14 +154,16 @@ func corporationCandidateFromLegacyPage(pageURL string, raw []byte) (EventCandid
 	}
 
 	return EventCandidate{
-		UID:         detailURL,
-		Summary:     title,
-		Description: corporationText(corporationDescriptionPattern.FindStringSubmatch(string(raw))),
-		Location:    "Corporation",
-		URL:         detailURL,
-		Status:      "Listed",
-		StartAt:     formatTime(startAt),
-		EndAt:       formatTime(endAt),
+		UID:            detailURL,
+		Summary:        title,
+		Description:    corporationText(corporationDescriptionPattern.FindStringSubmatch(string(raw))),
+		Location:       "Corporation",
+		URL:            detailURL,
+		ImageSourceURL: firstDocumentImageURL(pageURL, raw),
+		ImageAlt:       title,
+		Status:         "Listed",
+		StartAt:        formatTime(startAt),
+		EndAt:          formatTime(endAt),
 	}, ParseSkip{}, nil
 }
 

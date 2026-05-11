@@ -60,12 +60,18 @@ func ParseTheGreystonesMonthPage(pageURL string, raw []byte) ParseResult {
 
 	var result ParseResult
 	for i, match := range titleMatches {
+		sectionStart := match[0]
+		imageStart := 0
+		if i > 0 {
+			imageStart = titleMatches[i-1][1]
+		}
 		sectionEnd := len(raw)
 		if i+1 < len(titleMatches) {
 			sectionEnd = titleMatches[i+1][0]
 		}
-		section := raw[match[0]:sectionEnd]
-		candidate, skip, err := greystonesCandidateFromSection(pageURL, section, year)
+		section := raw[sectionStart:sectionEnd]
+		imageRegion := raw[imageStart:sectionStart]
+		candidate, skip, err := greystonesCandidateFromSection(pageURL, section, imageRegion, year)
 		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
 			continue
@@ -112,7 +118,7 @@ func greystonesPageYear(raw []byte) (int, error) {
 	return parsed.Year(), nil
 }
 
-func greystonesCandidateFromSection(pageURL string, section []byte, year int) (EventCandidate, ParseSkip, error) {
+func greystonesCandidateFromSection(pageURL string, section, imageRegion []byte, year int) (EventCandidate, ParseSkip, error) {
 	title := greystonesMatchText(greystonesTitlePattern.FindSubmatch(section))
 	meta := greystonesMatchText(greystonesMetaPattern.FindSubmatch(section))
 	skip := ParseSkip{Summary: title}
@@ -132,12 +138,14 @@ func greystonesCandidateFromSection(pageURL string, section []byte, year int) (E
 	}
 
 	return EventCandidate{
-		Summary:     title,
-		Description: greystonesDescription(section),
-		Location:    "The Greystones",
-		URL:         greystonesSectionURL(pageURL, section),
-		Status:      "Listed",
-		StartAt:     formatTime(startAt),
+		Summary:        title,
+		Description:    greystonesDescription(section),
+		Location:       "The Greystones",
+		URL:            greystonesSectionURL(pageURL, section),
+		ImageSourceURL: greystonesSectionImageURL(pageURL, imageRegion),
+		ImageAlt:       title,
+		Status:         "Listed",
+		StartAt:        formatTime(startAt),
 	}, ParseSkip{}, nil
 }
 
@@ -205,6 +213,20 @@ func greystonesSectionURL(pageURL string, section []byte) string {
 		}
 	}
 	return strings.TrimSpace(pageURL)
+}
+
+func greystonesSectionImageURL(pageURL string, region []byte) string {
+	matches := regexp.MustCompile(`(?is)<img\b[^>]*>`).FindAll(region, -1)
+	for i := len(matches) - 1; i >= 0; i-- {
+		attrs := parseHTMLAttributes(string(matches[i]))
+		if strings.EqualFold(strings.TrimSpace(attrs["alt"]), "ticket") {
+			continue
+		}
+		if imageURL := resolveImageSourceURL(pageURL, attrs["src"]); imageURL != "" {
+			return imageURL
+		}
+	}
+	return ""
 }
 
 func greystonesMatchText(match [][]byte) string {

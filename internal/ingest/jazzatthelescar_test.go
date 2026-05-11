@@ -63,6 +63,9 @@ func TestParseJazzAtTheLescarSourcePageAppliesLimit(t *testing.T) {
 	if got, want := len(result.Skips), 1; got != want {
 		t.Fatalf("skips = %d, want %d", got, want)
 	}
+	if got, want := result.Candidates[0].ImageSourceURL, "http://www.jazzatthelescar.com/ko.jpg"; got != want {
+		t.Fatalf("image source url = %q, want %q", got, want)
+	}
 }
 
 func TestParseJazzAtTheLescarPagePreservesDescriptionBreaks(t *testing.T) {

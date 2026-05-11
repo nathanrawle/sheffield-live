@@ -28,8 +28,10 @@ type Store interface {
 }
 
 type Options struct {
-	Source string
-	Limit  int
+	Source       string
+	Limit        int
+	ImageFetcher Fetcher
+	ImageStorage ImageStorage
 }
 
 type Report struct {
@@ -63,6 +65,7 @@ type CalendarReport struct {
 	Candidates []EventCandidate `json:"candidates"`
 	Skips      []ParseSkip      `json:"skips"`
 	Errors     []string         `json:"errors,omitempty"`
+	Warnings   []string         `json:"warnings,omitempty"`
 }
 
 type ReportTotals struct {
@@ -209,6 +212,7 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 			report.Totals.Snapshots += detailResult.Snapshots
 			for i := range report.Calendars {
 				report.Calendars[i].Candidates = mergeDetailDescriptions(report.Calendars[i].Candidates, detailResult.Descriptions)
+				copyCalendarCandidateImages(ctx, st, opts, &report.Calendars[i])
 			}
 		}
 	case pageProcessLinkedDetailPages:
@@ -264,6 +268,7 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 				continue
 			}
 			calendar.Candidates = parse.Candidates
+			copyCalendarCandidateImages(ctx, st, opts, &calendar)
 			calendar.Skips = parse.Skips
 			calendar.Errors = append(calendar.Errors, parse.Errors...)
 			report.Calendars = append(report.Calendars, calendar)
@@ -272,13 +277,15 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 		report.Links = appendUniqueStringsWithLimit(report.Links, opts.Limit, pageParse.Links...)
 		detailResult := liveDetailDescriptionsForCandidates(ctx, st, fetcher, runID, cfg, detailLinksForSource(cfg, pageURL, pageResult.Body, pageParse.Parse.Candidates, opts.Limit))
 		report.Totals.Snapshots += detailResult.Snapshots
-		report.Calendars = append(report.Calendars, CalendarReport{
+		calendar := CalendarReport{
 			URL:        pageURL,
 			Snapshot:   report.Page,
 			Candidates: mergeDetailDescriptions(pageParse.Parse.Candidates, detailResult.Descriptions),
 			Skips:      pageParse.Parse.Skips,
 			Errors:     append([]string{}, pageParse.Parse.Errors...),
-		})
+		}
+		copyCalendarCandidateImages(ctx, st, opts, &calendar)
+		report.Calendars = append(report.Calendars, calendar)
 
 		seenLinks := make(map[string]struct{}, len(report.Links)+1)
 		seenLinks[pageURL] = struct{}{}
@@ -332,6 +339,7 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 			detailResult := liveDetailDescriptionsForCandidates(ctx, st, fetcher, runID, cfg, detailLinksForSource(cfg, firstNonEmpty(pageResult.FinalURL, pageResult.URL), pageResult.Body, linkedParse.Parse.Candidates, opts.Limit))
 			report.Totals.Snapshots += detailResult.Snapshots
 			calendar.Candidates = mergeDetailDescriptions(linkedParse.Parse.Candidates, detailResult.Descriptions)
+			copyCalendarCandidateImages(ctx, st, opts, &calendar)
 			calendar.Skips = linkedParse.Parse.Skips
 			calendar.Errors = append(calendar.Errors, linkedParse.Parse.Errors...)
 			report.Calendars = append(report.Calendars, calendar)
@@ -370,6 +378,15 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 		status = importStatusFailed
 	}
 	return finishReport(ctx, st, report, status)
+}
+
+func copyCalendarCandidateImages(ctx context.Context, st Store, opts Options, calendar *CalendarReport) {
+	if calendar == nil || len(calendar.Candidates) == 0 {
+		return
+	}
+	candidates, warnings := copyCandidateImages(ctx, st, opts.ImageFetcher, opts.ImageStorage, calendar.Candidates)
+	calendar.Candidates = candidates
+	calendar.Warnings = append(calendar.Warnings, warnings...)
 }
 
 func createSnapshot(ctx context.Context, st Store, runID int64, sourceID int64, result FetchResult) (SnapshotReport, error) {

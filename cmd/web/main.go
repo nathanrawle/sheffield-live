@@ -20,6 +20,8 @@ func main() {
 func run() error {
 	addr := env("ADDR", ":8080")
 	dbPath := env("DB_PATH", "./data/sheffield-live.db")
+	mediaRoot := env("MEDIA_ROOT", "./data/media")
+	mediaURLPrefix := env("MEDIA_URL_PREFIX", "/media")
 
 	sourceCatalog, err := ingest.LoadRepoCatalog()
 	if err != nil {
@@ -50,6 +52,8 @@ func run() error {
 		EventGenreStore:           st,
 		GenreConfigurationStore:   st,
 		ReadyChecker:              st,
+		MediaRoot:                 mediaRoot,
+		MediaURLPrefix:            mediaURLPrefix,
 	})
 	if err != nil {
 		return err

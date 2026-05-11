@@ -463,13 +463,39 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 		existingCandidate := existingBucket[0]
 		incomingVenueText := strings.TrimSpace(incomingCandidate.VenueText)
 		incomingVenueLocationRaw := strings.TrimSpace(incomingCandidate.VenueLocationRaw)
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE review_candidates
-			SET venue_text = ?,
-				venue_location_raw = ?
-			WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
-		`, incomingVenueText, incomingVenueLocationRaw, existingCandidate.ID, groupID); err != nil {
-			return nil, err
+		if strings.TrimSpace(incomingCandidate.ImageURL) != "" {
+			if _, err := tx.ExecContext(ctx, `
+					UPDATE review_candidates
+					SET venue_text = ?,
+						venue_location_raw = ?,
+						image_url = ?,
+						image_source_url = ?,
+						image_alt = ?,
+						image_width = ?,
+						image_height = ?,
+						image_focus_x = ?,
+						image_focus_y = ?
+					WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
+				`, incomingVenueText, incomingVenueLocationRaw,
+				strings.TrimSpace(incomingCandidate.ImageURL),
+				strings.TrimSpace(incomingCandidate.ImageSourceURL),
+				strings.TrimSpace(incomingCandidate.ImageAlt),
+				incomingCandidate.ImageWidth,
+				incomingCandidate.ImageHeight,
+				normalizedImageFocusValue(incomingCandidate.ImageFocusX),
+				normalizedImageFocusValue(incomingCandidate.ImageFocusY),
+				existingCandidate.ID, groupID); err != nil {
+				return nil, err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+					UPDATE review_candidates
+					SET venue_text = ?,
+						venue_location_raw = ?
+					WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
+				`, incomingVenueText, incomingVenueLocationRaw, existingCandidate.ID, groupID); err != nil {
+				return nil, err
+			}
 		}
 		if reviewCandidateNeedsProvisionalVenueBackfill(existingCandidate, incomingVenueText, incomingVenueLocationRaw) {
 			existingCandidate.VenueSlug = strings.TrimSpace(incomingCandidate.VenueSlug)
@@ -546,6 +572,13 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 		Genre:            record.Event.Genre,
 		Status:           record.Event.Status,
 		Description:      record.Event.Description,
+		ImageURL:         record.Event.ImageURL,
+		ImageSourceURL:   record.Event.ImageSourceURL,
+		ImageAlt:         record.Event.ImageAlt,
+		ImageWidth:       record.Event.ImageWidth,
+		ImageHeight:      record.Event.ImageHeight,
+		ImageFocusX:      record.Event.ImageFocusX,
+		ImageFocusY:      record.Event.ImageFocusY,
 		SourceName:       record.Event.SourceName,
 		SourceURL:        firstNonEmptyReviewText(record.Event.OfficialListingURL, record.Event.SourceURL),
 		CalendarURL:      record.Event.CalendarURL,
@@ -571,12 +604,19 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 				genre = ?,
 				status = ?,
 				description = ?,
+				image_url = ?,
+				image_source_url = ?,
+				image_alt = ?,
+				image_width = ?,
+				image_height = ?,
+				image_focus_x = ?,
+				image_focus_y = ?,
 				source_name = ?,
 				source_url = ?,
 				calendar_url = ?,
 				provenance = ?
 			WHERE id = ? AND group_id = ?
-		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.VenueText, candidate.VenueLocationRaw, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.SourceName, candidate.SourceURL, candidate.CalendarURL, candidate.Provenance, existing.ID, groupID); err != nil {
+		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.VenueText, candidate.VenueLocationRaw, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.ImageURL, candidate.ImageSourceURL, candidate.ImageAlt, candidate.ImageWidth, candidate.ImageHeight, normalizedImageFocusValue(candidate.ImageFocusX), normalizedImageFocusValue(candidate.ImageFocusY), candidate.SourceName, candidate.SourceURL, candidate.CalendarURL, candidate.Provenance, existing.ID, groupID); err != nil {
 			return nil, err
 		}
 		return record, nil
@@ -768,6 +808,7 @@ func reviewConsensusFields() []review.Field {
 		review.FieldGenre,
 		review.FieldStatus,
 		review.FieldDescription,
+		review.FieldImageURL,
 	}
 }
 
@@ -1066,19 +1107,26 @@ func singletonResolvedEventFromGroupInput(input review.GroupInput, publishedAt t
 		SourceURL:  strings.TrimSpace(input.SourceURL),
 	}
 	selectedCandidate := review.Candidate{
-		ID:          1,
-		ExternalID:  strings.TrimSpace(candidate.ExternalID),
-		Name:        strings.TrimSpace(candidate.Name),
-		VenueSlug:   strings.TrimSpace(candidate.VenueSlug),
-		StartAt:     strings.TrimSpace(candidate.StartAt),
-		EndAt:       strings.TrimSpace(candidate.EndAt),
-		Genre:       strings.TrimSpace(candidate.Genre),
-		Status:      strings.TrimSpace(candidate.Status),
-		Description: strings.TrimSpace(candidate.Description),
-		SourceName:  strings.TrimSpace(candidate.SourceName),
-		SourceURL:   strings.TrimSpace(candidate.SourceURL),
-		CalendarURL: strings.TrimSpace(candidate.CalendarURL),
-		Provenance:  strings.TrimSpace(candidate.Provenance),
+		ID:             1,
+		ExternalID:     strings.TrimSpace(candidate.ExternalID),
+		Name:           strings.TrimSpace(candidate.Name),
+		VenueSlug:      strings.TrimSpace(candidate.VenueSlug),
+		StartAt:        strings.TrimSpace(candidate.StartAt),
+		EndAt:          strings.TrimSpace(candidate.EndAt),
+		Genre:          strings.TrimSpace(candidate.Genre),
+		Status:         strings.TrimSpace(candidate.Status),
+		Description:    strings.TrimSpace(candidate.Description),
+		ImageURL:       strings.TrimSpace(candidate.ImageURL),
+		ImageSourceURL: strings.TrimSpace(candidate.ImageSourceURL),
+		ImageAlt:       strings.TrimSpace(candidate.ImageAlt),
+		ImageWidth:     candidate.ImageWidth,
+		ImageHeight:    candidate.ImageHeight,
+		ImageFocusX:    candidate.ImageFocusX,
+		ImageFocusY:    candidate.ImageFocusY,
+		SourceName:     strings.TrimSpace(candidate.SourceName),
+		SourceURL:      strings.TrimSpace(candidate.SourceURL),
+		CalendarURL:    strings.TrimSpace(candidate.CalendarURL),
+		Provenance:     strings.TrimSpace(candidate.Provenance),
 	}
 	selected := make(map[review.Field]review.Candidate, len(review.CanonicalFields))
 	for _, field := range review.CanonicalFields {
@@ -1191,6 +1239,15 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 	if strings.TrimSpace(updated.CalendarURL) == "" && strings.TrimSpace(incoming.CalendarURL) != "" {
 		updated.CalendarURL = incoming.CalendarURL
 	}
+	if strings.TrimSpace(updated.ImageURL) == "" && strings.TrimSpace(incoming.ImageURL) != "" {
+		updated.ImageURL = incoming.ImageURL
+		updated.ImageSourceURL = incoming.ImageSourceURL
+		updated.ImageAlt = incoming.ImageAlt
+		updated.ImageWidth = incoming.ImageWidth
+		updated.ImageHeight = incoming.ImageHeight
+		updated.ImageFocusX = incoming.ImageFocusX
+		updated.ImageFocusY = incoming.ImageFocusY
+	}
 	updated.LastChecked = incoming.LastChecked.UTC()
 
 	if _, err := tx.ExecContext(ctx, `
@@ -1199,11 +1256,18 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 			genre = ?,
 			status = ?,
 			description = ?,
+			image_url = ?,
+			image_source_url = ?,
+			image_alt = ?,
+			image_width = ?,
+			image_height = ?,
+			image_focus_x = ?,
+			image_focus_y = ?,
 			official_listing_url = ?,
 			calendar_url = ?,
 			last_checked_at = ?
 		WHERE id = ?
-	`, nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, updated.OfficialListingURL, updated.CalendarURL, formatRFC3339UTC(updated.LastChecked), existing.ID); err != nil {
+	`, nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, updated.ImageURL, updated.ImageSourceURL, updated.ImageAlt, updated.ImageWidth, updated.ImageHeight, normalizedImageFocusValue(updated.ImageFocusX), normalizedImageFocusValue(updated.ImageFocusY), updated.OfficialListingURL, updated.CalendarURL, formatRFC3339UTC(updated.LastChecked), existing.ID); err != nil {
 		return err
 	}
 	return refreshEventGenresTx(ctx, tx, existing.ID, updated.Description, nil, incoming.LastChecked)
@@ -1590,16 +1654,26 @@ func insertEventTx(ctx context.Context, tx execer, event domain.Event, venueID, 
 			genre,
 			status,
 			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
 			official_listing_url,
 			calendar_url,
 			last_checked_at,
 			origin,
 			publication_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, event.Slug, venueID, sourceID, event.Name,
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
+		event.ImageURL, event.ImageSourceURL, event.ImageAlt, event.ImageWidth, event.ImageHeight,
+		normalizedImageFocusValue(event.ImageFocusX),
+		normalizedImageFocusValue(event.ImageFocusY),
 		event.OfficialListingURL,
 		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
@@ -1626,6 +1700,15 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 	if authoritativeDescriptionUsable(authoritative.Description) {
 		updated.Description = authoritative.Description
 	}
+	if strings.TrimSpace(authoritative.ImageURL) != "" {
+		updated.ImageURL = authoritative.ImageURL
+		updated.ImageSourceURL = authoritative.ImageSourceURL
+		updated.ImageAlt = authoritative.ImageAlt
+		updated.ImageWidth = authoritative.ImageWidth
+		updated.ImageHeight = authoritative.ImageHeight
+		updated.ImageFocusX = authoritative.ImageFocusX
+		updated.ImageFocusY = authoritative.ImageFocusY
+	}
 	updated.SourceName = authoritative.SourceName
 	updated.SourceURL = authoritative.SourceURL
 	if strings.TrimSpace(authoritative.OfficialListingURL) != "" {
@@ -1648,13 +1731,20 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 			genre = ?,
 			status = ?,
 			description = ?,
+			image_url = ?,
+			image_source_url = ?,
+			image_alt = ?,
+			image_width = ?,
+			image_height = ?,
+			image_focus_x = ?,
+			image_focus_y = ?,
 			official_listing_url = ?,
 			calendar_url = ?,
 			last_checked_at = ?,
 			origin = ?,
 			publication_state = ?
 		WHERE id = ?
-	`, venueID, sourceID, updated.Name, formatRFC3339UTC(updated.Start), nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, updated.OfficialListingURL, updated.CalendarURL, formatRFC3339UTC(updated.LastChecked), string(updated.Origin), string(updated.PublicationState), existing.ID); err != nil {
+	`, venueID, sourceID, updated.Name, formatRFC3339UTC(updated.Start), nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, updated.ImageURL, updated.ImageSourceURL, updated.ImageAlt, updated.ImageWidth, updated.ImageHeight, normalizedImageFocusValue(updated.ImageFocusX), normalizedImageFocusValue(updated.ImageFocusY), updated.OfficialListingURL, updated.CalendarURL, formatRFC3339UTC(updated.LastChecked), string(updated.Origin), string(updated.PublicationState), existing.ID); err != nil {
 		return domain.Event{}, err
 	}
 	return updated, nil
@@ -1817,6 +1907,13 @@ func loadEventRecordBySourceLinkTx(ctx context.Context, q queryer, sourceID int6
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -1845,6 +1942,13 @@ func loadEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (event
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -1872,6 +1976,13 @@ func loadEventRecordBySlugAndSourceTx(ctx context.Context, q queryer, slug strin
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -1899,6 +2010,13 @@ func loadLiveEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (e
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -1926,6 +2044,13 @@ func loadLiveEventRecordBySlugAndSourceTx(ctx context.Context, q queryer, slug s
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -1953,6 +2078,13 @@ func loadLiveEventRecordsByFingerprintTx(ctx context.Context, q queryer, name, v
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -1982,6 +2114,13 @@ func loadLiveEventRecordsByFingerprintAndSourceTx(ctx context.Context, q queryer
 			e.genre,
 			e.status,
 			e.description,
+			e.image_url,
+			e.image_source_url,
+			e.image_alt,
+			e.image_width,
+			e.image_height,
+			e.image_focus_x,
+			e.image_focus_y,
 			s.name,
 			s.url,
 			COALESCE(e.official_listing_url, ''),
@@ -2025,6 +2164,13 @@ func loadEventRecords(ctx context.Context, q queryer, query string, args ...any)
 			&record.Event.Genre,
 			&record.Event.Status,
 			&record.Event.Description,
+			&record.Event.ImageURL,
+			&record.Event.ImageSourceURL,
+			&record.Event.ImageAlt,
+			&record.Event.ImageWidth,
+			&record.Event.ImageHeight,
+			&record.Event.ImageFocusX,
+			&record.Event.ImageFocusY,
 			&record.Event.SourceName,
 			&record.Event.SourceURL,
 			&record.Event.OfficialListingURL,
@@ -2050,6 +2196,9 @@ func loadEventRecords(ctx context.Context, q queryer, query string, args ...any)
 		record.Event.Start = startAt
 		record.Event.End = endAt
 		record.Event.LastChecked = lastChecked
+		focus := normalizedImageFocus(record.Event.ImageFocusX, record.Event.ImageFocusY)
+		record.Event.ImageFocusX = focus.X
+		record.Event.ImageFocusY = focus.Y
 		record.Event.Origin = domain.Origin(origin)
 		record.Event.PublicationState = normalizedPublicationState(domain.PublicationState(publicationState))
 		if err := record.Event.ValidateCanonical(); err != nil {
@@ -2093,6 +2242,13 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 		&record.Event.Genre,
 		&record.Event.Status,
 		&record.Event.Description,
+		&record.Event.ImageURL,
+		&record.Event.ImageSourceURL,
+		&record.Event.ImageAlt,
+		&record.Event.ImageWidth,
+		&record.Event.ImageHeight,
+		&record.Event.ImageFocusX,
+		&record.Event.ImageFocusY,
 		&record.Event.SourceName,
 		&record.Event.SourceURL,
 		&record.Event.OfficialListingURL,
@@ -2118,6 +2274,9 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 	record.Event.Start = start
 	record.Event.End = end
 	record.Event.LastChecked = lastChecked
+	focus := normalizedImageFocus(record.Event.ImageFocusX, record.Event.ImageFocusY)
+	record.Event.ImageFocusX = focus.X
+	record.Event.ImageFocusY = focus.Y
 	record.Event.Origin = domain.Origin(origin)
 	record.Event.PublicationState = normalizedPublicationState(domain.PublicationState(publicationState))
 	if err := record.Event.ValidateCanonical(); err != nil {
@@ -2782,11 +2941,18 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 			genre,
 			status,
 			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
 			source_name,
 			source_url,
 			calendar_url,
 			provenance
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, groupID, position, nullableCanonicalEventID(input.CanonicalEventID), strings.TrimSpace(input.ExternalID), input.Name,
 		strings.TrimSpace(input.VenueSlug),
 		strings.TrimSpace(input.VenueText),
@@ -2796,6 +2962,13 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 		strings.TrimSpace(input.Genre),
 		strings.TrimSpace(input.Status),
 		strings.TrimSpace(input.Description),
+		strings.TrimSpace(input.ImageURL),
+		strings.TrimSpace(input.ImageSourceURL),
+		strings.TrimSpace(input.ImageAlt),
+		input.ImageWidth,
+		input.ImageHeight,
+		normalizedImageFocusValue(input.ImageFocusX),
+		normalizedImageFocusValue(input.ImageFocusY),
 		input.SourceName,
 		input.SourceURL,
 		input.CalendarURL,
@@ -3399,6 +3572,8 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 	genre := strings.TrimSpace(review.CandidateValue(selected[review.FieldGenre], review.FieldGenre))
 	status := strings.TrimSpace(review.CandidateValue(selected[review.FieldStatus], review.FieldStatus))
 	description := strings.TrimSpace(review.CandidateValue(selected[review.FieldDescription], review.FieldDescription))
+	imageCandidate := selected[review.FieldImageURL]
+	imageURL := strings.TrimSpace(review.CandidateValue(imageCandidate, review.FieldImageURL))
 	sourceName := strings.TrimSpace(review.CandidateValue(selected[review.FieldSourceName], review.FieldSourceName))
 	if sourceName == "" {
 		sourceName = strings.TrimSpace(group.SourceName)
@@ -3460,6 +3635,13 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 		Genre:              genre,
 		Status:             status,
 		Description:        description,
+		ImageURL:           imageURL,
+		ImageSourceURL:     strings.TrimSpace(imageCandidate.ImageSourceURL),
+		ImageAlt:           strings.TrimSpace(imageCandidate.ImageAlt),
+		ImageWidth:         imageCandidate.ImageWidth,
+		ImageHeight:        imageCandidate.ImageHeight,
+		ImageFocusX:        imageCandidate.ImageFocusX,
+		ImageFocusY:        imageCandidate.ImageFocusY,
 		SourceName:         sourceName,
 		SourceURL:          sourceURL,
 		OfficialListingURL: officialListingURL,
@@ -3534,12 +3716,19 @@ func upsertEventTx(ctx context.Context, tx interface {
 			genre,
 			status,
 			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
 			official_listing_url,
 			calendar_url,
 			last_checked_at,
 			origin,
 			publication_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(slug) DO UPDATE SET
 			venue_id = excluded.venue_id,
 			source_id = excluded.source_id,
@@ -3549,6 +3738,13 @@ func upsertEventTx(ctx context.Context, tx interface {
 			genre = excluded.genre,
 			status = excluded.status,
 			description = excluded.description,
+			image_url = CASE WHEN excluded.image_url = '' THEN image_url ELSE excluded.image_url END,
+			image_source_url = CASE WHEN excluded.image_url = '' THEN image_source_url ELSE excluded.image_source_url END,
+			image_alt = CASE WHEN excluded.image_url = '' THEN image_alt ELSE excluded.image_alt END,
+			image_width = CASE WHEN excluded.image_url = '' THEN image_width ELSE excluded.image_width END,
+			image_height = CASE WHEN excluded.image_url = '' THEN image_height ELSE excluded.image_height END,
+			image_focus_x = CASE WHEN excluded.image_url = '' THEN image_focus_x ELSE excluded.image_focus_x END,
+			image_focus_y = CASE WHEN excluded.image_url = '' THEN image_focus_y ELSE excluded.image_focus_y END,
 			official_listing_url = excluded.official_listing_url,
 			calendar_url = excluded.calendar_url,
 			last_checked_at = excluded.last_checked_at,
@@ -3558,6 +3754,9 @@ func upsertEventTx(ctx context.Context, tx interface {
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
+		event.ImageURL, event.ImageSourceURL, event.ImageAlt, event.ImageWidth, event.ImageHeight,
+		normalizedImageFocusValue(event.ImageFocusX),
+		normalizedImageFocusValue(event.ImageFocusY),
 		event.OfficialListingURL,
 		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
@@ -3598,6 +3797,7 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 	} else if ok && conflict.ID != eventID {
 		return fmt.Errorf("review event slug %q already belongs to a different event", event.Slug)
 	}
+	incomingImageURL := strings.TrimSpace(event.ImageURL)
 	_, err = tx.ExecContext(ctx, `
 		UPDATE events
 		SET slug = ?,
@@ -3609,6 +3809,13 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 			genre = ?,
 			status = ?,
 			description = ?,
+			image_url = CASE WHEN ? = '' THEN image_url ELSE ? END,
+			image_source_url = CASE WHEN ? = '' THEN image_source_url ELSE ? END,
+			image_alt = CASE WHEN ? = '' THEN image_alt ELSE ? END,
+			image_width = CASE WHEN ? = '' THEN image_width ELSE ? END,
+			image_height = CASE WHEN ? = '' THEN image_height ELSE ? END,
+			image_focus_x = CASE WHEN ? = '' THEN image_focus_x ELSE ? END,
+			image_focus_y = CASE WHEN ? = '' THEN image_focus_y ELSE ? END,
 			official_listing_url = ?,
 			calendar_url = ?,
 			last_checked_at = ?,
@@ -3619,6 +3826,13 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 		formatRFC3339UTC(event.Start),
 		nullableRFC3339UTC(event.End),
 		event.Genre, event.Status, event.Description,
+		incomingImageURL, incomingImageURL,
+		incomingImageURL, strings.TrimSpace(event.ImageSourceURL),
+		incomingImageURL, strings.TrimSpace(event.ImageAlt),
+		incomingImageURL, event.ImageWidth,
+		incomingImageURL, event.ImageHeight,
+		incomingImageURL, normalizedImageFocusValue(event.ImageFocusX),
+		incomingImageURL, normalizedImageFocusValue(event.ImageFocusY),
 		event.OfficialListingURL,
 		event.CalendarURL,
 		formatRFC3339UTC(event.LastChecked),
@@ -3667,6 +3881,13 @@ func loadReviewCandidates(ctx context.Context, q queryer, groupID int64) ([]revi
 			genre,
 			status,
 			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
 			source_name,
 			source_url,
 			calendar_url,
@@ -3711,6 +3932,13 @@ func loadReviewCandidate(ctx context.Context, q queryer, groupID, candidateID in
 			genre,
 			status,
 			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
 			source_name,
 			source_url,
 			calendar_url,
@@ -3757,6 +3985,13 @@ func loadCanonicalSnapshotCandidate(ctx context.Context, q queryer, groupID int6
 			genre,
 			status,
 			description,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
 			source_name,
 			source_url,
 			calendar_url,
@@ -3803,6 +4038,13 @@ func scanReviewCandidate(rows *sql.Rows) (review.Candidate, error) {
 		&candidate.Genre,
 		&candidate.Status,
 		&candidate.Description,
+		&candidate.ImageURL,
+		&candidate.ImageSourceURL,
+		&candidate.ImageAlt,
+		&candidate.ImageWidth,
+		&candidate.ImageHeight,
+		&candidate.ImageFocusX,
+		&candidate.ImageFocusY,
 		&candidate.SourceName,
 		&candidate.SourceURL,
 		&candidate.CalendarURL,
@@ -3810,6 +4052,9 @@ func scanReviewCandidate(rows *sql.Rows) (review.Candidate, error) {
 	); err != nil {
 		return review.Candidate{}, err
 	}
+	focus := normalizedImageFocus(candidate.ImageFocusX, candidate.ImageFocusY)
+	candidate.ImageFocusX = focus.X
+	candidate.ImageFocusY = focus.Y
 	return candidate, nil
 }
 

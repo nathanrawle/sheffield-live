@@ -16,6 +16,7 @@ const (
 	FieldGenre       Field = "genre"
 	FieldStatus      Field = "status"
 	FieldDescription Field = "description"
+	FieldImageURL    Field = "image_url"
 	FieldSourceName  Field = "source_name"
 	FieldSourceURL   Field = "source_url"
 )
@@ -34,6 +35,7 @@ var CanonicalFields = []Field{
 	FieldGenre,
 	FieldStatus,
 	FieldDescription,
+	FieldImageURL,
 	FieldSourceName,
 	FieldSourceURL,
 }
@@ -93,6 +95,13 @@ type Candidate struct {
 	Genre            string
 	Status           string
 	Description      string
+	ImageURL         string
+	ImageSourceURL   string
+	ImageAlt         string
+	ImageWidth       int
+	ImageHeight      int
+	ImageFocusX      int
+	ImageFocusY      int
 	SourceName       string
 	SourceURL        string
 	CalendarURL      string
@@ -124,6 +133,13 @@ type CandidateInput struct {
 	Genre            string
 	Status           string
 	Description      string
+	ImageURL         string
+	ImageSourceURL   string
+	ImageAlt         string
+	ImageWidth       int
+	ImageHeight      int
+	ImageFocusX      int
+	ImageFocusY      int
 	SourceName       string
 	SourceURL        string
 	CalendarURL      string
@@ -224,6 +240,8 @@ func (f Field) Label() string {
 		return "Status"
 	case FieldDescription:
 		return "Description"
+	case FieldImageURL:
+		return "Image"
 	case FieldSourceName:
 		return "Source name"
 	case FieldSourceURL:
@@ -249,6 +267,8 @@ func CandidateValue(candidate Candidate, field Field) string {
 		return candidate.Status
 	case FieldDescription:
 		return candidate.Description
+	case FieldImageURL:
+		return candidate.ImageURL
 	case FieldSourceName:
 		return candidate.SourceName
 	case FieldSourceURL:

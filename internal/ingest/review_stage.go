@@ -127,7 +127,7 @@ func reviewStageStagingKey(group review.GroupInput) string {
 
 func reviewStageCandidateFingerprint(candidate review.CandidateInput) string {
 	sum := sha256.New()
-	writeReviewStageHashPart(sum, "review-stage-candidate:v1")
+	writeReviewStageHashPart(sum, "review-stage-candidate:v2")
 	writeReviewStageHashPart(sum, candidate.ExternalID)
 	writeReviewStageHashPart(sum, candidate.Name)
 	writeReviewStageHashPart(sum, candidate.VenueSlug)
@@ -174,6 +174,13 @@ func reviewStageCandidateInput(catalog *Catalog, report Report, calendar Calenda
 		Genre:            "",
 		Status:           reviewStageStatus(candidate.Status),
 		Description:      strings.TrimSpace(candidate.Description),
+		ImageURL:         strings.TrimSpace(candidate.ImageURL),
+		ImageSourceURL:   strings.TrimSpace(candidate.ImageSourceURL),
+		ImageAlt:         strings.TrimSpace(candidate.ImageAlt),
+		ImageWidth:       candidate.ImageWidth,
+		ImageHeight:      candidate.ImageHeight,
+		ImageFocusX:      candidate.ImageFocusX,
+		ImageFocusY:      candidate.ImageFocusY,
 		SourceName:       reviewStageSourceName(catalog, report),
 		SourceURL:        reviewStageOfficialSourceURL(report, calendar, candidate),
 		CalendarURL:      reviewStageCalendarURL(calendar, candidate),
