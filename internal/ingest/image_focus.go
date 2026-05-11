@@ -35,9 +35,11 @@ const (
 	facePriorMaxScaleFraction = 0.95
 	facePriorClusterIoU       = 0.2
 	facePriorMinSampleSize    = 20
-	facePriorDefaultShift     = 0.1
+	facePriorDefaultShift     = 0.05
 	facePriorDefaultScale     = 1.1
 	facePriorDefaultAngle     = 0.0
+	facePriorFocusNudgeBase   = 0.55
+	facePriorFocusNudgeRange  = 0.25
 )
 
 var (
@@ -170,10 +172,12 @@ func estimateDecodedImageFocusWithDetector(img image.Image, detector facePriorDe
 	if detector == nil {
 		detector = loadDefaultFacePriorDetector()
 	}
+	var faceDetections []pigo.Detection
 	if detector != nil {
 		if detections, err := detector.Detect(sample); err == nil && len(detections) > 0 {
 			detections = filterFacePriorDetections(detections, sample.width, sample.height)
 			if len(detections) > 0 {
+				faceDetections = detections
 				saliency = applyFacePriorBoost(saliency, sample.width, sample.height, detections)
 			}
 		}
@@ -184,10 +188,8 @@ func estimateDecodedImageFocusWithDetector(img image.Image, detector facePriorDe
 		return DefaultImageFocus(), ErrImageFocusNoSignal
 	}
 
-	return normalizeEstimatedImageFocus(
-		focusPercent(weightedX/total),
-		focusPercent(weightedY/total),
-	), nil
+	focusX, focusY := applyFacePriorFocusNudge(weightedX/total, weightedY/total, sample.width, sample.height, faceDetections)
+	return normalizeEstimatedImageFocus(focusPercent(focusX), focusPercent(focusY)), nil
 }
 
 type imageFocusSample struct {
@@ -401,6 +403,18 @@ func facePriorBoostFactor(x, y float64, det pigo.Detection) float64 {
 		return 0
 	}
 	return facePriorMaxBoost * (1 - distance*distance)
+}
+
+func applyFacePriorFocusNudge(focusX, focusY float64, width, height int, detections []pigo.Detection) (float64, float64) {
+	if width <= 0 || height <= 0 || len(detections) == 0 {
+		return focusX, focusY
+	}
+	det := detections[0]
+	quality := clampFloat((float64(det.Q)-facePriorMinScore)/2.0, 0, 1)
+	strength := facePriorFocusNudgeBase + facePriorFocusNudgeRange*quality
+	faceX := float64(det.Col) / float64(width)
+	faceY := float64(det.Row) / float64(height)
+	return clampFloat(focusX*(1-strength)+faceX*strength, 0, 1), clampFloat(focusY*(1-strength)+faceY*strength, 0, 1)
 }
 
 func focusPercent(normalized float64) int {
