@@ -5757,7 +5757,7 @@ func TestUpsertEventTxPreservesExistingImageFieldsWhenImageURLBlank(t *testing.T
 	defer func() {
 		_ = tx.Rollback()
 	}()
-	if err := upsertEventTx(ctx, tx, domain.Event{
+	if _, err := upsertEventTx(ctx, tx, domain.Event{
 		Slug:             slug,
 		Name:             "Updated name",
 		VenueSlug:        "leadmill",
@@ -5834,7 +5834,7 @@ func TestUpsertEventTxReplacesImageFieldsWhenImageURLNonEmpty(t *testing.T) {
 	defer func() {
 		_ = tx.Rollback()
 	}()
-	if err := upsertEventTx(ctx, tx, domain.Event{
+	if _, err := upsertEventTx(ctx, tx, domain.Event{
 		Slug:             slug,
 		Name:             "Updated name",
 		VenueSlug:        "leadmill",

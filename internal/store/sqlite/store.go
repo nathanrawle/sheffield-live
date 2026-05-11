@@ -20,27 +20,28 @@ import (
 )
 
 const (
-	defaultPath       = "./data/sheffield-live.db"
-	schemaVersionV1   = 1
-	schemaVersionV2   = 2
-	schemaVersionV3   = 3
-	schemaVersionV4   = 4
-	schemaVersionV5   = 5
-	schemaVersionV6   = 6
-	schemaVersionV7   = 7
-	schemaVersionV8   = 8
-	schemaVersionV9   = 9
-	schemaVersionV10  = 10
-	schemaVersionV11  = 11
-	schemaVersionV12  = 12
-	schemaVersionV13  = 13
-	schemaVersionV14  = 14
-	schemaVersionV15  = 15
-	schemaVersionV16  = 16
-	schemaVersionV17  = 17
-	schemaVersionV18  = 18
-	rfc3339Timestamp  = time.RFC3339
-	foreignKeysPragma = "PRAGMA foreign_keys = ON"
+	defaultPath          = "./data/sheffield-live.db"
+	schemaVersionV1      = 1
+	schemaVersionV2      = 2
+	schemaVersionV3      = 3
+	schemaVersionV4      = 4
+	schemaVersionV5      = 5
+	schemaVersionV6      = 6
+	schemaVersionV7      = 7
+	schemaVersionV8      = 8
+	schemaVersionV9      = 9
+	schemaVersionV10     = 10
+	schemaVersionV11     = 11
+	schemaVersionV12     = 12
+	schemaVersionV13     = 13
+	schemaVersionV14     = 14
+	schemaVersionV15     = 15
+	schemaVersionV16     = 16
+	schemaVersionV17     = 17
+	schemaVersionV18     = 18
+	schemaVersionCurrent = schemaVersionV18
+	rfc3339Timestamp     = time.RFC3339
+	foreignKeysPragma    = "PRAGMA foreign_keys = ON"
 )
 
 var migrations = []struct {
@@ -449,8 +450,8 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if version > schemaVersionV17 {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionV17)
+	if version > schemaVersionCurrent {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionCurrent)
 	}
 
 	for _, migration := range migrations {
