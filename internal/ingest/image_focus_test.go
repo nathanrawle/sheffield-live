@@ -8,6 +8,8 @@ import (
 	"image/png"
 	"math"
 	"testing"
+
+	pigo "github.com/esimov/pigo/core"
 )
 
 func TestEstimateImageFocusFindsHighContrastRegion(t *testing.T) {
@@ -170,6 +172,181 @@ func TestEstimateImageFocusPrefersPhotoSideOverSparseTextSide(t *testing.T) {
 	}
 	if focus.X < 60 || focus.Y != 50 {
 		t.Fatalf("focus = %d,%d, want photo side preferred over sparse text side", focus.X, focus.Y)
+	}
+}
+
+func TestPigoFacePriorEmbeddedCascadeLoads(t *testing.T) {
+	detector, err := newPigoFacePriorDetector()
+	if err != nil {
+		t.Fatalf("load embedded cascade: %v", err)
+	}
+	if detector == nil || detector.classifier == nil {
+		t.Fatalf("detector = %#v, want loaded classifier", detector)
+	}
+}
+
+func TestEstimateImageFocusSkipsFaceDetectorAfterVerticalRectangle(t *testing.T) {
+	var body bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 180, 120))
+	fillRect(img, img.Bounds(), color.RGBA{R: 54, G: 68, B: 82, A: 255})
+	fillRect(img, image.Rect(0, 0, 80, 120), color.RGBA{R: 238, G: 232, B: 218, A: 255})
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+
+	stub := &stubFacePriorDetector{
+		detections: []pigo.Detection{{Row: 60, Col: 116, Scale: 44, Q: 2.5}},
+	}
+	focus, err := estimateDecodedImageFocusWithDetector(img, stub)
+	if err != nil {
+		t.Fatalf("estimate image focus: %v", err)
+	}
+	if stub.called {
+		t.Fatal("face detector was called before vertical rectangle short-circuit")
+	}
+	if focus.X < 20 || focus.X > 24 || focus.Y != 50 {
+		t.Fatalf("focus = %d,%d, want center of left-side embedded rectangle", focus.X, focus.Y)
+	}
+}
+
+func TestEstimateImageFocusFacePriorNudgesAmbiguousSaliencyTowardFaceSide(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 240, 120))
+	fillRect(img, img.Bounds(), color.RGBA{R: 232, G: 228, B: 220, A: 255})
+	fillEllipse(img, 62, 60, 18, 24, color.RGBA{R: 42, G: 42, B: 42, A: 255})
+	fillEllipse(img, 178, 60, 18, 24, color.RGBA{R: 42, G: 42, B: 42, A: 255})
+
+	baseFocus, err := estimateDecodedImageFocusWithDetector(img, noopFacePriorDetector{})
+	if err != nil {
+		t.Fatalf("baseline focus: %v", err)
+	}
+
+	stub := &stubFacePriorDetector{
+		detections: []pigo.Detection{
+			{Row: 32, Col: 95, Scale: 44, Q: 5.6},
+			{Row: 31, Col: 90, Scale: 36, Q: 5.2},
+		},
+	}
+	withPrior, err := estimateDecodedImageFocusWithDetector(img, stub)
+	if err != nil {
+		t.Fatalf("face-prior focus: %v", err)
+	}
+	if !stub.called {
+		t.Fatal("face detector was not called")
+	}
+	if withPrior.X <= baseFocus.X {
+		t.Fatalf("baseline focus = %d,%d, face-prior focus = %d,%d, want prior to pull toward face side", baseFocus.X, baseFocus.Y, withPrior.X, withPrior.Y)
+	}
+}
+
+func TestApplyFacePriorFocusNudgeDoesNotAverageDistantFaces(t *testing.T) {
+	focusX, focusY := applyFacePriorFocusNudge(0.48, 0.5, 100, 100, []pigo.Detection{
+		{Row: 50, Col: 20, Scale: 20, Q: 5.0},
+		{Row: 50, Col: 80, Scale: 20, Q: 5.0},
+	})
+	if focusX >= 0.40 {
+		t.Fatalf("focus = %.3f,%.3f, want nudge toward nearest face cluster instead of empty midpoint", focusX, focusY)
+	}
+	if math.Abs(focusY-0.5) > 0.001 {
+		t.Fatalf("focusY = %.3f, want unchanged vertical focus", focusY)
+	}
+}
+
+func TestApplyFacePriorFocusNudgePrefersLargeFaceOverSmallCluster(t *testing.T) {
+	focusX, focusY := applyFacePriorFocusNudge(0.5, 0.5, 160, 100, []pigo.Detection{
+		{Row: 50, Col: 24, Scale: 20, Q: 6.0},
+		{Row: 50, Col: 34, Scale: 20, Q: 6.0},
+		{Row: 50, Col: 130, Scale: 40, Q: 5.0},
+	})
+	if focusX <= 0.65 {
+		t.Fatalf("focus = %.3f,%.3f, want nudge toward largest face cluster", focusX, focusY)
+	}
+	if math.Abs(focusY-0.5) > 0.001 {
+		t.Fatalf("focusY = %.3f, want unchanged vertical focus", focusY)
+	}
+}
+
+func TestApplyFacePriorFocusNudgeAveragesCloseFaceCluster(t *testing.T) {
+	focusX, focusY := applyFacePriorFocusNudge(0.5, 0.5, 100, 100, []pigo.Detection{
+		{Row: 50, Col: 40, Scale: 20, Q: 6.0},
+		{Row: 50, Col: 60, Scale: 20, Q: 6.0},
+	})
+	if math.Abs(focusX-0.5) > 0.001 {
+		t.Fatalf("focus = %.3f,%.3f, want close face cluster center", focusX, focusY)
+	}
+	if math.Abs(focusY-0.5) > 0.001 {
+		t.Fatalf("focusY = %.3f, want unchanged vertical focus", focusY)
+	}
+}
+
+func TestEstimateImageFocusFacePriorDoesNotCreateSignalFromFlatImage(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 80, 80))
+	fillRect(img, img.Bounds(), color.RGBA{R: 120, G: 120, B: 120, A: 255})
+
+	stub := &stubFacePriorDetector{
+		detections: []pigo.Detection{{Row: 40, Col: 40, Scale: 24, Q: 5.1}},
+	}
+	focus, err := estimateDecodedImageFocusWithDetector(img, stub)
+	if !errors.Is(err, ErrImageFocusNoSignal) {
+		t.Fatalf("error = %v, want ErrImageFocusNoSignal", err)
+	}
+	if focus != DefaultImageFocus() {
+		t.Fatalf("focus = %#v, want default", focus)
+	}
+}
+
+func TestEstimateImageFocusIgnoresDetectorError(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 160, 120))
+	fillRect(img, img.Bounds(), color.RGBA{R: 170, G: 170, B: 170, A: 255})
+	fillEllipse(img, 52, 68, 22, 30, color.RGBA{R: 54, G: 82, B: 106, A: 255})
+	fillEllipse(img, 112, 36, 14, 16, color.RGBA{R: 184, G: 122, B: 82, A: 255})
+
+	baseFocus, err := estimateDecodedImageFocusWithDetector(img, noopFacePriorDetector{})
+	if err != nil {
+		t.Fatalf("baseline focus: %v", err)
+	}
+
+	stub := &stubFacePriorDetector{err: errors.New("detector failed")}
+	withError, err := estimateDecodedImageFocusWithDetector(img, stub)
+	if err != nil {
+		t.Fatalf("face detector error should be ignored, got %v", err)
+	}
+	if !stub.called {
+		t.Fatal("face detector was not called")
+	}
+	if withError != baseFocus {
+		t.Fatalf("baseline focus = %#v, error-detector focus = %#v, want unchanged saliency", baseFocus, withError)
+	}
+}
+
+func TestEstimateImageFocusFiltersWeakOrInvalidFaceDetections(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 240, 120))
+	fillRect(img, img.Bounds(), color.RGBA{R: 232, G: 228, B: 220, A: 255})
+	fillEllipse(img, 62, 60, 18, 24, color.RGBA{R: 42, G: 42, B: 42, A: 255})
+	fillEllipse(img, 178, 60, 18, 24, color.RGBA{R: 42, G: 42, B: 42, A: 255})
+
+	baseFocus, err := estimateDecodedImageFocusWithDetector(img, noopFacePriorDetector{})
+	if err != nil {
+		t.Fatalf("baseline focus: %v", err)
+	}
+
+	stub := &stubFacePriorDetector{
+		detections: []pigo.Detection{
+			{Row: 32, Col: 95, Scale: 14, Q: 5.1},
+			{Row: -2, Col: 95, Scale: 28, Q: 5.1},
+			{Row: 32, Col: 95, Scale: 70, Q: 5.1},
+			{Row: 32, Col: 125, Scale: 28, Q: 5.1},
+			{Row: 32, Col: 95, Scale: 28, Q: 4.9},
+		},
+	}
+	withInvalid, err := estimateDecodedImageFocusWithDetector(img, stub)
+	if err != nil {
+		t.Fatalf("invalid detections should be ignored, got %v", err)
+	}
+	if !stub.called {
+		t.Fatal("face detector was not called")
+	}
+	if withInvalid != baseFocus {
+		t.Fatalf("baseline focus = %#v, invalid-detector focus = %#v, want unchanged saliency", baseFocus, withInvalid)
 	}
 }
 
@@ -355,6 +532,23 @@ func blendColor(from, to color.RGBA, amount float64) color.RGBA {
 		B: uint8(math.Round(float64(from.B) + (float64(to.B)-float64(from.B))*amount)),
 		A: 255,
 	}
+}
+
+type stubFacePriorDetector struct {
+	detections []pigo.Detection
+	err        error
+	called     bool
+}
+
+func (detector *stubFacePriorDetector) Detect(sample imageFocusSample) ([]pigo.Detection, error) {
+	detector.called = true
+	return detector.detections, detector.err
+}
+
+type noopFacePriorDetector struct{}
+
+func (noopFacePriorDetector) Detect(sample imageFocusSample) ([]pigo.Detection, error) {
+	return nil, nil
 }
 
 func panelRegionOnlyParams() verticalRectangleParams {

@@ -1,0 +1,7 @@
+Pigo facefinder cascade
+
+Source: github.com/esimov/pigo v1.4.6
+Asset: cascade/facefinder
+License: MIT
+
+Copyright (c) 2018 Endre Simo

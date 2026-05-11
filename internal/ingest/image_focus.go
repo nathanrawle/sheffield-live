@@ -2,12 +2,16 @@ package ingest
 
 import (
 	"bytes"
+	"embed"
 	"errors"
 	"image"
 	"image/color"
 	"math"
 	"sort"
 	"strings"
+	"sync"
+
+	pigo "github.com/esimov/pigo/core"
 )
 
 const (
@@ -19,6 +23,31 @@ var (
 	ErrImageFocusUnsupported = errors.New("image focus unsupported")
 	ErrImageFocusTooLarge    = errors.New("image focus image too large")
 	ErrImageFocusNoSignal    = errors.New("image focus has no saliency signal")
+)
+
+//go:embed assets/pigo/*
+var pigoAssetFS embed.FS
+
+const (
+	facePriorMinScore         = 5.0
+	facePriorMaxDetections    = 3
+	facePriorMaxBoost         = 0.60
+	facePriorMaxScaleFraction = 0.95
+	facePriorClusterIoU       = 0.2
+	facePriorMinSampleSize    = 20
+	facePriorDefaultShift     = 0.05
+	facePriorDefaultScale     = 1.1
+	facePriorDefaultAngle     = 0.0
+	facePriorFocusNudgeBase   = 0.55
+	facePriorFocusNudgeRange  = 0.25
+	facePriorClusterDistance  = 1.5
+	facePriorClusterImageFrac = 0.12
+	facePriorQualityWeight    = 0.25
+)
+
+var (
+	defaultFacePriorDetectorOnce sync.Once
+	defaultFacePriorDetector     facePriorDetector
 )
 
 type ImageFocus struct {
@@ -101,22 +130,114 @@ func normalizedImageContentType(contentType string) string {
 }
 
 func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
+	return estimateDecodedImageFocusWithDetector(img, nil)
+}
+
+func estimateDecodedImageFocusWithDetector(img image.Image, detector facePriorDetector) (ImageFocus, error) {
+	sample := sampleImageFocus(img)
+	if sample.width <= 0 || sample.height <= 0 {
+		return DefaultImageFocus(), ErrImageFocusNoSignal
+	}
+
+	if focus, ok := verticalRectangleFocus(sample.red, sample.green, sample.blue, sample.luma, sample.width, sample.height); ok {
+		return focus, nil
+	}
+	toneProfile := imageToneProfileForSample(sample.width*sample.height, sample.grayLikePixels, sample.sepiaLikePixels)
+
+	fineSaliency := make([]float64, sample.width*sample.height)
+	saturation := make([]float64, sample.width*sample.height)
+	chromaticSkinTone := make([]float64, sample.width*sample.height)
+	skinTone := make([]float64, sample.width*sample.height)
+	for y := 0; y < sample.height; y++ {
+		for x := 0; x < sample.width; x++ {
+			idx := y*sample.width + x
+			maxChannel := math.Max(sample.red[idx], math.Max(sample.green[idx], sample.blue[idx]))
+			minChannel := math.Min(sample.red[idx], math.Min(sample.green[idx], sample.blue[idx]))
+			hue := rgbHueDegrees(sample.red[idx], sample.green[idx], sample.blue[idx], maxChannel, minChannel)
+			if maxChannel > 0 {
+				saturation[idx] = (maxChannel - minChannel) / maxChannel
+			}
+			chromaticSkinTone[idx] = chromaticSkinToneScore(sample.red[idx], sample.green[idx], sample.blue[idx], hue, maxChannel, minChannel)
+			skinTone[idx] = maxFloat(chromaticSkinTone[idx], monochromeSkinToneScore(sample.luma[idx], saturation[idx], toneProfile))
+			left := sample.luma[y*sample.width+maxInt(0, x-1)]
+			right := sample.luma[y*sample.width+minInt(sample.width-1, x+1)]
+			up := sample.luma[maxInt(0, y-1)*sample.width+x]
+			down := sample.luma[minInt(sample.height-1, y+1)*sample.width+x]
+			contrast := math.Hypot(right-left, down-up)
+			if contrast > 0 {
+				base := contrast * (1 + 0.7*saturation[idx])
+				fineSaliency[idx] = base * (1 + 2.0*skinTone[idx])
+			}
+		}
+	}
+	coarseSaliency := coarseBlobSaliency(sample.luma, saturation, skinTone, sample.width, sample.height)
+	saliency := combineFineAndCoarseSaliency(fineSaliency, coarseSaliency)
+	if detector == nil {
+		detector = loadDefaultFacePriorDetector()
+	}
+	var faceDetections []pigo.Detection
+	if detector != nil {
+		if detections, err := detector.Detect(sample); err == nil && len(detections) > 0 {
+			detections = filterFacePriorDetections(detections, sample.width, sample.height)
+			if len(detections) > 0 {
+				faceDetections = detections
+				saliency = applyFacePriorBoost(saliency, sample.width, sample.height, detections)
+			}
+		}
+	}
+
+	total, weightedX, weightedY := mostSalientFocusWindow(saliency, sample.width, sample.height)
+	if total <= 0.000001 {
+		return DefaultImageFocus(), ErrImageFocusNoSignal
+	}
+
+	focusX, focusY := applyFacePriorFocusNudge(weightedX/total, weightedY/total, sample.width, sample.height, faceDetections)
+	return normalizeEstimatedImageFocus(focusPercent(focusX), focusPercent(focusY)), nil
+}
+
+type imageFocusSample struct {
+	width           int
+	height          int
+	red             []float64
+	green           []float64
+	blue            []float64
+	luma            []float64
+	grayscale       []uint8
+	grayLikePixels  int
+	sepiaLikePixels int
+}
+
+type facePriorDetector interface {
+	Detect(imageFocusSample) ([]pigo.Detection, error)
+}
+
+type pigoFacePriorDetector struct {
+	classifier *pigo.Pigo
+}
+
+type facePriorDetectionCluster struct {
+	detections []pigo.Detection
+}
+
+func sampleImageFocus(img image.Image) imageFocusSample {
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
 	if width <= 0 || height <= 0 {
-		return DefaultImageFocus(), ErrImageFocusNoSignal
+		return imageFocusSample{}
 	}
 
 	sampleWidth, sampleHeight := focusSampleSize(width, height)
-	red := make([]float64, sampleWidth*sampleHeight)
-	green := make([]float64, sampleWidth*sampleHeight)
-	blue := make([]float64, sampleWidth*sampleHeight)
-	luma := make([]float64, sampleWidth*sampleHeight)
-	saturation := make([]float64, sampleWidth*sampleHeight)
-	chromaticSkinTone := make([]float64, sampleWidth*sampleHeight)
-	skinTone := make([]float64, sampleWidth*sampleHeight)
-	var grayLikePixels, sepiaLikePixels int
+	sample := imageFocusSample{
+		width:     sampleWidth,
+		height:    sampleHeight,
+		red:       make([]float64, sampleWidth*sampleHeight),
+		green:     make([]float64, sampleWidth*sampleHeight),
+		blue:      make([]float64, sampleWidth*sampleHeight),
+		luma:      make([]float64, sampleWidth*sampleHeight),
+		grayscale: make([]uint8, sampleWidth*sampleHeight),
+	}
+
 	for y := 0; y < sampleHeight; y++ {
 		srcY := bounds.Min.Y + minInt(height-1, y*height/sampleHeight)
 		for x := 0; x < sampleWidth; x++ {
@@ -126,58 +247,328 @@ func estimateDecodedImageFocus(img image.Image) (ImageFocus, error) {
 			r := float64(c.R) / 255
 			g := float64(c.G) / 255
 			b := float64(c.B) / 255
-			red[idx] = r
-			green[idx] = g
-			blue[idx] = b
-			luma[idx] = 0.2126*r + 0.7152*g + 0.0722*b
+			sample.red[idx] = r
+			sample.green[idx] = g
+			sample.blue[idx] = b
+			sample.luma[idx] = 0.2126*r + 0.7152*g + 0.0722*b
+			sample.grayscale[idx] = uint8(math.Round((0.299*r + 0.587*g + 0.114*b) * 255))
 			maxChannel := math.Max(r, math.Max(g, b))
 			minChannel := math.Min(r, math.Min(g, b))
 			hue := rgbHueDegrees(r, g, b, maxChannel, minChannel)
+			saturation := 0.0
 			if maxChannel > 0 {
-				saturation[idx] = (maxChannel - minChannel) / maxChannel
+				saturation = (maxChannel - minChannel) / maxChannel
 			}
-			if saturation[idx] < 0.08 {
-				grayLikePixels++
+			if saturation < 0.08 {
+				sample.grayLikePixels++
 			}
-			if sepiaToneScore(hue, saturation[idx], luma[idx]) > 0.4 {
-				sepiaLikePixels++
-			}
-			chromaticSkinTone[idx] = chromaticSkinToneScore(r, g, b, hue, maxChannel, minChannel)
-		}
-	}
-	if focus, ok := verticalRectangleFocus(red, green, blue, luma, sampleWidth, sampleHeight); ok {
-		return focus, nil
-	}
-	toneProfile := imageToneProfileForSample(sampleWidth*sampleHeight, grayLikePixels, sepiaLikePixels)
-
-	fineSaliency := make([]float64, sampleWidth*sampleHeight)
-	for y := 0; y < sampleHeight; y++ {
-		for x := 0; x < sampleWidth; x++ {
-			idx := y*sampleWidth + x
-			skinTone[idx] = maxFloat(chromaticSkinTone[idx], monochromeSkinToneScore(luma[idx], saturation[idx], toneProfile))
-			left := luma[y*sampleWidth+maxInt(0, x-1)]
-			right := luma[y*sampleWidth+minInt(sampleWidth-1, x+1)]
-			up := luma[maxInt(0, y-1)*sampleWidth+x]
-			down := luma[minInt(sampleHeight-1, y+1)*sampleWidth+x]
-			contrast := math.Hypot(right-left, down-up)
-			if contrast > 0 {
-				base := contrast * (1 + 0.7*saturation[idx])
-				fineSaliency[idx] = base * (1 + 2.0*skinTone[idx])
+			if sepiaToneScore(hue, saturation, sample.luma[idx]) > 0.4 {
+				sample.sepiaLikePixels++
 			}
 		}
 	}
-	coarseSaliency := coarseBlobSaliency(luma, saturation, skinTone, sampleWidth, sampleHeight)
-	saliency := combineFineAndCoarseSaliency(fineSaliency, coarseSaliency)
+	return sample
+}
 
-	total, weightedX, weightedY := mostSalientFocusWindow(saliency, sampleWidth, sampleHeight)
-	if total <= 0.000001 {
-		return DefaultImageFocus(), ErrImageFocusNoSignal
+func loadDefaultFacePriorDetector() facePriorDetector {
+	defaultFacePriorDetectorOnce.Do(func() {
+		defaultFacePriorDetector, _ = newPigoFacePriorDetector()
+	})
+	return defaultFacePriorDetector
+}
+
+func newPigoFacePriorDetector() (*pigoFacePriorDetector, error) {
+	cascade, err := pigoAssetFS.ReadFile("assets/pigo/facefinder")
+	if err != nil {
+		return nil, err
+	}
+	classifier, err := pigo.NewPigo().Unpack(cascade)
+	if err != nil {
+		return nil, err
+	}
+	return &pigoFacePriorDetector{classifier: classifier}, nil
+}
+
+func (detector *pigoFacePriorDetector) Detect(sample imageFocusSample) ([]pigo.Detection, error) {
+	if detector == nil || detector.classifier == nil || sample.width <= 0 || sample.height <= 0 {
+		return nil, nil
 	}
 
-	return normalizeEstimatedImageFocus(
-		focusPercent(weightedX/total),
-		focusPercent(weightedY/total),
-	), nil
+	minSize := maxInt(facePriorMinSampleSize, minInt(sample.width, sample.height)/6)
+	maxSize := minInt(sample.width, sample.height)
+	if minSize > maxSize {
+		minSize = maxSize
+	}
+	if maxSize < 1 || minSize < 1 {
+		return nil, nil
+	}
+
+	detections := detector.classifier.RunCascade(pigo.CascadeParams{
+		MinSize:     minSize,
+		MaxSize:     maxSize,
+		ShiftFactor: facePriorDefaultShift,
+		ScaleFactor: facePriorDefaultScale,
+		ImageParams: pigo.ImageParams{
+			Pixels: sample.grayscale,
+			Rows:   sample.height,
+			Cols:   sample.width,
+			Dim:    sample.width,
+		},
+	}, facePriorDefaultAngle)
+	if len(detections) == 0 {
+		return nil, nil
+	}
+	detections = detector.classifier.ClusterDetections(detections, facePriorClusterIoU)
+	detections = filterFacePriorDetections(detections, sample.width, sample.height)
+	return detections, nil
+}
+
+func filterFacePriorDetections(detections []pigo.Detection, width, height int) []pigo.Detection {
+	if len(detections) == 0 || width <= 0 || height <= 0 {
+		return nil
+	}
+
+	minSize := maxInt(facePriorMinSampleSize, minInt(width, height)/6)
+	maxSize := minInt(width, height)
+	fullImageLimit := maxSize
+	if facePriorMaxScaleFraction > 0 && facePriorMaxScaleFraction < 1 {
+		fullImageLimit = maxInt(1, int(math.Round(float64(maxSize)*facePriorMaxScaleFraction)))
+	}
+	accepted := make([]pigo.Detection, 0, len(detections))
+	for _, det := range detections {
+		if det.Q < facePriorMinScore {
+			continue
+		}
+		if det.Scale < minSize || det.Scale >= fullImageLimit {
+			continue
+		}
+		half := float64(det.Scale) / 2
+		row := float64(det.Row)
+		col := float64(det.Col)
+		if row-half < 0 || col-half < 0 || row+half > float64(height) || col+half > float64(width) {
+			continue
+		}
+		accepted = append(accepted, det)
+	}
+	sort.Slice(accepted, func(i, j int) bool {
+		if accepted[i].Q == accepted[j].Q {
+			return accepted[i].Scale > accepted[j].Scale
+		}
+		return accepted[i].Q > accepted[j].Q
+	})
+	if len(accepted) > facePriorMaxDetections {
+		accepted = accepted[:facePriorMaxDetections]
+	}
+	return accepted
+}
+
+func applyFacePriorBoost(saliency []float64, width, height int, detections []pigo.Detection) []float64 {
+	if len(saliency) == 0 || width <= 0 || height <= 0 || len(detections) == 0 {
+		return saliency
+	}
+
+	boosted := append([]float64(nil), saliency...)
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			idx := y*width + x
+			value := boosted[idx]
+			if value <= 0 {
+				continue
+			}
+			factor := 1.0
+			for _, det := range detections {
+				boost := facePriorBoostFactor(float64(x)+0.5, float64(y)+0.5, det)
+				if boost <= 0 {
+					continue
+				}
+				factor *= 1 + boost
+				if factor >= 1+facePriorMaxBoost {
+					factor = 1 + facePriorMaxBoost
+					break
+				}
+			}
+			boosted[idx] = value * factor
+		}
+	}
+	return boosted
+}
+
+func facePriorBoostFactor(x, y float64, det pigo.Detection) float64 {
+	radius := float64(det.Scale)
+	if radius <= 0 {
+		return 0
+	}
+	dx := math.Abs(x - float64(det.Col))
+	dy := math.Abs(y - float64(det.Row))
+	if dx > radius || dy > radius {
+		return 0
+	}
+	nx := dx / radius
+	ny := dy / radius
+	distance := math.Hypot(nx, ny)
+	if distance >= 1 {
+		return 0
+	}
+	return facePriorMaxBoost * (1 - distance*distance)
+}
+
+func applyFacePriorFocusNudge(focusX, focusY float64, width, height int, detections []pigo.Detection) (float64, float64) {
+	if width <= 0 || height <= 0 || len(detections) == 0 {
+		return focusX, focusY
+	}
+	cluster, ok := selectFacePriorNudgeCluster(focusX, focusY, width, height, detections)
+	if !ok {
+		return focusX, focusY
+	}
+	faceX, faceY, quality, ok := facePriorClusterTarget(cluster, width, height)
+	if !ok {
+		return focusX, focusY
+	}
+	strength := facePriorFocusNudgeBase + facePriorFocusNudgeRange*quality
+	return clampFloat(focusX*(1-strength)+faceX*strength, 0, 1), clampFloat(focusY*(1-strength)+faceY*strength, 0, 1)
+}
+
+func selectFacePriorNudgeCluster(focusX, focusY float64, width, height int, detections []pigo.Detection) (facePriorDetectionCluster, bool) {
+	clusters := facePriorDetectionClusters(detections, width, height)
+	if len(clusters) == 0 {
+		return facePriorDetectionCluster{}, false
+	}
+	best := clusters[0]
+	for _, cluster := range clusters[1:] {
+		if facePriorClusterPreferred(cluster, best, focusX, focusY, width, height) {
+			best = cluster
+		}
+	}
+	return best, true
+}
+
+func facePriorDetectionClusters(detections []pigo.Detection, width, height int) []facePriorDetectionCluster {
+	if width <= 0 || height <= 0 || len(detections) == 0 {
+		return nil
+	}
+	parent := make([]int, len(detections))
+	for i := range parent {
+		parent[i] = i
+	}
+	find := func(i int) int {
+		for parent[i] != i {
+			parent[i] = parent[parent[i]]
+			i = parent[i]
+		}
+		return i
+	}
+	union := func(a, b int) {
+		rootA := find(a)
+		rootB := find(b)
+		if rootA != rootB {
+			parent[rootB] = rootA
+		}
+	}
+	for i := 0; i < len(detections); i++ {
+		for j := i + 1; j < len(detections); j++ {
+			if facePriorDetectionsClusterTogether(detections[i], detections[j], width, height) {
+				union(i, j)
+			}
+		}
+	}
+
+	var roots []int
+	var clusters []facePriorDetectionCluster
+	for i, det := range detections {
+		root := find(i)
+		clusterIndex := -1
+		for j, existing := range roots {
+			if existing == root {
+				clusterIndex = j
+				break
+			}
+		}
+		if clusterIndex == -1 {
+			roots = append(roots, root)
+			clusters = append(clusters, facePriorDetectionCluster{})
+			clusterIndex = len(clusters) - 1
+		}
+		clusters[clusterIndex].detections = append(clusters[clusterIndex].detections, det)
+	}
+	return clusters
+}
+
+func facePriorDetectionsClusterTogether(a, b pigo.Detection, width, height int) bool {
+	distance := math.Hypot(float64(a.Col-b.Col), float64(a.Row-b.Row))
+	largerScale := maxInt(a.Scale, b.Scale)
+	threshold := maxFloat(float64(largerScale)*facePriorClusterDistance, float64(minInt(width, height))*facePriorClusterImageFrac)
+	return distance <= threshold
+}
+
+func facePriorClusterPreferred(candidate, current facePriorDetectionCluster, focusX, focusY float64, width, height int) bool {
+	candidateScale := facePriorClusterMaxScale(candidate)
+	currentScale := facePriorClusterMaxScale(current)
+	if candidateScale != currentScale {
+		return candidateScale > currentScale
+	}
+	candidateQuality := facePriorClusterMaxQuality(candidate)
+	currentQuality := facePriorClusterMaxQuality(current)
+	if math.Abs(candidateQuality-currentQuality) > 0.000001 {
+		return candidateQuality > currentQuality
+	}
+	if len(candidate.detections) != len(current.detections) {
+		return len(candidate.detections) > len(current.detections)
+	}
+	return facePriorClusterDistanceFromFocus(candidate, focusX, focusY, width, height) < facePriorClusterDistanceFromFocus(current, focusX, focusY, width, height)
+}
+
+func facePriorClusterMaxScale(cluster facePriorDetectionCluster) int {
+	maxScale := 0
+	for _, det := range cluster.detections {
+		if det.Scale > maxScale {
+			maxScale = det.Scale
+		}
+	}
+	return maxScale
+}
+
+func facePriorClusterMaxQuality(cluster facePriorDetectionCluster) float64 {
+	maxQuality := math.Inf(-1)
+	for _, det := range cluster.detections {
+		if float64(det.Q) > maxQuality {
+			maxQuality = float64(det.Q)
+		}
+	}
+	return maxQuality
+}
+
+func facePriorClusterDistanceFromFocus(cluster facePriorDetectionCluster, focusX, focusY float64, width, height int) float64 {
+	targetX, targetY, _, ok := facePriorClusterTarget(cluster, width, height)
+	if !ok {
+		return math.Inf(1)
+	}
+	return math.Hypot(targetX-focusX, targetY-focusY)
+}
+
+func facePriorClusterTarget(cluster facePriorDetectionCluster, width, height int) (float64, float64, float64, bool) {
+	if width <= 0 || height <= 0 || len(cluster.detections) == 0 {
+		return 0, 0, 0, false
+	}
+	var totalWeight, weightedX, weightedY float64
+	maxQuality := math.Inf(-1)
+	for _, det := range cluster.detections {
+		scale := maxFloat(float64(det.Scale), 1)
+		quality := clampFloat((float64(det.Q)-facePriorMinScore)/2.0, 0, 1)
+		weight := scale * scale * (1 + facePriorQualityWeight*quality)
+		totalWeight += weight
+		weightedX += (float64(det.Col) / float64(width)) * weight
+		weightedY += (float64(det.Row) / float64(height)) * weight
+		if float64(det.Q) > maxQuality {
+			maxQuality = float64(det.Q)
+		}
+	}
+	if totalWeight <= 0 {
+		return 0, 0, 0, false
+	}
+	return clampFloat(weightedX/totalWeight, 0, 1),
+		clampFloat(weightedY/totalWeight, 0, 1),
+		clampFloat((maxQuality-facePriorMinScore)/2.0, 0, 1),
+		true
 }
 
 func focusPercent(normalized float64) int {
