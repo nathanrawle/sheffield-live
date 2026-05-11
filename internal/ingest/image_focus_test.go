@@ -238,6 +238,46 @@ func TestEstimateImageFocusFacePriorNudgesAmbiguousSaliencyTowardFaceSide(t *tes
 	}
 }
 
+func TestApplyFacePriorFocusNudgeDoesNotAverageDistantFaces(t *testing.T) {
+	focusX, focusY := applyFacePriorFocusNudge(0.48, 0.5, 100, 100, []pigo.Detection{
+		{Row: 50, Col: 20, Scale: 20, Q: 5.0},
+		{Row: 50, Col: 80, Scale: 20, Q: 5.0},
+	})
+	if focusX >= 0.40 {
+		t.Fatalf("focus = %.3f,%.3f, want nudge toward nearest face cluster instead of empty midpoint", focusX, focusY)
+	}
+	if math.Abs(focusY-0.5) > 0.001 {
+		t.Fatalf("focusY = %.3f, want unchanged vertical focus", focusY)
+	}
+}
+
+func TestApplyFacePriorFocusNudgePrefersLargeFaceOverSmallCluster(t *testing.T) {
+	focusX, focusY := applyFacePriorFocusNudge(0.5, 0.5, 160, 100, []pigo.Detection{
+		{Row: 50, Col: 24, Scale: 20, Q: 6.0},
+		{Row: 50, Col: 34, Scale: 20, Q: 6.0},
+		{Row: 50, Col: 130, Scale: 40, Q: 5.0},
+	})
+	if focusX <= 0.65 {
+		t.Fatalf("focus = %.3f,%.3f, want nudge toward largest face cluster", focusX, focusY)
+	}
+	if math.Abs(focusY-0.5) > 0.001 {
+		t.Fatalf("focusY = %.3f, want unchanged vertical focus", focusY)
+	}
+}
+
+func TestApplyFacePriorFocusNudgeAveragesCloseFaceCluster(t *testing.T) {
+	focusX, focusY := applyFacePriorFocusNudge(0.5, 0.5, 100, 100, []pigo.Detection{
+		{Row: 50, Col: 40, Scale: 20, Q: 6.0},
+		{Row: 50, Col: 60, Scale: 20, Q: 6.0},
+	})
+	if math.Abs(focusX-0.5) > 0.001 {
+		t.Fatalf("focus = %.3f,%.3f, want close face cluster center", focusX, focusY)
+	}
+	if math.Abs(focusY-0.5) > 0.001 {
+		t.Fatalf("focusY = %.3f, want unchanged vertical focus", focusY)
+	}
+}
+
 func TestEstimateImageFocusFacePriorDoesNotCreateSignalFromFlatImage(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 80, 80))
 	fillRect(img, img.Bounds(), color.RGBA{R: 120, G: 120, B: 120, A: 255})

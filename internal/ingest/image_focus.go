@@ -40,6 +40,9 @@ const (
 	facePriorDefaultAngle     = 0.0
 	facePriorFocusNudgeBase   = 0.55
 	facePriorFocusNudgeRange  = 0.25
+	facePriorClusterDistance  = 1.5
+	facePriorClusterImageFrac = 0.12
+	facePriorQualityWeight    = 0.25
 )
 
 var (
@@ -210,6 +213,10 @@ type facePriorDetector interface {
 
 type pigoFacePriorDetector struct {
 	classifier *pigo.Pigo
+}
+
+type facePriorDetectionCluster struct {
+	detections []pigo.Detection
 }
 
 func sampleImageFocus(img image.Image) imageFocusSample {
@@ -409,12 +416,159 @@ func applyFacePriorFocusNudge(focusX, focusY float64, width, height int, detecti
 	if width <= 0 || height <= 0 || len(detections) == 0 {
 		return focusX, focusY
 	}
-	det := detections[0]
-	quality := clampFloat((float64(det.Q)-facePriorMinScore)/2.0, 0, 1)
+	cluster, ok := selectFacePriorNudgeCluster(focusX, focusY, width, height, detections)
+	if !ok {
+		return focusX, focusY
+	}
+	faceX, faceY, quality, ok := facePriorClusterTarget(cluster, width, height)
+	if !ok {
+		return focusX, focusY
+	}
 	strength := facePriorFocusNudgeBase + facePriorFocusNudgeRange*quality
-	faceX := float64(det.Col) / float64(width)
-	faceY := float64(det.Row) / float64(height)
 	return clampFloat(focusX*(1-strength)+faceX*strength, 0, 1), clampFloat(focusY*(1-strength)+faceY*strength, 0, 1)
+}
+
+func selectFacePriorNudgeCluster(focusX, focusY float64, width, height int, detections []pigo.Detection) (facePriorDetectionCluster, bool) {
+	clusters := facePriorDetectionClusters(detections, width, height)
+	if len(clusters) == 0 {
+		return facePriorDetectionCluster{}, false
+	}
+	best := clusters[0]
+	for _, cluster := range clusters[1:] {
+		if facePriorClusterPreferred(cluster, best, focusX, focusY, width, height) {
+			best = cluster
+		}
+	}
+	return best, true
+}
+
+func facePriorDetectionClusters(detections []pigo.Detection, width, height int) []facePriorDetectionCluster {
+	if width <= 0 || height <= 0 || len(detections) == 0 {
+		return nil
+	}
+	parent := make([]int, len(detections))
+	for i := range parent {
+		parent[i] = i
+	}
+	find := func(i int) int {
+		for parent[i] != i {
+			parent[i] = parent[parent[i]]
+			i = parent[i]
+		}
+		return i
+	}
+	union := func(a, b int) {
+		rootA := find(a)
+		rootB := find(b)
+		if rootA != rootB {
+			parent[rootB] = rootA
+		}
+	}
+	for i := 0; i < len(detections); i++ {
+		for j := i + 1; j < len(detections); j++ {
+			if facePriorDetectionsClusterTogether(detections[i], detections[j], width, height) {
+				union(i, j)
+			}
+		}
+	}
+
+	var roots []int
+	var clusters []facePriorDetectionCluster
+	for i, det := range detections {
+		root := find(i)
+		clusterIndex := -1
+		for j, existing := range roots {
+			if existing == root {
+				clusterIndex = j
+				break
+			}
+		}
+		if clusterIndex == -1 {
+			roots = append(roots, root)
+			clusters = append(clusters, facePriorDetectionCluster{})
+			clusterIndex = len(clusters) - 1
+		}
+		clusters[clusterIndex].detections = append(clusters[clusterIndex].detections, det)
+	}
+	return clusters
+}
+
+func facePriorDetectionsClusterTogether(a, b pigo.Detection, width, height int) bool {
+	distance := math.Hypot(float64(a.Col-b.Col), float64(a.Row-b.Row))
+	largerScale := maxInt(a.Scale, b.Scale)
+	threshold := maxFloat(float64(largerScale)*facePriorClusterDistance, float64(minInt(width, height))*facePriorClusterImageFrac)
+	return distance <= threshold
+}
+
+func facePriorClusterPreferred(candidate, current facePriorDetectionCluster, focusX, focusY float64, width, height int) bool {
+	candidateScale := facePriorClusterMaxScale(candidate)
+	currentScale := facePriorClusterMaxScale(current)
+	if candidateScale != currentScale {
+		return candidateScale > currentScale
+	}
+	candidateQuality := facePriorClusterMaxQuality(candidate)
+	currentQuality := facePriorClusterMaxQuality(current)
+	if math.Abs(candidateQuality-currentQuality) > 0.000001 {
+		return candidateQuality > currentQuality
+	}
+	if len(candidate.detections) != len(current.detections) {
+		return len(candidate.detections) > len(current.detections)
+	}
+	return facePriorClusterDistanceFromFocus(candidate, focusX, focusY, width, height) < facePriorClusterDistanceFromFocus(current, focusX, focusY, width, height)
+}
+
+func facePriorClusterMaxScale(cluster facePriorDetectionCluster) int {
+	maxScale := 0
+	for _, det := range cluster.detections {
+		if det.Scale > maxScale {
+			maxScale = det.Scale
+		}
+	}
+	return maxScale
+}
+
+func facePriorClusterMaxQuality(cluster facePriorDetectionCluster) float64 {
+	maxQuality := math.Inf(-1)
+	for _, det := range cluster.detections {
+		if float64(det.Q) > maxQuality {
+			maxQuality = float64(det.Q)
+		}
+	}
+	return maxQuality
+}
+
+func facePriorClusterDistanceFromFocus(cluster facePriorDetectionCluster, focusX, focusY float64, width, height int) float64 {
+	targetX, targetY, _, ok := facePriorClusterTarget(cluster, width, height)
+	if !ok {
+		return math.Inf(1)
+	}
+	return math.Hypot(targetX-focusX, targetY-focusY)
+}
+
+func facePriorClusterTarget(cluster facePriorDetectionCluster, width, height int) (float64, float64, float64, bool) {
+	if width <= 0 || height <= 0 || len(cluster.detections) == 0 {
+		return 0, 0, 0, false
+	}
+	var totalWeight, weightedX, weightedY float64
+	maxQuality := math.Inf(-1)
+	for _, det := range cluster.detections {
+		scale := maxFloat(float64(det.Scale), 1)
+		quality := clampFloat((float64(det.Q)-facePriorMinScore)/2.0, 0, 1)
+		weight := scale * scale * (1 + facePriorQualityWeight*quality)
+		totalWeight += weight
+		weightedX += (float64(det.Col) / float64(width)) * weight
+		weightedY += (float64(det.Row) / float64(height)) * weight
+		if float64(det.Q) > maxQuality {
+			maxQuality = float64(det.Q)
+		}
+	}
+	if totalWeight <= 0 {
+		return 0, 0, 0, false
+	}
+	return clampFloat(weightedX/totalWeight, 0, 1),
+		clampFloat(weightedY/totalWeight, 0, 1),
+		clampFloat((maxQuality-facePriorMinScore)/2.0, 0, 1),
+		true
 }
 
 func focusPercent(normalized float64) int {
