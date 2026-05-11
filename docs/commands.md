@@ -22,6 +22,8 @@ Environment:
 - `LOG_LEVEL` defaults to `info`; supported values are `debug`, `info`, `warn`, and `error`
 - `LOG_FORMAT` defaults to `text`; supported values are `text` and `json`
 
+See [Logging](logging.md) for log fields, examples, and stdout/stderr behavior.
+
 Behavior:
 
 - opens and bootstraps the SQLite database on startup
