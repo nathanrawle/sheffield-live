@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"sheffield-live/internal/domain"
+	"sheffield-live/internal/genre"
 	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/logging"
 	"sheffield-live/internal/review"
@@ -1397,6 +1398,50 @@ func TestSQLiteAdminConfigurationListsAndSavesGenreRules(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
 	}
 	assertContains(t, rr.Body.String(), "invalid regex")
+}
+
+func TestAdminConfigurationPostLogsStoreFailure(t *testing.T) {
+	var logs bytes.Buffer
+	logger, err := logging.NewLogger(&logs, logging.Config{})
+	if err != nil {
+		t.Fatalf("new logger: %v", err)
+	}
+	deps := testServerDeps(failingGenreConfigurationStore{saveErr: fmt.Errorf("save failed")})
+	deps.Logger = logger
+	server, err := NewServer(deps)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	form := url.Values{}
+	form.Set("action", "save")
+	form.Set("key", "doom-metal")
+	form.Set("name", "Doom metal")
+	form.Set("match_type", "plain")
+	form.Set("pattern", "doom metal")
+	form.Set("enabled", "1")
+	form.Set("sort_order", "320")
+	req := httptest.NewRequest(http.MethodPost, "/admin/configuration", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	assertContains(t, rr.Body.String(), "save failed")
+	got := logs.String()
+	for _, want := range []string{
+		`msg="save genre rule"`,
+		`error="save failed"`,
+		`path=/admin/configuration`,
+		`msg="http request"`,
+		`status=400`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("logs = %q, want %q", got, want)
+		}
+	}
 }
 
 func TestHomeShowsTodayAndThisWeekWithFixedClock(t *testing.T) {
@@ -3772,6 +3817,28 @@ type failingReadyChecker struct{}
 
 func (failingReadyChecker) Ready(context.Context) error {
 	return fmt.Errorf("not ready")
+}
+
+type failingGenreConfigurationStore struct {
+	saveErr      error
+	deleteErr    error
+	recomputeErr error
+}
+
+func (failingGenreConfigurationStore) ListGenreRules(context.Context) ([]genre.Rule, error) {
+	return nil, nil
+}
+
+func (s failingGenreConfigurationStore) SaveGenreRule(context.Context, genre.RuleInput) error {
+	return s.saveErr
+}
+
+func (s failingGenreConfigurationStore) DeleteGenreRule(context.Context, int64) error {
+	return s.deleteErr
+}
+
+func (s failingGenreConfigurationStore) RecomputeEventGenres(context.Context) error {
+	return s.recomputeErr
 }
 
 func (importHistoryWithDetailNoReviewStoreStub) LoadImportRun(context.Context, int64) (ingest.ReplayRun, error) {

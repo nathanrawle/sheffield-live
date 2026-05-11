@@ -882,6 +882,7 @@ func (s *Server) postAdminConfiguration(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err := s.genreConfigStore.SaveGenreRule(r.Context(), input); err != nil {
+			s.logRequestError(r, "save genre rule", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -893,6 +894,7 @@ func (s *Server) postAdminConfiguration(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err := s.genreConfigStore.DeleteGenreRule(r.Context(), id); err != nil {
+			s.logRequestError(r, "delete genre rule", err, "genre_rule_id", id)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -1151,6 +1153,7 @@ func (s *Server) postAdminVenueDecision(w http.ResponseWriter, r *http.Request, 
 				http.NotFound(w, r)
 				return
 			}
+			s.logRequestError(r, "validate venue", err, "venue_slug", slug)
 			http.Error(w, "validate venue", http.StatusBadRequest)
 			return
 		}
@@ -1167,6 +1170,7 @@ func (s *Server) postAdminVenueDecision(w http.ResponseWriter, r *http.Request, 
 				http.NotFound(w, r)
 				return
 			}
+			s.logRequestError(r, "update provisional venue", err, "venue_slug", slug)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -1253,6 +1257,7 @@ func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		if err := s.saveAdminReviewDraft(r.Context(), groupID, group, r.Form); err != nil {
+			s.logRequestError(r, "save review draft", err, "review_group_id", groupID)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -1268,6 +1273,7 @@ func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		if err := s.reviewStore.ResolveReviewGroup(r.Context(), groupID, choices); err != nil {
+			s.logRequestError(r, "resolve review group", err, "review_group_id", groupID)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -1283,6 +1289,7 @@ func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		if err := s.reviewStore.ResolveReviewGroup(r.Context(), groupID, choices); err != nil {
+			s.logRequestError(r, "accept review group", err, "review_group_id", groupID)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -1293,6 +1300,7 @@ func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		if err := s.reviewStore.UpdateReviewGroupStatus(r.Context(), groupID, review.StatusRejected); err != nil {
+			s.logRequestError(r, "reject review group", err, "review_group_id", groupID)
 			http.Error(w, "update review status", http.StatusBadRequest)
 			return
 		}
