@@ -1,7 +1,11 @@
 .DS_Store
+.env
+.env.*
 /tmp/
 /dist/
 /data/media/
+*.key
+*.pem
 *.db
 *.sqlite
 *.sqlite3

@@ -85,6 +85,7 @@ a:focus-visible {
 
 .nav {
   display: flex;
+  align-items: center;
   gap: 1rem;
   color: var(--muted);
 }
@@ -100,6 +101,26 @@ a:focus-visible {
 .nav a[aria-current="page"] {
   color: var(--accent);
   font-weight: 700;
+}
+
+.nav-logout {
+  margin: 0;
+}
+
+.nav-logout button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.nav-logout button:hover,
+.nav-logout button:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
 }
 
 .main {
@@ -525,6 +546,29 @@ a:focus-visible {
   color: var(--muted);
   font-family: ui-sans-serif, system-ui, sans-serif;
   font-size: 0.9rem;
+}
+
+.login-form {
+  display: grid;
+  gap: 1rem;
+  max-width: 28rem;
+}
+
+.login-form label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.login-form input {
+  width: 100%;
+  min-height: 2.35rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
 }
 
 .import-run-table {

@@ -21,6 +21,7 @@
   <div class="section-head">
     <h2>Genre rules</h2>
     <form method="post" action="/admin/configuration">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <input type="hidden" name="action" value="recompute">
       <button type="submit">Recompute event genres</button>
     </form>
@@ -28,6 +29,7 @@
   <div class="genre-rule-list">
     {{range .GenreRules}}
     <form class="genre-rule-grid" method="post" action="/admin/configuration">
+      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
       <input type="hidden" name="id" value="{{.ID}}">
       <label><span>Enabled</span><input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}}></label>
       <label><span>Key</span><input name="key" value="{{.Key}}"></label>
@@ -50,6 +52,7 @@
     <p class="empty-state">No genre rules configured.</p>
     {{end}}
     <form class="genre-rule-grid" method="post" action="/admin/configuration">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <label><span>Enabled</span><input type="checkbox" name="enabled" value="1" checked></label>
       <label><span>Key</span><input name="key" placeholder="doom-metal"></label>
       <label><span>Name</span><input name="name" placeholder="Doom metal"></label>

@@ -26,11 +26,11 @@ Supported formats:
 Examples:
 
 ```bash
-LOG_LEVEL=info LOG_FORMAT=text go run ./cmd/web
+ADMIN_AUTH_DISABLED=1 LOG_LEVEL=info LOG_FORMAT=text go run ./cmd/web
 ```
 
 ```bash
-LOG_LEVEL=debug LOG_FORMAT=json go run ./cmd/web
+ADMIN_AUTH_DISABLED=1 LOG_LEVEL=debug LOG_FORMAT=json go run ./cmd/web
 ```
 
 ```bash
@@ -150,8 +150,10 @@ The application does not log:
 - request bodies
 - query strings
 - form bodies
+- admin passphrases
+- session or CSRF tokens
 
-The web server logs request paths, remote addresses, and user agents. Ingest logs include the database path and source names. Treat logs as operational data and avoid posting production logs publicly without review.
+The web server logs request paths, remote addresses, user agents, and startup auth status without logging admin secrets. Ingest logs include the database path and source names. Treat logs as operational data and avoid posting production logs publicly without review.
 
 ## Manual QA
 

@@ -26,6 +26,8 @@ import (
 	sqlitestore "sheffield-live/internal/store/sqlite"
 )
 
+const testAdminPasswordHash = "$2a$12$Np7G88kWczQUXP1fhca9..B9Gv1N55toTxUHQ02rBkN0c1QJggkMW"
+
 func TestRoutes(t *testing.T) {
 	server, err := NewServer(testServerDeps(store.NewSeedStore()))
 	if err != nil {
@@ -283,6 +285,184 @@ func TestAdminLandingPageRejectsPost(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
+	}
+}
+
+func TestAdminAuthRedirectsUnauthenticatedAdminRequests(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusSeeOther)
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/login?next=%2Fadmin%2Freview" {
+		t.Fatalf("Location = %q, want login redirect", location)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/events", nil)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("public status = %d, want %d", rr.Code, http.StatusOK)
+	}
+}
+
+func TestAdminLoginSetsSecureSessionCookieAndAllowsAdminAccess(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, location := loginAdmin(t, server, "/admin/review")
+	if location != "/admin/review" {
+		t.Fatalf("login Location = %q, want /admin/review", location)
+	}
+	if cookie.Name != adminSessionCookieName {
+		t.Fatalf("cookie name = %q, want %q", cookie.Name, adminSessionCookieName)
+	}
+	if !cookie.HttpOnly {
+		t.Fatal("session cookie is not HttpOnly")
+	}
+	if !cookie.Secure {
+		t.Fatal("session cookie is not Secure")
+	}
+	if cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("SameSite = %v, want strict", cookie.SameSite)
+	}
+	if cookie.Path != "/admin" {
+		t.Fatalf("Path = %q, want /admin", cookie.Path)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "Review queue")
+	assertContains(t, rr.Body.String(), `name="csrf_token"`)
+}
+
+func TestAdminLoginRejectsBadPassword(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	form := url.Values{
+		"password": {"wrong"},
+		"next":     {"/admin/review"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	assertContains(t, rr.Body.String(), "Sign in failed.")
+	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("cookies = %v, want none", cookies)
+	}
+}
+
+func TestAdminLoginRejectsUnsafeNextRedirect(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, location := loginAdmin(t, server, "https://example.test/admin")
+	if location != "/admin" {
+		t.Fatalf("login Location = %q, want /admin", location)
+	}
+}
+
+func TestAdminPostRequiresCSRF(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin")
+	form := url.Values{"action": {"rejected"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/1", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+}
+
+func TestAdminLogoutInvalidatesSession(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	csrfToken := extractCSRFToken(t, rr.Body.String())
+
+	form := url.Values{"csrf_token": {csrfToken}}
+	req = httptest.NewRequest(http.MethodPost, "/admin/logout", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("logout status = %d, want %d", rr.Code, http.StatusSeeOther)
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/login" {
+		t.Fatalf("logout Location = %q, want /admin/login", location)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("post-logout status = %d, want %d", rr.Code, http.StatusSeeOther)
+	}
+}
+
+func TestAdminSessionExpires(t *testing.T) {
+	deps := testAdminAuthDeps(reviewOnlyStoreStub{})
+	deps.AdminAuth.SessionIdleTimeout = time.Minute
+	deps.AdminAuth.SessionAbsoluteTimeout = time.Hour
+	server, err := NewServer(deps)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	now := fixtureLocalTime(2026, time.May, 13, 10, 0)
+	server.SetClockForTesting(func() time.Time { return now })
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	now = now.Add(2 * time.Minute)
+	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusSeeOther)
 	}
 }
 
@@ -4020,6 +4200,54 @@ func testServerDeps(value any) ServerDeps {
 		deps.ReadyChecker = readyChecker
 	}
 	return deps
+}
+
+func testAdminAuthDeps(value any) ServerDeps {
+	deps := testServerDeps(value)
+	deps.AdminAuth = AdminAuthConfig{
+		PasswordHash: testAdminPasswordHash,
+	}
+	return deps
+}
+
+func loginAdmin(t *testing.T, server *Server, next string) (*http.Cookie, string) {
+	t.Helper()
+
+	form := url.Values{
+		"password": {"correct horse battery staple"},
+		"next":     {next},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("login status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	for _, cookie := range rr.Result().Cookies() {
+		if cookie.Name == adminSessionCookieName {
+			return cookie, rr.Header().Get("Location")
+		}
+	}
+	t.Fatalf("login did not set %s cookie", adminSessionCookieName)
+	return nil, ""
+}
+
+func extractCSRFToken(t *testing.T, body string) string {
+	t.Helper()
+
+	marker := `name="csrf_token" value="`
+	start := strings.Index(body, marker)
+	if start < 0 {
+		t.Fatalf("body missing CSRF token: %q", body)
+	}
+	rest := body[start+len(marker):]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		t.Fatalf("body has unterminated CSRF token: %q", body)
+	}
+	return rest[:end]
 }
 
 func fixtureLocalTime(year int, month time.Month, day, hour, minute int) time.Time {

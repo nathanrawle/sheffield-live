@@ -10,7 +10,7 @@ This repository has one Go monolith and two entrypoints:
 Run:
 
 ```bash
-go run ./cmd/web
+ADMIN_AUTH_DISABLED=1 go run ./cmd/web
 ```
 
 Environment:
@@ -19,16 +19,26 @@ Environment:
 - `DB_PATH` defaults to `./data/sheffield-live.db`
 - `MEDIA_ROOT` defaults to `./data/media`
 - `MEDIA_URL_PREFIX` defaults to `/media`
+- `ADMIN_PASSWORD_HASH` is required unless `ADMIN_AUTH_DISABLED=1`
+- `ADMIN_AUTH_DISABLED=1` disables admin login for disposable local development only
+- `ADMIN_COOKIE_SECURE` defaults to `true`; set `false` only when testing auth over local HTTP
 - `LOG_LEVEL` defaults to `info`; supported values are `debug`, `info`, `warn`, and `error`
 - `LOG_FORMAT` defaults to `text`; supported values are `text` and `json`
 
 See [Logging](logging.md) for log fields, examples, and stdout/stderr behavior.
+
+Generate an admin password hash:
+
+```bash
+printf '%s' 'your admin passphrase' | go run ./cmd/admin-password-hash
+```
 
 Behavior:
 
 - opens and bootstraps the SQLite database on startup
 - validates the opened store once before serving
 - serves server-rendered HTML
+- protects `/admin` routes with a passphrase-backed session when auth is enabled
 - serves copied local media files from `MEDIA_ROOT` under `MEDIA_URL_PREFIX`
 - logs startup, request, readiness, and internal error events to stderr
 - uses `modernc.org/sqlite`
@@ -41,6 +51,9 @@ Routes:
 - `GET /events/{slug}` event detail
 - `GET /venues` venue list
 - `GET /venues/{slug}` venue detail
+- `GET /admin/login` admin login page
+- `POST /admin/login` start an admin session
+- `POST /admin/logout` end an admin session
 - `GET /admin` admin landing page
 - `GET /admin/review` open review queue
 - `GET /admin/review/history` read-only resolved and rejected review history

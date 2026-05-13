@@ -21,7 +21,7 @@ rm -f "$WEB_DB" "$INGEST_DB" "$WEB_LOG" "$INGEST_LOG" "$INGEST_JSON"
 Start the web app:
 
 ```bash
-ADDR=:8098 DB_PATH="$WEB_DB" LOG_LEVEL=info LOG_FORMAT=text go run ./cmd/web 2>"$WEB_LOG"
+ADDR=:8098 DB_PATH="$WEB_DB" ADMIN_AUTH_DISABLED=1 LOG_LEVEL=info LOG_FORMAT=text go run ./cmd/web 2>"$WEB_LOG"
 ```
 
 In another terminal:
@@ -79,7 +79,7 @@ status=400
 Stop the first server, then run:
 
 ```bash
-ADDR=:8099 DB_PATH=/tmp/sheffield-live-logging-json.db LOG_FORMAT=json go run ./cmd/web 2>/tmp/sheffield-live-web-json.log
+ADDR=:8099 DB_PATH=/tmp/sheffield-live-logging-json.db ADMIN_AUTH_DISABLED=1 LOG_FORMAT=json go run ./cmd/web 2>/tmp/sheffield-live-web-json.log
 ```
 
 In another terminal:
@@ -144,7 +144,7 @@ Expected:
 - Stderr says `unsupported LOG_LEVEL`.
 
 ```bash
-LOG_FORMAT=xml go run ./cmd/web
+ADMIN_AUTH_DISABLED=1 LOG_FORMAT=xml go run ./cmd/web
 ```
 
 Expected:

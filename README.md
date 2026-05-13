@@ -5,10 +5,16 @@ Sheffield Live is a single Go monolith for browsing live music in Sheffield with
 Run it:
 
 ```bash
-go run ./cmd/web
+ADMIN_AUTH_DISABLED=1 go run ./cmd/web
 ```
 
-Defaults: `ADDR=:8080`, `DB_PATH=./data/sheffield-live.db`, `LOG_LEVEL=info`, and `LOG_FORMAT=text`.
+For a public or shared deployment, set `ADMIN_PASSWORD_HASH` instead of disabling auth. Generate the hash with:
+
+```bash
+printf '%s' 'your admin passphrase' | go run ./cmd/admin-password-hash
+```
+
+Defaults: `ADDR=:8080`, `DB_PATH=./data/sheffield-live.db`, `LOG_LEVEL=info`, `LOG_FORMAT=text`, and `ADMIN_COOKIE_SECURE=true`.
 
 Current surface:
 

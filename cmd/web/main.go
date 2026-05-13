@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/logging"
@@ -40,12 +41,18 @@ func runWithLogger(logger *slog.Logger) error {
 	dbPath := env("DB_PATH", "./data/sheffield-live.db")
 	mediaRoot := env("MEDIA_ROOT", "./data/media")
 	mediaURLPrefix := env("MEDIA_URL_PREFIX", "/media")
+	adminAuth, err := adminAuthConfigFromEnv()
+	if err != nil {
+		return err
+	}
 
 	logger.Info("web starting",
 		"addr", addr,
 		"db_path", dbPath,
 		"media_root", mediaRoot,
 		"media_url_prefix", mediaURLPrefix,
+		"admin_auth_enabled", !adminAuth.Disabled,
+		"admin_cookie_secure", !adminAuth.AllowInsecureCookie,
 	)
 
 	sourceCatalog, err := ingest.LoadRepoCatalog()
@@ -79,6 +86,7 @@ func runWithLogger(logger *slog.Logger) error {
 		ReadyChecker:              st,
 		MediaRoot:                 mediaRoot,
 		MediaURLPrefix:            mediaURLPrefix,
+		AdminAuth:                 adminAuth,
 		Logger:                    logger,
 	})
 	if err != nil {
@@ -98,4 +106,43 @@ func env(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func adminAuthConfigFromEnv() (web.AdminAuthConfig, error) {
+	disabled, err := boolEnv("ADMIN_AUTH_DISABLED", false)
+	if err != nil {
+		return web.AdminAuthConfig{}, err
+	}
+	if disabled {
+		return web.AdminAuthConfig{Disabled: true}, nil
+	}
+
+	passwordHash := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH"))
+	if passwordHash == "" {
+		return web.AdminAuthConfig{}, fmt.Errorf("ADMIN_PASSWORD_HASH is required unless ADMIN_AUTH_DISABLED=1")
+	}
+
+	cookieSecure, err := boolEnv("ADMIN_COOKIE_SECURE", true)
+	if err != nil {
+		return web.AdminAuthConfig{}, err
+	}
+	return web.AdminAuthConfig{
+		PasswordHash:        passwordHash,
+		AllowInsecureCookie: !cookieSecure,
+	}, nil
+}
+
+func boolEnv(key string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s must be a boolean value", key)
+	}
 }
