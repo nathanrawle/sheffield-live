@@ -88,8 +88,11 @@ type adminFailureStore struct {
 type adminSessionContextKey struct{}
 
 func newAdminAuthenticator(config AdminAuthConfig) (*adminAuthenticator, error) {
-	if config.Disabled || strings.TrimSpace(config.PasswordHash) == "" {
+	if config.Disabled {
 		return &adminAuthenticator{disabled: true}, nil
+	}
+	if strings.TrimSpace(config.PasswordHash) == "" {
+		return nil, fmt.Errorf("admin password hash is required unless admin auth is disabled")
 	}
 
 	passwordHash := []byte(strings.TrimSpace(config.PasswordHash))
@@ -309,7 +312,7 @@ func (s *Server) requireAdminCSRF(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "admin session required", http.StatusForbidden)
 		return false
 	}
-	token := r.FormValue(adminCSRFFieldName)
+	token := r.PostForm.Get(adminCSRFFieldName)
 	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(session.CSRFToken)) != 1 {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return false

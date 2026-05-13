@@ -222,6 +222,16 @@ func TestNewServerAcceptsReadOnlyStore(t *testing.T) {
 	}
 }
 
+func TestNewServerRequiresExplicitAdminAuthConfig(t *testing.T) {
+	_, err := NewServer(ServerDeps{Catalog: store.NewSeedStore()})
+	if err == nil {
+		t.Fatal("new server error = nil, want admin auth config error")
+	}
+	if !strings.Contains(err.Error(), "admin password hash") {
+		t.Fatalf("new server error = %q, want admin password hash", err)
+	}
+}
+
 func TestAdminReviewOmitsLatestImportWithoutImportHistoryStore(t *testing.T) {
 	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{}))
 	if err != nil {
@@ -375,6 +385,24 @@ func TestAdminLoginRejectsBadPassword(t *testing.T) {
 	}
 }
 
+func TestAdminLoginRejectsPasswordInQueryString(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/login?password=correct+horse+battery+staple&next=/admin/review", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("cookies = %v, want none", cookies)
+	}
+}
+
 func TestAdminLoginRejectsUnsafeNextRedirect(t *testing.T) {
 	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
 	if err != nil {
@@ -387,6 +415,41 @@ func TestAdminLoginRejectsUnsafeNextRedirect(t *testing.T) {
 	}
 }
 
+func TestAdminLoginThrottlesRepeatedFailures(t *testing.T) {
+	deps := testAdminAuthDeps(reviewOnlyStoreStub{})
+	deps.AdminAuth.MaxFailures = 2
+	server, err := NewServer(deps)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		form := url.Values{
+			"password": {"wrong"},
+			"next":     {"/admin/review"},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d, want %d", i+1, rr.Code, http.StatusUnauthorized)
+		}
+	}
+
+	form := url.Values{
+		"password": {"correct horse battery staple"},
+		"next":     {"/admin/review"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("locked status = %d, want %d", rr.Code, http.StatusTooManyRequests)
+	}
+}
+
 func TestAdminPostRequiresCSRF(t *testing.T) {
 	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
 	if err != nil {
@@ -396,6 +459,88 @@ func TestAdminPostRequiresCSRF(t *testing.T) {
 	cookie, _ := loginAdmin(t, server, "/admin")
 	form := url.Values{"action": {"rejected"}}
 	req := httptest.NewRequest(http.MethodPost, "/admin/review/1", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+}
+
+func TestAdminPostRejectsCSRFTokenInQueryString(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	csrfToken := extractCSRFToken(t, rr.Body.String())
+
+	form := url.Values{"action": {"rejected"}}
+	req = httptest.NewRequest(http.MethodPost, "/admin/review/1?csrf_token="+url.QueryEscape(csrfToken), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+}
+
+func TestAdminVenuePostRequiresCSRF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(testAdminAuthDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin")
+	form := url.Values{"action": {"validate"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+}
+
+func TestAdminConfigurationPostRequiresCSRF(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(failingGenreConfigurationStore{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin")
+	form := url.Values{
+		"action":     {"save"},
+		"key":        {"doom-metal"},
+		"name":       {"Doom metal"},
+		"match_type": {"plain"},
+		"pattern":    {"doom metal"},
+		"enabled":    {"1"},
+		"sort_order": {"320"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/configuration", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
 	rr := httptest.NewRecorder()
@@ -2051,6 +2196,7 @@ func TestReadyzReturnsServiceUnavailableWhenReadinessFails(t *testing.T) {
 	server, err := NewServer(ServerDeps{
 		Catalog:      store.NewSeedStore(),
 		ReadyChecker: failingReadyChecker{},
+		AdminAuth:    AdminAuthConfig{Disabled: true},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -2075,6 +2221,7 @@ func TestReadyzLogsReadinessFailure(t *testing.T) {
 		Catalog:      store.NewSeedStore(),
 		ReadyChecker: failingReadyChecker{},
 		Logger:       logger,
+		AdminAuth:    AdminAuthConfig{Disabled: true},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -4168,7 +4315,8 @@ func mustClockedServer(t *testing.T, st *store.Store) *Server {
 
 func testServerDeps(value any) ServerDeps {
 	deps := ServerDeps{
-		Catalog: store.NewSeedStore(),
+		Catalog:   store.NewSeedStore(),
+		AdminAuth: AdminAuthConfig{Disabled: true},
 	}
 	if catalog, ok := value.(store.CatalogStore); ok {
 		deps.Catalog = catalog

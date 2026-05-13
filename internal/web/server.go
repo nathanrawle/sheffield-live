@@ -737,7 +737,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "parse form", http.StatusBadRequest)
 			return
 		}
-		next := sanitizeAdminNextPath(r.FormValue("next"))
+		next := sanitizeAdminNextPath(r.PostForm.Get("next"))
 		failureKey := adminFailureKey(r)
 		now := s.now()
 		if s.adminAuth.failures.locked(failureKey, now) {
@@ -746,7 +746,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 			s.renderAdminLogin(w, next, "Sign in is temporarily unavailable. Try again later.")
 			return
 		}
-		if !s.adminAuth.authenticate(r.FormValue("password")) {
+		if !s.adminAuth.authenticate(r.PostForm.Get("password")) {
 			s.adminAuth.failures.recordFailure(failureKey, now)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusUnauthorized)
