@@ -115,6 +115,55 @@ func TestReviewGroupsFromReportStagingKeyIsStableForSameContent(t *testing.T) {
 	}
 }
 
+func TestReviewGroupsFromReportStagingKeyIgnoresRoomEvidence(t *testing.T) {
+	base := ReviewGroupsFromReport(successfulReviewStageReport(
+		CalendarReport{
+			URL: "https://calendar.example.test/one.ics",
+			Candidates: []EventCandidate{
+				{
+					UID:      "shared-uid",
+					Summary:  "Parallel Delusion",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-01T19:00:00Z",
+					EndAt:    "2026-05-01T22:00:00Z",
+				},
+			},
+		},
+	))
+	enriched := ReviewGroupsFromReport(successfulReviewStageReport(
+		CalendarReport{
+			URL: "https://calendar.example.test/one.ics",
+			Candidates: []EventCandidate{
+				{
+					UID:      "shared-uid",
+					Summary:  "Parallel Delusion",
+					Location: "Sidney & Matilda",
+					RoomText: "FACTORY",
+					Rooms:    []RoomCandidate{{Slug: "factory", Name: "Factory"}},
+					StartAt:  "2026-05-01T19:00:00Z",
+					EndAt:    "2026-05-01T22:00:00Z",
+				},
+			},
+		},
+	))
+
+	if got, want := len(base), 1; got != want {
+		t.Fatalf("base groups = %d, want %d", got, want)
+	}
+	if got, want := len(enriched), 1; got != want {
+		t.Fatalf("enriched groups = %d, want %d", got, want)
+	}
+	if got, want := base[0].StagingKey, enriched[0].StagingKey; got != want {
+		t.Fatalf("staging key = %q, want %q", got, want)
+	}
+	if got, want := enriched[0].Candidates[0].RoomText, "FACTORY"; got != want {
+		t.Fatalf("room text = %q, want %q", got, want)
+	}
+	if got, want := review.RoomSlugsValue(enriched[0].Candidates[0].Rooms), "factory"; got != want {
+		t.Fatalf("room slugs = %q, want %q", got, want)
+	}
+}
+
 func TestReviewGroupsFromReportStagingKeyChangesWhenStableContentChanges(t *testing.T) {
 	base := ReviewGroupsFromReport(successfulReviewStageReport(
 		CalendarReport{

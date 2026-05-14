@@ -453,7 +453,7 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 		if candidate.CanonicalEventID != 0 {
 			continue
 		}
-		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.RoomText, review.RoomSlugsValue(candidate.Rooms), candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
+		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
 		incomingByFingerprint[fingerprint] = append(incomingByFingerprint[fingerprint], candidate)
 	}
 
@@ -462,7 +462,7 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 		if candidate.CanonicalEventID != 0 {
 			continue
 		}
-		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.RoomText, review.RoomSlugsValue(candidate.Rooms), candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
+		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
 		existingByFingerprint[fingerprint] = append(existingByFingerprint[fingerprint], candidate)
 	}
 

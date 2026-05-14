@@ -132,8 +132,6 @@ func reviewStageCandidateFingerprint(candidate review.CandidateInput) string {
 	writeReviewStageHashPart(sum, candidate.ExternalID)
 	writeReviewStageHashPart(sum, candidate.Name)
 	writeReviewStageHashPart(sum, candidate.VenueSlug)
-	writeReviewStageHashPart(sum, candidate.RoomText)
-	writeReviewStageHashPart(sum, review.RoomSlugsValue(candidate.Rooms))
 	writeReviewStageHashPart(sum, candidate.StartAt)
 	writeReviewStageHashPart(sum, candidate.EndAt)
 	writeReviewStageHashPart(sum, candidate.Genre)

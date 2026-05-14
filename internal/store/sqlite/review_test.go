@@ -689,6 +689,77 @@ func TestStageReviewGroupRestagingOpenGroupRefreshesImageFields(t *testing.T) {
 	}
 }
 
+func TestStageReviewGroupRestagingOpenGroupRefreshesRoomEvidence(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	input := review.GroupInput{
+		Title:      "Room restage",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:room-restage.ics",
+		StagingKey: "v1:room-restage",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "shared-room-uid",
+			Name:        "Room Restage Show",
+			VenueSlug:   "sidney-and-matilda",
+			StartAt:     "2026-05-01T19:00:00Z",
+			EndAt:       "2026-05-01T22:00:00Z",
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "First description",
+			SourceName:  "Fixture ICS",
+			SourceURL:   "https://example.test/room-restage",
+			Provenance:  "fixture UID shared-room-uid",
+		}},
+	}
+
+	stageResult, err := st.StageReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	groupID := stageResult.ID
+
+	withRoom := input
+	withRoom.Candidates[0].RoomText = "COURTYARD STAGE"
+	withRoom.Candidates[0].Rooms = []domain.VenueRoom{{Slug: "courtyard-stage", Name: "Courtyard Stage"}}
+	reused, err := st.StageReviewGroup(ctx, withRoom)
+	if err != nil {
+		t.Fatalf("restage review group with room: %v", err)
+	}
+	if reused.Created || reused.ID != groupID {
+		t.Fatalf("restaged result = %#v, want reused group %d", reused, groupID)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if got := group.Candidates[0].RoomText; got != "COURTYARD STAGE" {
+		t.Fatalf("room text = %q, want %q", got, "COURTYARD STAGE")
+	}
+	if got := review.RoomSlugsValue(group.Candidates[0].Rooms); got != "courtyard-stage" {
+		t.Fatalf("room slugs = %q, want %q", got, "courtyard-stage")
+	}
+
+	room, ok, err := st.LoadVenueRoomBySlug(ctx, "sidney-and-matilda", "courtyard-stage")
+	if err != nil {
+		t.Fatalf("load room: %v", err)
+	}
+	if !ok {
+		t.Fatal("provisional room not found after restage")
+	}
+	if room.Name != "Courtyard Stage" || room.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("room = %#v, want provisional Courtyard Stage", room)
+	}
+}
+
 func TestStageReviewGroupReusesClosedMatchingGroupWithoutReopening(t *testing.T) {
 	cases := []struct {
 		name       string
