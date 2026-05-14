@@ -83,6 +83,7 @@
   <p class="review-action-note">Save draft choices while the group stays open, confirm the duplicate once every canonical field is selected, or mark it not duplicate without submitting field choices.</p>
   {{if eq .ReviewDetail.Group.Status "open"}}
   <form method="post" action="/admin/review/{{.ReviewDetail.Group.ID}}">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <div class="review-matrix-wrap">
       <table class="review-matrix">
         <thead>
@@ -123,6 +124,7 @@
     </div>
   </form>
   <form class="review-action-form" method="post" action="/admin/review/{{.ReviewDetail.Group.ID}}">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <button class="secondary-button danger-button" type="submit" name="action" value="rejected">Mark not duplicate</button>
   </form>
   {{else}}
@@ -175,6 +177,7 @@
   {{if eq .ReviewDetail.Group.Status "open"}}
   <p class="review-action-note">Accept this listing into the resolved review record, or reject it without submitting field choices.</p>
   <form method="post" action="/admin/review/{{.ReviewDetail.Group.ID}}">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <div class="review-actions">
       <button class="primary-button" type="submit" name="action" value="accept">Accept new listing</button>
       <button class="secondary-button danger-button" type="submit" name="action" value="rejected">Reject</button>

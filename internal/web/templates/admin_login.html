@@ -1,0 +1,24 @@
+<section class="page-head">
+  <p class="eyebrow">Admin</p>
+  <h1>Admin login</h1>
+  <p class="lede">Sign in to manage Sheffield Live.</p>
+</section>
+
+{{with .LoginError}}
+<section class="section-block">
+  <p class="notice">{{.}}</p>
+</section>
+{{end}}
+
+<section class="section-block">
+  <form class="login-form" method="post" action="/admin/login">
+    <input type="hidden" name="next" value="{{.LoginNext}}">
+    <label>
+      Passphrase
+      <input type="password" name="password" autocomplete="current-password" required autofocus>
+    </label>
+    <div>
+      <button type="submit" class="primary-button">Sign in</button>
+    </div>
+  </form>
+</section>

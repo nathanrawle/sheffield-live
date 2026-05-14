@@ -52,6 +52,7 @@ type Server struct {
 	mediaServer               http.Handler
 	mediaURLPrefix            string
 	logger                    *slog.Logger
+	adminAuth                 *adminAuthenticator
 }
 
 type ReviewStore interface {
@@ -105,6 +106,7 @@ type ServerDeps struct {
 	ReadyChecker              ReadyChecker
 	MediaRoot                 string
 	MediaURLPrefix            string
+	AdminAuth                 AdminAuthConfig
 	Logger                    *slog.Logger
 }
 
@@ -146,6 +148,10 @@ type PageData struct {
 	HasVenueAdmin            bool
 	HasVenueAdminWrites      bool
 	HasGenreConfiguration    bool
+	AdminAuthenticated       bool
+	CSRFToken                string
+	LoginNext                string
+	LoginError               string
 	Flash                    string
 }
 
@@ -383,6 +389,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"templates/event_detail.html",
 		"templates/venues.html",
 		"templates/venue_detail.html",
+		"templates/admin_login.html",
 		"templates/admin.html",
 		"templates/admin_review.html",
 		"templates/admin_review_history.html",
@@ -411,6 +418,10 @@ func NewServer(deps ServerDeps) (*Server, error) {
 	if strings.TrimSpace(deps.MediaRoot) != "" {
 		mediaServer = http.StripPrefix(mediaURLPrefix+"/", http.FileServer(fileSystemRejectingDirectories{base: http.Dir(deps.MediaRoot)}))
 	}
+	adminAuth, err := newAdminAuthenticator(deps.AdminAuth)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Server{
 		catalog:                   deps.Catalog,
@@ -430,6 +441,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		mediaServer:               mediaServer,
 		mediaURLPrefix:            mediaURLPrefix,
 		logger:                    logging.EnsureLogger(deps.Logger),
+		adminAuth:                 adminAuth,
 	}, nil
 }
 
@@ -588,6 +600,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 	cleaned := path.Clean(r.URL.Path)
+	if cleaned == "/admin/login" {
+		s.handleAdminLogin(w, r)
+		return
+	}
+	if cleaned == "/admin/logout" {
+		var ok bool
+		r, ok = s.requireAdmin(w, r)
+		if !ok {
+			return
+		}
+		s.handleAdminLogout(w, r)
+		return
+	}
+	if isAdminRequestPath(cleaned) {
+		var ok bool
+		r, ok = s.requireAdmin(w, r)
+		if !ok {
+			return
+		}
+	}
 	switch {
 	case cleaned == "/":
 		s.handleHome(w, r)
@@ -691,6 +723,80 @@ func (s *Server) logRequestError(r *http.Request, message string, err error, att
 	s.log().Error(message, fields...)
 }
 
+func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuth.enabled() {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.renderAdminLogin(w, sanitizeAdminNextPath(r.URL.Query().Get("next")), "")
+	case http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "parse form", http.StatusBadRequest)
+			return
+		}
+		next := sanitizeAdminNextPath(r.PostForm.Get("next"))
+		failureKey := adminFailureKey(r)
+		now := s.now()
+		if s.adminAuth.failures.locked(failureKey, now) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusTooManyRequests)
+			s.renderAdminLogin(w, next, "Sign in is temporarily unavailable. Try again later.")
+			return
+		}
+		if !s.adminAuth.authenticate(r.PostForm.Get("password")) {
+			s.adminAuth.failures.recordFailure(failureKey, now)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			s.renderAdminLogin(w, next, "Sign in failed.")
+			return
+		}
+		s.adminAuth.failures.clear(failureKey)
+		if err := s.adminAuth.startSession(w, now); err != nil {
+			s.logRequestError(r, "start admin session", err)
+			http.Error(w, "start admin session", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, next, http.StatusSeeOther)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) renderAdminLogin(w http.ResponseWriter, next, errorText string) {
+	data := PageData{
+		SiteName:        "Sheffield Live",
+		PageTitle:       "Admin login",
+		MetaDescription: "Admin login for Sheffield Live.",
+		Now:             s.now(),
+		LoginNext:       sanitizeAdminNextPath(next),
+		LoginError:      errorText,
+	}
+	s.renderPage(w, "templates/admin_login.html", data)
+}
+
+func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuth.enabled() {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	if !s.requireAdminCSRF(w, r) {
+		return
+	}
+	s.adminAuth.endSession(w, r)
+	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+}
+
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	if !s.hasVenueAdmin() {
 		http.NotFound(w, r)
@@ -712,6 +818,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		HasVenueAdmin:       s.hasVenueAdmin(),
 		HasVenueAdminWrites: s.canWriteVenueAdmin(),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin.html", data)
 }
 
@@ -765,6 +872,7 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		}
 		data.LatestImport = latest
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_review.html", data)
 }
 
@@ -813,6 +921,7 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 			s.localLocation,
 		),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_venues.html", data)
 }
 
@@ -861,6 +970,7 @@ func (s *Server) handleAdminConfiguration(w http.ResponseWriter, r *http.Request
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 		Flash:                 flash,
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_configuration.html", data)
 }
 
@@ -871,6 +981,9 @@ func (s *Server) postAdminConfiguration(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	if !s.requireAdminCSRF(w, r) {
 		return
 	}
 	action := strings.TrimSpace(r.FormValue("action"))
@@ -967,6 +1080,7 @@ func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_review_history.html", data)
 }
 
@@ -1032,6 +1146,7 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 		Flash:                 flash,
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_venue_detail.html", data)
 }
 
@@ -1069,6 +1184,7 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		HasVenueAdminWrites:      s.canWriteVenueAdmin(),
 		HasGenreConfiguration:    s.hasGenreConfiguration(),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_import_runs.html", data)
 }
 
@@ -1121,6 +1237,7 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_import_run_detail.html", data)
 }
 
@@ -1132,6 +1249,9 @@ func (s *Server) postAdminVenueDecision(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	if !s.requireAdminCSRF(w, r) {
 		return
 	}
 	action := strings.TrimSpace(r.FormValue("action"))
@@ -1231,6 +1351,9 @@ func (s *Server) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request, groupID int64) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	if !s.requireAdminCSRF(w, r) {
 		return
 	}
 
@@ -1425,6 +1548,7 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		Flash:                 flash,
 	}
 	data.ReviewDetail = buildReviewDetail(group)
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_review_detail.html", data)
 }
 

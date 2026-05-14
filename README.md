@@ -2,18 +2,26 @@
 
 Sheffield Live is a single Go monolith for browsing live music in Sheffield with server-rendered HTML and SQLite persistence via `modernc.org/sqlite`.
 
-Run it:
+Run it locally with admin auth disabled:
 
 ```bash
-go run ./cmd/web
+ADMIN_AUTH_DISABLED=1 go run ./cmd/web
 ```
 
-Defaults: `ADDR=:8080`, `DB_PATH=./data/sheffield-live.db`, `LOG_LEVEL=info`, and `LOG_FORMAT=text`.
+For a public or shared deployment, keep admin auth enabled and provide a bcrypt hash:
+
+```bash
+printf '%s' 'your admin passphrase' | go run ./cmd/admin-password-hash
+ADMIN_PASSWORD_HASH='paste generated hash here' go run ./cmd/web
+```
+
+Defaults: `ADDR=:8080`, `DB_PATH=./data/sheffield-live.db`, `LOG_LEVEL=info`, `LOG_FORMAT=text`, and `ADMIN_COOKIE_SECURE=true`.
+Set `ADMIN_COOKIE_SECURE=false` only when testing login over local plain HTTP.
 
 Current surface:
 
 - home, event list/detail, and venue list/detail pages
-- admin review queue, provisional venue queue, review history, and review detail pages for staged ingest work
+- passphrase-protected `/admin` tools for review, provisional venues, import history, and genre configuration
 - `GET /healthz`
 - `GET /readyz`
 - embedded stylesheet at `/static/site.css`
@@ -27,6 +35,10 @@ Replay auto-detects the stored source from page snapshot metadata and reuses tha
 Review staging is idempotent by durable staging key, so reruns reuse existing review groups instead of duplicating them, and each staged or reused group persists a link to the current import run.
 Duplicate review groups can include a live canonical snapshot column, persist majority defaults separately from manual draft choices, and auto-resolve in narrow duplicate cases without leaving an open review.
 Venue coverage is stored as data. Most venues use full-venue coverage; The Lescar is marked program-only and shows a coverage note in venue and event detail pages.
+
+## Admin login
+
+Set `ADMIN_PASSWORD_HASH` for public or shared deployments. Use `ADMIN_AUTH_DISABLED=1` only for disposable local development, and do not commit passphrases or generated hashes to the repository.
 
 Docs:
 
