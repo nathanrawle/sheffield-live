@@ -81,6 +81,42 @@ func TestParseICSExtractsImageURL(t *testing.T) {
 	}
 }
 
+func TestParseICSUnescapesHTMLEntities(t *testing.T) {
+	result := ParseICS([]byte("BEGIN:VCALENDAR\n" +
+		"BEGIN:VEVENT\n" +
+		"UID:escaped-show\n" +
+		"SUMMARY:S&amp;amp;M Presents: R&amp;B Night\n" +
+		"DESCRIPTION:Line with R&amp;amp;B and A&amp;R\n" +
+		"LOCATION:Sidney &amp;amp; Matilda\n" +
+		"URL:https://example.test/events?title=S&amp;amp;M\n" +
+		"DTSTART:20260501T190000Z\n" +
+		"END:VEVENT\n" +
+		"END:VCALENDAR\n"))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	candidate := result.Candidates[0]
+	if got, want := candidate.Summary, "S&M Presents: R&B Night"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+	if got, want := candidate.Description, "Line with R&B and A&R"; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+	if got, want := candidate.Location, "Sidney & Matilda"; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+	if got, want := candidate.URL, "https://example.test/events?title=S&M"; got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+	if got, want := candidate.ImageAlt, "S&M Presents: R&B Night"; got != want {
+		t.Fatalf("image alt = %q, want %q", got, want)
+	}
+}
+
 func TestParseICSPreservesRawLocationEvidence(t *testing.T) {
 	result := ParseICS([]byte("BEGIN:VCALENDAR\n" +
 		"BEGIN:VEVENT\n" +
