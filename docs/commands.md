@@ -80,7 +80,9 @@ The provisional room queue lists provisional room rows created from newly detect
 
 `/admin/configuration` exposes genre inference rules. Defaults are loaded from `config/genres.yaml`, copied into SQLite, and can be overridden through the admin page. Saving or deleting a rule recomputes stored event genres and refreshes the top-two `events.genre` summary cache.
 
-`/events` query parameters:
+`/events` defaults to a date board with Tonight, Tomorrow, and the next seven local days. Empty days stay visible with a quiet `No shows listed` card.
+
+`/events` query parameters remain supported for direct links, even though the public page no longer shows filter controls:
 
 - `window=all|today|tonight|week|weekend`
 - `area={venue-neighbourhood}`

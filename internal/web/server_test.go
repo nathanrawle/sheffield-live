@@ -2228,12 +2228,35 @@ func TestEventsFiltersToday(t *testing.T) {
 	assertNotContains(t, body, "Friday Leadmill")
 }
 
+func TestEventsDefaultShowsNineDayBoard(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/events")
+
+	assertInOrder(t, body, []string{
+		"Tonight",
+		"19 Apr - 1 show",
+		"Tonight Leadmill",
+		"Tomorrow",
+		"20 Apr - 1 show",
+		"Tomorrow Yellow Arch",
+		"Tuesday",
+		"21 Apr - 0 shows",
+		"No shows listed",
+		"Friday",
+		"24 Apr - 1 show",
+		"Friday Leadmill",
+		"Monday",
+		"27 Apr - 1 show",
+		"Later Leadmill",
+	})
+	assertNotContains(t, body, "Past Leadmill")
+}
+
 func TestEventsFiltersTonight(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/events?window=tonight")
 
 	assertContains(t, body, "Tonight Leadmill")
-	assertContains(t, body, `option value="tonight" selected`)
 	assertNotContains(t, body, "Tomorrow Yellow Arch")
 	assertNotContains(t, body, "Friday Leadmill")
 }
@@ -2244,8 +2267,6 @@ func TestEventsFiltersWeekAndVenue(t *testing.T) {
 
 	assertContains(t, body, "Tonight Leadmill")
 	assertContains(t, body, "Friday Leadmill")
-	assertContains(t, body, `option value="week" selected`)
-	assertContains(t, body, `option value="leadmill" selected`)
 	assertNotContains(t, body, "Tomorrow Yellow Arch")
 	assertNotContains(t, body, "Later Leadmill")
 }
@@ -2281,7 +2302,6 @@ func TestEventsFiltersWeekendAndArea(t *testing.T) {
 
 	areaBody := renderPath(t, server, "/events?area=Neepsend")
 	assertContains(t, areaBody, "Tomorrow Yellow Arch")
-	assertContains(t, areaBody, `option value="Neepsend" selected`)
 	assertNotContains(t, areaBody, "Tonight Leadmill")
 }
 
@@ -2293,8 +2313,6 @@ func TestEventsUnknownVenueBehavesLikeAllVenues(t *testing.T) {
 	assertContains(t, body, "Tomorrow Yellow Arch")
 	assertContains(t, body, "Friday Leadmill")
 	assertContains(t, body, "Later Leadmill")
-	assertContains(t, body, `<option value="">All venues</option>`)
-	assertNotContains(t, body, `option value="missing" selected`)
 	assertNotContains(t, body, "No shows match these filters.")
 }
 
@@ -2336,7 +2354,7 @@ func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
 		cardClass string
 	}{
 		{name: "home", path: "/", cardClass: `class="event-card has-image"`},
-		{name: "events", path: "/events?window=today", cardClass: `class="event-card wide has-image"`},
+		{name: "events", path: "/events?window=today", cardClass: `class="event-card has-image"`},
 		{name: "venue", path: "/venues/leadmill", cardClass: `class="event-card has-image"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2345,6 +2363,89 @@ func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
 			assertContains(t, body, `<img class="event-card-image" src="/media/events/poster.jpg" alt="Poster Show artwork" style="--image-focus-x: 35%; --image-focus-y: 65%;" loading="lazy" decoding="async">`)
 		})
 	}
+}
+
+func TestEventCardsRenderMissingImagePlaceholder(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{{
+			Slug:        "no-poster-show",
+			Name:        "No Poster Show",
+			VenueSlug:   "leadmill",
+			Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+			End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "No poster description.",
+			SourceName:  "Fixture listings",
+			SourceURL:   "https://example.test/no-poster-show",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			Origin:      domain.OriginLive,
+		}},
+	))
+
+	body := renderPath(t, server, "/events?window=today")
+
+	assertContains(t, body, `class="event-card missing-image"`)
+	assertContains(t, body, `<span class="event-card-media event-card-placeholder" aria-hidden="true"></span>`)
+	assertNotContains(t, body, "No image")
+}
+
+func TestEventCardsShowOnlyPublicUnconfirmedStatus(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:             "listed-show",
+				Name:             "Listed Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 20, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 22, 0),
+				Genre:            "Indie",
+				Status:           "Listed",
+				Description:      "Listed description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/listed-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateReviewed,
+			},
+			{
+				Slug:             "provisional-show",
+				Name:             "Provisional Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 21, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 23, 0),
+				Genre:            "Rock",
+				Status:           "Listed",
+				Description:      "Provisional description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/provisional-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateProvisional,
+			},
+		},
+	))
+
+	body := renderPath(t, server, "/events?window=today")
+
+	assertContains(t, body, `<span class="event-status">Unconfirmed</span>`)
+	assertNotContains(t, body, `>Listed<`)
 }
 
 func TestEventCardsPreserveExplicitTopLeftImageFocus(t *testing.T) {
@@ -2644,7 +2745,7 @@ func TestLayoutMetadataAndActiveNav(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/events")
 
-	assertContains(t, body, `<meta name="description" content="Browse Sheffield live music by date window and venue.">`)
+	assertContains(t, body, `<meta name="description" content="Browse Sheffield live music by date and venue.">`)
 	assertContains(t, body, `<a class="skip-link" href="#main">Skip to content</a>`)
 	assertContains(t, body, `<main id="main" class="shell main">`)
 	assertContains(t, body, `<a class="active" aria-current="page" href="/events">Events</a>`)

@@ -126,15 +126,23 @@
   {{if .VenueEvents}}
   <div class="event-list compact">
     {{range .VenueEvents}}
-    <a class="event-card{{if .ImageURL}} has-image{{end}}" href="/events/{{.Slug}}">
+    <a class="event-card{{if .ImageURL}} has-image{{else}} missing-image{{end}}{{if eventStatusLabel .}} has-status{{end}}" href="/events/{{.Slug}}">
+      {{if .ImageURL}}
+      <span class="event-card-media"><img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async"></span>
+      {{else}}
+      <span class="event-card-media event-card-placeholder" aria-hidden="true"></span>
+      {{end}}
       <span class="event-card-main">
-        <span class="event-date">{{dateLong .Start}} {{timeShort .Start}}</span>
+        <span class="event-card-topline">
+          <time class="event-time" datetime="{{dateTimeAttr .Start}}">{{timeShort .Start}}</time>
+          {{with eventStatusLabel .}}<span class="event-status">{{.}}</span>{{end}}
+        </span>
         <span class="event-title">{{.Name}}</span>
         {{with eventRoomText .}}<span class="event-meta">{{.}}</span>{{end}}
+        <span class="event-genre">{{dateLong .Start}}</span>
         <span class="event-meta">{{if .SourceName}}{{.SourceName}}{{end}}{{if and .SourceName .Origin}} · {{end}}{{if .Origin}}{{originText .Origin}}{{end}}</span>
         {{with .Description}}<span class="event-meta">{{.}}</span>{{end}}
       </span>
-      {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async">{{end}}
     </a>
     {{end}}
   </div>

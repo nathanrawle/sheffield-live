@@ -145,7 +145,7 @@ func TestMixedPagesBadgeItemByItem(t *testing.T) {
 		},
 	))
 
-	eventBody := renderPath(t, server, "/events")
+	eventBody := renderPath(t, server, "/events?window=all")
 	assertLabelCount(t, eventBody, "Seed data", 0)
 	assertLabelCount(t, eventBody, "Test data", 1)
 	assertLabelCount(t, eventBody, "Development data", 1)
