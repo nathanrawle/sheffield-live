@@ -10,6 +10,11 @@ type sourcePageParseResult struct {
 	Parse ParseResult
 }
 
+type sourceRoomEvidence struct {
+	Text  string
+	Rooms []RoomCandidate
+}
+
 type sourcePageParserFunc func(pageURL string, body []byte, limit int) ParseResult
 type pageLinkExtractorFunc func(pageURL string, body []byte, limit int) ([]string, error)
 type icsParserFunc func(body []byte) ParseResult
@@ -147,6 +152,45 @@ func parseICSForSource(cfg sourceConfig, body []byte) ParseResult {
 		return ParseResult{Errors: []string{fmt.Sprintf("unsupported ICS parser family %q", cfg.ICSParserFamily)}}
 	}
 	return parser(body)
+}
+
+func roomEvidenceForSourcePage(cfg sourceConfig, pageURL string, body []byte) map[string]sourceRoomEvidence {
+	switch strings.TrimSpace(cfg.Key) {
+	case DefaultSource:
+		return ExtractSidneyAndMatildaRoomEvidence(pageURL, body)
+	default:
+		return nil
+	}
+}
+
+func mergeRoomEvidence(candidates []EventCandidate, evidence map[string]sourceRoomEvidence) []EventCandidate {
+	if len(candidates) == 0 || len(evidence) == 0 {
+		return candidates
+	}
+	out := append([]EventCandidate(nil), candidates...)
+	for i := range out {
+		match, ok := evidence[roomEvidenceCandidateKey(out[i])]
+		if !ok {
+			match, ok = evidence[roomEvidenceTitleKey(out[i].Summary)]
+		}
+		if !ok {
+			continue
+		}
+		out[i].RoomText = strings.TrimSpace(match.Text)
+		out[i].Rooms = append([]RoomCandidate(nil), match.Rooms...)
+	}
+	return out
+}
+
+func roomEvidenceCandidateKey(candidate EventCandidate) string {
+	if value := strings.TrimSpace(candidate.URL); value != "" {
+		return "url:" + strings.TrimRight(value, "/")
+	}
+	return roomEvidenceTitleKey(candidate.Summary)
+}
+
+func roomEvidenceTitleKey(title string) string {
+	return "title:" + strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(title)), " "))
 }
 
 func extractLinkedDetailPageLinks(cfg sourceConfig, pageURL string, body []byte, limit int) ([]string, error) {

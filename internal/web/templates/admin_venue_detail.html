@@ -7,6 +7,7 @@
     {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
     {{if or .HasReviewStorage .HasImportHistory}} · {{end}}
     <a href="/admin/venues">Back to provisional venues</a>
+    {{if .HasRoomAdmin}} · <a href="/admin/rooms">Provisional rooms</a>{{end}}
     {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
   </p>
 </section>
@@ -127,6 +128,7 @@
       <span class="event-card-main">
         <span class="event-date">{{dateLong .Start}} {{timeShort .Start}}</span>
         <span class="event-title">{{.Name}}</span>
+        {{with eventRoomText .}}<span class="event-meta">{{.}}</span>{{end}}
         <span class="event-meta">{{if .SourceName}}{{.SourceName}}{{end}}{{if and .SourceName .Origin}} · {{end}}{{if .Origin}}{{originText .Origin}}{{end}}</span>
         {{with .Description}}<span class="event-meta">{{.}}</span>{{end}}
       </span>

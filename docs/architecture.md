@@ -51,6 +51,8 @@ The source catalog path is fixed to the repository `config/sources` directory in
 - `/admin/import-runs/{id}`
 - `/admin/venues`
 - `/admin/venues/{slug}`
+- `/admin/rooms`
+- `/admin/rooms/{venueSlug}/{roomSlug}`
 - `/admin/configuration`
 - `/healthz`
 - `/readyz`
@@ -71,15 +73,16 @@ The source catalog path is fixed to the repository `config/sources` directory in
 Public records live in SQLite and are served from canonical `venues` and `events` rows.
 
 - `Venue` stores slug, name, address, neighbourhood, description, website, validation state, coverage kind, coverage note, and origin
-- `Event` stores slug, name, venue slug, a required UTC start time, an optional UTC end time, top-two genre summary, status, description, copied image URL/source/alt/dimensions/focus, source name, source URL, last checked time, and origin
+- `VenueRoom` stores a venue-scoped room slug/name, sort order, validation state, and origin
+- `Event` stores slug, name, venue slug, optional linked venue rooms, optional source room text, a required UTC start time, an optional UTC end time, top-two genre summary, status, description, copied image URL/source/alt/dimensions/focus, source name, source URL, last checked time, and origin
 
 Raw ingest snapshots, import runs, and review records are stored separately from canonical public events.
-Review persistence also stores canonical snapshot rows alongside staged candidates, persists source-derived venue evidence (`venue_text`, `venue_location_raw`), and keeps majority defaults separate from reviewer-edited draft choices. For ICS sources, `venue_location_raw` is parsing evidence rather than a display string: it keeps the unfolded raw `LOCATION` text so later venue derivation can decode ICS escapes before applying the normal comma/newline split.
+Review persistence also stores canonical snapshot rows alongside staged candidates, persists source-derived venue evidence (`venue_text`, `venue_location_raw`), optional room evidence (`room_text` plus room slugs/names), and keeps majority defaults separate from reviewer-edited draft choices. For ICS sources, `venue_location_raw` is parsing evidence rather than a display string: it keeps the unfolded raw `LOCATION` text so later venue derivation can decode ICS escapes before applying the normal comma/newline split.
 Review resolution can also persist secondary-source `genre` and `description` rows linked back to the canonical event without changing the canonical public schema. Authoritative resolution reconciles the secondary rows supplied with that authoritative decision. Non-authoritative resolution upserts matching secondary candidates as cumulative evidence, so an omitted source in a later accepted review does not delete previously stored source information. A staged candidate matches the accepted event for secondary evidence when venue slug and start time match and the title matches after case and whitespace normalization.
 Inferred genres are stored as ranked `event_genres` rows. Ranking is calculated across the canonical description plus persisted secondary-source descriptions, using a balanced score from mention frequency and earliest match position. Public summary cards still read `events.genre`, which is refreshed as the top two inferred genres.
 Copied image assets are tracked separately by source URL and storage path, including a best-effort focus point for cropped display, so replay can reuse previously copied files without fetching the image again.
 
-The admin UI exposes a landing page, read-only review history, import history, provisional venue queue/detail pages, genre configuration, and per-run snapshot metadata when the backing store implements those read paths. Public venue/event pages and admin provisional venue pages display normalized multiline addresses, including dropping an address first line that duplicates the venue name. The provisional venue queue lists only provisional venues. Detail pages remain read-only when venue admin writes are unavailable, and show save/validate controls only when the backing store exposes provisional venue write capability. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
+The admin UI exposes a landing page, read-only review history, import history, provisional venue queue/detail pages, provisional room queue/detail pages, genre configuration, and per-run snapshot metadata when the backing store implements those read paths. Public venue/event pages and admin provisional venue pages display normalized multiline addresses, including dropping an address first line that duplicates the venue name. Public event cards and detail pages show room names when an event has linked rooms. The provisional venue and room queues list only provisional rows. Detail pages remain read-only when write support is unavailable, and show save/validate controls only when the backing store exposes the relevant provisional write capability. The review history lists the 50 newest resolved and rejected review groups. The per-run view renders import run summary fields and decoded snapshot envelope metadata only; raw snapshot payload JSON and response bodies are not rendered.
 
 When the backing store also exposes secondary-source event info, the public event detail page can render alternate `genre` and `description` values grouped by secondary source without altering the canonical event record. Public event cards render an available image on the right, and event detail renders landscape images as a top hero or tall images beside the description on wide screens.
 
@@ -103,6 +106,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - singleton new listings may either auto-promote or stay in review
 - any singleton may be attempted for auto-promotion when it is the first matching live record seen
 - provisional venue creation derives address and neighbourhood from source-derived venue evidence, dropping duplicate venue-name address lines and recognizing Sheffield district names in the address
+- room evidence is venue-scoped; known Sidney & Matilda rooms are bootstrapped as validated rows, and new detected room labels create provisional room rows under the matched venue
 - exact staged `venue_slug` matches take precedence over conflicting venue-text or raw-location heuristics during canonical venue resolution
 - ICS venue parsing preserves raw `LOCATION` evidence, decodes ICS escapes, and then derives venue identity using the normal comma/newline split
 - new provisional venue slugs and names prefer that derived location-head venue name over the full generic ICS `LOCATION` string

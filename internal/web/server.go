@@ -68,6 +68,14 @@ type VenueAdminStore interface {
 	UpdateProvisionalVenue(ctx context.Context, input store.VenueUpdateInput) error
 }
 
+type RoomAdminStore interface {
+	ListVenueRooms(ctx context.Context) ([]domain.VenueRoom, error)
+	ListVenueRoomsForVenue(ctx context.Context, venueSlug string) ([]domain.VenueRoom, error)
+	LoadVenueRoomBySlug(ctx context.Context, venueSlug, roomSlug string) (domain.VenueRoom, bool, error)
+	ValidateVenueRoom(ctx context.Context, venueSlug, roomSlug string) error
+	UpdateProvisionalVenueRoom(ctx context.Context, input store.RoomUpdateInput) error
+}
+
 const adminReviewHistoryLimit = 50
 
 type ImportRunReviewGroupStore interface {
@@ -135,6 +143,9 @@ type PageData struct {
 	ReviewHistoryRows        []ReviewHistoryRow
 	ReviewDetail             ReviewDetail
 	ProvisionalVenues        []ProvisionalVenueRow
+	ProvisionalRooms         []ProvisionalRoomRow
+	Room                     domain.VenueRoom
+	RoomEvents               []domain.Event
 	ImportRunRows            []ImportRunRow
 	ImportRunDetail          ImportRunDetail
 	GenreRules               []genre.Rule
@@ -145,6 +156,7 @@ type PageData struct {
 	HasReviewStorage         bool
 	HasVenueAdmin            bool
 	HasVenueAdminWrites      bool
+	HasRoomAdmin             bool
 	HasGenreConfiguration    bool
 	Flash                    string
 }
@@ -171,6 +183,13 @@ type ReviewDetail struct {
 }
 
 type ProvisionalVenueRow struct {
+	Venue              domain.Venue
+	UpcomingEventCount int
+	NextEvent          *domain.Event
+}
+
+type ProvisionalRoomRow struct {
+	Room               domain.VenueRoom
 	Venue              domain.Venue
 	UpcomingEventCount int
 	NextEvent          *domain.Event
@@ -347,6 +366,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			}
 			return slug
 		},
+		"eventRoomText": eventRoomText,
 		"originText": func(origin domain.Origin) string {
 			return string(origin)
 		},
@@ -388,6 +408,8 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"templates/admin_review_history.html",
 		"templates/admin_venues.html",
 		"templates/admin_venue_detail.html",
+		"templates/admin_rooms.html",
+		"templates/admin_room_detail.html",
 		"templates/admin_configuration.html",
 		"templates/admin_import_runs.html",
 		"templates/admin_import_run_detail.html",
@@ -564,6 +586,17 @@ func (s *Server) canWriteVenueAdmin() bool {
 	return s.venueAdminStore() != nil
 }
 
+func (s *Server) roomAdminStore() RoomAdminStore {
+	if store, ok := s.catalog.(RoomAdminStore); ok {
+		return store
+	}
+	return nil
+}
+
+func (s *Server) hasRoomAdmin() bool {
+	return s.roomAdminStore() != nil
+}
+
 func (s *Server) hasGenreConfiguration() bool {
 	return s.genreConfigStore != nil
 }
@@ -607,6 +640,8 @@ func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminReviewHistory(w, r)
 	case cleaned == "/admin/venues":
 		s.handleAdminVenues(w, r)
+	case cleaned == "/admin/rooms":
+		s.handleAdminRooms(w, r)
 	case cleaned == "/admin/configuration":
 		s.handleAdminConfiguration(w, r)
 	case r.URL.Path == "/admin/import-runs":
@@ -615,6 +650,8 @@ func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminImportRunDetail(w, r)
 	case strings.HasPrefix(cleaned, "/admin/venues/"):
 		s.handleAdminVenueDetail(w, r, strings.TrimPrefix(cleaned, "/admin/venues/"))
+	case strings.HasPrefix(cleaned, "/admin/rooms/"):
+		s.handleAdminRoomDetail(w, r, strings.TrimPrefix(cleaned, "/admin/rooms/"))
 	case strings.HasPrefix(cleaned, "/admin/review/"):
 		s.handleAdminReviewDetail(w, r, strings.TrimPrefix(cleaned, "/admin/review/"))
 	case strings.HasPrefix(cleaned, "/events/"):
@@ -711,6 +748,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		HasReviewStorage:    s.reviewStore != nil,
 		HasVenueAdmin:       s.hasVenueAdmin(),
 		HasVenueAdminWrites: s.canWriteVenueAdmin(),
+		HasRoomAdmin:        s.hasRoomAdmin(),
 	}
 	s.renderPage(w, "templates/admin.html", data)
 }
@@ -804,6 +842,7 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 		HasReviewStorage:      s.reviewStore != nil,
 		HasVenueAdmin:         s.hasVenueAdmin(),
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasRoomAdmin:          s.hasRoomAdmin(),
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 		Flash:                 flash,
 		ProvisionalVenues: buildProvisionalVenueRows(
@@ -814,6 +853,63 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 		),
 	}
 	s.renderPage(w, "templates/admin_venues.html", data)
+}
+
+func (s *Server) handleAdminRooms(w http.ResponseWriter, r *http.Request) {
+	roomStore := s.roomAdminStore()
+	if s.catalog == nil || roomStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	venues, err := s.catalog.ListVenues(r.Context())
+	if err != nil {
+		s.logRequestError(r, "load venues", err)
+		http.Error(w, "load venues", http.StatusInternalServerError)
+		return
+	}
+	rooms, err := roomStore.ListVenueRooms(r.Context())
+	if err != nil {
+		s.logRequestError(r, "load rooms", err)
+		http.Error(w, "load rooms", http.StatusInternalServerError)
+		return
+	}
+	events, err := s.catalog.ListEvents(r.Context())
+	if err != nil {
+		s.logRequestError(r, "load events", err)
+		http.Error(w, "load events", http.StatusInternalServerError)
+		return
+	}
+	now := s.now()
+	flash := ""
+	if r.URL.Query().Get("validated") == "1" {
+		flash = "Room validated."
+	}
+	data := PageData{
+		SiteName:              "Sheffield Live",
+		PageTitle:             "Provisional rooms",
+		MetaDescription:       "Queue of provisional venue rooms awaiting validation.",
+		Now:                   now,
+		HasImportHistory:      s.importRunStore != nil,
+		HasImportRunDetail:    s.replayStore != nil,
+		HasReviewStorage:      s.reviewStore != nil,
+		HasVenueAdmin:         s.hasVenueAdmin(),
+		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasRoomAdmin:          s.hasRoomAdmin(),
+		HasGenreConfiguration: s.hasGenreConfiguration(),
+		Flash:                 flash,
+		ProvisionalRooms: buildProvisionalRoomRows(
+			venues,
+			rooms,
+			events,
+			now,
+			s.localLocation,
+		),
+	}
+	s.renderPage(w, "templates/admin_rooms.html", data)
 }
 
 func (s *Server) handleAdminConfiguration(w http.ResponseWriter, r *http.Request) {
@@ -858,6 +954,7 @@ func (s *Server) handleAdminConfiguration(w http.ResponseWriter, r *http.Request
 		HasReviewStorage:      s.reviewStore != nil,
 		HasVenueAdmin:         s.hasVenueAdmin(),
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasRoomAdmin:          s.hasRoomAdmin(),
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 		Flash:                 flash,
 	}
@@ -1035,6 +1132,83 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 	s.renderPage(w, "templates/admin_venue_detail.html", data)
 }
 
+func (s *Server) handleAdminRoomDetail(w http.ResponseWriter, r *http.Request, raw string) {
+	roomStore := s.roomAdminStore()
+	if s.catalog == nil || roomStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	venueSlug, roomSlug, ok := parseAdminRoomPath(raw)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		s.postAdminRoomDecision(w, r, venueSlug, roomSlug)
+		return
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	room, ok, err := roomStore.LoadVenueRoomBySlug(r.Context(), venueSlug, roomSlug)
+	if err != nil {
+		s.logRequestError(r, "load room", err, "venue_slug", venueSlug, "room_slug", roomSlug)
+		http.Error(w, "load room", http.StatusInternalServerError)
+		return
+	}
+	if !ok || room.ValidationState != domain.ValidationStateProvisional {
+		http.NotFound(w, r)
+		return
+	}
+	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), venueSlug)
+	if err != nil {
+		s.logRequestError(r, "load room venue", err, "venue_slug", venueSlug)
+		http.Error(w, "load venue", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	events, err := s.catalog.ListEventsForVenue(r.Context(), venueSlug)
+	if err != nil {
+		s.logRequestError(r, "load room events", err, "venue_slug", venueSlug, "room_slug", roomSlug)
+		http.Error(w, "load room events", http.StatusInternalServerError)
+		return
+	}
+	pageTitle := strings.TrimSpace(room.Name)
+	if pageTitle == "" {
+		pageTitle = strings.TrimSpace(room.Slug)
+	}
+	if pageTitle == "" {
+		pageTitle = "Provisional room"
+	}
+	flash := ""
+	if r.URL.Query().Get("saved") == "1" {
+		flash = "Room saved."
+	}
+	data := PageData{
+		SiteName:              "Sheffield Live",
+		PageTitle:             pageTitle,
+		MetaDescription:       "Provisional room awaiting validation.",
+		Now:                   s.now(),
+		Venue:                 venue,
+		Room:                  room,
+		RoomEvents:            sortEventsForDisplay(upcomingEvents(filterEventsByRoom(events, room.Slug), s.now(), s.localLocation)),
+		HasImportHistory:      s.importRunStore != nil,
+		HasReviewStorage:      s.reviewStore != nil,
+		HasVenueAdmin:         s.hasVenueAdmin(),
+		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasRoomAdmin:          s.hasRoomAdmin(),
+		HasGenreConfiguration: s.hasGenreConfiguration(),
+		Flash:                 flash,
+	}
+	s.renderPage(w, "templates/admin_room_detail.html", data)
+}
+
 func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 	if s.importRunStore == nil {
 		http.NotFound(w, r)
@@ -1178,6 +1352,87 @@ func (s *Server) postAdminVenueDecision(w http.ResponseWriter, r *http.Request, 
 	default:
 		http.Error(w, "invalid venue action", http.StatusBadRequest)
 	}
+}
+
+func (s *Server) postAdminRoomDecision(w http.ResponseWriter, r *http.Request, venueSlug, roomSlug string) {
+	roomStore := s.roomAdminStore()
+	if roomStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	action := strings.TrimSpace(r.FormValue("action"))
+	room, ok, err := roomStore.LoadVenueRoomBySlug(r.Context(), venueSlug, roomSlug)
+	if err != nil {
+		s.logRequestError(r, "load room", err, "venue_slug", venueSlug, "room_slug", roomSlug)
+		http.Error(w, "load room", http.StatusInternalServerError)
+		return
+	}
+	if !ok || room.ValidationState != domain.ValidationStateProvisional {
+		http.NotFound(w, r)
+		return
+	}
+	switch action {
+	case "validate":
+		if err := roomStore.ValidateVenueRoom(r.Context(), venueSlug, roomSlug); err != nil {
+			lower := strings.ToLower(err.Error())
+			if strings.Contains(lower, "not found") || strings.Contains(lower, "not provisional") {
+				http.NotFound(w, r)
+				return
+			}
+			s.logRequestError(r, "validate room", err, "venue_slug", venueSlug, "room_slug", roomSlug)
+			http.Error(w, "validate room", http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/rooms?validated=1", http.StatusSeeOther)
+	case "save":
+		input, err := provisionalRoomUpdateFromForm(venueSlug, roomSlug, r.Form)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := roomStore.UpdateProvisionalVenueRoom(r.Context(), input); err != nil {
+			lower := strings.ToLower(err.Error())
+			if strings.Contains(lower, "not found") || strings.Contains(lower, "not provisional") {
+				http.NotFound(w, r)
+				return
+			}
+			s.logRequestError(r, "update provisional room", err, "venue_slug", venueSlug, "room_slug", roomSlug)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/admin/rooms/%s/%s?saved=1", venueSlug, roomSlug), http.StatusSeeOther)
+	default:
+		http.Error(w, "invalid room action", http.StatusBadRequest)
+	}
+}
+
+func provisionalRoomUpdateFromForm(venueSlug, roomSlug string, form url.Values) (store.RoomUpdateInput, error) {
+	input := store.RoomUpdateInput{
+		VenueSlug: strings.TrimSpace(venueSlug),
+		Slug:      strings.TrimSpace(roomSlug),
+		Name:      strings.TrimSpace(form.Get("name")),
+	}
+	if rawSortOrder := strings.TrimSpace(form.Get("sort_order")); rawSortOrder != "" {
+		sortOrder, err := strconv.Atoi(rawSortOrder)
+		if err != nil {
+			return store.RoomUpdateInput{}, fmt.Errorf("invalid sort order")
+		}
+		input.SortOrder = sortOrder
+	}
+	if input.VenueSlug == "" {
+		return store.RoomUpdateInput{}, fmt.Errorf("room venue slug is required")
+	}
+	if input.Slug == "" {
+		return store.RoomUpdateInput{}, fmt.Errorf("room slug is required")
+	}
+	if input.Name == "" {
+		return store.RoomUpdateInput{}, fmt.Errorf("room name is required")
+	}
+	return input, nil
 }
 
 func provisionalVenueUpdateFromForm(slug string, form url.Values) (store.VenueUpdateInput, error) {
@@ -1329,6 +1584,9 @@ func reviewChoicesFromForm(group review.Group, form url.Values, requireAll bool)
 	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
 	for _, field := range review.CanonicalFields {
 		rawCandidateID := strings.TrimSpace(form.Get("choice_" + string(field)))
+		if rawCandidateID == "" && requireAll && field == review.FieldRoomSlugs && len(group.Candidates) > 0 {
+			rawCandidateID = strconv.FormatInt(group.Candidates[0].ID, 10)
+		}
 		if rawCandidateID == "" {
 			if requireAll {
 				return nil, fmt.Errorf("all review fields must be selected before resolving")
@@ -1751,6 +2009,23 @@ func filterEventsByVenue(events []domain.Event, venueSlug string) []domain.Event
 	return out
 }
 
+func filterEventsByRoom(events []domain.Event, roomSlug string) []domain.Event {
+	roomSlug = strings.TrimSpace(roomSlug)
+	if roomSlug == "" {
+		return events
+	}
+	out := make([]domain.Event, 0, len(events))
+	for _, event := range events {
+		for _, room := range event.Rooms {
+			if room.Slug == roomSlug {
+				out = append(out, event)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func filterEventsByArea(events []domain.Event, venues []domain.Venue, area string) []domain.Event {
 	area = strings.TrimSpace(area)
 	if area == "" {
@@ -1767,6 +2042,37 @@ func filterEventsByArea(events []domain.Event, venues []domain.Venue, area strin
 		}
 	}
 	return out
+}
+
+func parseAdminRoomPath(raw string) (string, string, bool) {
+	raw = strings.Trim(strings.TrimSpace(raw), "/")
+	venueSlug, roomSlug, ok := strings.Cut(raw, "/")
+	if !ok {
+		return "", "", false
+	}
+	venueSlug = strings.TrimSpace(venueSlug)
+	roomSlug = strings.TrimSpace(roomSlug)
+	if venueSlug == "" || roomSlug == "" || strings.Contains(roomSlug, "/") {
+		return "", "", false
+	}
+	return venueSlug, roomSlug, true
+}
+
+func eventRoomText(event domain.Event) string {
+	if len(event.Rooms) == 0 {
+		return strings.TrimSpace(event.RoomText)
+	}
+	names := make([]string, 0, len(event.Rooms))
+	for _, room := range event.Rooms {
+		name := strings.TrimSpace(room.Name)
+		if name == "" {
+			name = strings.TrimSpace(room.Slug)
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, " + ")
 }
 
 func sortEventsForDisplay(events []domain.Event) []domain.Event {
@@ -2012,6 +2318,69 @@ func buildProvisionalVenueRows(venues []domain.Venue, events []domain.Event, now
 		default:
 			if rows[i].Venue.Name == rows[j].Venue.Name {
 				return rows[i].Venue.Slug < rows[j].Venue.Slug
+			}
+			return rows[i].Venue.Name < rows[j].Venue.Name
+		}
+	})
+	return rows
+}
+
+func buildProvisionalRoomRows(venues []domain.Venue, rooms []domain.VenueRoom, events []domain.Event, now time.Time, loc *time.Location) []ProvisionalRoomRow {
+	venuesBySlug := make(map[string]domain.Venue, len(venues))
+	for _, venue := range venues {
+		venuesBySlug[venue.Slug] = venue
+	}
+
+	upcoming := sortEventsForDisplay(upcomingEvents(events, now, loc))
+	eventsByRoom := make(map[string][]domain.Event)
+	for _, event := range upcoming {
+		for _, room := range event.Rooms {
+			key := event.VenueSlug + "\x00" + room.Slug
+			eventsByRoom[key] = append(eventsByRoom[key], event)
+		}
+	}
+
+	rows := make([]ProvisionalRoomRow, 0, len(rooms))
+	for _, room := range rooms {
+		if room.ValidationState != domain.ValidationStateProvisional {
+			continue
+		}
+		key := room.VenueSlug + "\x00" + room.Slug
+		linkedEvents := eventsByRoom[key]
+		row := ProvisionalRoomRow{
+			Room:               room,
+			Venue:              venuesBySlug[room.VenueSlug],
+			UpcomingEventCount: len(linkedEvents),
+		}
+		if len(linkedEvents) > 0 {
+			next := linkedEvents[0]
+			row.NextEvent = &next
+		}
+		rows = append(rows, row)
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		iHasNext := rows[i].NextEvent != nil
+		jHasNext := rows[j].NextEvent != nil
+		switch {
+		case iHasNext && jHasNext:
+			if rows[i].NextEvent.Start.Equal(rows[j].NextEvent.Start) {
+				if rows[i].Venue.Name == rows[j].Venue.Name {
+					return rows[i].Room.Name < rows[j].Room.Name
+				}
+				return rows[i].Venue.Name < rows[j].Venue.Name
+			}
+			return rows[i].NextEvent.Start.Before(rows[j].NextEvent.Start)
+		case iHasNext:
+			return true
+		case jHasNext:
+			return false
+		default:
+			if rows[i].Venue.Name == rows[j].Venue.Name {
+				if rows[i].Room.Name == rows[j].Room.Name {
+					return rows[i].Room.Slug < rows[j].Room.Slug
+				}
+				return rows[i].Room.Name < rows[j].Room.Name
 			}
 			return rows[i].Venue.Name < rows[j].Venue.Name
 		}

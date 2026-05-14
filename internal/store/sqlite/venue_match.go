@@ -367,6 +367,8 @@ func reviewCandidateFromInput(input review.CandidateInput) review.Candidate {
 		VenueSlug:        strings.TrimSpace(input.VenueSlug),
 		VenueText:        strings.TrimSpace(input.VenueText),
 		VenueLocationRaw: strings.TrimSpace(input.VenueLocationRaw),
+		RoomText:         strings.TrimSpace(input.RoomText),
+		Rooms:            append([]domain.VenueRoom(nil), input.Rooms...),
 		StartAt:          strings.TrimSpace(input.StartAt),
 		EndAt:            strings.TrimSpace(input.EndAt),
 		Genre:            strings.TrimSpace(input.Genre),

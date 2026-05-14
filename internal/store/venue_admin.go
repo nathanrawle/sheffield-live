@@ -12,3 +12,10 @@ type VenueUpdateInput struct {
 	CoverageKind  domain.CoverageKind
 	CoverageNote  string
 }
+
+type RoomUpdateInput struct {
+	VenueSlug string
+	Slug      string
+	Name      string
+	SortOrder int
+}

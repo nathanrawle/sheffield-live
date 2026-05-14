@@ -1909,6 +1909,77 @@ func TestResolveReviewGroupPublishesCanonicalEvent(t *testing.T) {
 	}
 }
 
+func TestResolveReviewGroupPublishesRoomAssignment(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
+		Title:      "Room resolve",
+		SourceName: "Sidney & Matilda Google Calendar ICS",
+		SourceURL:  "file:sidney.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "parallel-delusion",
+			Name:        "Parallel Delusion",
+			VenueSlug:   "sidney-and-matilda",
+			RoomText:    "FACTORY",
+			Rooms:       []domain.VenueRoom{{Slug: "factory", Name: "Factory"}},
+			StartAt:     "2026-05-04T19:00:00Z",
+			EndAt:       "2026-05-04T22:00:00Z",
+			Genre:       "Experimental",
+			Status:      "Listed",
+			Description: "Factory room fixture.",
+			SourceName:  "Sidney & Matilda Google Calendar ICS",
+			SourceURL:   "https://www.sidneyandmatilda.com/events/parallel-delusion",
+			Provenance:  "fixture UID parallel-delusion",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	event, ok := st.EventBySlug("live-parallel-delusion-sidney-and-matilda-20260504190000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	if event.RoomText != "FACTORY" {
+		t.Fatalf("room text = %q, want %q", event.RoomText, "FACTORY")
+	}
+	if len(event.Rooms) != 1 {
+		t.Fatalf("rooms = %#v, want one room", event.Rooms)
+	}
+	room := event.Rooms[0]
+	if room.VenueSlug != "sidney-and-matilda" || room.Slug != "factory" || room.Name != "Factory" {
+		t.Fatalf("room = %#v, want Sidney & Matilda Factory", room)
+	}
+	if room.ValidationState != domain.ValidationStateValidated {
+		t.Fatalf("room validation state = %q, want %q", room.ValidationState, domain.ValidationStateValidated)
+	}
+
+	final, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load final group: %v", err)
+	}
+	if !ok {
+		t.Fatal("final review group not found")
+	}
+	assertDraftChoice(t, final, review.FieldRoomSlugs, group.Candidates[0].ID, "factory")
+}
+
 func TestResolveReviewGroupPublishesChosenImage(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))

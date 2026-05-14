@@ -95,6 +95,9 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 		if err := ensureProvisionalVenuesForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
 			return review.StageGroupResult{}, err
 		}
+		if err := ensureProvisionalRoomsForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
+			return review.StageGroupResult{}, err
+		}
 		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, groupID, input, now); err != nil {
 			return review.StageGroupResult{}, err
 		}
@@ -140,6 +143,9 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 			return review.StageGroupResult{}, err
 		}
 		if err := ensureProvisionalVenuesForReviewCandidatesTx(ctx, tx, backfillCandidates); err != nil {
+			return review.StageGroupResult{}, err
+		}
+		if err := ensureProvisionalRoomsForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
 			return review.StageGroupResult{}, err
 		}
 	}
@@ -398,6 +404,12 @@ func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, 
 	if err := insertReviewCandidatesTx(ctx, tx, groupID, input.Candidates, input.SourceName, input.SourceURL); err != nil {
 		return 0, err
 	}
+	if err := ensureProvisionalVenuesForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
+		return 0, err
+	}
+	if err := ensureProvisionalRoomsForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
+		return 0, err
+	}
 	if err := recomputeReviewFieldDefaultsTx(ctx, tx, groupID, now); err != nil {
 		return 0, err
 	}
@@ -441,7 +453,7 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 		if candidate.CanonicalEventID != 0 {
 			continue
 		}
-		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
+		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.RoomText, review.RoomSlugsValue(candidate.Rooms), candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
 		incomingByFingerprint[fingerprint] = append(incomingByFingerprint[fingerprint], candidate)
 	}
 
@@ -450,7 +462,7 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 		if candidate.CanonicalEventID != 0 {
 			continue
 		}
-		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
+		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.RoomText, review.RoomSlugsValue(candidate.Rooms), candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
 		existingByFingerprint[fingerprint] = append(existingByFingerprint[fingerprint], candidate)
 	}
 
@@ -463,11 +475,13 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 		existingCandidate := existingBucket[0]
 		incomingVenueText := strings.TrimSpace(incomingCandidate.VenueText)
 		incomingVenueLocationRaw := strings.TrimSpace(incomingCandidate.VenueLocationRaw)
+		incomingRoomText := strings.TrimSpace(incomingCandidate.RoomText)
 		if strings.TrimSpace(incomingCandidate.ImageURL) != "" {
 			if _, err := tx.ExecContext(ctx, `
 					UPDATE review_candidates
 					SET venue_text = ?,
 						venue_location_raw = ?,
+						room_text = ?,
 						image_url = ?,
 						image_source_url = ?,
 						image_alt = ?,
@@ -476,7 +490,7 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 						image_focus_x = ?,
 						image_focus_y = ?
 					WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
-				`, incomingVenueText, incomingVenueLocationRaw,
+				`, incomingVenueText, incomingVenueLocationRaw, incomingRoomText,
 				strings.TrimSpace(incomingCandidate.ImageURL),
 				strings.TrimSpace(incomingCandidate.ImageSourceURL),
 				strings.TrimSpace(incomingCandidate.ImageAlt),
@@ -491,11 +505,15 @@ func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interfa
 			if _, err := tx.ExecContext(ctx, `
 					UPDATE review_candidates
 					SET venue_text = ?,
-						venue_location_raw = ?
+						venue_location_raw = ?,
+						room_text = ?
 					WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
-				`, incomingVenueText, incomingVenueLocationRaw, existingCandidate.ID, groupID); err != nil {
+				`, incomingVenueText, incomingVenueLocationRaw, incomingRoomText, existingCandidate.ID, groupID); err != nil {
 				return nil, err
 			}
+		}
+		if err := replaceReviewCandidateRoomsTx(ctx, tx, existingCandidate.ID, incomingCandidate.Rooms); err != nil {
+			return nil, err
 		}
 		if reviewCandidateNeedsProvisionalVenueBackfill(existingCandidate, incomingVenueText, incomingVenueLocationRaw) {
 			existingCandidate.VenueSlug = strings.TrimSpace(incomingCandidate.VenueSlug)
@@ -567,6 +585,8 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 		VenueSlug:        record.Event.VenueSlug,
 		VenueText:        "",
 		VenueLocationRaw: "",
+		RoomText:         record.Event.RoomText,
+		Rooms:            append([]domain.VenueRoom(nil), record.Event.Rooms...),
 		StartAt:          formatRFC3339UTC(record.Event.Start),
 		EndAt:            formatOptionalTime(record.Event.End),
 		Genre:            record.Event.Genre,
@@ -599,6 +619,7 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 				venue_slug = ?,
 				venue_text = ?,
 				venue_location_raw = ?,
+				room_text = ?,
 				start_at = ?,
 				end_at = ?,
 				genre = ?,
@@ -616,7 +637,10 @@ func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
 				calendar_url = ?,
 				provenance = ?
 			WHERE id = ? AND group_id = ?
-		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.VenueText, candidate.VenueLocationRaw, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.ImageURL, candidate.ImageSourceURL, candidate.ImageAlt, candidate.ImageWidth, candidate.ImageHeight, normalizedImageFocusValue(candidate.ImageFocusX), normalizedImageFocusValue(candidate.ImageFocusY), candidate.SourceName, candidate.SourceURL, candidate.CalendarURL, candidate.Provenance, existing.ID, groupID); err != nil {
+		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.VenueText, candidate.VenueLocationRaw, candidate.RoomText, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.ImageURL, candidate.ImageSourceURL, candidate.ImageAlt, candidate.ImageWidth, candidate.ImageHeight, normalizedImageFocusValue(candidate.ImageFocusX), normalizedImageFocusValue(candidate.ImageFocusY), candidate.SourceName, candidate.SourceURL, candidate.CalendarURL, candidate.Provenance, existing.ID, groupID); err != nil {
+			return nil, err
+		}
+		if err := replaceReviewCandidateRoomsTx(ctx, tx, existing.ID, candidate.Rooms); err != nil {
 			return nil, err
 		}
 		return record, nil
@@ -803,6 +827,7 @@ func reviewConsensusFields() []review.Field {
 	return []review.Field{
 		review.FieldName,
 		review.FieldVenueSlug,
+		review.FieldRoomSlugs,
 		review.FieldStartAt,
 		review.FieldEndAt,
 		review.FieldGenre,
@@ -1036,6 +1061,9 @@ func reviewCandidateMatchesEvent(candidate review.Candidate, event domain.Event)
 	if strings.TrimSpace(candidate.VenueSlug) != strings.TrimSpace(event.VenueSlug) {
 		return false
 	}
+	if roomSetsConflict(candidate.Rooms, event.Rooms) {
+		return false
+	}
 	start, err := parseRFC3339UTC(strings.TrimSpace(candidate.StartAt))
 	if err != nil {
 		return false
@@ -1111,6 +1139,8 @@ func singletonResolvedEventFromGroupInput(input review.GroupInput, publishedAt t
 		ExternalID:     strings.TrimSpace(candidate.ExternalID),
 		Name:           strings.TrimSpace(candidate.Name),
 		VenueSlug:      strings.TrimSpace(candidate.VenueSlug),
+		RoomText:       strings.TrimSpace(candidate.RoomText),
+		Rooms:          append([]domain.VenueRoom(nil), candidate.Rooms...),
 		StartAt:        strings.TrimSpace(candidate.StartAt),
 		EndAt:          strings.TrimSpace(candidate.EndAt),
 		Genre:          strings.TrimSpace(candidate.Genre),
@@ -1201,6 +1231,9 @@ func supportingEventConflict(existing, incoming domain.Event) bool {
 	if strings.TrimSpace(existing.VenueSlug) != strings.TrimSpace(incoming.VenueSlug) {
 		return true
 	}
+	if roomSetsConflict(existing.Rooms, incoming.Rooms) {
+		return true
+	}
 	if !existing.Start.UTC().Equal(incoming.Start.UTC()) {
 		return true
 	}
@@ -1232,6 +1265,12 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 	}
 	if strings.TrimSpace(updated.Description) == "" && strings.TrimSpace(incoming.Description) != "" {
 		updated.Description = incoming.Description
+	}
+	if len(updated.Rooms) == 0 && len(incoming.Rooms) > 0 {
+		updated.Rooms = append([]domain.VenueRoom(nil), incoming.Rooms...)
+	}
+	if strings.TrimSpace(updated.RoomText) == "" && strings.TrimSpace(incoming.RoomText) != "" {
+		updated.RoomText = incoming.RoomText
 	}
 	if strings.TrimSpace(updated.OfficialListingURL) == "" && strings.TrimSpace(incoming.OfficialListingURL) != "" {
 		updated.OfficialListingURL = incoming.OfficialListingURL
@@ -1268,6 +1307,9 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 			last_checked_at = ?
 		WHERE id = ?
 	`, nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, updated.ImageURL, updated.ImageSourceURL, updated.ImageAlt, updated.ImageWidth, updated.ImageHeight, normalizedImageFocusValue(updated.ImageFocusX), normalizedImageFocusValue(updated.ImageFocusY), updated.OfficialListingURL, updated.CalendarURL, formatRFC3339UTC(updated.LastChecked), existing.ID); err != nil {
+		return err
+	}
+	if err := replaceEventRoomsTx(ctx, tx, existing.ID, updated); err != nil {
 		return err
 	}
 	return refreshEventGenresTx(ctx, tx, existing.ID, updated.Description, nil, incoming.LastChecked)
@@ -1642,7 +1684,10 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 	return eventRecord{ID: eventID, Event: event}, true, nil
 }
 
-func insertEventTx(ctx context.Context, tx execer, event domain.Event, venueID, sourceID int64) (int64, error) {
+func insertEventTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, event domain.Event, venueID, sourceID int64) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO events (
 			slug,
@@ -1682,13 +1727,25 @@ func insertEventTx(ctx context.Context, tx execer, event domain.Event, venueID, 
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	eventID, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if err := replaceEventRoomsTx(ctx, tx, eventID, event); err != nil {
+		return 0, err
+	}
+	return eventID, nil
 }
 
-func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing eventRecord, authoritative domain.Event, venueID, sourceID int64) (domain.Event, error) {
+func updateEventAuthoritativelyTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, existing eventRecord, authoritative domain.Event, venueID, sourceID int64) (domain.Event, error) {
 	updated := existing.Event
 	updated.Name = authoritative.Name
 	updated.VenueSlug = authoritative.VenueSlug
+	updated.Rooms = append([]domain.VenueRoom(nil), authoritative.Rooms...)
+	updated.RoomText = strings.TrimSpace(authoritative.RoomText)
 	updated.Start = authoritative.Start
 	updated.End = authoritative.End
 	if authoritative.Genre != "" {
@@ -1745,6 +1802,9 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx execer, existing event
 			publication_state = ?
 		WHERE id = ?
 	`, venueID, sourceID, updated.Name, formatRFC3339UTC(updated.Start), nullableRFC3339UTC(updated.End), updated.Genre, updated.Status, updated.Description, updated.ImageURL, updated.ImageSourceURL, updated.ImageAlt, updated.ImageWidth, updated.ImageHeight, normalizedImageFocusValue(updated.ImageFocusX), normalizedImageFocusValue(updated.ImageFocusY), updated.OfficialListingURL, updated.CalendarURL, formatRFC3339UTC(updated.LastChecked), string(updated.Origin), string(updated.PublicationState), existing.ID); err != nil {
+		return domain.Event{}, err
+	}
+	if err := replaceEventRoomsTx(ctx, tx, existing.ID, updated); err != nil {
 		return domain.Event{}, err
 	}
 	return updated, nil
@@ -2209,6 +2269,9 @@ func loadEventRecords(ctx context.Context, q queryer, query string, args ...any)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if err := hydrateEventRecordRooms(ctx, q, records); err != nil {
+		return nil, err
+	}
 	return records, nil
 }
 
@@ -2285,6 +2348,11 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 	if err := rows.Err(); err != nil {
 		return eventRecord{}, false, err
 	}
+	records := []eventRecord{record}
+	if err := hydrateEventRecordRooms(ctx, q, records); err != nil {
+		return eventRecord{}, false, err
+	}
+	record = records[0]
 	return record, true, nil
 }
 
@@ -2719,10 +2787,6 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	if groupID <= 0 {
 		return errors.New("review group ID is required")
 	}
-	if len(choices) != len(review.CanonicalFields) {
-		return fmt.Errorf("all review fields must be selected before resolving")
-	}
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -2746,6 +2810,10 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		return err
 	}
 	group.Candidates = candidates
+	choices = completeOptionalReviewRoomChoice(choices, candidates)
+	if len(choices) != len(review.CanonicalFields) {
+		return fmt.Errorf("all review fields must be selected before resolving")
+	}
 	matcher, err := loadVenueMatcher(ctx, tx)
 	if err != nil {
 		return err
@@ -2867,6 +2935,24 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 	return nil
 }
 
+func completeOptionalReviewRoomChoice(choices []review.DraftChoiceInput, candidates []review.Candidate) []review.DraftChoiceInput {
+	for _, choice := range choices {
+		if choice.Field == review.FieldRoomSlugs {
+			return choices
+		}
+	}
+	if len(candidates) == 0 || candidates[0].ID <= 0 {
+		return choices
+	}
+	completed := make([]review.DraftChoiceInput, 0, len(choices)+1)
+	completed = append(completed, choices...)
+	completed = append(completed, review.DraftChoiceInput{
+		Field:       review.FieldRoomSlugs,
+		CandidateID: candidates[0].ID,
+	})
+	return completed
+}
+
 func (s *Store) UpdateReviewGroupStatus(ctx context.Context, groupID int64, status string) error {
 	if s == nil || s.db == nil {
 		return errors.New("sqlite store is not open")
@@ -2926,7 +3012,7 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 		return fmt.Errorf("review candidate %d name is required", position)
 	}
 
-	_, err := tx.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
 		INSERT INTO review_candidates (
 			group_id,
 			position,
@@ -2936,6 +3022,7 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 			venue_slug,
 			venue_text,
 			venue_location_raw,
+			room_text,
 			start_at,
 			end_at,
 			genre,
@@ -2952,11 +3039,12 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 			source_url,
 			calendar_url,
 			provenance
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, groupID, position, nullableCanonicalEventID(input.CanonicalEventID), strings.TrimSpace(input.ExternalID), input.Name,
 		strings.TrimSpace(input.VenueSlug),
 		strings.TrimSpace(input.VenueText),
 		input.VenueLocationRaw,
+		strings.TrimSpace(input.RoomText),
 		strings.TrimSpace(input.StartAt),
 		strings.TrimSpace(input.EndAt),
 		strings.TrimSpace(input.Genre),
@@ -2973,7 +3061,14 @@ func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, positi
 		input.SourceURL,
 		input.CalendarURL,
 		strings.TrimSpace(input.Provenance))
-	return err
+	if err != nil {
+		return err
+	}
+	candidateID, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+	return replaceReviewCandidateRoomsTx(ctx, tx, candidateID, input.Rooms)
 }
 
 func loadReviewGroup(ctx context.Context, q queryer, id int64) (review.Group, bool, error) {
@@ -3567,6 +3662,7 @@ func deleteEventSecondarySourceInfoForEventTx(ctx context.Context, tx execer, ev
 func buildResolvedEvent(group review.Group, selected map[review.Field]review.Candidate, publishedAt time.Time) (domain.Event, error) {
 	name := strings.TrimSpace(review.CandidateValue(selected[review.FieldName], review.FieldName))
 	venueSlug := strings.TrimSpace(review.CandidateValue(selected[review.FieldVenueSlug], review.FieldVenueSlug))
+	roomCandidate := selected[review.FieldRoomSlugs]
 	startText := strings.TrimSpace(review.CandidateValue(selected[review.FieldStartAt], review.FieldStartAt))
 	endText := strings.TrimSpace(review.CandidateValue(selected[review.FieldEndAt], review.FieldEndAt))
 	genre := strings.TrimSpace(review.CandidateValue(selected[review.FieldGenre], review.FieldGenre))
@@ -3630,6 +3726,8 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 		Slug:               slug,
 		Name:               name,
 		VenueSlug:          venueSlug,
+		Rooms:              normalizeRoomsForVenue(venueSlug, roomCandidate.Rooms),
+		RoomText:           strings.TrimSpace(roomCandidate.RoomText),
 		Start:              start,
 		End:                end,
 		Genre:              genre,
@@ -3771,6 +3869,11 @@ func upsertEventTx(ctx context.Context, tx interface {
 	if !ok {
 		return eventRecord{}, fmt.Errorf("event %q not found after upsert", event.Slug)
 	}
+	if err := replaceEventRoomsTx(ctx, tx, record.ID, event); err != nil {
+		return eventRecord{}, err
+	}
+	record.Event.Rooms = append([]domain.VenueRoom(nil), event.Rooms...)
+	record.Event.RoomText = strings.TrimSpace(event.RoomText)
 	return record, nil
 }
 
@@ -3839,7 +3942,10 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 		string(event.Origin),
 		string(normalizedPublicationState(event.PublicationState)),
 		eventID)
-	return err
+	if err != nil {
+		return err
+	}
+	return replaceEventRoomsTx(ctx, tx, eventID, event)
 }
 
 func loadVenueIDBySlugTx(ctx context.Context, q queryer, slug string) (int64, bool, error) {
@@ -3876,6 +3982,7 @@ func loadReviewCandidates(ctx context.Context, q queryer, groupID int64) ([]revi
 			venue_slug,
 			venue_text,
 			venue_location_raw,
+			room_text,
 			start_at,
 			end_at,
 			genre,
@@ -3912,6 +4019,9 @@ func loadReviewCandidates(ctx context.Context, q queryer, groupID int64) ([]revi
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if err := hydrateReviewCandidateRooms(ctx, q, candidates); err != nil {
+		return nil, err
+	}
 	return candidates, nil
 }
 
@@ -3927,6 +4037,7 @@ func loadReviewCandidate(ctx context.Context, q queryer, groupID, candidateID in
 			venue_slug,
 			venue_text,
 			venue_location_raw,
+			room_text,
 			start_at,
 			end_at,
 			genre,
@@ -3965,6 +4076,11 @@ func loadReviewCandidate(ctx context.Context, q queryer, groupID, candidateID in
 	if err := rows.Err(); err != nil {
 		return review.Candidate{}, false, err
 	}
+	candidates := []review.Candidate{candidate}
+	if err := hydrateReviewCandidateRooms(ctx, q, candidates); err != nil {
+		return review.Candidate{}, false, err
+	}
+	candidate = candidates[0]
 	return candidate, true, nil
 }
 
@@ -3980,6 +4096,7 @@ func loadCanonicalSnapshotCandidate(ctx context.Context, q queryer, groupID int6
 			venue_slug,
 			venue_text,
 			venue_location_raw,
+			room_text,
 			start_at,
 			end_at,
 			genre,
@@ -4018,6 +4135,11 @@ func loadCanonicalSnapshotCandidate(ctx context.Context, q queryer, groupID int6
 	if err := rows.Err(); err != nil {
 		return review.Candidate{}, false, err
 	}
+	candidates := []review.Candidate{candidate}
+	if err := hydrateReviewCandidateRooms(ctx, q, candidates); err != nil {
+		return review.Candidate{}, false, err
+	}
+	candidate = candidates[0]
 	return candidate, true, nil
 }
 
@@ -4033,6 +4155,7 @@ func scanReviewCandidate(rows *sql.Rows) (review.Candidate, error) {
 		&candidate.VenueSlug,
 		&candidate.VenueText,
 		&candidate.VenueLocationRaw,
+		&candidate.RoomText,
 		&candidate.StartAt,
 		&candidate.EndAt,
 		&candidate.Genre,

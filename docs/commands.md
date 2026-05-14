@@ -49,9 +49,12 @@ Routes:
 - `GET /admin/import-runs/{id}` read-only import run snapshot metadata
 - `GET /admin/venues` provisional venue queue
 - `GET /admin/venues/{slug}` provisional venue detail
+- `GET /admin/rooms` provisional room queue
+- `GET /admin/rooms/{venueSlug}/{roomSlug}` provisional room detail
 - `GET /admin/configuration` genre inference configuration
 - `POST /admin/configuration` save, delete, or recompute genre inference rules
 - `POST /admin/venues/{slug}` save provisional venue field edits or validate the venue when venue writes are available
+- `POST /admin/rooms/{venueSlug}/{roomSlug}` save provisional room field edits or validate the room when room writes are available
 - `POST /admin/review/{groupID}` review actions
 - `GET /healthz` plain-text health check
 - `GET /readyz` plain-text readiness check backed by a cheap store probe
@@ -59,6 +62,8 @@ Routes:
 - `GET /media/{path}` copied event media when `MEDIA_ROOT` is configured
 
 The provisional venue queue lists provisional venue rows created from newly detected venue evidence during new-group staging, singleton auto-promotion, or manual review resolution. Detail pages show upcoming linked events. When venue writes are available, they also show editable venue fields and support two POST actions on the same route: save field edits in place or validate the venue and return to the queue. If venue writes are unavailable, provisional venue detail remains read-only and hides those controls.
+
+The provisional room queue lists provisional room rows created from newly detected room evidence under an existing venue. Detail pages show upcoming linked events for that venue room. When room writes are available, they support the same save-or-validate workflow as provisional venues.
 
 `/admin/configuration` exposes genre inference rules. Defaults are loaded from `config/genres.yaml`, copied into SQLite, and can be overridden through the admin page. Saving or deleting a rule recomputes stored event genres and refreshes the top-two `events.genre` summary cache.
 
@@ -81,6 +86,7 @@ Review behavior:
 - open duplicate reviews preselect those persisted defaults when no manual draft exists
 - duplicate reviews may include a `Live canonical snapshot` matrix column sourced from an existing live event
 - review summaries derive shared venue labels from deterministic matching over stored candidate venue slug, venue text, and raw location evidence
+- review candidates can carry optional room evidence; room selection is a canonical field, and published events keep both the selected venue and selected venue room links
 - the review queue shows a read-only link to the latest successful import when the store provides import history
 - `action=save` stores draft choices for duplicate groups
 - `action=resolved` confirms a duplicate and resolves it, publishing one canonical public event
@@ -140,7 +146,7 @@ Live ingest:
 - supports `sidney-and-matilda`, `yellow-arch`, `cafe-no-9`, `jazz-at-the-lescar`, `the-greystones`, `leadmill`, and `corporation`
 - `-all-sources` runs every registered source sequentially in registry order and emits one aggregated JSON report
 - fetches the selected source page
-- Sidney & Matilda snapshots the source page, fetched ICS payloads, and linked event detail pages. ICS remains authoritative for event identity/times; detail pages enrich blank descriptions from clean schema.org `Event` JSON-LD or bounded event content only.
+- Sidney & Matilda snapshots the source page, fetched ICS payloads, and linked event detail pages. ICS remains authoritative for event identity/times; detail pages enrich blank descriptions from clean schema.org `Event` JSON-LD or bounded event content only. The source page also supplies room evidence for known room labels such as Factory, Basement, and Gallery.
 - Cafe No. 9 snapshots the WeGotTickets organiser page, follows pagination, snapshots event detail pages, and enriches descriptions from the detail page `Event information` section.
 - Jazz at The Lescar snapshots the source page and parses repeated listing blocks into review candidates without authoritative source event IDs
 - The Greystones snapshots the events hub, discovers linked month pages, snapshots those pages, and parses repeated month-page listing rows into review candidates
@@ -178,6 +184,7 @@ Stage review groups:
 - creates duplicate review groups
 - creates singleton review groups only for singleton candidates that were not auto-promoted first
 - persists review-candidate venue evidence as `venue_text` and `venue_location_raw`; for ICS sources `venue_text` stays cleaned for display while `venue_location_raw` preserves the unfolded raw `LOCATION` text for later decoded comma/newline venue parsing
+- persists optional review-candidate room evidence as `room_text` plus room slug/name rows
 - singleton candidates may auto-promote when they are the first matching live event seen; authoritative sources can also upgrade provisional events in place
 - singleton auto-promotion can create a provisional venue row immediately for a uniquely new venue
 - duplicate groups may also auto-resolve as `canonical_exact_match` or `unanimous_duplicate`

@@ -39,10 +39,21 @@ type Venue struct {
 	Origin          Origin
 }
 
+type VenueRoom struct {
+	VenueSlug       string
+	Slug            string
+	Name            string
+	SortOrder       int
+	ValidationState ValidationState
+	Origin          Origin
+}
+
 type Event struct {
 	Slug               string
 	Name               string
 	VenueSlug          string
+	Rooms              []VenueRoom
+	RoomText           string
 	Start              time.Time
 	End                time.Time
 	Genre              string

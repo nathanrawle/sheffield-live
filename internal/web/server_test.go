@@ -511,6 +511,8 @@ func TestAdminVenuePagesMissingWithoutAdminStores(t *testing.T) {
 	tests := []string{
 		"/admin/venues",
 		"/admin/venues/imaginary-hall",
+		"/admin/rooms",
+		"/admin/rooms/sidney-and-matilda/factory",
 	}
 	for _, path := range tests {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -521,6 +523,52 @@ func TestAdminVenuePagesMissingWithoutAdminStores(t *testing.T) {
 		}
 		assertContains(t, rr.Body.String(), "404 page not found")
 	}
+}
+
+func TestSQLiteAdminRoomsShowStagedProvisionalRoom(t *testing.T) {
+	st, server, _ := mustAdminVenuesServer(t)
+	defer st.Close()
+
+	result, err := st.StageReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Staged new room",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:staged-new-room.ics",
+		StagingKey: "v1:staged-new-room",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "candidate-a",
+			Name:        "Staged room show",
+			VenueSlug:   "sidney-and-matilda",
+			RoomText:    "COURTYARD STAGE",
+			Rooms:       []domain.VenueRoom{{Slug: "courtyard-stage", Name: "Courtyard Stage"}},
+			StartAt:     "2026-05-10T18:30:00Z",
+			EndAt:       "2026-05-10T22:00:00Z",
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "Staged room fixture.",
+			SourceName:  "Fixture ICS",
+			SourceURL:   "https://example.test/staged-room-show",
+			Provenance:  "fixture UID candidate-a",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !result.Created {
+		t.Fatalf("created = false, want true")
+	}
+
+	body := renderPath(t, server, "/admin/rooms")
+	assertContains(t, body, "Provisional rooms")
+	assertContains(t, body, "Courtyard Stage")
+	assertContains(t, body, "Sidney &amp; Matilda")
+	assertContains(t, body, `href="/admin/rooms/sidney-and-matilda/courtyard-stage"`)
+	assertContains(t, body, ">0</td>")
+
+	detailBody := renderPath(t, server, "/admin/rooms/sidney-and-matilda/courtyard-stage")
+	assertContains(t, detailBody, "Validate room")
+	assertContains(t, detailBody, `name="name" value="Courtyard Stage"`)
+	assertContains(t, detailBody, ">provisional</dd>")
+	assertContains(t, detailBody, "No upcoming linked events for this provisional room.")
 }
 
 func TestSQLiteAdminVenuesListOnlyProvisionalVenues(t *testing.T) {
@@ -1499,6 +1547,47 @@ func TestHomeVenueCardsUseAddressFallbackMeta(t *testing.T) {
 	assertNotContains(t, body, `<span class="venue-meta">Duplicate Room</span>`)
 	assertContains(t, body, `<span class="venue-title">Blank Room</span>
       <span class="venue-meta"></span>`)
+}
+
+func TestEventPagesRenderVenueRoom(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore([]domain.Venue{
+		{
+			Slug:          "sidney-and-matilda",
+			Name:          "Sidney & Matilda",
+			Address:       "Rivelin Works, 46 Sidney Street, Sheffield",
+			Neighbourhood: "Cultural Industries Quarter",
+			Website:       "https://www.sidneyandmatilda.com/",
+		},
+	}, []domain.Event{
+		{
+			Slug:      "parallel-delusion",
+			Name:      "Parallel Delusion",
+			VenueSlug: "sidney-and-matilda",
+			Rooms: []domain.VenueRoom{{
+				VenueSlug: "sidney-and-matilda",
+				Slug:      "factory",
+				Name:      "Factory",
+			}},
+			Start:       fixtureLocalTime(2026, time.April, 20, 19, 30),
+			End:         fixtureLocalTime(2026, time.April, 20, 22, 0),
+			Genre:       "Experimental",
+			Status:      "Listed",
+			Description: "Factory room fixture.",
+			SourceName:  "Fixture ICS",
+			SourceURL:   "file:fixture.ics",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			Origin:      domain.OriginLive,
+		},
+	}))
+
+	eventsBody := renderPath(t, server, "/events")
+	assertContains(t, eventsBody, "Sidney &amp; Matilda · Factory · Experimental · Listed")
+
+	eventBody := renderPath(t, server, "/events/parallel-delusion")
+	assertContains(t, eventBody, "<p>Factory</p>")
+
+	venueBody := renderPath(t, server, "/venues/sidney-and-matilda")
+	assertContains(t, venueBody, `<span class="event-meta">Factory</span>`)
 }
 
 func TestEventsFiltersToday(t *testing.T) {

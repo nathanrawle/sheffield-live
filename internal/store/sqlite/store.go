@@ -39,7 +39,8 @@ const (
 	schemaVersionV16     = 16
 	schemaVersionV17     = 17
 	schemaVersionV18     = 18
-	schemaVersionCurrent = schemaVersionV18
+	schemaVersionV19     = 19
+	schemaVersionCurrent = schemaVersionV19
 	rfc3339Timestamp     = time.RFC3339
 	foreignKeysPragma    = "PRAGMA foreign_keys = ON"
 )
@@ -66,6 +67,7 @@ var migrations = []struct {
 	{version: schemaVersionV16, path: "migrations/0016_genres.sql"},
 	{version: schemaVersionV17, path: "migrations/0017_event_images.sql"},
 	{version: schemaVersionV18, path: "migrations/0018_image_focus.sql"},
+	{version: schemaVersionV19, path: "migrations/0019_venue_rooms.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -146,6 +148,9 @@ func Open(path string, sourceMetadata ...ingest.SourceMetadataLookup) (st *Store
 	}
 	if err := bootstrapIfEmpty(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: bootstrap seed data: %w", path, err)
+	}
+	if err := syncSeedVenueRooms(ctx, tx); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: sync seed venue rooms: %w", path, err)
 	}
 	if err := backfillReviewGroupImportRunLinks(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill review group import-run links: %w", path, err)
@@ -656,6 +661,25 @@ func bootstrapSeedData(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
+func syncSeedVenueRooms(ctx context.Context, tx execer) error {
+	rooms := []domain.VenueRoom{
+		{VenueSlug: "sidney-and-matilda", Slug: "factory", Name: "Factory", SortOrder: 1},
+		{VenueSlug: "sidney-and-matilda", Slug: "basement", Name: "Basement", SortOrder: 2},
+		{VenueSlug: "sidney-and-matilda", Slug: "gallery", Name: "Gallery", SortOrder: 3},
+	}
+	for _, room := range rooms {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO venue_rooms (venue_id, slug, name, sort_order, validation_state, origin)
+			SELECT id, ?, ?, ?, ?, ?
+			FROM venues
+			WHERE slug = ?
+		`, room.Slug, room.Name, room.SortOrder, string(domain.ValidationStateValidated), string(domain.OriginLive), room.VenueSlug); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func insertVenue(ctx context.Context, tx execer, venue domain.Venue) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO venues (slug, name, address, neighbourhood, description, website, validation_state, coverage_kind, coverage_note, origin)
@@ -1020,6 +1044,9 @@ func loadEvents(ctx context.Context, q queryer, query string, args ...any) ([]do
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := hydrateEventRooms(ctx, q, events); err != nil {
 		return nil, err
 	}
 	return events, nil

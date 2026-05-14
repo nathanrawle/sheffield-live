@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"sheffield-live/internal/domain"
 )
 
 type Field string
@@ -11,6 +13,7 @@ type Field string
 const (
 	FieldName        Field = "name"
 	FieldVenueSlug   Field = "venue_slug"
+	FieldRoomSlugs   Field = "room_slugs"
 	FieldStartAt     Field = "start_at"
 	FieldEndAt       Field = "end_at"
 	FieldGenre       Field = "genre"
@@ -30,6 +33,7 @@ const (
 var CanonicalFields = []Field{
 	FieldName,
 	FieldVenueSlug,
+	FieldRoomSlugs,
 	FieldStartAt,
 	FieldEndAt,
 	FieldGenre,
@@ -90,6 +94,8 @@ type Candidate struct {
 	VenueSlug        string
 	VenueText        string `json:"-"`
 	VenueLocationRaw string `json:"-"`
+	RoomText         string `json:"-"`
+	Rooms            []domain.VenueRoom
 	StartAt          string
 	EndAt            string
 	Genre            string
@@ -128,6 +134,8 @@ type CandidateInput struct {
 	VenueSlug        string
 	VenueText        string `json:"-"`
 	VenueLocationRaw string `json:"-"`
+	RoomText         string `json:"-"`
+	Rooms            []domain.VenueRoom
 	StartAt          string
 	EndAt            string
 	Genre            string
@@ -230,6 +238,8 @@ func (f Field) Label() string {
 		return "Name"
 	case FieldVenueSlug:
 		return "Venue slug"
+	case FieldRoomSlugs:
+		return "Rooms"
 	case FieldStartAt:
 		return "Start"
 	case FieldEndAt:
@@ -257,6 +267,8 @@ func CandidateValue(candidate Candidate, field Field) string {
 		return candidate.Name
 	case FieldVenueSlug:
 		return candidate.VenueSlug
+	case FieldRoomSlugs:
+		return RoomSlugsValue(candidate.Rooms)
 	case FieldStartAt:
 		return candidate.StartAt
 	case FieldEndAt:
@@ -276,6 +288,23 @@ func CandidateValue(candidate Candidate, field Field) string {
 	default:
 		return ""
 	}
+}
+
+func RoomSlugsValue(rooms []domain.VenueRoom) string {
+	values := make([]string, 0, len(rooms))
+	seen := make(map[string]struct{}, len(rooms))
+	for _, room := range rooms {
+		slug := strings.TrimSpace(room.Slug)
+		if slug == "" {
+			continue
+		}
+		if _, ok := seen[slug]; ok {
+			continue
+		}
+		seen[slug] = struct{}{}
+		values = append(values, slug)
+	}
+	return strings.Join(values, ", ")
 }
 
 func (c Candidate) IsCanonicalSnapshot() bool {

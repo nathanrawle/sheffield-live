@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"sheffield-live/internal/domain"
 	"sheffield-live/internal/review"
 )
 
@@ -131,6 +132,8 @@ func reviewStageCandidateFingerprint(candidate review.CandidateInput) string {
 	writeReviewStageHashPart(sum, candidate.ExternalID)
 	writeReviewStageHashPart(sum, candidate.Name)
 	writeReviewStageHashPart(sum, candidate.VenueSlug)
+	writeReviewStageHashPart(sum, candidate.RoomText)
+	writeReviewStageHashPart(sum, review.RoomSlugsValue(candidate.Rooms))
 	writeReviewStageHashPart(sum, candidate.StartAt)
 	writeReviewStageHashPart(sum, candidate.EndAt)
 	writeReviewStageHashPart(sum, candidate.Genre)
@@ -169,6 +172,8 @@ func reviewStageCandidateInput(catalog *Catalog, report Report, calendar Calenda
 		VenueSlug:        reviewStageVenueSlug(catalog, report.Source, candidate),
 		VenueText:        strings.TrimSpace(candidate.Location),
 		VenueLocationRaw: candidate.LocationRaw,
+		RoomText:         strings.TrimSpace(candidate.RoomText),
+		Rooms:            reviewStageRooms(catalog, report.Source, candidate),
 		StartAt:          strings.TrimSpace(candidate.StartAt),
 		EndAt:            strings.TrimSpace(candidate.EndAt),
 		Genre:            "",
@@ -186,6 +191,30 @@ func reviewStageCandidateInput(catalog *Catalog, report Report, calendar Calenda
 		CalendarURL:      reviewStageCalendarURL(calendar, candidate),
 		Provenance:       reviewStageProvenance(report, calendar, candidate),
 	}
+}
+
+func reviewStageRooms(catalog *Catalog, source string, candidate EventCandidate) []domain.VenueRoom {
+	venueSlug := reviewStageVenueSlug(catalog, source, candidate)
+	rooms := make([]domain.VenueRoom, 0, len(candidate.Rooms))
+	for _, room := range candidate.Rooms {
+		slug := strings.TrimSpace(room.Slug)
+		if slug == "" {
+			slug = VenueSlugFromText(room.Name)
+		}
+		name := strings.TrimSpace(room.Name)
+		if name == "" {
+			name = slug
+		}
+		if venueSlug == "" || slug == "" || name == "" {
+			continue
+		}
+		rooms = append(rooms, domain.VenueRoom{
+			VenueSlug: venueSlug,
+			Slug:      slug,
+			Name:      name,
+		})
+	}
+	return rooms
 }
 
 func reviewStageOfficialSourceURL(report Report, calendar CalendarReport, candidate EventCandidate) string {

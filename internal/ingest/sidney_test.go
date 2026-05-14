@@ -79,6 +79,55 @@ func TestExtractSidneyAndMatildaEventDetailLinks(t *testing.T) {
 	}
 }
 
+func TestExtractSidneyAndMatildaRoomEvidence(t *testing.T) {
+	body := []byte(`
+		<article class="eventlist-event">
+			<a href="/events/parallel-delusion">Parallel Delusion</a>
+			<div class="eventlist-excerpt"><p>FACTORY</p><p>Tickets available</p></div>
+		</article>
+		<article class="eventlist-event">
+			<a href="/events/contrails">Contrails</a>
+			<div class="eventlist-excerpt"><p>BASEMENT</p></div>
+		</article>
+		<article class="eventlist-event">
+			<a href="/events/abba-gold">The Belgrave House Band Presents: ABBA Gold</a>
+			<div class="eventlist-excerpt"><p>GALLERY</p></div>
+		</article>
+		<article class="eventlist-event">
+			<a href="/events/two-roomer">Two Roomer</a>
+			<div class="eventlist-excerpt"><p>GALLERY + BASEMENT</p></div>
+		</article>
+		<article class="eventlist-event">
+			<a href="/events/whole-venue">Whole Venue Show</a>
+			<div class="eventlist-excerpt"><p>WHOLE VENUE</p></div>
+		</article>
+		<article class="eventlist-event">
+			<a href="/events/new-space">New Space Show</a>
+			<div class="eventlist-excerpt"><p>COURTYARD STAGE</p></div>
+		</article>
+	`)
+
+	got := ExtractSidneyAndMatildaRoomEvidence("https://www.sidneyandmatilda.com/events/", body)
+
+	assertRoomEvidence(t, got["url:https://www.sidneyandmatilda.com/events/parallel-delusion"], "FACTORY", []RoomCandidate{{Slug: "factory", Name: "Factory"}})
+	assertRoomEvidence(t, got[roomEvidenceTitleKey("Contrails")], "BASEMENT", []RoomCandidate{{Slug: "basement", Name: "Basement"}})
+	assertRoomEvidence(t, got["url:https://www.sidneyandmatilda.com/events/abba-gold"], "GALLERY", []RoomCandidate{{Slug: "gallery", Name: "Gallery"}})
+	assertRoomEvidence(t, got["url:https://www.sidneyandmatilda.com/events/two-roomer"], "GALLERY + BASEMENT", []RoomCandidate{{Slug: "gallery", Name: "Gallery"}, {Slug: "basement", Name: "Basement"}})
+	assertRoomEvidence(t, got["url:https://www.sidneyandmatilda.com/events/whole-venue"], "WHOLE VENUE", nil)
+	assertRoomEvidence(t, got["url:https://www.sidneyandmatilda.com/events/new-space"], "COURTYARD STAGE", []RoomCandidate{{Slug: "courtyard-stage", Name: "Courtyard Stage"}})
+}
+
+func assertRoomEvidence(t *testing.T, got sourceRoomEvidence, wantText string, wantRooms []RoomCandidate) {
+	t.Helper()
+
+	if got.Text != wantText {
+		t.Fatalf("room evidence text = %q, want %q", got.Text, wantText)
+	}
+	if !reflect.DeepEqual(got.Rooms, wantRooms) {
+		t.Fatalf("room evidence rooms = %#v, want %#v", got.Rooms, wantRooms)
+	}
+}
+
 func TestParseSidneyAndMatildaDetailPageExtractsDescription(t *testing.T) {
 	detail := ParseSidneyAndMatildaDetailPage("https://www.sidneyandmatilda.com/events/leo-middea-brazil", readFixture(t, "sidney_detail.html"))
 
