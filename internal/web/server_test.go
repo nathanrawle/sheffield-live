@@ -40,7 +40,7 @@ func TestRoutes(t *testing.T) {
 		code int
 		body string
 	}{
-		{name: "home", path: "/", code: http.StatusOK, body: "Sheffield live music"},
+		{name: "home", path: "/", code: http.StatusOK, body: "Upcoming shows"},
 		{name: "events", path: "/events", code: http.StatusOK, body: "Upcoming shows"},
 		{name: "venues", path: "/venues", code: http.StatusOK, body: "Sheffield rooms"},
 		{name: "venue detail", path: "/venues/leadmill", code: http.StatusOK, body: "Leadmill"},
@@ -1904,61 +1904,20 @@ func TestAdminConfigurationPostLogsStoreFailure(t *testing.T) {
 	}
 }
 
-func TestHomeShowsTodayAndThisWeekWithFixedClock(t *testing.T) {
+func TestHomeShowsDefaultEventBoard(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/")
 
-	assertContains(t, body, "<h2>Today</h2>")
-	assertContains(t, body, "Tonight Leadmill")
-	assertContains(t, body, "<h2>This week</h2>")
-	assertContains(t, body, "Tomorrow Yellow Arch")
-	assertContains(t, body, "Friday Leadmill")
-	assertNotContains(t, body, "Later Leadmill")
-}
-
-func TestHomeShowsEmptyStatesWithFixedClock(t *testing.T) {
-	server := mustClockedServer(t, store.NewStore(nil, nil))
-	body := renderPath(t, server, "/")
-
-	assertContains(t, body, "No shows listed for today.")
-	assertContains(t, body, "No more shows listed this week.")
-}
-
-func TestHomeVenueCardsUseAddressFallbackMeta(t *testing.T) {
-	server := mustClockedServer(t, store.NewStore([]domain.Venue{
-		{
-			Slug:          "neighbourhood-room",
-			Name:          "Neighbourhood Room",
-			Address:       "1 Neighbourhood Road, Sheffield",
-			Neighbourhood: "Kelham",
-		},
-		{
-			Slug:    "address-room",
-			Name:    "Address Room",
-			Address: "12 Address Street, Sheffield",
-		},
-		{
-			Slug:    "duplicate-room",
-			Name:    "Duplicate Room",
-			Address: "Duplicate Room, Hidden Lane, Sheffield",
-		},
-		{
-			Slug: "blank-room",
-			Name: "Blank Room",
-		},
-	}, nil))
-
-	body := renderPath(t, server, "/")
-
-	assertContains(t, body, `<span class="venue-title">Neighbourhood Room</span>`)
-	assertContains(t, body, `<span class="venue-meta">Kelham</span>`)
-	assertContains(t, body, `<span class="venue-title">Address Room</span>`)
-	assertContains(t, body, `<span class="venue-meta">12 Address Street</span>`)
-	assertContains(t, body, `<span class="venue-title">Duplicate Room</span>`)
-	assertContains(t, body, `<span class="venue-meta">Hidden Lane</span>`)
-	assertNotContains(t, body, `<span class="venue-meta">Duplicate Room</span>`)
-	assertContains(t, body, `<span class="venue-title">Blank Room</span>
-      <span class="venue-meta"></span>`)
+	assertContains(t, body, "Upcoming shows")
+	assertInOrder(t, body, []string{
+		"Tonight",
+		"Tonight Leadmill",
+		"Tomorrow",
+		"Tomorrow Yellow Arch",
+		"Friday",
+		"Friday Leadmill",
+	})
+	assertContains(t, body, `<a class="active" aria-current="page" href="/">Events</a>`)
 }
 
 func TestEventPagesRenderVenueRoom(t *testing.T) {
@@ -2197,16 +2156,17 @@ func TestPublicPagesCleanEventPresentationLeaks(t *testing.T) {
 	homeBody := renderPath(t, server, "/")
 	assertContains(t, homeBody, `S&amp;M Presents: Dealbreaker`)
 	assertNotContains(t, homeBody, `S&amp;amp;M Presents`)
-	assertContains(t, homeBody, `<span class="event-meta">Sidney &amp; Matilda</span>`)
+	assertContains(t, homeBody, `<span class="event-venue">Sidney &amp; Matilda<span class="event-area">Cultural Industries Quarter</span></span>`)
 	assertNotContains(t, homeBody, `Sidney &amp; Matilda ·`)
 
 	eventsBody := renderPath(t, server, "/events?window=all")
 	assertContains(t, eventsBody, `Dansette Springs`)
-	assertContains(t, eventsBody, `<span class="event-meta">Foundry · Blues</span>`)
+	assertContains(t, eventsBody, `<span class="event-venue">Foundry<span class="event-area">Broomhall</span></span>`)
+	assertContains(t, eventsBody, `<span class="event-genre">Blues</span>`)
 	assertNotContains(t, eventsBody, `Blues · Listed`)
 	assertContains(t, eventsBody, `Marmozets`)
 	assertNotContains(t, eventsBody, `Marmozets - Foundry`)
-	assertContains(t, eventsBody, `Foundry · Postponed`)
+	assertContains(t, eventsBody, `<span class="event-status">Postponed</span>`)
 
 	detailBody := renderPath(t, server, "/events/double-escaped")
 	assertContains(t, detailBody, `<h1>S&amp;M Presents: Dealbreaker</h1>`)
@@ -2743,12 +2703,13 @@ func TestReadyzLogsReadinessFailure(t *testing.T) {
 
 func TestLayoutMetadataAndActiveNav(t *testing.T) {
 	server := mustFixtureServer(t)
-	body := renderPath(t, server, "/events")
+	body := renderPath(t, server, "/")
 
 	assertContains(t, body, `<meta name="description" content="Browse Sheffield live music by date and venue.">`)
 	assertContains(t, body, `<a class="skip-link" href="#main">Skip to content</a>`)
 	assertContains(t, body, `<main id="main" class="shell main">`)
-	assertContains(t, body, `<a class="active" aria-current="page" href="/events">Events</a>`)
+	assertContains(t, body, `<a class="active" aria-current="page" href="/">Events</a>`)
+	assertNotContains(t, body, `href="/">Home</a>`)
 }
 
 func TestAdminReviewListDetailAndSave(t *testing.T) {

@@ -139,11 +139,6 @@ type PageData struct {
 	EventGenres              []genre.Match
 	Venues                   []domain.Venue
 	Venue                    domain.Venue
-	FeaturedEvent            domain.Event
-	TodayEvents              []domain.Event
-	TonightEvents            []domain.Event
-	ThisWeekEvents           []domain.Event
-	ThisWeekendEvents        []domain.Event
 	VenueEvents              []domain.Event
 	ReviewGroups             []review.GroupSummary
 	ReviewHistoryRows        []ReviewHistoryRow
@@ -428,7 +423,6 @@ func NewServer(deps ServerDeps) (*Server, error) {
 	}
 
 	pageFiles := []string{
-		"templates/home.html",
 		"templates/events.html",
 		"templates/event_detail.html",
 		"templates/venues.html",
@@ -954,7 +948,7 @@ func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case cleaned == "/":
-		s.handleHome(w, r)
+		s.handleEvents(w, r)
 	case cleaned == "/events":
 		s.handleEvents(w, r)
 	case cleaned == "/venues":
@@ -2113,48 +2107,6 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 	s.renderPage(w, "templates/admin_review_detail.html", data)
 }
 
-func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	now := s.now()
-	venues, err := s.catalog.ListVenues(r.Context())
-	if err != nil {
-		s.logRequestError(r, "load venues", err)
-		http.Error(w, "load venues", http.StatusInternalServerError)
-		return
-	}
-	events, err := s.catalog.ListEvents(r.Context())
-	if err != nil {
-		s.logRequestError(r, "load events", err)
-		http.Error(w, "load events", http.StatusInternalServerError)
-		return
-	}
-	events = sortEventsForDisplay(upcomingEvents(events, now, s.localLocation))
-	todayEvents := filterEventsByWindow(events, now, s.localLocation, "today")
-	tonightEvents := filterEventsByWindow(events, now, s.localLocation, "tonight")
-	thisWeekEvents := filterEventsByWindow(events, now, s.localLocation, "week")
-	thisWeekendEvents := filterEventsByWindow(events, now, s.localLocation, "weekend")
-	thisWeekEvents = excludeLocalDate(thisWeekEvents, localDayStart(now, s.localLocation), s.localLocation)
-	if len(events) > 3 {
-		events = events[:3]
-	}
-	data := PageData{
-		SiteName:          "Sheffield Live",
-		PageTitle:         "Sheffield live music",
-		MetaDescription:   "Upcoming live music in Sheffield, grouped by date and linked back to venue sources.",
-		Active:            "home",
-		Now:               now,
-		VenueNames:        venueNameMap(venues),
-		VenueAreas:        venueAreaMap(venues),
-		Venues:            venues,
-		Events:            events,
-		FeaturedEvent:     firstEvent(events),
-		TodayEvents:       todayEvents,
-		TonightEvents:     tonightEvents,
-		ThisWeekEvents:    thisWeekEvents,
-		ThisWeekendEvents: thisWeekendEvents,
-	}
-	s.renderPage(w, "templates/home.html", data)
-}
-
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	venues, err := s.catalog.ListVenues(r.Context())
@@ -2383,13 +2335,6 @@ func (s *Server) renderPage(w http.ResponseWriter, pageKey string, data PageData
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(layoutBuf.Bytes())
-}
-
-func firstEvent(events []domain.Event) domain.Event {
-	if len(events) == 0 {
-		return domain.Event{}
-	}
-	return events[0]
 }
 
 func (s *Server) now() time.Time {
@@ -2687,7 +2632,7 @@ func eventStatusLabel(event domain.Event) string {
 	if event.PublicationState == domain.PublicationStateProvisional {
 		return "Unconfirmed"
 	}
-	return ""
+	return publicEventStatus(event.Status)
 }
 
 func showCount(count int) string {

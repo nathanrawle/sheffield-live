@@ -46,8 +46,8 @@ Behavior:
 
 Routes:
 
-- `GET /` home page
-- `GET /events` event list
+- `GET /` home event board
+- `GET /events` event board alias
 - `GET /events/{slug}` event detail
 - `GET /venues` venue list
 - `GET /venues/{slug}` venue detail

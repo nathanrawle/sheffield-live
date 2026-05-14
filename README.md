@@ -20,7 +20,7 @@ Set `ADMIN_COOKIE_SECURE=false` only when testing login over local plain HTTP.
 
 Current surface:
 
-- home, event list/detail, and venue list/detail pages
+- home and `/events` event board, event detail, and venue list/detail pages
 - passphrase-protected `/admin` tools for review, provisional venues and rooms, import history, and genre configuration
 - `GET /healthz`
 - `GET /readyz`
