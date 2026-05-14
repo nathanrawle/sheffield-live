@@ -1660,7 +1660,8 @@ func TestSQLiteEventDetailRendersAllInferredGenres(t *testing.T) {
 	body := renderPath(t, server, "/events/inferred-genre-event")
 	assertContains(t, body, "All genres")
 	assertContains(t, body, "Jazz, Rock, Experimental")
-	assertContains(t, body, "Jazz, Rock · Listed")
+	assertContains(t, body, "<p>Jazz, Rock</p>")
+	assertNotContains(t, body, "Jazz, Rock · Listed")
 }
 
 func TestSQLiteAdminConfigurationListsAndSavesGenreRules(t *testing.T) {
@@ -1824,6 +1825,221 @@ func TestHomeVenueCardsUseAddressFallbackMeta(t *testing.T) {
 	assertNotContains(t, body, `<span class="venue-meta">Duplicate Room</span>`)
 	assertContains(t, body, `<span class="venue-title">Blank Room</span>
       <span class="venue-meta"></span>`)
+}
+
+func TestPublicEventTitleCleansSourcePresentationLeaks(t *testing.T) {
+	venueNames := map[string]string{
+		"foundry":             "Foundry",
+		"hallamshire-hotel":   "Hallamshire Hotel",
+		"memorial-hall":       "Memorial Hall",
+		"sidney-and-matilda":  "Sidney & Matilda",
+		"yellow-arch-studios": "Yellow Arch Studios",
+	}
+
+	tests := []struct {
+		name      string
+		eventName string
+		venueSlug string
+		want      string
+	}{
+		{
+			name:      "double escaped ampersand",
+			eventName: "S&amp;amp;M Presents: Dealbreaker",
+			venueSlug: "sidney-and-matilda",
+			want:      "S&M Presents: Dealbreaker",
+		},
+		{
+			name:      "all caps title",
+			eventName: "DANSETTE SPRINGS",
+			venueSlug: "sidney-and-matilda",
+			want:      "Dansette Springs",
+		},
+		{
+			name:      "all caps artist name",
+			eventName: "EDWINA HAYES",
+			venueSlug: "sidney-and-matilda",
+			want:      "Edwina Hayes",
+		},
+		{
+			name:      "single token all caps name",
+			eventName: "SLACKRR",
+			venueSlug: "sidney-and-matilda",
+			want:      "SLACKRR",
+		},
+		{
+			name:      "leading delimiter",
+			eventName: "| Sorebones | EP Release Show w/ YURN & Ella Wingfield",
+			venueSlug: "sidney-and-matilda",
+			want:      "Sorebones | EP Release Show w/ YURN & Ella Wingfield",
+		},
+		{
+			name:      "dash venue suffix",
+			eventName: "Marmozets - Foundry",
+			venueSlug: "foundry",
+			want:      "Marmozets",
+		},
+		{
+			name:      "city venue suffix",
+			eventName: "The Bootleg Beatles - Foundry, Sheffield",
+			venueSlug: "foundry",
+			want:      "The Bootleg Beatles",
+		},
+		{
+			name:      "parenthetical venue suffix",
+			eventName: "Dylan Flynn & The Dead Poets (Hallamshire Hotel)",
+			venueSlug: "hallamshire-hotel",
+			want:      "Dylan Flynn & The Dead Poets",
+		},
+		{
+			name:      "live at venue suffix",
+			eventName: "Tom Smith (Editors) live at Memorial Hall",
+			venueSlug: "memorial-hall",
+			want:      "Tom Smith (Editors)",
+		},
+		{
+			name:      "non matching venue text remains",
+			eventName: "PINS plus Gia Ford & Gelder - Yellow Arch (Rescheduled Date)",
+			venueSlug: "yellow-arch-studios",
+			want:      "PINS plus Gia Ford & Gelder - Yellow Arch (Rescheduled Date)",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			event := domain.Event{Name: tc.eventName, VenueSlug: tc.venueSlug}
+			if got := publicEventTitle(event, venueNames); got != tc.want {
+				t.Fatalf("publicEventTitle() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPublicEventMetadataOmitsEmptyAndListedStatus(t *testing.T) {
+	venueNames := map[string]string{"sidney-and-matilda": "Sidney & Matilda"}
+
+	tests := []struct {
+		name       string
+		event      domain.Event
+		wantCard   string
+		wantDetail string
+	}{
+		{
+			name:       "venue only",
+			event:      domain.Event{VenueSlug: "sidney-and-matilda"},
+			wantCard:   "Sidney & Matilda",
+			wantDetail: "",
+		},
+		{
+			name:       "listed hidden",
+			event:      domain.Event{VenueSlug: "sidney-and-matilda", Genre: "Indie", Status: "Listed"},
+			wantCard:   "Sidney & Matilda · Indie",
+			wantDetail: "Indie",
+		},
+		{
+			name:       "confirmed hidden",
+			event:      domain.Event{VenueSlug: "sidney-and-matilda", Genre: "Folk", Status: "CONFIRMED"},
+			wantCard:   "Sidney & Matilda · Folk",
+			wantDetail: "Folk",
+		},
+		{
+			name:       "meaningful status shown",
+			event:      domain.Event{VenueSlug: "sidney-and-matilda", Status: "POSTPONED"},
+			wantCard:   "Sidney & Matilda · Postponed",
+			wantDetail: "Postponed",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := publicEventCardMeta(tc.event, venueNames); got != tc.wantCard {
+				t.Fatalf("publicEventCardMeta() = %q, want %q", got, tc.wantCard)
+			}
+			if got := publicEventDetailMeta(tc.event); got != tc.wantDetail {
+				t.Fatalf("publicEventDetailMeta() = %q, want %q", got, tc.wantDetail)
+			}
+		})
+	}
+}
+
+func TestPublicPagesCleanEventPresentationLeaks(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{
+			{
+				Slug:          "sidney-and-matilda",
+				Name:          "Sidney & Matilda",
+				Address:       "Rivelin Works, Sheffield",
+				Neighbourhood: "Cultural Industries Quarter",
+				Description:   "A Sheffield venue.",
+				Website:       "https://example.test/sidney",
+			},
+			{
+				Slug:          "foundry",
+				Name:          "Foundry",
+				Address:       "Western Bank, Sheffield",
+				Neighbourhood: "Broomhall",
+				Description:   "A Sheffield venue.",
+				Website:       "https://example.test/foundry",
+			},
+		},
+		[]domain.Event{
+			{
+				Slug:        "double-escaped",
+				Name:        "S&amp;M Presents: Dealbreaker",
+				VenueSlug:   "sidney-and-matilda",
+				Start:       fixtureLocalTime(2026, time.April, 19, 19, 30),
+				Description: "Source title contains an escaped ampersand.",
+				SourceName:  "Sidney & Matilda manual ingest",
+				SourceURL:   "https://example.test/sidney/dealbreaker",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "all-caps-listed",
+				Name:        "DANSETTE SPRINGS",
+				VenueSlug:   "foundry",
+				Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+				Genre:       "Blues",
+				Status:      "Listed",
+				Description: "All caps source title.",
+				SourceName:  "The Greystones manual ingest",
+				SourceURL:   "https://example.test/greystones/dansette",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "venue-suffix",
+				Name:        "Marmozets - Foundry",
+				VenueSlug:   "foundry",
+				Start:       fixtureLocalTime(2026, time.April, 20, 20, 0),
+				Status:      "Postponed",
+				Description: "Venue suffix source title.",
+				SourceName:  "The Leadmill manual ingest",
+				SourceURL:   "https://example.test/leadmill/marmozets",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+
+	homeBody := renderPath(t, server, "/")
+	assertContains(t, homeBody, `S&amp;M Presents: Dealbreaker`)
+	assertNotContains(t, homeBody, `S&amp;amp;M Presents`)
+	assertContains(t, homeBody, `<span class="event-meta">Sidney &amp; Matilda</span>`)
+	assertNotContains(t, homeBody, `Sidney &amp; Matilda ·`)
+
+	eventsBody := renderPath(t, server, "/events?window=all")
+	assertContains(t, eventsBody, `Dansette Springs`)
+	assertContains(t, eventsBody, `<span class="event-meta">Foundry · Blues</span>`)
+	assertNotContains(t, eventsBody, `Blues · Listed`)
+	assertContains(t, eventsBody, `Marmozets`)
+	assertNotContains(t, eventsBody, `Marmozets - Foundry`)
+	assertContains(t, eventsBody, `Foundry · Postponed`)
+
+	detailBody := renderPath(t, server, "/events/double-escaped")
+	assertContains(t, detailBody, `<h1>S&amp;M Presents: Dealbreaker</h1>`)
+	assertNotContains(t, detailBody, `S&amp;amp;M Presents`)
+	assertNotContains(t, detailBody, `<p> · </p>`)
+
+	venueBody := renderPath(t, server, "/venues/foundry")
+	assertContains(t, venueBody, `<span class="event-title">Marmozets</span>`)
+	assertNotContains(t, venueBody, `Marmozets - Foundry`)
 }
 
 func TestEventsFiltersToday(t *testing.T) {
