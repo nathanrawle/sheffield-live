@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -689,6 +690,78 @@ func TestStageReviewGroupRestagingOpenGroupRefreshesImageFields(t *testing.T) {
 	}
 }
 
+func TestStageReviewGroupRestagingOpenGroupRefreshesRoomEvidence(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	input := review.GroupInput{
+		Title:      "Room restage",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:room-restage.ics",
+		StagingKey: "v1:room-restage",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "shared-room-uid",
+			Name:        "Room Restage Show",
+			VenueSlug:   "sidney-and-matilda",
+			StartAt:     "2026-05-01T19:00:00Z",
+			EndAt:       "2026-05-01T22:00:00Z",
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "First description",
+			SourceName:  "Fixture ICS",
+			SourceURL:   "https://example.test/room-restage",
+			Provenance:  "fixture UID shared-room-uid",
+		}},
+	}
+
+	stageResult, err := st.StageReviewGroup(ctx, input)
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	groupID := stageResult.ID
+
+	withRoom := input
+	withRoom.Candidates[0].RoomText = "COURTYARD STAGE"
+	withRoom.Candidates[0].Rooms = []domain.VenueRoom{{Slug: "courtyard-stage", Name: "Courtyard Stage"}}
+	reused, err := st.StageReviewGroup(ctx, withRoom)
+	if err != nil {
+		t.Fatalf("restage review group with room: %v", err)
+	}
+	if reused.Created || reused.ID != groupID {
+		t.Fatalf("restaged result = %#v, want reused group %d", reused, groupID)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if got := group.Candidates[0].RoomText; got != "COURTYARD STAGE" {
+		t.Fatalf("room text = %q, want %q", got, "COURTYARD STAGE")
+	}
+	if got := review.RoomSlugsValue(group.Candidates[0].Rooms); got != "courtyard-stage" {
+		t.Fatalf("room slugs = %q, want %q", got, "courtyard-stage")
+	}
+	assertDefaultChoice(t, group, review.FieldRoomSlugs, group.Candidates[0].ID, "courtyard-stage")
+
+	room, ok, err := st.LoadVenueRoomBySlug(ctx, "sidney-and-matilda", "courtyard-stage")
+	if err != nil {
+		t.Fatalf("load room: %v", err)
+	}
+	if !ok {
+		t.Fatal("provisional room not found after restage")
+	}
+	if room.Name != "Courtyard Stage" || room.ValidationState != domain.ValidationStateProvisional {
+		t.Fatalf("room = %#v, want provisional Courtyard Stage", room)
+	}
+}
+
 func TestStageReviewGroupReusesClosedMatchingGroupWithoutReopening(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -923,6 +996,132 @@ func TestStageReviewGroupCanonicalExactMatchPromotesProvisionalEventToReviewed(t
 	}
 	if got, want := event.PublicationState, domain.PublicationStateReviewed; got != want {
 		t.Fatalf("publication state = %q, want %q", got, want)
+	}
+}
+
+func TestStageReviewGroupDistinguishesWholeVenueRoomEvidenceFromBlank(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	result, err := st.StageReviewGroup(ctx, review.GroupInput{
+		Title:      "Whole venue evidence",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:whole-venue.ics",
+		StagingKey: "v1:whole-venue-evidence",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "whole-venue-a",
+				Name:        "Whole Venue Show",
+				VenueSlug:   "sidney-and-matilda",
+				RoomText:    "WHOLE VENUE",
+				StartAt:     "2026-05-10T18:30:00Z",
+				EndAt:       "2026-05-10T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Whole venue fixture.",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/whole-venue-a",
+			},
+			{
+				ExternalID:  "whole-venue-b",
+				Name:        "Whole Venue Show",
+				VenueSlug:   "sidney-and-matilda",
+				RoomText:    "WHOLE VENUE",
+				StartAt:     "2026-05-10T18:30:00Z",
+				EndAt:       "2026-05-10T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Whole venue fixture.",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/whole-venue-b",
+			},
+			{
+				ExternalID:  "blank-room",
+				Name:        "Whole Venue Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-10T18:30:00Z",
+				EndAt:       "2026-05-10T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Whole venue fixture.",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/blank-room",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !result.Created {
+		t.Fatal("created = false, want true")
+	}
+	if result.AutoResolved {
+		t.Fatalf("auto resolved = true, want false")
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, result.ID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if group.Status != review.StatusOpen {
+		t.Fatalf("status = %q, want %q", group.Status, review.StatusOpen)
+	}
+	assertDefaultChoice(t, group, review.FieldRoomSlugs, group.Candidates[0].ID, "WHOLE VENUE")
+}
+
+func TestReviewCandidateMatchesEventRejectsTextOnlyRoomEvidenceAgainstConcreteRooms(t *testing.T) {
+	start := time.Date(2026, time.May, 10, 18, 30, 0, 0, time.UTC)
+	candidate := review.Candidate{
+		Name:      "Whole Venue Show",
+		VenueSlug: "sidney-and-matilda",
+		RoomText:  "WHOLE VENUE",
+		StartAt:   formatRFC3339UTC(start),
+	}
+	event := domain.Event{
+		Name:      "Whole Venue Show",
+		VenueSlug: "sidney-and-matilda",
+		RoomText:  "FACTORY",
+		Rooms:     []domain.VenueRoom{{VenueSlug: "sidney-and-matilda", Slug: "factory", Name: "Factory"}},
+		Start:     start,
+	}
+
+	if reviewCandidateMatchesEvent(candidate, event) {
+		t.Fatal("text-only room evidence matched concrete room evidence")
+	}
+}
+
+func TestSupportingEventConflictDetectsTextOnlyRoomEvidenceAgainstConcreteRooms(t *testing.T) {
+	start := time.Date(2026, time.May, 10, 18, 30, 0, 0, time.UTC)
+	existing := domain.Event{
+		Name:      "Whole Venue Show",
+		VenueSlug: "sidney-and-matilda",
+		RoomText:  "WHOLE VENUE",
+		Start:     start,
+	}
+	incoming := domain.Event{
+		Name:      "Whole Venue Show",
+		VenueSlug: "sidney-and-matilda",
+		RoomText:  "FACTORY",
+		Rooms:     []domain.VenueRoom{{VenueSlug: "sidney-and-matilda", Slug: "factory", Name: "Factory"}},
+		Start:     start,
+	}
+
+	if !supportingEventConflict(existing, incoming) {
+		t.Fatal("text-only room evidence did not conflict with concrete room evidence")
+	}
+
+	existing.RoomText = ""
+	if supportingEventConflict(existing, incoming) {
+		t.Fatal("blank room evidence conflicted with concrete room evidence")
 	}
 }
 
@@ -1906,6 +2105,215 @@ func TestResolveReviewGroupPublishesCanonicalEvent(t *testing.T) {
 	}
 	if got := mustCount(t, db, "events"); got != beforeCount+1 {
 		t.Fatalf("events rows = %d, want %d", got, beforeCount+1)
+	}
+}
+
+func TestResolveReviewGroupPublishesRoomAssignment(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
+		Title:      "Room resolve",
+		SourceName: "Sidney & Matilda Google Calendar ICS",
+		SourceURL:  "file:sidney.ics",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "parallel-delusion",
+			Name:        "Parallel Delusion",
+			VenueSlug:   "sidney-and-matilda",
+			RoomText:    "FACTORY",
+			Rooms:       []domain.VenueRoom{{Slug: "factory", Name: "Factory"}},
+			StartAt:     "2026-05-04T19:00:00Z",
+			EndAt:       "2026-05-04T22:00:00Z",
+			Genre:       "Experimental",
+			Status:      "Listed",
+			Description: "Factory room fixture.",
+			SourceName:  "Sidney & Matilda Google Calendar ICS",
+			SourceURL:   "https://www.sidneyandmatilda.com/events/parallel-delusion",
+			Provenance:  "fixture UID parallel-delusion",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	event, ok := st.EventBySlug("live-parallel-delusion-sidney-and-matilda-20260504190000")
+	if !ok {
+		t.Fatal("published event not found")
+	}
+	if event.RoomText != "FACTORY" {
+		t.Fatalf("room text = %q, want %q", event.RoomText, "FACTORY")
+	}
+	if len(event.Rooms) != 1 {
+		t.Fatalf("rooms = %#v, want one room", event.Rooms)
+	}
+	room := event.Rooms[0]
+	if room.VenueSlug != "sidney-and-matilda" || room.Slug != "factory" || room.Name != "Factory" {
+		t.Fatalf("room = %#v, want Sidney & Matilda Factory", room)
+	}
+	if room.ValidationState != domain.ValidationStateValidated {
+		t.Fatalf("room validation state = %q, want %q", room.ValidationState, domain.ValidationStateValidated)
+	}
+
+	final, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load final group: %v", err)
+	}
+	if !ok {
+		t.Fatal("final review group not found")
+	}
+	assertDraftChoice(t, final, review.FieldRoomSlugs, group.Candidates[0].ID, "factory")
+}
+
+func TestResolveReviewGroupRequiresRoomChoice(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeEventCount := mustCount(t, db, "events")
+
+	groupID := mustCreatePublishableReviewGroup(t, st, "Missing room choice")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields)-1)
+	for _, choice := range fullReviewChoices(t, group) {
+		if choice.Field != review.FieldRoomSlugs {
+			choices = append(choices, choice)
+		}
+	}
+
+	err = st.ResolveReviewGroup(ctx, groupID, choices)
+	if err == nil {
+		t.Fatal("expected missing room choice to be rejected")
+	}
+	if !strings.Contains(err.Error(), "all review fields must be selected before resolving") {
+		t.Fatalf("error = %v, want missing fields error", err)
+	}
+
+	after, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group after failed resolve: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after failed resolve")
+	}
+	if after.Status != review.StatusOpen {
+		t.Fatalf("status = %q, want %q", after.Status, review.StatusOpen)
+	}
+	if len(after.DraftChoices) != 0 {
+		t.Fatalf("draft choices = %d, want 0", len(after.DraftChoices))
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	}
+}
+
+func TestResolveReviewGroupRejectsRoomChoiceFromDifferentVenue(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
+		Title:      "Mixed room venue resolve",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:mixed-room-venue.ics",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "sidney-room",
+				Name:        "Parallel Delusion",
+				VenueSlug:   "sidney-and-matilda",
+				RoomText:    "FACTORY",
+				Rooms:       []domain.VenueRoom{{VenueSlug: "sidney-and-matilda", Slug: "factory", Name: "Factory"}},
+				StartAt:     "2026-05-04T19:00:00Z",
+				EndAt:       "2026-05-04T22:00:00Z",
+				Genre:       "Experimental",
+				Status:      "Listed",
+				Description: "Factory room fixture.",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/sidney-room",
+				Provenance:  "fixture UID sidney-room",
+			},
+			{
+				ExternalID:  "leadmill-venue",
+				Name:        "Parallel Delusion",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-04T19:00:00Z",
+				EndAt:       "2026-05-04T22:00:00Z",
+				Genre:       "Experimental",
+				Status:      "Listed",
+				Description: "Factory room fixture.",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/leadmill-venue",
+				Provenance:  "fixture UID leadmill-venue",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	choices := fullReviewChoices(t, group)
+	for i := range choices {
+		if choices[i].Field == review.FieldVenueSlug {
+			choices[i].CandidateID = group.Candidates[1].ID
+		}
+	}
+
+	err = st.ResolveReviewGroup(ctx, groupID, choices)
+	if err == nil {
+		t.Fatal("expected mixed room and venue choices to be rejected")
+	}
+	if !strings.Contains(err.Error(), `review room choice venue "sidney-and-matilda" does not match selected venue "leadmill"`) {
+		t.Fatalf("resolve error = %q, want room venue mismatch", err)
+	}
+
+	final, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load final group: %v", err)
+	}
+	if !ok {
+		t.Fatal("final review group not found")
+	}
+	if final.Status != review.StatusOpen {
+		t.Fatalf("final status = %q, want %q", final.Status, review.StatusOpen)
 	}
 }
 
@@ -5880,6 +6288,24 @@ func assertDraftChoice(t *testing.T, group review.Group, field review.Field, can
 	}
 	if choice.UpdatedAt.IsZero() {
 		t.Fatalf("%s updated_at is zero", field)
+	}
+}
+
+func assertDefaultChoice(t *testing.T, group review.Group, field review.Field, candidateID int64, value string) {
+	t.Helper()
+
+	choice, ok := group.DefaultChoices[field]
+	if !ok {
+		t.Fatalf("missing default choice for %s", field)
+	}
+	if choice.CandidateID != candidateID {
+		t.Fatalf("%s default candidate ID = %d, want %d", field, choice.CandidateID, candidateID)
+	}
+	if choice.Value != value {
+		t.Fatalf("%s default value = %q, want %q", field, choice.Value, value)
+	}
+	if choice.UpdatedAt.IsZero() {
+		t.Fatalf("%s default updated_at is zero", field)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -491,7 +492,10 @@ func TestReplayImportRunEnrichesSidneyDescriptionsFromDetailSnapshots(t *testing
 						Body: []byte(`
 							<a href="https://calendar.example.test/live.ics">Google Calendar ICS</a>
 							<a href="https://calendar.example.test/club.ics">Google Calendar ICS</a>
-							<a href="/events/leo-middea-brazil">Leo Middea (Brazil)</a>
+							<article class="eventlist-event">
+								<a href="/events/leo-middea-brazil">Leo Middea (Brazil)</a>
+								<div class="eventlist-excerpt"><p>FACTORY</p></div>
+							</article>
 						`),
 						CapturedAt: time.Date(2026, 4, 20, 12, 1, 0, 0, time.UTC),
 					}, nil),
@@ -554,6 +558,12 @@ func TestReplayImportRunEnrichesSidneyDescriptionsFromDetailSnapshots(t *testing
 	for i, calendar := range report.Calendars {
 		if got := calendar.Candidates[0].Description; got != wantDescription {
 			t.Fatalf("calendar %d description = %q, want %q", i, got, wantDescription)
+		}
+		if got, want := calendar.Candidates[0].RoomText, "FACTORY"; got != want {
+			t.Fatalf("calendar %d room text = %q, want %q", i, got, want)
+		}
+		if got, want := calendar.Candidates[0].Rooms, []RoomCandidate{{Slug: "factory", Name: "Factory"}}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("calendar %d rooms = %#v, want %#v", i, got, want)
 		}
 	}
 	if got, want := report.Totals.Snapshots, 4; got != want {

@@ -1,16 +1,14 @@
 <section class="page-head">
   <p class="eyebrow">Admin</p>
-  <h1>Provisional venues</h1>
-  <p class="lede">Queue of provisional venue rows created from newly detected venue evidence. Some rows may not have linked events yet.</p>
-  {{if or .HasReviewStorage .HasImportHistory}}
+  <h1>Provisional rooms</h1>
+  <p class="lede">Queue of provisional venue rooms created from newly detected room evidence.</p>
   <p class="review-group-meta">
     {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
     {{if and .HasReviewStorage .HasImportHistory}} · {{end}}
     {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
-    {{if .HasRoomAdmin}}{{if or .HasReviewStorage .HasImportHistory}} · {{end}}<a href="/admin/rooms">Provisional rooms</a>{{end}}
-    {{if .HasGenreConfiguration}}{{if or .HasReviewStorage .HasImportHistory .HasRoomAdmin}} · {{end}}<a href="/admin/configuration">Configuration</a>{{end}}
+    {{if .HasVenueAdmin}}{{if or .HasReviewStorage .HasImportHistory}} · {{end}}<a href="/admin/venues">Provisional venues</a>{{end}}
+    {{if .HasGenreConfiguration}}{{if or .HasReviewStorage .HasImportHistory .HasVenueAdmin}} · {{end}}<a href="/admin/configuration">Configuration</a>{{end}}
   </p>
-  {{end}}
 </section>
 
 {{with .Flash}}
@@ -20,26 +18,26 @@
 {{end}}
 
 <section class="section-block">
-  {{if .ProvisionalVenues}}
+  {{if .ProvisionalRooms}}
   <div class="import-run-table-wrap">
     <table class="import-run-table provisional-venue-table">
       <thead>
         <tr>
-          <th scope="col">Name</th>
+          <th scope="col">Room</th>
+          <th scope="col">Venue</th>
           <th scope="col">Slug</th>
-          <th scope="col">Address</th>
           <th scope="col">Origin</th>
           <th scope="col">Upcoming events</th>
           <th scope="col">Next event</th>
         </tr>
       </thead>
       <tbody>
-        {{range .ProvisionalVenues}}
+        {{range .ProvisionalRooms}}
         <tr>
-          <td><a href="/admin/venues/{{.Venue.Slug}}">{{blankValue .Venue.Name}}</a></td>
-          <td>{{.Venue.Slug}}</td>
-          <td>{{blankValue (displayAddress .Venue.Name .Venue.Address)}}</td>
-          <td>{{originText .Venue.Origin}}</td>
+          <td><a href="/admin/rooms/{{.Room.VenueSlug}}/{{.Room.Slug}}">{{blankValue .Room.Name}}</a></td>
+          <td>{{blankValue .Venue.Name}}</td>
+          <td>{{.Room.Slug}}</td>
+          <td>{{originText .Room.Origin}}</td>
           <td>{{.UpcomingEventCount}}</td>
           <td>
             {{with .NextEvent}}
@@ -55,6 +53,6 @@
     </table>
   </div>
   {{else}}
-  <p class="empty-state">No provisional venues are queued right now.</p>
+  <p class="empty-state">No provisional rooms are queued right now.</p>
   {{end}}
 </section>

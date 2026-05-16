@@ -140,6 +140,7 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 	case pageProcessLinkedICS:
 		report.Links = append(report.Links, pageParse.Links...)
 		report.Totals.Links = len(report.Links)
+		roomEvidence := roomEvidenceForSourcePage(sourceCfg, pageBaseURL, page.body)
 		if len(report.Links) == 0 {
 			report.Errors = append(report.Errors, "no ICS links found")
 			return replayFinalizeReport(report, sourceCfg)
@@ -173,6 +174,7 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 				continue
 			}
 			parse := parseICSForSource(sourceCfg, snapshot.body)
+			parse.Candidates = mergeRoomEvidence(parse.Candidates, roomEvidence)
 			calendar.Candidates = attachExistingCandidateImages(ctx, st, mergeDetailDescriptions(parse.Candidates, detailResult.Descriptions))
 			calendar.Skips = parse.Skips
 			calendar.Errors = append(calendar.Errors, parse.Errors...)

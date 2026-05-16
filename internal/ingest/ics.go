@@ -8,22 +8,29 @@ import (
 )
 
 type EventCandidate struct {
-	UID            string `json:"uid,omitempty"`
-	Summary        string `json:"summary"`
-	Description    string `json:"description,omitempty"`
-	Location       string `json:"location,omitempty"`
-	LocationRaw    string `json:"-"`
-	URL            string `json:"url,omitempty"`
-	ImageURL       string `json:"image_url,omitempty"`
-	ImageSourceURL string `json:"image_source_url,omitempty"`
-	ImageAlt       string `json:"image_alt,omitempty"`
-	ImageWidth     int    `json:"image_width,omitempty"`
-	ImageHeight    int    `json:"image_height,omitempty"`
-	ImageFocusX    int    `json:"image_focus_x,omitempty"`
-	ImageFocusY    int    `json:"image_focus_y,omitempty"`
-	Status         string `json:"status,omitempty"`
-	StartAt        string `json:"start_at"`
-	EndAt          string `json:"end_at,omitempty"`
+	UID            string          `json:"uid,omitempty"`
+	Summary        string          `json:"summary"`
+	Description    string          `json:"description,omitempty"`
+	Location       string          `json:"location,omitempty"`
+	LocationRaw    string          `json:"-"`
+	RoomText       string          `json:"room_text,omitempty"`
+	Rooms          []RoomCandidate `json:"rooms,omitempty"`
+	URL            string          `json:"url,omitempty"`
+	ImageURL       string          `json:"image_url,omitempty"`
+	ImageSourceURL string          `json:"image_source_url,omitempty"`
+	ImageAlt       string          `json:"image_alt,omitempty"`
+	ImageWidth     int             `json:"image_width,omitempty"`
+	ImageHeight    int             `json:"image_height,omitempty"`
+	ImageFocusX    int             `json:"image_focus_x,omitempty"`
+	ImageFocusY    int             `json:"image_focus_y,omitempty"`
+	Status         string          `json:"status,omitempty"`
+	StartAt        string          `json:"start_at"`
+	EndAt          string          `json:"end_at,omitempty"`
+}
+
+type RoomCandidate struct {
+	Slug string `json:"slug"`
+	Name string `json:"name"`
 }
 
 type ParseSkip struct {

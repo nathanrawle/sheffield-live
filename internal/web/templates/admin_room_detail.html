@@ -1,0 +1,103 @@
+<section class="page-head">
+  <p class="eyebrow">Admin</p>
+  <h1>{{blankValue .Room.Name}}</h1>
+  <p class="lede">
+    {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if and .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
+    {{if or .HasReviewStorage .HasImportHistory}} · {{end}}
+    <a href="/admin/rooms">Back to provisional rooms</a>
+    {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
+  </p>
+</section>
+
+{{with .Flash}}
+<section class="section-block">
+  <p class="notice">{{.}}</p>
+</section>
+{{end}}
+
+{{if .HasVenueAdminWrites}}
+<section class="section-block">
+  <form method="post" class="review-actions">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="action" value="validate">
+    <button type="submit">Validate room</button>
+  </form>
+</section>
+{{end}}
+
+{{if .HasVenueAdminWrites}}
+<section class="section-block">
+  <h2>Edit provisional room</h2>
+  <form method="post" class="venue-edit-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="action" value="save">
+    <label>
+      Name
+      <input type="text" name="name" value="{{.Room.Name}}">
+    </label>
+    <label>
+      Sort order
+      <input type="number" name="sort_order" value="{{.Room.SortOrder}}">
+    </label>
+    <div class="venue-edit-form-actions">
+      <button type="submit" class="primary-button">Save room fields</button>
+    </div>
+  </form>
+</section>
+{{end}}
+
+<section class="section-block">
+  <h2>Stored room fields</h2>
+  <dl class="import-run-summary">
+    <div>
+      <dt>Name</dt>
+      <dd>{{blankValue .Room.Name}}</dd>
+    </div>
+    <div>
+      <dt>Slug</dt>
+      <dd>{{blankValue .Room.Slug}}</dd>
+    </div>
+    <div>
+      <dt>Venue</dt>
+      <dd>{{blankValue .Venue.Name}}</dd>
+    </div>
+    <div>
+      <dt>Validation state</dt>
+      <dd>{{blankValue (printf "%s" .Room.ValidationState)}}</dd>
+    </div>
+    <div>
+      <dt>Sort order</dt>
+      <dd>{{.Room.SortOrder}}</dd>
+    </div>
+    <div>
+      <dt>Origin</dt>
+      <dd>{{originText .Room.Origin}}</dd>
+    </div>
+  </dl>
+</section>
+
+<section class="section-block">
+  <div class="section-head">
+    <h2>Upcoming events</h2>
+    <p class="review-group-meta">{{len .RoomEvents}} upcoming linked events</p>
+  </div>
+  {{if .RoomEvents}}
+  <div class="event-list compact">
+    {{range .RoomEvents}}
+    <a class="event-card{{if .ImageURL}} has-image{{end}}" href="/events/{{.Slug}}">
+      <span class="event-card-main">
+        <span class="event-date">{{dateLong .Start}} {{timeShort .Start}}</span>
+        <span class="event-title">{{.Name}}</span>
+        <span class="event-meta">{{eventRoomText .}}</span>
+        {{with .Description}}<span class="event-meta">{{.}}</span>{{end}}
+      </span>
+      {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async">{{end}}
+    </a>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty-state">No upcoming linked events for this provisional room.</p>
+  {{end}}
+</section>

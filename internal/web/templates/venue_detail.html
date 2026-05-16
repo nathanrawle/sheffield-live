@@ -30,6 +30,7 @@
         <span class="event-card-main">
           <span class="event-date">{{dateShort .Start}} · {{timeShort .Start}}</span>
           <span class="event-title">{{eventTitle . $.VenueNames}}</span>
+          {{with eventRoomText .}}<span class="event-meta">{{.}}</span>{{end}}
           {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
         </span>
         {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async">{{end}}

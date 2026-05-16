@@ -152,6 +152,7 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 	case pageProcessLinkedICS:
 		report.Links = pageParse.Links
 		report.Totals.Links = len(report.Links)
+		roomEvidence := roomEvidenceForSourcePage(cfg, pageURL, pageResult.Body)
 		if len(report.Links) == 0 {
 			report.Errors = append(report.Errors, "no ICS links found")
 			return finishReport(ctx, st, report, importStatusFailed)
@@ -197,6 +198,7 @@ func RunManualWithCatalog(ctx context.Context, st Store, fetcher Fetcher, catalo
 			}
 
 			parse := parseICSForSource(cfg, icsResult.Body)
+			parse.Candidates = mergeRoomEvidence(parse.Candidates, roomEvidence)
 			if len(parse.Candidates) > 0 {
 				usableICSParsed = true
 			}

@@ -1,7 +1,7 @@
 <section class="page-head">
   <p class="eyebrow">Admin</p>
   <h1>Admin</h1>
-  <p class="lede">Review staged listings, inspect ingest runs, and validate provisional venues.</p>
+  <p class="lede">Review staged listings, inspect ingest runs, and validate provisional venues and rooms.</p>
 </section>
 
 <section class="section-block">
@@ -28,6 +28,12 @@
     <a class="admin-card" href="/admin/venues">
       <span class="admin-card-title">Provisional venues</span>
       <span class="admin-card-meta">Review provisional venue rows and validate them when write support is available.</span>
+    </a>
+    {{end}}
+    {{if .HasRoomAdmin}}
+    <a class="admin-card" href="/admin/rooms">
+      <span class="admin-card-title">Provisional rooms</span>
+      <span class="admin-card-meta">Review provisional room rows under existing venues.</span>
     </a>
     {{end}}
   </div>

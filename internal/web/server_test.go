@@ -524,6 +524,92 @@ func TestAdminVenuePostRequiresCSRF(t *testing.T) {
 	}
 }
 
+func TestAdminRoomPostRequiresCSRF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	_, err = st.StageReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Staged room",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:staged-room.ics",
+		StagingKey: "v1:admin-room-csrf",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "candidate-a",
+			Name:        "Staged room show",
+			VenueSlug:   "sidney-and-matilda",
+			RoomText:    "COURTYARD STAGE",
+			Rooms:       []domain.VenueRoom{{Slug: "courtyard-stage", Name: "Courtyard Stage"}},
+			StartAt:     "2026-05-10T18:30:00Z",
+			EndAt:       "2026-05-10T22:00:00Z",
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "Staged room fixture.",
+			SourceName:  "Fixture ICS",
+			SourceURL:   "https://example.test/staged-room-show",
+			Provenance:  "fixture UID candidate-a",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+
+	server, err := NewServer(testAdminAuthDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin")
+
+	form := url.Values{"action": {"validate"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/rooms/sidney-and-matilda/courtyard-stage", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/rooms/sidney-and-matilda/courtyard-stage", nil)
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d; body %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	body := rr.Body.String()
+	assertContains(t, body, `<form method="post" class="review-actions">
+    <input type="hidden" name="csrf_token" value="`)
+	assertContains(t, body, `<form method="post" class="venue-edit-form">
+    <input type="hidden" name="csrf_token" value="`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form = url.Values{
+		"action":     {"validate"},
+		"csrf_token": {csrfToken},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/admin/rooms/sidney-and-matilda/courtyard-stage", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/rooms?validated=1" {
+		t.Fatalf("Location = %q, want %q", location, "/admin/rooms?validated=1")
+	}
+}
+
 func TestAdminConfigurationPostRequiresCSRF(t *testing.T) {
 	server, err := NewServer(testAdminAuthDeps(failingGenreConfigurationStore{}))
 	if err != nil {
@@ -836,6 +922,8 @@ func TestAdminVenuePagesMissingWithoutAdminStores(t *testing.T) {
 	tests := []string{
 		"/admin/venues",
 		"/admin/venues/imaginary-hall",
+		"/admin/rooms",
+		"/admin/rooms/sidney-and-matilda/factory",
 	}
 	for _, path := range tests {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -846,6 +934,52 @@ func TestAdminVenuePagesMissingWithoutAdminStores(t *testing.T) {
 		}
 		assertContains(t, rr.Body.String(), "404 page not found")
 	}
+}
+
+func TestSQLiteAdminRoomsShowStagedProvisionalRoom(t *testing.T) {
+	st, server, _ := mustAdminVenuesServer(t)
+	defer st.Close()
+
+	result, err := st.StageReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Staged new room",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:staged-new-room.ics",
+		StagingKey: "v1:staged-new-room",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "candidate-a",
+			Name:        "Staged room show",
+			VenueSlug:   "sidney-and-matilda",
+			RoomText:    "COURTYARD STAGE",
+			Rooms:       []domain.VenueRoom{{Slug: "courtyard-stage", Name: "Courtyard Stage"}},
+			StartAt:     "2026-05-10T18:30:00Z",
+			EndAt:       "2026-05-10T22:00:00Z",
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "Staged room fixture.",
+			SourceName:  "Fixture ICS",
+			SourceURL:   "https://example.test/staged-room-show",
+			Provenance:  "fixture UID candidate-a",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !result.Created {
+		t.Fatalf("created = false, want true")
+	}
+
+	body := renderPath(t, server, "/admin/rooms")
+	assertContains(t, body, "Provisional rooms")
+	assertContains(t, body, "Courtyard Stage")
+	assertContains(t, body, "Sidney &amp; Matilda")
+	assertContains(t, body, `href="/admin/rooms/sidney-and-matilda/courtyard-stage"`)
+	assertContains(t, body, ">0</td>")
+
+	detailBody := renderPath(t, server, "/admin/rooms/sidney-and-matilda/courtyard-stage")
+	assertContains(t, detailBody, "Validate room")
+	assertContains(t, detailBody, `name="name" value="Courtyard Stage"`)
+	assertContains(t, detailBody, ">provisional</dd>")
+	assertContains(t, detailBody, "No upcoming linked events for this provisional room.")
 }
 
 func TestSQLiteAdminVenuesListOnlyProvisionalVenues(t *testing.T) {
@@ -1825,6 +1959,48 @@ func TestHomeVenueCardsUseAddressFallbackMeta(t *testing.T) {
 	assertNotContains(t, body, `<span class="venue-meta">Duplicate Room</span>`)
 	assertContains(t, body, `<span class="venue-title">Blank Room</span>
       <span class="venue-meta"></span>`)
+}
+
+func TestEventPagesRenderVenueRoom(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore([]domain.Venue{
+		{
+			Slug:          "sidney-and-matilda",
+			Name:          "Sidney & Matilda",
+			Address:       "Rivelin Works, 46 Sidney Street, Sheffield",
+			Neighbourhood: "Cultural Industries Quarter",
+			Website:       "https://www.sidneyandmatilda.com/",
+		},
+	}, []domain.Event{
+		{
+			Slug:      "parallel-delusion",
+			Name:      "Parallel Delusion",
+			VenueSlug: "sidney-and-matilda",
+			Rooms: []domain.VenueRoom{{
+				VenueSlug: "sidney-and-matilda",
+				Slug:      "factory",
+				Name:      "Factory",
+			}},
+			Start:       fixtureLocalTime(2026, time.April, 20, 19, 30),
+			End:         fixtureLocalTime(2026, time.April, 20, 22, 0),
+			Genre:       "Experimental",
+			Status:      "Listed",
+			Description: "Factory room fixture.",
+			SourceName:  "Fixture ICS",
+			SourceURL:   "file:fixture.ics",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			Origin:      domain.OriginLive,
+		},
+	}))
+
+	eventsBody := renderPath(t, server, "/events")
+	assertContains(t, eventsBody, "Sidney &amp; Matilda (Factory) · Experimental")
+	assertNotContains(t, eventsBody, "Experimental · Listed")
+
+	eventBody := renderPath(t, server, "/events/parallel-delusion")
+	assertContains(t, eventBody, `<p><a href="/venues/sidney-and-matilda">Sidney &amp; Matilda</a> (Factory)</p>`)
+
+	venueBody := renderPath(t, server, "/venues/sidney-and-matilda")
+	assertContains(t, venueBody, `<span class="event-meta">Factory</span>`)
 }
 
 func TestPublicEventTitleCleansSourcePresentationLeaks(t *testing.T) {
@@ -3311,6 +3487,38 @@ func TestAdminReviewResolveRequiresAllFields(t *testing.T) {
 	assertContains(t, rr.Body.String(), "all review fields must be selected before resolving")
 }
 
+func TestAdminReviewResolveRequiresRoomChoice(t *testing.T) {
+	st, server, groupID := mustReviewServerWithGroup(t)
+	defer st.Close()
+
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	form := url.Values{}
+	form.Set("action", "resolved")
+	for _, field := range review.CanonicalFields {
+		if field == review.FieldRoomSlugs {
+			continue
+		}
+		form.Set("choice_"+string(field), strconvFormatInt(group.Candidates[0].ID))
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "all review fields must be selected before resolving")
+}
+
 func TestAdminReviewResolveRedirectsAndRemovesFromQueue(t *testing.T) {
 	st, server, groupID := mustReviewServerWithGroup(t)
 	defer st.Close()
@@ -3327,6 +3535,7 @@ func TestAdminReviewResolveRedirectsAndRemovesFromQueue(t *testing.T) {
 	form.Set("action", "resolved")
 	form.Set("choice_name", strconvFormatInt(group.Candidates[1].ID))
 	form.Set("choice_venue_slug", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_room_slugs", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_start_at", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_end_at", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_genre", strconvFormatInt(group.Candidates[1].ID))
@@ -3548,6 +3757,7 @@ func TestAdminReviewClosedGroupIsReadOnlyAndRejectsPost(t *testing.T) {
 	if err := st.ResolveReviewGroup(contextForTesting(), groupID, []review.DraftChoiceInput{
 		{Field: review.FieldName, CandidateID: group.Candidates[1].ID},
 		{Field: review.FieldVenueSlug, CandidateID: group.Candidates[0].ID},
+		{Field: review.FieldRoomSlugs, CandidateID: group.Candidates[0].ID},
 		{Field: review.FieldStartAt, CandidateID: group.Candidates[0].ID},
 		{Field: review.FieldEndAt, CandidateID: group.Candidates[0].ID},
 		{Field: review.FieldGenre, CandidateID: group.Candidates[1].ID},
