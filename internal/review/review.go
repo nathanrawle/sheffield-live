@@ -269,7 +269,7 @@ func CandidateValue(candidate Candidate, field Field) string {
 	case FieldVenueSlug:
 		return candidate.VenueSlug
 	case FieldRoomSlugs:
-		return RoomSlugsValue(candidate.Rooms)
+		return CandidateRoomValue(candidate)
 	case FieldStartAt:
 		return candidate.StartAt
 	case FieldEndAt:
@@ -289,6 +289,13 @@ func CandidateValue(candidate Candidate, field Field) string {
 	default:
 		return ""
 	}
+}
+
+func CandidateRoomValue(candidate Candidate) string {
+	if value := RoomSlugsValue(candidate.Rooms); value != "" {
+		return value
+	}
+	return strings.Join(strings.Fields(strings.TrimSpace(candidate.RoomText)), " ")
 }
 
 func RoomSlugsValue(rooms []domain.VenueRoom) string {

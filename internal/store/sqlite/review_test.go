@@ -999,6 +999,85 @@ func TestStageReviewGroupCanonicalExactMatchPromotesProvisionalEventToReviewed(t
 	}
 }
 
+func TestStageReviewGroupDistinguishesWholeVenueRoomEvidenceFromBlank(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	result, err := st.StageReviewGroup(ctx, review.GroupInput{
+		Title:      "Whole venue evidence",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:whole-venue.ics",
+		StagingKey: "v1:whole-venue-evidence",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "whole-venue-a",
+				Name:        "Whole Venue Show",
+				VenueSlug:   "sidney-and-matilda",
+				RoomText:    "WHOLE VENUE",
+				StartAt:     "2026-05-10T18:30:00Z",
+				EndAt:       "2026-05-10T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Whole venue fixture.",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/whole-venue-a",
+			},
+			{
+				ExternalID:  "whole-venue-b",
+				Name:        "Whole Venue Show",
+				VenueSlug:   "sidney-and-matilda",
+				RoomText:    "WHOLE VENUE",
+				StartAt:     "2026-05-10T18:30:00Z",
+				EndAt:       "2026-05-10T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Whole venue fixture.",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/whole-venue-b",
+			},
+			{
+				ExternalID:  "blank-room",
+				Name:        "Whole Venue Show",
+				VenueSlug:   "sidney-and-matilda",
+				StartAt:     "2026-05-10T18:30:00Z",
+				EndAt:       "2026-05-10T22:00:00Z",
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Whole venue fixture.",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/blank-room",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+	if !result.Created {
+		t.Fatal("created = false, want true")
+	}
+	if result.AutoResolved {
+		t.Fatalf("auto resolved = true, want false")
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, result.ID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if group.Status != review.StatusOpen {
+		t.Fatalf("status = %q, want %q", group.Status, review.StatusOpen)
+	}
+	assertDefaultChoice(t, group, review.FieldRoomSlugs, group.Candidates[0].ID, "WHOLE VENUE")
+}
+
 func TestStageReviewGroupUnanimousDuplicateAutoResolvesWithNewProvisionalVenue(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
