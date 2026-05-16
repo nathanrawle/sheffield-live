@@ -1953,7 +1953,7 @@ func TestEventPagesRenderVenueRoom(t *testing.T) {
 	}))
 
 	eventsBody := renderPath(t, server, "/events")
-	assertContains(t, eventsBody, "Sidney &amp; Matilda (Factory) · Experimental")
+	assertContains(t, eventsBody, `<span class="event-venue"><span class="event-room">Factory</span>Sidney &amp; Matilda<span class="event-area">Cultural Industries Quarter</span></span>`)
 	assertNotContains(t, eventsBody, "Experimental · Listed")
 
 	eventBody := renderPath(t, server, "/events/parallel-delusion")

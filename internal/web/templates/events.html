@@ -26,7 +26,7 @@
               {{with eventStatusLabel .}}<span class="event-status">{{.}}</span>{{end}}
             </span>
             <span class="event-title">{{eventTitle . $.VenueNames}}</span>
-            <span class="event-venue">{{venueName $.VenueNames .VenueSlug}}{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
+            <span class="event-venue">{{with eventRoomText .}}<span class="event-room">{{.}}</span>{{end}}{{venueName $.VenueNames .VenueSlug}}{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
             {{with .Genre}}<span class="event-genre">{{.}}</span>{{end}}
             {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
           </span>
@@ -58,7 +58,7 @@
               {{with eventStatusLabel .}}<span class="event-status">{{.}}</span>{{end}}
             </span>
             <span class="event-title">{{eventTitle . $.VenueNames}}</span>
-            <span class="event-venue">{{venueName $.VenueNames .VenueSlug}}{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
+            <span class="event-venue">{{with eventRoomText .}}<span class="event-room">{{.}}</span>{{end}}{{venueName $.VenueNames .VenueSlug}}{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
             {{with .Genre}}<span class="event-genre">{{.}}</span>{{end}}
             {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
           </span>
