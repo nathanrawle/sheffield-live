@@ -2694,7 +2694,7 @@ func eventIsCurrentOrUpcoming(event domain.Event, now time.Time, loc *time.Locat
 func eventDisplayEnd(event domain.Event, loc *time.Location) (time.Time, bool) {
 	eventStart := event.Start.In(loc)
 	if event.End.IsZero() {
-		return eventStart, false
+		return localDayStart(eventStart, loc).AddDate(0, 0, 1), true
 	}
 	eventEnd := event.End.In(loc)
 	if eventEnd.Before(eventStart) {
@@ -2827,10 +2827,14 @@ func venueAreasList(venues []domain.Venue) []string {
 }
 
 func eventStatusLabel(event domain.Event) string {
+	status := publicEventStatus(event.Status)
 	if event.PublicationState == domain.PublicationStateProvisional {
+		if status != "" {
+			return status + " · Unconfirmed"
+		}
 		return "Unconfirmed"
 	}
-	return publicEventStatus(event.Status)
+	return status
 }
 
 func showCount(count int) string {

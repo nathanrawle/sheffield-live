@@ -2360,6 +2360,85 @@ func TestEventsShowOngoingPriorDayEventsInCurrentDay(t *testing.T) {
 	assertNotContains(t, filteredBody, "19 Apr - 1 show")
 }
 
+func TestEventsKeepStartOnlyShowsVisibleThroughLocalDay(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:        "start-only-yesterday",
+				Name:        "Start Only Yesterday",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Started yesterday with no listed end time.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/start-only-yesterday",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "start-only-today",
+				Name:        "Start Only Today",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 20, 20, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Started today with no listed end time.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/start-only-today",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "tomorrow-show",
+				Name:        "Tomorrow Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 21, 19, 0),
+				End:         fixtureLocalTime(2026, time.April, 21, 21, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Tomorrow.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/tomorrow-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 20, 21, 0)
+	})
+
+	homeBody := renderPath(t, server, "/")
+	assertInOrder(t, homeBody, []string{
+		"Tonight",
+		"20 Apr - 1 show",
+		"Start Only Today",
+	})
+	assertNotContains(t, homeBody, "Start Only Yesterday")
+
+	filteredBody := renderPath(t, server, "/events?window=today")
+	assertInOrder(t, filteredBody, []string{
+		"Tonight",
+		"20 Apr - 1 show",
+		"Start Only Today",
+	})
+	assertNotContains(t, filteredBody, "Start Only Yesterday")
+
+	venueBody := renderPath(t, server, "/venues/leadmill")
+	assertInOrder(t, venueBody, []string{
+		"Today",
+		"20 Apr - 1 show",
+		"Start Only Today",
+	})
+	assertNotContains(t, venueBody, "Start Only Yesterday")
+}
+
 func TestEventsDefaultOmitsTodayWhenNoCurrentOrUpcomingShowsRemain(t *testing.T) {
 	server := mustClockedServer(t, store.NewStore(
 		[]domain.Venue{{
@@ -2624,12 +2703,28 @@ func TestEventCardsShowOnlyPublicUnconfirmedStatus(t *testing.T) {
 				Origin:           domain.OriginLive,
 				PublicationState: domain.PublicationStateProvisional,
 			},
+			{
+				Slug:             "cancelled-provisional-show",
+				Name:             "Cancelled Provisional Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 22, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 23, 30),
+				Genre:            "Rock",
+				Status:           "Cancelled",
+				Description:      "Cancelled provisional description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/cancelled-provisional-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateProvisional,
+			},
 		},
 	))
 
 	body := renderPath(t, server, "/events?window=today")
 
 	assertContains(t, body, `<span class="event-status">Unconfirmed</span>`)
+	assertContains(t, body, `<span class="event-status">Cancelled · Unconfirmed</span>`)
 	assertNotContains(t, body, `>Listed<`)
 }
 
