@@ -59,7 +59,6 @@
               </span>
               <span class="event-title">{{eventTitle $event $.VenueNames}}</span>
               {{with eventRoomText $event}}<span class="event-meta">{{.}}</span>{{end}}
-              <span class="event-venue">{{venueName $.VenueNames $event.VenueSlug}}{{with venueArea $.VenueAreas $event.VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
               {{with $event.Genre}}<span class="event-genre">{{.}}</span>{{end}}
               {{with originLabel $event.Origin}}<span class="origin-badge">{{.}}</span>{{end}}
             </span>

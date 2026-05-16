@@ -2537,6 +2537,7 @@ func TestVenueDetailEventCardsShowDates(t *testing.T) {
 	assertNotContains(t, body, "Past Leadmill")
 	assertNotContains(t, body, "Nothing Listed")
 	assertNotContains(t, body, "19 Apr 2026 · 20:00")
+	assertNotContains(t, body, `class="event-venue"`)
 }
 
 func TestVenueAndEventDetailShowCoverageNote(t *testing.T) {
