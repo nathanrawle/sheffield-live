@@ -1064,7 +1064,7 @@ func reviewCandidateMatchesEvent(candidate review.Candidate, event domain.Event)
 	if strings.TrimSpace(candidate.VenueSlug) != strings.TrimSpace(event.VenueSlug) {
 		return false
 	}
-	if roomSetsConflict(candidate.Rooms, event.Rooms) {
+	if roomEvidenceConflicts(candidate.RoomText, candidate.Rooms, event.RoomText, event.Rooms) {
 		return false
 	}
 	start, err := parseRFC3339UTC(strings.TrimSpace(candidate.StartAt))
@@ -1234,7 +1234,7 @@ func supportingEventConflict(existing, incoming domain.Event) bool {
 	if strings.TrimSpace(existing.VenueSlug) != strings.TrimSpace(incoming.VenueSlug) {
 		return true
 	}
-	if roomSetsConflict(existing.Rooms, incoming.Rooms) {
+	if roomEvidenceConflicts(existing.RoomText, existing.Rooms, incoming.RoomText, incoming.Rooms) {
 		return true
 	}
 	if !existing.Start.UTC().Equal(incoming.Start.UTC()) {

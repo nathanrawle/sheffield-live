@@ -69,6 +69,30 @@ func roomSetsConflict(a, b []domain.VenueRoom) bool {
 	return false
 }
 
+func roomEvidenceConflicts(aText string, aRooms []domain.VenueRoom, bText string, bRooms []domain.VenueRoom) bool {
+	aRooms = normalizeRoomsForVenue("", aRooms)
+	bRooms = normalizeRoomsForVenue("", bRooms)
+	if len(aRooms) > 0 || len(bRooms) > 0 {
+		if len(aRooms) > 0 && len(bRooms) > 0 {
+			return roomSetsConflict(aRooms, bRooms)
+		}
+		if len(aRooms) > 0 {
+			return normalizeRoomEvidenceText(bText) != ""
+		}
+		return normalizeRoomEvidenceText(aText) != ""
+	}
+	aText = normalizeRoomEvidenceText(aText)
+	bText = normalizeRoomEvidenceText(bText)
+	if aText == "" || bText == "" {
+		return false
+	}
+	return aText != bText
+}
+
+func normalizeRoomEvidenceText(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
+}
+
 func hydrateEventRooms(ctx context.Context, q queryer, events []domain.Event) error {
 	if len(events) == 0 {
 		return nil

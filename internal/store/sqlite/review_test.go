@@ -1078,6 +1078,53 @@ func TestStageReviewGroupDistinguishesWholeVenueRoomEvidenceFromBlank(t *testing
 	assertDefaultChoice(t, group, review.FieldRoomSlugs, group.Candidates[0].ID, "WHOLE VENUE")
 }
 
+func TestReviewCandidateMatchesEventRejectsTextOnlyRoomEvidenceAgainstConcreteRooms(t *testing.T) {
+	start := time.Date(2026, time.May, 10, 18, 30, 0, 0, time.UTC)
+	candidate := review.Candidate{
+		Name:      "Whole Venue Show",
+		VenueSlug: "sidney-and-matilda",
+		RoomText:  "WHOLE VENUE",
+		StartAt:   formatRFC3339UTC(start),
+	}
+	event := domain.Event{
+		Name:      "Whole Venue Show",
+		VenueSlug: "sidney-and-matilda",
+		RoomText:  "FACTORY",
+		Rooms:     []domain.VenueRoom{{VenueSlug: "sidney-and-matilda", Slug: "factory", Name: "Factory"}},
+		Start:     start,
+	}
+
+	if reviewCandidateMatchesEvent(candidate, event) {
+		t.Fatal("text-only room evidence matched concrete room evidence")
+	}
+}
+
+func TestSupportingEventConflictDetectsTextOnlyRoomEvidenceAgainstConcreteRooms(t *testing.T) {
+	start := time.Date(2026, time.May, 10, 18, 30, 0, 0, time.UTC)
+	existing := domain.Event{
+		Name:      "Whole Venue Show",
+		VenueSlug: "sidney-and-matilda",
+		RoomText:  "WHOLE VENUE",
+		Start:     start,
+	}
+	incoming := domain.Event{
+		Name:      "Whole Venue Show",
+		VenueSlug: "sidney-and-matilda",
+		RoomText:  "FACTORY",
+		Rooms:     []domain.VenueRoom{{VenueSlug: "sidney-and-matilda", Slug: "factory", Name: "Factory"}},
+		Start:     start,
+	}
+
+	if !supportingEventConflict(existing, incoming) {
+		t.Fatal("text-only room evidence did not conflict with concrete room evidence")
+	}
+
+	existing.RoomText = ""
+	if supportingEventConflict(existing, incoming) {
+		t.Fatal("blank room evidence conflicted with concrete room evidence")
+	}
+}
+
 func TestStageReviewGroupUnanimousDuplicateAutoResolvesWithNewProvisionalVenue(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
