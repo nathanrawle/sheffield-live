@@ -82,7 +82,8 @@ func TestExtractSidneyAndMatildaEventDetailLinks(t *testing.T) {
 func TestExtractSidneyAndMatildaRoomEvidence(t *testing.T) {
 	body := []byte(`
 		<article class="eventlist-event">
-			<a href="/events/parallel-delusion">Parallel Delusion</a>
+			<a href="/events/parallel-delusion" class="eventlist-column-thumbnail"></a>
+			<h1 class="eventlist-title"><a href="/events/parallel-delusion">S&amp;M Presents: Parallel Delusion</a></h1>
 			<div class="eventlist-excerpt"><p>FACTORY</p><p>Tickets available</p></div>
 		</article>
 		<article class="eventlist-event">
@@ -110,6 +111,7 @@ func TestExtractSidneyAndMatildaRoomEvidence(t *testing.T) {
 	got := ExtractSidneyAndMatildaRoomEvidence("https://www.sidneyandmatilda.com/events/", body)
 
 	assertRoomEvidence(t, got["url:https://www.sidneyandmatilda.com/events/parallel-delusion"], "FACTORY", []RoomCandidate{{Slug: "factory", Name: "Factory"}})
+	assertRoomEvidence(t, got[roomEvidenceTitleKey("S&M Presents: Parallel Delusion")], "FACTORY", []RoomCandidate{{Slug: "factory", Name: "Factory"}})
 	assertRoomEvidence(t, got[roomEvidenceTitleKey("Contrails")], "BASEMENT", []RoomCandidate{{Slug: "basement", Name: "Basement"}})
 	assertRoomEvidence(t, got["url:https://www.sidneyandmatilda.com/events/abba-gold"], "GALLERY", []RoomCandidate{{Slug: "gallery", Name: "Gallery"}})
 	assertRoomEvidence(t, got["url:https://www.sidneyandmatilda.com/events/two-roomer"], "GALLERY + BASEMENT", []RoomCandidate{{Slug: "gallery", Name: "Gallery"}, {Slug: "basement", Name: "Basement"}})

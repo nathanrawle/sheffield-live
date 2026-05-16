@@ -78,6 +78,8 @@ func ExtractSidneyAndMatildaRoomEvidence(baseURL string, body []byte) map[string
 }
 
 func sidneyEventArticleIdentity(base *url.URL, raw []byte) (string, string) {
+	var detailURL string
+	var title string
 	for _, match := range anchorPattern.FindAllSubmatch(raw, -1) {
 		href := strings.Trim(strings.TrimSpace(string(match[1])), `"'`)
 		label := anchorLabel(match[2])
@@ -89,9 +91,26 @@ func sidneyEventArticleIdentity(base *url.URL, raw []byte) (string, string) {
 		if err != nil {
 			continue
 		}
-		return resolved, label
+		if detailURL == "" {
+			detailURL = resolved
+		}
+		if title == "" && sidneyEventTitleCandidate(label) {
+			title = label
+		}
+		if detailURL != "" && title != "" {
+			return detailURL, title
+		}
 	}
-	return "", ""
+	return detailURL, title
+}
+
+func sidneyEventTitleCandidate(label string) bool {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return false
+	}
+	normalized := strings.ToLower(strings.Join(strings.Fields(label), " "))
+	return normalized != "view event" && !strings.HasPrefix(normalized, "view event ")
 }
 
 func sidneyEventArticleRoomText(raw []byte) string {
