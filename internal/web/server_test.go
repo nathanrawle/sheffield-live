@@ -2095,13 +2095,25 @@ func TestPublicEventTitleCleansSourcePresentationLeaks(t *testing.T) {
 			name:      "at venue suffix with back to back qualifier",
 			eventName: "An evening with Artist at Cafe No. 9 (the first of two back to back shows)",
 			venueSlug: "cafe-no-9",
-			want:      "An evening with Artist",
+			want:      "Artist",
 		},
 		{
 			name:      "at venue suffix with dash qualifier",
 			eventName: "An evening with The 20ft Squid Blues Band at Cafe No9 - The first of two back to back shows",
 			venueSlug: "cafe-no-9",
-			want:      "An evening with The 20ft Squid Blues Band",
+			want:      "The 20ft Squid Blues Band",
+		},
+		{
+			name:      "cafe no 9 house prefix without venue suffix",
+			eventName: "An evening with Ellie Gowers",
+			venueSlug: "cafe-no-9",
+			want:      "Ellie Gowers",
+		},
+		{
+			name:      "cafe no 9 house prefix is venue scoped",
+			eventName: "An evening with Ellie Gowers",
+			venueSlug: "sidney-and-matilda",
+			want:      "An evening with Ellie Gowers",
 		},
 	}
 

@@ -528,6 +528,7 @@ func publicEventTitle(event domain.Event, venueNames map[string]string) string {
 	if venueName := publicVenueName(venueNames, event.VenueSlug); strings.TrimSpace(venueName) != "" {
 		title = stripPublicEventVenueSuffix(title, venueName)
 	}
+	title = stripCafeNo9PublicTitlePrefix(title, event.VenueSlug)
 	return titleCasePublicShoutingTitle(title)
 }
 
@@ -607,6 +608,17 @@ func trimLeadingTitlePunctuation(value string) string {
 		return value
 	}
 	return trimmed
+}
+
+func stripCafeNo9PublicTitlePrefix(title, venueSlug string) string {
+	if !strings.EqualFold(strings.TrimSpace(venueSlug), "cafe-no-9") {
+		return title
+	}
+	const prefix = "An evening with "
+	if len(title) < len(prefix) || !strings.EqualFold(title[:len(prefix)], prefix) {
+		return title
+	}
+	return nonEmptyTitlePrefix(title, strings.TrimSpace(title[len(prefix):]))
 }
 
 func stripPublicEventVenueSuffix(title, venueName string) string {
