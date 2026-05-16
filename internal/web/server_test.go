@@ -45,6 +45,7 @@ func TestRoutes(t *testing.T) {
 		{name: "venues", path: "/venues", code: http.StatusOK, body: "Sheffield rooms"},
 		{name: "venue detail", path: "/venues/leadmill", code: http.StatusOK, body: "Leadmill"},
 		{name: "static css", path: "/static/site.css", code: http.StatusOK, body: "color-scheme"},
+		{name: "static js", path: "/static/site.js", code: http.StatusOK, body: "data-venue-timeline"},
 		{name: "admin missing", path: "/admin", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "admin import history missing", path: "/admin/import-runs", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "admin review history missing", path: "/admin/review/history", code: http.StatusNotFound, body: "404 page not found"},
@@ -2530,6 +2531,9 @@ func TestVenueDetailEventCardsShowDates(t *testing.T) {
 		"27 Apr - 1 show",
 		"20:00",
 	})
+	assertContains(t, body, `data-venue-timeline`)
+	assertContains(t, body, `class="venue-timeline-item venue-timeline-day-start venue-day-tone-0" data-venue-day="0"`)
+	assertContains(t, body, `class="venue-timeline-item venue-timeline-day-start venue-day-tone-1" data-venue-day="1"`)
 	assertNotContains(t, body, "Past Leadmill")
 	assertNotContains(t, body, "Nothing Listed")
 	assertNotContains(t, body, "19 Apr 2026 · 20:00")

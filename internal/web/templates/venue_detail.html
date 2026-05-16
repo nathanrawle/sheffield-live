@@ -26,12 +26,11 @@
     <div class="section-head">
       <h2>Coming up here</h2>
     </div>
-    <div class="venue-timeline">
-      {{range .VenueTimelineSections}}
+    <div class="venue-timeline" data-venue-timeline>
+      {{range $sectionIndex, $section := .VenueTimelineSections}}
       {{if .Events}}
-        {{$section := .}}
         {{range $index, $event := .Events}}
-        <div class="venue-timeline-item{{if eq $index 0}} venue-timeline-day-start{{end}}">
+        <div class="venue-timeline-item{{if eq $index 0}} venue-timeline-day-start{{end}} {{venueTimelineToneClass $sectionIndex}}" data-venue-day="{{$sectionIndex}}">
           {{if eq $index 0}}
           <span class="venue-day-marker">
             <span class="venue-day-pill">

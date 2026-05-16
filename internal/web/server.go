@@ -322,6 +322,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"venueTimelineMeta": func(section VenueTimelineSection) string {
 			return venueTimelineMeta(section, localLocation)
 		},
+		"venueTimelineToneClass": venueTimelineToneClass,
 		"dateShortPtr": func(t *time.Time) string {
 			if t == nil {
 				return ""
@@ -2682,6 +2683,10 @@ func venueTimelineDayTitle(date, now time.Time, loc *time.Location) string {
 
 func venueTimelineMeta(section VenueTimelineSection, loc *time.Location) string {
 	return fmt.Sprintf("%s - %s", venueTimelineDateLabel(section.Dates, loc), showCount(len(section.Events)))
+}
+
+func venueTimelineToneClass(index int) string {
+	return fmt.Sprintf("venue-day-tone-%d", index%4)
 }
 
 func venueTimelineDateLabel(dates []time.Time, loc *time.Location) string {
