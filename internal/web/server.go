@@ -2590,6 +2590,9 @@ func buildVenueTimelineSections(events []domain.Event, now time.Time, loc *time.
 	eventsByDate := make(map[time.Time][]domain.Event)
 	for _, event := range events {
 		date := localDayStart(event.Start, loc)
+		if date.Before(today) && eventIsCurrentOrUpcoming(event, now, loc) {
+			date = today
+		}
 		eventsByDate[date] = append(eventsByDate[date], event)
 	}
 
