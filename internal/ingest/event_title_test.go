@@ -70,6 +70,12 @@ func TestStripVenueNameFromEventTitle(t *testing.T) {
 			want:      "An evening with Artist",
 		},
 		{
+			name:      "at suffix with dash qualifier",
+			title:     "An evening with The 20ft Squid Blues Band at Cafe No9 - The first of two back to back shows",
+			venueSlug: "cafe-no-9",
+			want:      "An evening with The 20ft Squid Blues Band",
+		},
+		{
 			name:      "case and whitespace",
 			title:     "  maybe   gold   -   yellow   arch  ",
 			venueSlug: "yellow-arch",

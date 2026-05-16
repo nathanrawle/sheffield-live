@@ -2097,6 +2097,12 @@ func TestPublicEventTitleCleansSourcePresentationLeaks(t *testing.T) {
 			venueSlug: "cafe-no-9",
 			want:      "An evening with Artist",
 		},
+		{
+			name:      "at venue suffix with dash qualifier",
+			eventName: "An evening with The 20ft Squid Blues Band at Cafe No9 - The first of two back to back shows",
+			venueSlug: "cafe-no-9",
+			want:      "An evening with The 20ft Squid Blues Band",
+		},
 	}
 
 	for _, tc := range tests {
