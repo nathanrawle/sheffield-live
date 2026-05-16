@@ -2189,7 +2189,7 @@ func TestEventsFiltersToday(t *testing.T) {
 	assertNotContains(t, body, "Friday Leadmill")
 }
 
-func TestEventsDefaultShowsNineDayBoard(t *testing.T) {
+func TestEventsDefaultShowsOnlyDaysWithCurrentOrUpcomingEvents(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/events")
 
@@ -2200,9 +2200,6 @@ func TestEventsDefaultShowsNineDayBoard(t *testing.T) {
 		"Tomorrow",
 		"20 Apr - 1 show",
 		"Tomorrow Yellow Arch",
-		"Tuesday",
-		"21 Apr - 0 shows",
-		"No shows listed",
 		"Friday",
 		"24 Apr - 1 show",
 		"Friday Leadmill",
@@ -2211,6 +2208,133 @@ func TestEventsDefaultShowsNineDayBoard(t *testing.T) {
 		"Later Leadmill",
 	})
 	assertNotContains(t, body, "Past Leadmill")
+	assertNotContains(t, body, "No shows listed")
+	assertNotContains(t, body, "21 Apr - 0 shows")
+}
+
+func TestEventsDefaultShowsOngoingTodayEventsAndOmitsEndedDays(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:        "ended-show",
+				Name:        "Ended Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 18, 0),
+				End:         fixtureLocalTime(2026, time.April, 19, 20, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Ended today.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/ended-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "ongoing-show",
+				Name:        "Ongoing Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+				End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Still running.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/ongoing-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "tomorrow-show",
+				Name:        "Tomorrow Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 20, 19, 0),
+				End:         fixtureLocalTime(2026, time.April, 20, 21, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Tomorrow.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/tomorrow-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 19, 21, 0)
+	})
+
+	body := renderPath(t, server, "/events")
+
+	assertInOrder(t, body, []string{
+		"Tonight",
+		"19 Apr - 1 show",
+		"Ongoing Show",
+		"Tomorrow",
+		"20 Apr - 1 show",
+		"Tomorrow Show",
+	})
+	assertNotContains(t, body, "Ended Show")
+	assertNotContains(t, body, "No shows listed")
+}
+
+func TestEventsDefaultOmitsTodayWhenNoCurrentOrUpcomingShowsRemain(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:        "ended-show",
+				Name:        "Ended Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 18, 0),
+				End:         fixtureLocalTime(2026, time.April, 19, 20, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Ended today.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/ended-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "tomorrow-show",
+				Name:        "Tomorrow Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 20, 19, 0),
+				End:         fixtureLocalTime(2026, time.April, 20, 21, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Tomorrow.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/tomorrow-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 19, 21, 0)
+	})
+
+	body := renderPath(t, server, "/events")
+
+	assertInOrder(t, body, []string{
+		"Tomorrow",
+		"20 Apr - 1 show",
+		"Tomorrow Show",
+	})
+	assertNotContains(t, body, "Tonight")
+	assertNotContains(t, body, "Ended Show")
+	assertNotContains(t, body, "No shows listed")
 }
 
 func TestEventsFiltersTonight(t *testing.T) {
