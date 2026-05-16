@@ -747,6 +747,7 @@ func TestStageReviewGroupRestagingOpenGroupRefreshesRoomEvidence(t *testing.T) {
 	if got := review.RoomSlugsValue(group.Candidates[0].Rooms); got != "courtyard-stage" {
 		t.Fatalf("room slugs = %q, want %q", got, "courtyard-stage")
 	}
+	assertDefaultChoice(t, group, review.FieldRoomSlugs, group.Candidates[0].ID, "courtyard-stage")
 
 	room, ok, err := st.LoadVenueRoomBySlug(ctx, "sidney-and-matilda", "courtyard-stage")
 	if err != nil {
@@ -6022,6 +6023,24 @@ func assertDraftChoice(t *testing.T, group review.Group, field review.Field, can
 	}
 	if choice.UpdatedAt.IsZero() {
 		t.Fatalf("%s updated_at is zero", field)
+	}
+}
+
+func assertDefaultChoice(t *testing.T, group review.Group, field review.Field, candidateID int64, value string) {
+	t.Helper()
+
+	choice, ok := group.DefaultChoices[field]
+	if !ok {
+		t.Fatalf("missing default choice for %s", field)
+	}
+	if choice.CandidateID != candidateID {
+		t.Fatalf("%s default candidate ID = %d, want %d", field, choice.CandidateID, candidateID)
+	}
+	if choice.Value != value {
+		t.Fatalf("%s default value = %q, want %q", field, choice.Value, value)
+	}
+	if choice.UpdatedAt.IsZero() {
+		t.Fatalf("%s default updated_at is zero", field)
 	}
 }
 

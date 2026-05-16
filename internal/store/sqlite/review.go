@@ -148,6 +148,9 @@ func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (
 		if err := ensureProvisionalRoomsForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
 			return review.StageGroupResult{}, err
 		}
+		if err := recomputeReviewFieldDefaultsTx(ctx, tx, group.ID, now); err != nil {
+			return review.StageGroupResult{}, err
+		}
 	}
 	if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, group.ID, now); err != nil {
 		return review.StageGroupResult{}, err
