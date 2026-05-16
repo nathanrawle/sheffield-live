@@ -762,6 +762,8 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 		wantUA       string
 		wantContact  string
 		wantStage    bool
+		wantTitle    bool
+		wantApply    bool
 		wantFixture  string
 		wantImportID int64
 		wantAll      bool
@@ -779,6 +781,8 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 		{name: "canonical+alias stage groups same", args: []string{"-stage-review-groups=true", "-stage-review=true"}, wantStage: true},
 		{name: "canonical+alias stage groups different", args: []string{"-stage-review-groups=true", "-stage-review=false"}, wantErr: true},
 		{name: "reordered stage groups mismatch", args: []string{"-stage-review-groups=true", "-stage-review=false", "-stage-review-groups=true"}, wantErr: true},
+		{name: "event title repair dry run", args: []string{"-repair-event-titles"}, wantTitle: true},
+		{name: "event title repair apply", args: []string{"-repair-event-titles", "-apply-title-repairs"}, wantTitle: true, wantApply: true},
 		{name: "canonical fixture", args: []string{"-review-ics-fixture", "fixture.ics"}, wantFixture: "fixture.ics"},
 		{name: "alias fixture", args: []string{"-review-fixture", "fixture.ics"}, wantFixture: "fixture.ics"},
 		{name: "canonical+alias fixture same", args: []string{"-review-ics-fixture", "fixture.ics", "-review-fixture", "fixture.ics"}, wantFixture: "fixture.ics"},
@@ -809,6 +813,12 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 			}
 			if got := cfg.stageReviewGroups; got != tc.wantStage {
 				t.Fatalf("stage review groups = %v, want %v", got, tc.wantStage)
+			}
+			if got := cfg.repairEventTitles; got != tc.wantTitle {
+				t.Fatalf("repair event titles = %v, want %v", got, tc.wantTitle)
+			}
+			if got := cfg.applyTitleRepairs; got != tc.wantApply {
+				t.Fatalf("apply title repairs = %v, want %v", got, tc.wantApply)
 			}
 			if got := cfg.reviewICSFixture; got != tc.wantFixture {
 				t.Fatalf("fixture = %q, want %q", got, tc.wantFixture)
@@ -909,6 +919,78 @@ func TestParseIngestArgsRejectsRepairDescriptionConflicts(t *testing.T) {
 				t.Fatal("expected repair description flag conflict")
 			}
 		})
+	}
+}
+
+func TestParseIngestArgsRejectsRepairEventTitleConflicts(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "stage review groups", args: []string{"-repair-event-titles", "-stage-review-groups"}},
+		{name: "descriptions", args: []string{"-repair-event-titles", "-repair-descriptions"}},
+		{name: "fixture", args: []string{"-repair-event-titles", "-review-ics-fixture", "fixture.ics"}},
+		{name: "apply without repair", args: []string{"-apply-title-repairs"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseIngestArgs(tc.args); err == nil {
+				t.Fatal("expected repair event title flag conflict")
+			}
+		})
+	}
+}
+
+func TestRunWithArgsRepairEventTitlesDryRunDoesNotMutate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	sourceID, err := st.EnsureSource(context.Background(), "Yellow Arch manual ingest", "https://www.yellowarch.com/event/late-junction/")
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	dirty := "Late Junction - Yellow Arch Studios"
+	startAt := "2026-05-10T18:30:00Z"
+	dirtySlug := mustLiveEventSlugForCLI(t, dirty, "yellow-arch", startAt)
+	insertCLIEvent(t, db, sourceID, dirtySlug, "yellow-arch", dirty, startAt)
+
+	originalReplay := replayImportRun
+	defer func() {
+		replayImportRun = originalReplay
+	}()
+	replayImportRun = func(_ context.Context, _ *sqlite.Store, _ *ingest.Catalog, importRunID int64, _ ingest.ReplayOptions) (ingest.Report, error) {
+		if importRunID != 42 {
+			t.Fatalf("import run id = %d, want 42", importRunID)
+		}
+		return cliYellowArchTitleRepairReport(startAt, dirty), nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "-import-run-id", "42", "-repair-event-titles"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("run repair event titles: %v", err)
+	}
+	var got titleRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if !got.TitleRepair.DryRun || got.TitleRepair.Applied {
+		t.Fatalf("dry/apply = %v/%v, want true/false", got.TitleRepair.DryRun, got.TitleRepair.Applied)
+	}
+	if got.TitleRepair.Repaired != 1 || got.TitleRepair.Changes[0].Result != "would_repair" {
+		t.Fatalf("title repair = %#v, want one dry-run repair", got.TitleRepair)
+	}
+	row := loadEventRow(t, db, dirtySlug)
+	if row.Name != dirty {
+		t.Fatalf("event name = %q, want unchanged %q", row.Name, dirty)
 	}
 }
 
@@ -2343,6 +2425,88 @@ type eventRow struct {
 	LastCheckedAt    string
 	Origin           string
 	PublicationState string
+}
+
+func cliYellowArchTitleRepairReport(startAt, summary string) ingest.Report {
+	return ingest.Report{
+		Source:      ingest.YellowArchSource,
+		SourceURL:   "https://www.yellowarch.com/events/",
+		ImportRunID: 42,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.yellowarch.com/events/",
+			Candidates: []ingest.EventCandidate{{
+				Summary:  summary,
+				Location: "Yellow Arch Studios",
+				URL:      "https://www.yellowarch.com/event/late-junction/",
+				StartAt:  startAt,
+				Status:   "Listed",
+			}},
+		}},
+	}
+}
+
+func mustLiveEventSlugForCLI(t *testing.T, name, venueSlug, startAt string) string {
+	t.Helper()
+
+	start, err := time.Parse(time.RFC3339, startAt)
+	if err != nil {
+		t.Fatalf("parse start: %v", err)
+	}
+	return "live-" + cliSlugFromText(name) + "-" + cliSlugFromText(venueSlug) + "-" + start.UTC().Format("20060102150405")
+}
+
+func cliSlugFromText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	wroteDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+			wroteDash = false
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			wroteDash = false
+		default:
+			if builder.Len() > 0 && !wroteDash {
+				builder.WriteByte('-')
+				wroteDash = true
+			}
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func insertCLIEvent(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, name, startAt string) {
+	t.Helper()
+
+	var venueID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+	`, venueSlug).Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			last_checked_at,
+			origin,
+			publication_state
+		) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, name, startAt, "Test", "Listed", "Existing description.", "2026-05-01T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed)); err != nil {
+		t.Fatalf("insert CLI event: %v", err)
+	}
 }
 
 func loadEventRow(t *testing.T, db *sql.DB, slug string) eventRow {

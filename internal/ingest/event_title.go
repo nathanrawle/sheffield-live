@@ -38,6 +38,10 @@ func cleanEventCandidateSummaryForCatalog(catalog *Catalog, source string, candi
 	return stripVenueNameFromEventTitle(candidate.Summary, venueSlug)
 }
 
+func CleanEventTitleForVenue(title, venueSlug string) string {
+	return stripVenueNameFromEventTitle(title, venueSlug)
+}
+
 func stripVenueNameFromEventTitle(title, venueSlug string) string {
 	original := strings.TrimSpace(title)
 	cleaned := normalizeEventTitleSpacing(original)
