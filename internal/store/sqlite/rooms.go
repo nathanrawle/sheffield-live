@@ -57,8 +57,12 @@ func roomSetsConflict(a, b []domain.VenueRoom) bool {
 	if len(a) != len(b) {
 		return true
 	}
-	for i := range a {
-		if a[i].VenueSlug != b[i].VenueSlug || a[i].Slug != b[i].Slug {
+	bRooms := make(map[string]struct{}, len(b))
+	for _, room := range b {
+		bRooms[room.VenueSlug+"\x00"+room.Slug] = struct{}{}
+	}
+	for _, room := range a {
+		if _, ok := bRooms[room.VenueSlug+"\x00"+room.Slug]; !ok {
 			return true
 		}
 	}

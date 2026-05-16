@@ -1,6 +1,7 @@
 package review
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -304,6 +305,7 @@ func RoomSlugsValue(rooms []domain.VenueRoom) string {
 		seen[slug] = struct{}{}
 		values = append(values, slug)
 	}
+	sort.Strings(values)
 	return strings.Join(values, ", ")
 }
 
