@@ -626,12 +626,33 @@ a:focus-visible {
   font-weight: 800;
 }
 
+.event-venue.has-room {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  align-items: baseline;
+}
+
+.event-room,
+.event-venue-name {
+  color: var(--text);
+}
+
+.event-meta-separator {
+  margin: 0 0.25rem;
+  color: var(--muted);
+}
+
 .event-area,
 .event-genre {
   display: block;
   color: var(--muted);
   font-family: ui-sans-serif, system-ui, sans-serif;
   font-size: 0.9rem;
+}
+
+.event-venue.has-room .event-area {
+  display: inline;
 }
 
 .event-card-empty {

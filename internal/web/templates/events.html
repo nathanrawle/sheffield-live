@@ -26,7 +26,11 @@
               {{with eventStatusLabel .}}<span class="event-status">{{.}}</span>{{end}}
             </span>
             <span class="event-title">{{eventTitle . $.VenueNames}}</span>
-            <span class="event-venue">{{with eventRoomText .}}<span class="event-room">{{.}}</span>{{end}}{{venueName $.VenueNames .VenueSlug}}{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
+            {{if eventRoomText .}}
+            <span class="event-venue has-room"><span class="event-room">{{eventRoomText .}}</span><span class="event-meta-separator"> · </span><span class="event-venue-name">{{venueName $.VenueNames .VenueSlug}}</span>{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-meta-separator"> · </span><span class="event-area">{{.}}</span>{{end}}</span>
+            {{else}}
+            <span class="event-venue">{{venueName $.VenueNames .VenueSlug}}{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
+            {{end}}
             {{with .Genre}}<span class="event-genre">{{.}}</span>{{end}}
             {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
           </span>
@@ -58,7 +62,11 @@
               {{with eventStatusLabel .}}<span class="event-status">{{.}}</span>{{end}}
             </span>
             <span class="event-title">{{eventTitle . $.VenueNames}}</span>
-            <span class="event-venue">{{with eventRoomText .}}<span class="event-room">{{.}}</span>{{end}}{{venueName $.VenueNames .VenueSlug}}{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
+            {{if eventRoomText .}}
+            <span class="event-venue has-room"><span class="event-room">{{eventRoomText .}}</span><span class="event-meta-separator"> · </span><span class="event-venue-name">{{venueName $.VenueNames .VenueSlug}}</span>{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-meta-separator"> · </span><span class="event-area">{{.}}</span>{{end}}</span>
+            {{else}}
+            <span class="event-venue">{{venueName $.VenueNames .VenueSlug}}{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
+            {{end}}
             {{with .Genre}}<span class="event-genre">{{.}}</span>{{end}}
             {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
           </span>
