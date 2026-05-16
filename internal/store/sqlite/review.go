@@ -3699,6 +3699,9 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 	if venueSlug == "" {
 		return domain.Event{}, errors.New("review event venue slug is required")
 	}
+	if err := validateRoomChoiceVenue(roomCandidate, venueSlug); err != nil {
+		return domain.Event{}, err
+	}
 	if startText == "" {
 		return domain.Event{}, errors.New("review event start time is required")
 	}
@@ -3755,6 +3758,26 @@ func buildResolvedEvent(group review.Group, selected map[review.Field]review.Can
 		return domain.Event{}, fmt.Errorf("review event %w", err)
 	}
 	return event, nil
+}
+
+func validateRoomChoiceVenue(roomCandidate review.Candidate, venueSlug string) error {
+	if len(roomCandidate.Rooms) == 0 {
+		return nil
+	}
+	venueSlug = strings.TrimSpace(venueSlug)
+	roomVenueSlug := strings.TrimSpace(roomCandidate.VenueSlug)
+	if roomVenueSlug == "" {
+		return errors.New("review room choice has rooms but no venue slug")
+	}
+	if roomVenueSlug != venueSlug {
+		return fmt.Errorf("review room choice venue %q does not match selected venue %q", roomVenueSlug, venueSlug)
+	}
+	for _, room := range roomCandidate.Rooms {
+		if roomVenueSlug := strings.TrimSpace(room.VenueSlug); roomVenueSlug != "" && roomVenueSlug != venueSlug {
+			return fmt.Errorf("review room %q belongs to venue %q, not selected venue %q", strings.TrimSpace(room.Slug), roomVenueSlug, venueSlug)
+		}
+	}
+	return nil
 }
 
 func buildLiveEventSlug(name, venueSlug string, start time.Time) (string, error) {

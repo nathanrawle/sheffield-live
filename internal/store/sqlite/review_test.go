@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -2050,6 +2051,88 @@ func TestResolveReviewGroupPublishesRoomAssignment(t *testing.T) {
 		t.Fatal("final review group not found")
 	}
 	assertDraftChoice(t, final, review.FieldRoomSlugs, group.Candidates[0].ID, "factory")
+}
+
+func TestResolveReviewGroupRejectsRoomChoiceFromDifferentVenue(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
+		Title:      "Mixed room venue resolve",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:mixed-room-venue.ics",
+		Candidates: []review.CandidateInput{
+			{
+				ExternalID:  "sidney-room",
+				Name:        "Parallel Delusion",
+				VenueSlug:   "sidney-and-matilda",
+				RoomText:    "FACTORY",
+				Rooms:       []domain.VenueRoom{{VenueSlug: "sidney-and-matilda", Slug: "factory", Name: "Factory"}},
+				StartAt:     "2026-05-04T19:00:00Z",
+				EndAt:       "2026-05-04T22:00:00Z",
+				Genre:       "Experimental",
+				Status:      "Listed",
+				Description: "Factory room fixture.",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/sidney-room",
+				Provenance:  "fixture UID sidney-room",
+			},
+			{
+				ExternalID:  "leadmill-venue",
+				Name:        "Parallel Delusion",
+				VenueSlug:   "leadmill",
+				StartAt:     "2026-05-04T19:00:00Z",
+				EndAt:       "2026-05-04T22:00:00Z",
+				Genre:       "Experimental",
+				Status:      "Listed",
+				Description: "Factory room fixture.",
+				SourceName:  "Fixture ICS",
+				SourceURL:   "https://example.test/leadmill-venue",
+				Provenance:  "fixture UID leadmill-venue",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create review group: %v", err)
+	}
+
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	choices := fullReviewChoices(t, group)
+	for i := range choices {
+		if choices[i].Field == review.FieldVenueSlug {
+			choices[i].CandidateID = group.Candidates[1].ID
+		}
+	}
+
+	err = st.ResolveReviewGroup(ctx, groupID, choices)
+	if err == nil {
+		t.Fatal("expected mixed room and venue choices to be rejected")
+	}
+	if !strings.Contains(err.Error(), `review room choice venue "sidney-and-matilda" does not match selected venue "leadmill"`) {
+		t.Fatalf("resolve error = %q, want room venue mismatch", err)
+	}
+
+	final, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load final group: %v", err)
+	}
+	if !ok {
+		t.Fatal("final review group not found")
+	}
+	if final.Status != review.StatusOpen {
+		t.Fatalf("final status = %q, want %q", final.Status, review.StatusOpen)
+	}
 }
 
 func TestResolveReviewGroupPublishesChosenImage(t *testing.T) {
