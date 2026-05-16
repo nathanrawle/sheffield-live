@@ -524,6 +524,92 @@ func TestAdminVenuePostRequiresCSRF(t *testing.T) {
 	}
 }
 
+func TestAdminRoomPostRequiresCSRF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	_, err = st.StageReviewGroup(contextForTesting(), review.GroupInput{
+		Title:      "Staged room",
+		SourceName: "Fixture ICS",
+		SourceURL:  "file:staged-room.ics",
+		StagingKey: "v1:admin-room-csrf",
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "candidate-a",
+			Name:        "Staged room show",
+			VenueSlug:   "sidney-and-matilda",
+			RoomText:    "COURTYARD STAGE",
+			Rooms:       []domain.VenueRoom{{Slug: "courtyard-stage", Name: "Courtyard Stage"}},
+			StartAt:     "2026-05-10T18:30:00Z",
+			EndAt:       "2026-05-10T22:00:00Z",
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "Staged room fixture.",
+			SourceName:  "Fixture ICS",
+			SourceURL:   "https://example.test/staged-room-show",
+			Provenance:  "fixture UID candidate-a",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stage review group: %v", err)
+	}
+
+	server, err := NewServer(testAdminAuthDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin")
+
+	form := url.Values{"action": {"validate"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/rooms/sidney-and-matilda/courtyard-stage", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/rooms/sidney-and-matilda/courtyard-stage", nil)
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d; body %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	body := rr.Body.String()
+	assertContains(t, body, `<form method="post" class="review-actions">
+    <input type="hidden" name="csrf_token" value="`)
+	assertContains(t, body, `<form method="post" class="venue-edit-form">
+    <input type="hidden" name="csrf_token" value="`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form = url.Values{
+		"action":     {"validate"},
+		"csrf_token": {csrfToken},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/admin/rooms/sidney-and-matilda/courtyard-stage", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/rooms?validated=1" {
+		t.Fatalf("Location = %q, want %q", location, "/admin/rooms?validated=1")
+	}
+}
+
 func TestAdminConfigurationPostRequiresCSRF(t *testing.T) {
 	server, err := NewServer(testAdminAuthDeps(failingGenreConfigurationStore{}))
 	if err != nil {

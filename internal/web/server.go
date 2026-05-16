@@ -1293,6 +1293,7 @@ func (s *Server) handleAdminRooms(w http.ResponseWriter, r *http.Request) {
 			s.localLocation,
 		),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_rooms.html", data)
 }
 
@@ -1596,6 +1597,7 @@ func (s *Server) handleAdminRoomDetail(w http.ResponseWriter, r *http.Request, r
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 		Flash:                 flash,
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_room_detail.html", data)
 }
 
@@ -1757,6 +1759,9 @@ func (s *Server) postAdminRoomDecision(w http.ResponseWriter, r *http.Request, v
 	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	if !s.requireAdminCSRF(w, r) {
 		return
 	}
 	action := strings.TrimSpace(r.FormValue("action"))

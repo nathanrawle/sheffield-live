@@ -20,6 +20,7 @@
 {{if .HasVenueAdminWrites}}
 <section class="section-block">
   <form method="post" class="review-actions">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="hidden" name="action" value="validate">
     <button type="submit">Validate room</button>
   </form>
@@ -30,6 +31,7 @@
 <section class="section-block">
   <h2>Edit provisional room</h2>
   <form method="post" class="venue-edit-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="hidden" name="action" value="save">
     <label>
       Name
