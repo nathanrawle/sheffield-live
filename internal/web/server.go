@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -52,6 +53,7 @@ type Server struct {
 	mediaServer               http.Handler
 	mediaURLPrefix            string
 	logger                    *slog.Logger
+	adminAuth                 *adminAuthenticator
 }
 
 type ReviewStore interface {
@@ -113,6 +115,7 @@ type ServerDeps struct {
 	ReadyChecker              ReadyChecker
 	MediaRoot                 string
 	MediaURLPrefix            string
+	AdminAuth                 AdminAuthConfig
 	Logger                    *slog.Logger
 }
 
@@ -158,6 +161,10 @@ type PageData struct {
 	HasVenueAdminWrites      bool
 	HasRoomAdmin             bool
 	HasGenreConfiguration    bool
+	AdminAuthenticated       bool
+	CSRFToken                string
+	LoginNext                string
+	LoginError               string
 	Flash                    string
 }
 
@@ -319,6 +326,13 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			return formatVenueAddress(name, value)
 		},
 		"venueCardMeta": venueCardMeta,
+		"eventTitle": func(event domain.Event, venueNames map[string]string) string {
+			return publicEventTitle(event, venueNames)
+		},
+		"eventCardMeta": func(event domain.Event, venueNames map[string]string) string {
+			return publicEventCardMeta(event, venueNames)
+		},
+		"eventDetailMeta": publicEventDetailMeta,
 		"candidateDisplayLabel": func(candidate review.Candidate) string {
 			if candidate.IsCanonicalSnapshot() {
 				return "Live canonical snapshot"
@@ -357,11 +371,8 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			}
 			return t.In(localLocation).Format("15:04")
 		},
-		"venueName": func(venueNames map[string]string, slug string) string {
-			return venueDisplayName(venueNames, slug)
-		},
-		"eventVenueName": eventVenueName,
-		"eventRoomText":  eventRoomText,
+		"venueName":     publicVenueName,
+		"eventRoomText": eventRoomText,
 		"originText": func(origin domain.Origin) string {
 			return string(origin)
 		},
@@ -398,6 +409,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"templates/event_detail.html",
 		"templates/venues.html",
 		"templates/venue_detail.html",
+		"templates/admin_login.html",
 		"templates/admin.html",
 		"templates/admin_review.html",
 		"templates/admin_review_history.html",
@@ -428,6 +440,10 @@ func NewServer(deps ServerDeps) (*Server, error) {
 	if strings.TrimSpace(deps.MediaRoot) != "" {
 		mediaServer = http.StripPrefix(mediaURLPrefix+"/", http.FileServer(fileSystemRejectingDirectories{base: http.Dir(deps.MediaRoot)}))
 	}
+	adminAuth, err := newAdminAuthenticator(deps.AdminAuth)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Server{
 		catalog:                   deps.Catalog,
@@ -447,6 +463,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		mediaServer:               mediaServer,
 		mediaURLPrefix:            mediaURLPrefix,
 		logger:                    logging.EnsureLogger(deps.Logger),
+		adminAuth:                 adminAuth,
 	}, nil
 }
 
@@ -498,6 +515,281 @@ func venueCardMeta(name, neighbourhood, address string) string {
 
 	line, _, _ := strings.Cut(formatVenueAddress(name, address), "\n")
 	return strings.TrimSuffix(strings.TrimSpace(line), ",")
+}
+
+func publicEventTitle(event domain.Event, venueNames map[string]string) string {
+	title := normalizePublicText(event.Name)
+	if title == "" {
+		return strings.TrimSpace(event.Name)
+	}
+	if trimmed := trimLeadingTitlePunctuation(title); trimmed != "" {
+		title = trimmed
+	}
+	if venueName := publicVenueName(venueNames, event.VenueSlug); strings.TrimSpace(venueName) != "" {
+		title = stripPublicEventVenueSuffix(title, venueName)
+	}
+	return titleCasePublicShoutingTitle(title)
+}
+
+func publicEventCardMeta(event domain.Event, venueNames map[string]string) string {
+	parts := []string{}
+	if venueName := publicEventVenueName(event, venueNames); venueName != "" {
+		parts = append(parts, venueName)
+	}
+	if genre := normalizePublicText(event.Genre); genre != "" {
+		parts = append(parts, genre)
+	}
+	if status := publicEventStatus(event.Status); status != "" {
+		parts = append(parts, status)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func publicEventVenueName(event domain.Event, venueNames map[string]string) string {
+	venueName := normalizePublicText(publicVenueName(venueNames, event.VenueSlug))
+	if venueName == "" {
+		return ""
+	}
+	if room := normalizePublicText(eventRoomText(event)); room != "" {
+		return fmt.Sprintf("%s (%s)", venueName, room)
+	}
+	return venueName
+}
+
+func publicEventDetailMeta(event domain.Event) string {
+	parts := []string{}
+	if genre := normalizePublicText(event.Genre); genre != "" {
+		parts = append(parts, genre)
+	}
+	if status := publicEventStatus(event.Status); status != "" {
+		parts = append(parts, status)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func publicVenueName(venueNames map[string]string, slug string) string {
+	if venueNames == nil {
+		return slug
+	}
+	if name := strings.TrimSpace(venueNames[slug]); name != "" {
+		return name
+	}
+	return slug
+}
+
+func normalizePublicText(value string) string {
+	value = decodePublicHTMLEntities(strings.TrimSpace(value))
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func decodePublicHTMLEntities(value string) string {
+	for i := 0; i < 4; i++ {
+		decoded := html.UnescapeString(value)
+		if decoded == value {
+			break
+		}
+		value = decoded
+	}
+	return value
+}
+
+func trimLeadingTitlePunctuation(value string) string {
+	trimmed := strings.TrimLeftFunc(value, func(r rune) bool {
+		switch r {
+		case '|', '-', '–', '—', ':', '•', '·':
+			return true
+		default:
+			return unicode.IsSpace(r)
+		}
+	})
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" {
+		return value
+	}
+	return trimmed
+}
+
+func stripPublicEventVenueSuffix(title, venueName string) string {
+	if stripped := stripTrailingParentheticalVenue(title, venueName); stripped != title {
+		title = stripped
+	}
+	if stripped := stripTrailingLiveAtVenue(title, venueName); stripped != title {
+		title = stripped
+	}
+	if stripped := stripTrailingDelimitedVenue(title, venueName); stripped != title {
+		title = stripped
+	}
+	return title
+}
+
+func stripTrailingParentheticalVenue(title, venueName string) string {
+	if !strings.HasSuffix(title, ")") {
+		return title
+	}
+	start := strings.LastIndex(title, "(")
+	if start < 0 {
+		return title
+	}
+	suffix := strings.TrimSpace(title[start+1 : len(title)-1])
+	if !publicVenueSuffixMatches(suffix, venueName) {
+		return title
+	}
+	return nonEmptyTitlePrefix(title, strings.TrimSpace(title[:start]))
+}
+
+func stripTrailingLiveAtVenue(title, venueName string) string {
+	lower := strings.ToLower(title)
+	marker := " live at "
+	idx := strings.LastIndex(lower, marker)
+	if idx < 0 {
+		return title
+	}
+	suffix := strings.TrimSpace(title[idx+len(marker):])
+	if !publicVenueSuffixMatches(suffix, venueName) {
+		return title
+	}
+	return nonEmptyTitlePrefix(title, strings.TrimSpace(title[:idx]))
+}
+
+func stripTrailingDelimitedVenue(title, venueName string) string {
+	delimiters := []string{" - ", " – ", " — ", " | ", ", "}
+	for _, delimiter := range delimiters {
+		for searchEnd := len(title); searchEnd > 0; {
+			idx := strings.LastIndex(title[:searchEnd], delimiter)
+			if idx < 0 {
+				break
+			}
+			suffix := strings.TrimSpace(title[idx+len(delimiter):])
+			if publicVenueSuffixMatches(suffix, venueName) {
+				return nonEmptyTitlePrefix(title, strings.TrimSpace(title[:idx]))
+			}
+			searchEnd = idx
+		}
+	}
+	return title
+}
+
+func publicVenueSuffixMatches(suffix, venueName string) bool {
+	suffix = strings.TrimSpace(suffix)
+	venueName = strings.TrimSpace(venueName)
+	if suffix == "" || venueName == "" {
+		return false
+	}
+	if samePublicVenueName(suffix, venueName) {
+		return true
+	}
+	if head, _, ok := strings.Cut(suffix, ","); ok && samePublicVenueName(head, venueName) {
+		return true
+	}
+	return false
+}
+
+func samePublicVenueName(left, right string) bool {
+	leftKey := normalizedDisplayAddressNameKey(left)
+	rightKey := normalizedDisplayAddressNameKey(right)
+	return leftKey != "" && leftKey == rightKey
+}
+
+func nonEmptyTitlePrefix(original, prefix string) string {
+	if prefix == "" {
+		return original
+	}
+	return prefix
+}
+
+func titleCasePublicShoutingTitle(value string) string {
+	if !publicTitleLooksShouting(value) {
+		return value
+	}
+	words := strings.Fields(value)
+	for i, word := range words {
+		words[i] = titleCasePublicTitleWord(word)
+	}
+	return strings.Join(words, " ")
+}
+
+func publicTitleLooksShouting(value string) bool {
+	if len(strings.Fields(value)) < 2 {
+		return false
+	}
+	letters := 0
+	for _, r := range value {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		letters++
+		if unicode.IsLower(r) {
+			return false
+		}
+	}
+	return letters >= 4
+}
+
+func titleCasePublicTitleWord(word string) string {
+	if preservePublicUppercaseWord(word) {
+		return word
+	}
+	runes := []rune(strings.ToLower(word))
+	for i, r := range runes {
+		if unicode.IsLetter(r) {
+			runes[i] = unicode.ToUpper(r)
+			break
+		}
+	}
+	return string(runes)
+}
+
+func preservePublicUppercaseWord(word string) bool {
+	key := publicTitleWordKey(word)
+	switch key {
+	case "ABBA", "DJ", "DJS", "EP", "EU", "LP", "MC", "MCS", "UK", "US", "USA":
+		return true
+	}
+	for _, r := range word {
+		if unicode.IsDigit(r) || r == '.' {
+			return true
+		}
+	}
+	return false
+}
+
+func publicTitleWordKey(word string) string {
+	var b strings.Builder
+	for _, r := range word {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToUpper(r))
+		}
+	}
+	return b.String()
+}
+
+func publicEventStatus(status string) string {
+	status = normalizePublicText(status)
+	switch {
+	case status == "":
+		return ""
+	case strings.EqualFold(status, "Listed"), strings.EqualFold(status, "CONFIRMED"):
+		return ""
+	default:
+		return titleCasePublicStatus(status)
+	}
+}
+
+func titleCasePublicStatus(status string) string {
+	letters := 0
+	for _, r := range status {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		letters++
+		if unicode.IsLower(r) {
+			return status
+		}
+	}
+	if letters == 0 {
+		return status
+	}
+	return titleCasePublicTitleWord(status)
 }
 
 func formatVenueAddress(name, value string) string {
@@ -616,6 +908,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 	cleaned := path.Clean(r.URL.Path)
+	if cleaned == "/admin/login" {
+		s.handleAdminLogin(w, r)
+		return
+	}
+	if cleaned == "/admin/logout" {
+		var ok bool
+		r, ok = s.requireAdmin(w, r)
+		if !ok {
+			return
+		}
+		s.handleAdminLogout(w, r)
+		return
+	}
+	if isAdminRequestPath(cleaned) {
+		var ok bool
+		r, ok = s.requireAdmin(w, r)
+		if !ok {
+			return
+		}
+	}
 	switch {
 	case cleaned == "/":
 		s.handleHome(w, r)
@@ -723,6 +1035,80 @@ func (s *Server) logRequestError(r *http.Request, message string, err error, att
 	s.log().Error(message, fields...)
 }
 
+func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuth.enabled() {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.renderAdminLogin(w, sanitizeAdminNextPath(r.URL.Query().Get("next")), "")
+	case http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "parse form", http.StatusBadRequest)
+			return
+		}
+		next := sanitizeAdminNextPath(r.PostForm.Get("next"))
+		failureKey := adminFailureKey(r)
+		now := s.now()
+		if s.adminAuth.failures.locked(failureKey, now) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusTooManyRequests)
+			s.renderAdminLogin(w, next, "Sign in is temporarily unavailable. Try again later.")
+			return
+		}
+		if !s.adminAuth.authenticate(r.PostForm.Get("password")) {
+			s.adminAuth.failures.recordFailure(failureKey, now)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			s.renderAdminLogin(w, next, "Sign in failed.")
+			return
+		}
+		s.adminAuth.failures.clear(failureKey)
+		if err := s.adminAuth.startSession(w, now); err != nil {
+			s.logRequestError(r, "start admin session", err)
+			http.Error(w, "start admin session", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, next, http.StatusSeeOther)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) renderAdminLogin(w http.ResponseWriter, next, errorText string) {
+	data := PageData{
+		SiteName:        "Sheffield Live",
+		PageTitle:       "Admin login",
+		MetaDescription: "Admin login for Sheffield Live.",
+		Now:             s.now(),
+		LoginNext:       sanitizeAdminNextPath(next),
+		LoginError:      errorText,
+	}
+	s.renderPage(w, "templates/admin_login.html", data)
+}
+
+func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	if !s.adminAuth.enabled() {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	if !s.requireAdminCSRF(w, r) {
+		return
+	}
+	s.adminAuth.endSession(w, r)
+	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+}
+
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	if !s.hasVenueAdmin() {
 		http.NotFound(w, r)
@@ -745,6 +1131,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		HasVenueAdminWrites: s.canWriteVenueAdmin(),
 		HasRoomAdmin:        s.hasRoomAdmin(),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin.html", data)
 }
 
@@ -798,6 +1185,7 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 		}
 		data.LatestImport = latest
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_review.html", data)
 }
 
@@ -847,6 +1235,7 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 			s.localLocation,
 		),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_venues.html", data)
 }
 
@@ -953,6 +1342,7 @@ func (s *Server) handleAdminConfiguration(w http.ResponseWriter, r *http.Request
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 		Flash:                 flash,
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_configuration.html", data)
 }
 
@@ -963,6 +1353,9 @@ func (s *Server) postAdminConfiguration(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	if !s.requireAdminCSRF(w, r) {
 		return
 	}
 	action := strings.TrimSpace(r.FormValue("action"))
@@ -1059,6 +1452,7 @@ func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_review_history.html", data)
 }
 
@@ -1124,6 +1518,7 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 		Flash:                 flash,
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_venue_detail.html", data)
 }
 
@@ -1238,6 +1633,7 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		HasVenueAdminWrites:      s.canWriteVenueAdmin(),
 		HasGenreConfiguration:    s.hasGenreConfiguration(),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_import_runs.html", data)
 }
 
@@ -1290,6 +1686,7 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 	}
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_import_run_detail.html", data)
 }
 
@@ -1301,6 +1698,9 @@ func (s *Server) postAdminVenueDecision(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	if !s.requireAdminCSRF(w, r) {
 		return
 	}
 	action := strings.TrimSpace(r.FormValue("action"))
@@ -1481,6 +1881,9 @@ func (s *Server) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request, groupID int64) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	if !s.requireAdminCSRF(w, r) {
 		return
 	}
 
@@ -1678,6 +2081,7 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 		Flash:                 flash,
 	}
 	data.ReviewDetail = buildReviewDetail(group)
+	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_review_detail.html", data)
 }
 
@@ -1781,6 +2185,7 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 		return
 	}
 	event = eventWithPublicLinks(event, venue)
+	venueNames := map[string]string{venue.Slug: venue.Name}
 	var secondarySources []store.EventSecondarySourceInfo
 	if s.secondarySourceStore != nil {
 		loaded, err := s.secondarySourceStore.EventSecondarySourceInfoByEventSlug(r.Context(), slug)
@@ -1803,11 +2208,12 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 	}
 	data := PageData{
 		SiteName:              "Sheffield Live",
-		PageTitle:             event.Name,
+		PageTitle:             publicEventTitle(event, venueNames),
 		MetaDescription:       event.Description,
 		Active:                "events",
 		Now:                   s.now(),
 		Event:                 event,
+		VenueNames:            venueNames,
 		EventSecondarySources: secondarySources,
 		EventGenres:           eventGenres,
 		Venue:                 venue,
@@ -1886,6 +2292,7 @@ func (s *Server) handleVenueDetail(w http.ResponseWriter, r *http.Request, slug 
 		Active:          "venues",
 		Now:             now,
 		Venue:           venue,
+		VenueNames:      map[string]string{venue.Slug: venue.Name},
 		VenueEvents:     sortEventsForDisplay(upcomingEvents(events, now, s.localLocation)),
 	}
 	s.renderPage(w, "templates/venue_detail.html", data)
@@ -2068,24 +2475,6 @@ func eventRoomText(event domain.Event) string {
 		}
 	}
 	return strings.Join(names, " + ")
-}
-
-func eventVenueName(venueNames map[string]string, event domain.Event) string {
-	name := venueDisplayName(venueNames, event.VenueSlug)
-	if room := eventRoomText(event); room != "" {
-		return fmt.Sprintf("%s (%s)", name, room)
-	}
-	return name
-}
-
-func venueDisplayName(venueNames map[string]string, slug string) string {
-	if venueNames == nil {
-		return slug
-	}
-	if name := strings.TrimSpace(venueNames[slug]); name != "" {
-		return name
-	}
-	return slug
 }
 
 func sortEventsForDisplay(events []domain.Event) []domain.Event {

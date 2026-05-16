@@ -26,6 +26,8 @@ import (
 	sqlitestore "sheffield-live/internal/store/sqlite"
 )
 
+const testAdminPasswordHash = "$2a$12$Np7G88kWczQUXP1fhca9..B9Gv1N55toTxUHQ02rBkN0c1QJggkMW"
+
 func TestRoutes(t *testing.T) {
 	server, err := NewServer(testServerDeps(store.NewSeedStore()))
 	if err != nil {
@@ -220,6 +222,16 @@ func TestNewServerAcceptsReadOnlyStore(t *testing.T) {
 	}
 }
 
+func TestNewServerRequiresExplicitAdminAuthConfig(t *testing.T) {
+	_, err := NewServer(ServerDeps{Catalog: store.NewSeedStore()})
+	if err == nil {
+		t.Fatal("new server error = nil, want admin auth config error")
+	}
+	if !strings.Contains(err.Error(), "admin password hash") {
+		t.Fatalf("new server error = %q, want admin password hash", err)
+	}
+}
+
 func TestAdminReviewOmitsLatestImportWithoutImportHistoryStore(t *testing.T) {
 	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{}))
 	if err != nil {
@@ -283,6 +295,319 @@ func TestAdminLandingPageRejectsPost(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
+	}
+}
+
+func TestAdminAuthRedirectsUnauthenticatedAdminRequests(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusSeeOther)
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/login?next=%2Fadmin%2Freview" {
+		t.Fatalf("Location = %q, want login redirect", location)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/events", nil)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("public status = %d, want %d", rr.Code, http.StatusOK)
+	}
+}
+
+func TestAdminLoginSetsSecureSessionCookieAndAllowsAdminAccess(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, location := loginAdmin(t, server, "/admin/review")
+	if location != "/admin/review" {
+		t.Fatalf("login Location = %q, want /admin/review", location)
+	}
+	if cookie.Name != adminSessionCookieName {
+		t.Fatalf("cookie name = %q, want %q", cookie.Name, adminSessionCookieName)
+	}
+	if !cookie.HttpOnly {
+		t.Fatal("session cookie is not HttpOnly")
+	}
+	if !cookie.Secure {
+		t.Fatal("session cookie is not Secure")
+	}
+	if cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("SameSite = %v, want strict", cookie.SameSite)
+	}
+	if cookie.Path != "/admin" {
+		t.Fatalf("Path = %q, want /admin", cookie.Path)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "Review queue")
+	assertContains(t, rr.Body.String(), `name="csrf_token"`)
+}
+
+func TestAdminLoginRejectsBadPassword(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	form := url.Values{
+		"password": {"wrong"},
+		"next":     {"/admin/review"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	assertContains(t, rr.Body.String(), "Sign in failed.")
+	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("cookies = %v, want none", cookies)
+	}
+}
+
+func TestAdminLoginRejectsPasswordInQueryString(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/login?password=correct+horse+battery+staple&next=/admin/review", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("cookies = %v, want none", cookies)
+	}
+}
+
+func TestAdminLoginRejectsUnsafeNextRedirect(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	_, location := loginAdmin(t, server, "https://example.test/admin")
+	if location != "/admin" {
+		t.Fatalf("login Location = %q, want /admin", location)
+	}
+}
+
+func TestAdminLoginThrottlesRepeatedFailures(t *testing.T) {
+	deps := testAdminAuthDeps(reviewOnlyStoreStub{})
+	deps.AdminAuth.MaxFailures = 2
+	server, err := NewServer(deps)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		form := url.Values{
+			"password": {"wrong"},
+			"next":     {"/admin/review"},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d, want %d", i+1, rr.Code, http.StatusUnauthorized)
+		}
+	}
+
+	form := url.Values{
+		"password": {"correct horse battery staple"},
+		"next":     {"/admin/review"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("locked status = %d, want %d", rr.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestAdminPostRequiresCSRF(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin")
+	form := url.Values{"action": {"rejected"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/1", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+}
+
+func TestAdminPostRejectsCSRFTokenInQueryString(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	csrfToken := extractCSRFToken(t, rr.Body.String())
+
+	form := url.Values{"action": {"rejected"}}
+	req = httptest.NewRequest(http.MethodPost, "/admin/review/1?csrf_token="+url.QueryEscape(csrfToken), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+}
+
+func TestAdminVenuePostRequiresCSRF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	server, err := NewServer(testAdminAuthDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin")
+	form := url.Values{"action": {"validate"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/venues/imaginary-hall", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+}
+
+func TestAdminConfigurationPostRequiresCSRF(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(failingGenreConfigurationStore{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin")
+	form := url.Values{
+		"action":     {"save"},
+		"key":        {"doom-metal"},
+		"name":       {"Doom metal"},
+		"match_type": {"plain"},
+		"pattern":    {"doom metal"},
+		"enabled":    {"1"},
+		"sort_order": {"320"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/configuration", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+}
+
+func TestAdminLogoutInvalidatesSession(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	csrfToken := extractCSRFToken(t, rr.Body.String())
+
+	form := url.Values{"csrf_token": {csrfToken}}
+	req = httptest.NewRequest(http.MethodPost, "/admin/logout", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("logout status = %d, want %d", rr.Code, http.StatusSeeOther)
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/login" {
+		t.Fatalf("logout Location = %q, want /admin/login", location)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("post-logout status = %d, want %d", rr.Code, http.StatusSeeOther)
+	}
+}
+
+func TestAdminSessionExpires(t *testing.T) {
+	deps := testAdminAuthDeps(reviewOnlyStoreStub{})
+	deps.AdminAuth.SessionIdleTimeout = time.Minute
+	deps.AdminAuth.SessionAbsoluteTimeout = time.Hour
+	server, err := NewServer(deps)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	now := fixtureLocalTime(2026, time.May, 13, 10, 0)
+	server.SetClockForTesting(func() time.Time { return now })
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	now = now.Add(2 * time.Minute)
+	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusSeeOther)
 	}
 }
 
@@ -1383,7 +1708,8 @@ func TestSQLiteEventDetailRendersAllInferredGenres(t *testing.T) {
 	body := renderPath(t, server, "/events/inferred-genre-event")
 	assertContains(t, body, "All genres")
 	assertContains(t, body, "Jazz, Rock, Experimental")
-	assertContains(t, body, "Jazz, Rock · Listed")
+	assertContains(t, body, "<p>Jazz, Rock</p>")
+	assertNotContains(t, body, "Jazz, Rock · Listed")
 }
 
 func TestSQLiteAdminConfigurationListsAndSavesGenreRules(t *testing.T) {
@@ -1581,13 +1907,229 @@ func TestEventPagesRenderVenueRoom(t *testing.T) {
 	}))
 
 	eventsBody := renderPath(t, server, "/events")
-	assertContains(t, eventsBody, "Sidney &amp; Matilda (Factory) · Experimental · Listed")
+	assertContains(t, eventsBody, "Sidney &amp; Matilda (Factory) · Experimental")
+	assertNotContains(t, eventsBody, "Experimental · Listed")
 
 	eventBody := renderPath(t, server, "/events/parallel-delusion")
 	assertContains(t, eventBody, `<p><a href="/venues/sidney-and-matilda">Sidney &amp; Matilda</a> (Factory)</p>`)
 
 	venueBody := renderPath(t, server, "/venues/sidney-and-matilda")
 	assertContains(t, venueBody, `<span class="event-meta">Factory</span>`)
+}
+
+func TestPublicEventTitleCleansSourcePresentationLeaks(t *testing.T) {
+	venueNames := map[string]string{
+		"foundry":             "Foundry",
+		"hallamshire-hotel":   "Hallamshire Hotel",
+		"memorial-hall":       "Memorial Hall",
+		"sidney-and-matilda":  "Sidney & Matilda",
+		"yellow-arch-studios": "Yellow Arch Studios",
+	}
+
+	tests := []struct {
+		name      string
+		eventName string
+		venueSlug string
+		want      string
+	}{
+		{
+			name:      "double escaped ampersand",
+			eventName: "S&amp;amp;M Presents: Dealbreaker",
+			venueSlug: "sidney-and-matilda",
+			want:      "S&M Presents: Dealbreaker",
+		},
+		{
+			name:      "all caps title",
+			eventName: "DANSETTE SPRINGS",
+			venueSlug: "sidney-and-matilda",
+			want:      "Dansette Springs",
+		},
+		{
+			name:      "all caps artist name",
+			eventName: "EDWINA HAYES",
+			venueSlug: "sidney-and-matilda",
+			want:      "Edwina Hayes",
+		},
+		{
+			name:      "single token all caps name",
+			eventName: "SLACKRR",
+			venueSlug: "sidney-and-matilda",
+			want:      "SLACKRR",
+		},
+		{
+			name:      "leading delimiter",
+			eventName: "| Sorebones | EP Release Show w/ YURN & Ella Wingfield",
+			venueSlug: "sidney-and-matilda",
+			want:      "Sorebones | EP Release Show w/ YURN & Ella Wingfield",
+		},
+		{
+			name:      "dash venue suffix",
+			eventName: "Marmozets - Foundry",
+			venueSlug: "foundry",
+			want:      "Marmozets",
+		},
+		{
+			name:      "city venue suffix",
+			eventName: "The Bootleg Beatles - Foundry, Sheffield",
+			venueSlug: "foundry",
+			want:      "The Bootleg Beatles",
+		},
+		{
+			name:      "parenthetical venue suffix",
+			eventName: "Dylan Flynn & The Dead Poets (Hallamshire Hotel)",
+			venueSlug: "hallamshire-hotel",
+			want:      "Dylan Flynn & The Dead Poets",
+		},
+		{
+			name:      "live at venue suffix",
+			eventName: "Tom Smith (Editors) live at Memorial Hall",
+			venueSlug: "memorial-hall",
+			want:      "Tom Smith (Editors)",
+		},
+		{
+			name:      "non matching venue text remains",
+			eventName: "PINS plus Gia Ford & Gelder - Yellow Arch (Rescheduled Date)",
+			venueSlug: "yellow-arch-studios",
+			want:      "PINS plus Gia Ford & Gelder - Yellow Arch (Rescheduled Date)",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			event := domain.Event{Name: tc.eventName, VenueSlug: tc.venueSlug}
+			if got := publicEventTitle(event, venueNames); got != tc.want {
+				t.Fatalf("publicEventTitle() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPublicEventMetadataOmitsEmptyAndListedStatus(t *testing.T) {
+	venueNames := map[string]string{"sidney-and-matilda": "Sidney & Matilda"}
+
+	tests := []struct {
+		name       string
+		event      domain.Event
+		wantCard   string
+		wantDetail string
+	}{
+		{
+			name:       "venue only",
+			event:      domain.Event{VenueSlug: "sidney-and-matilda"},
+			wantCard:   "Sidney & Matilda",
+			wantDetail: "",
+		},
+		{
+			name:       "listed hidden",
+			event:      domain.Event{VenueSlug: "sidney-and-matilda", Genre: "Indie", Status: "Listed"},
+			wantCard:   "Sidney & Matilda · Indie",
+			wantDetail: "Indie",
+		},
+		{
+			name:       "confirmed hidden",
+			event:      domain.Event{VenueSlug: "sidney-and-matilda", Genre: "Folk", Status: "CONFIRMED"},
+			wantCard:   "Sidney & Matilda · Folk",
+			wantDetail: "Folk",
+		},
+		{
+			name:       "meaningful status shown",
+			event:      domain.Event{VenueSlug: "sidney-and-matilda", Status: "POSTPONED"},
+			wantCard:   "Sidney & Matilda · Postponed",
+			wantDetail: "Postponed",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := publicEventCardMeta(tc.event, venueNames); got != tc.wantCard {
+				t.Fatalf("publicEventCardMeta() = %q, want %q", got, tc.wantCard)
+			}
+			if got := publicEventDetailMeta(tc.event); got != tc.wantDetail {
+				t.Fatalf("publicEventDetailMeta() = %q, want %q", got, tc.wantDetail)
+			}
+		})
+	}
+}
+
+func TestPublicPagesCleanEventPresentationLeaks(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{
+			{
+				Slug:          "sidney-and-matilda",
+				Name:          "Sidney & Matilda",
+				Address:       "Rivelin Works, Sheffield",
+				Neighbourhood: "Cultural Industries Quarter",
+				Description:   "A Sheffield venue.",
+				Website:       "https://example.test/sidney",
+			},
+			{
+				Slug:          "foundry",
+				Name:          "Foundry",
+				Address:       "Western Bank, Sheffield",
+				Neighbourhood: "Broomhall",
+				Description:   "A Sheffield venue.",
+				Website:       "https://example.test/foundry",
+			},
+		},
+		[]domain.Event{
+			{
+				Slug:        "double-escaped",
+				Name:        "S&amp;M Presents: Dealbreaker",
+				VenueSlug:   "sidney-and-matilda",
+				Start:       fixtureLocalTime(2026, time.April, 19, 19, 30),
+				Description: "Source title contains an escaped ampersand.",
+				SourceName:  "Sidney & Matilda manual ingest",
+				SourceURL:   "https://example.test/sidney/dealbreaker",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "all-caps-listed",
+				Name:        "DANSETTE SPRINGS",
+				VenueSlug:   "foundry",
+				Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+				Genre:       "Blues",
+				Status:      "Listed",
+				Description: "All caps source title.",
+				SourceName:  "The Greystones manual ingest",
+				SourceURL:   "https://example.test/greystones/dansette",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "venue-suffix",
+				Name:        "Marmozets - Foundry",
+				VenueSlug:   "foundry",
+				Start:       fixtureLocalTime(2026, time.April, 20, 20, 0),
+				Status:      "Postponed",
+				Description: "Venue suffix source title.",
+				SourceName:  "The Leadmill manual ingest",
+				SourceURL:   "https://example.test/leadmill/marmozets",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+
+	homeBody := renderPath(t, server, "/")
+	assertContains(t, homeBody, `S&amp;M Presents: Dealbreaker`)
+	assertNotContains(t, homeBody, `S&amp;amp;M Presents`)
+	assertContains(t, homeBody, `<span class="event-meta">Sidney &amp; Matilda</span>`)
+	assertNotContains(t, homeBody, `Sidney &amp; Matilda ·`)
+
+	eventsBody := renderPath(t, server, "/events?window=all")
+	assertContains(t, eventsBody, `Dansette Springs`)
+	assertContains(t, eventsBody, `<span class="event-meta">Foundry · Blues</span>`)
+	assertNotContains(t, eventsBody, `Blues · Listed`)
+	assertContains(t, eventsBody, `Marmozets`)
+	assertNotContains(t, eventsBody, `Marmozets - Foundry`)
+	assertContains(t, eventsBody, `Foundry · Postponed`)
+
+	detailBody := renderPath(t, server, "/events/double-escaped")
+	assertContains(t, detailBody, `<h1>S&amp;M Presents: Dealbreaker</h1>`)
+	assertNotContains(t, detailBody, `S&amp;amp;M Presents`)
+	assertNotContains(t, detailBody, `<p> · </p>`)
+
+	venueBody := renderPath(t, server, "/venues/foundry")
+	assertContains(t, venueBody, `<span class="event-title">Marmozets</span>`)
+	assertNotContains(t, venueBody, `Marmozets - Foundry`)
 }
 
 func TestEventsFiltersToday(t *testing.T) {
@@ -1960,6 +2502,7 @@ func TestReadyzReturnsServiceUnavailableWhenReadinessFails(t *testing.T) {
 	server, err := NewServer(ServerDeps{
 		Catalog:      store.NewSeedStore(),
 		ReadyChecker: failingReadyChecker{},
+		AdminAuth:    AdminAuthConfig{Disabled: true},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -1984,6 +2527,7 @@ func TestReadyzLogsReadinessFailure(t *testing.T) {
 		Catalog:      store.NewSeedStore(),
 		ReadyChecker: failingReadyChecker{},
 		Logger:       logger,
+		AdminAuth:    AdminAuthConfig{Disabled: true},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -4077,7 +4621,8 @@ func mustClockedServer(t *testing.T, st *store.Store) *Server {
 
 func testServerDeps(value any) ServerDeps {
 	deps := ServerDeps{
-		Catalog: store.NewSeedStore(),
+		Catalog:   store.NewSeedStore(),
+		AdminAuth: AdminAuthConfig{Disabled: true},
 	}
 	if catalog, ok := value.(store.CatalogStore); ok {
 		deps.Catalog = catalog
@@ -4109,6 +4654,54 @@ func testServerDeps(value any) ServerDeps {
 		deps.ReadyChecker = readyChecker
 	}
 	return deps
+}
+
+func testAdminAuthDeps(value any) ServerDeps {
+	deps := testServerDeps(value)
+	deps.AdminAuth = AdminAuthConfig{
+		PasswordHash: testAdminPasswordHash,
+	}
+	return deps
+}
+
+func loginAdmin(t *testing.T, server *Server, next string) (*http.Cookie, string) {
+	t.Helper()
+
+	form := url.Values{
+		"password": {"correct horse battery staple"},
+		"next":     {next},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("login status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	for _, cookie := range rr.Result().Cookies() {
+		if cookie.Name == adminSessionCookieName {
+			return cookie, rr.Header().Get("Location")
+		}
+	}
+	t.Fatalf("login did not set %s cookie", adminSessionCookieName)
+	return nil, ""
+}
+
+func extractCSRFToken(t *testing.T, body string) string {
+	t.Helper()
+
+	marker := `name="csrf_token" value="`
+	start := strings.Index(body, marker)
+	if start < 0 {
+		t.Fatalf("body missing CSRF token: %q", body)
+	}
+	rest := body[start+len(marker):]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		t.Fatalf("body has unterminated CSRF token: %q", body)
+	}
+	return rest[:end]
 }
 
 func fixtureLocalTime(year int, month time.Month, day, hour, minute int) time.Time {

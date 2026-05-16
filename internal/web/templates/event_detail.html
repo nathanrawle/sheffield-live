@@ -2,7 +2,7 @@
   <header class="event-detail-head{{if .Event.ImageURL}}{{if eventImagePortrait .Event}} portrait-image{{else}} hero-image{{end}}{{end}}">
     <div class="event-detail-title">
       <p class="eyebrow">Event</p>
-      <h1>{{.Event.Name}}</h1>
+      <h1>{{eventTitle .Event .VenueNames}}</h1>
       {{with originLabel .Event.Origin}}<p class="origin-badge">{{.}}</p>{{end}}
     </div>
     {{if .Event.ImageURL}}
@@ -34,7 +34,7 @@
       <h2>When</h2>
       <p>{{dateLong .Event.Start}}</p>
       <p>{{if .Event.HasEnd}}{{timeShort .Event.Start}} to {{timeShort .Event.End}}{{else}}Starts at {{timeShort .Event.Start}}{{end}}</p>
-      <p>{{.Event.Genre}} · {{.Event.Status}}</p>
+      {{with eventDetailMeta .Event}}<p>{{.}}</p>{{end}}
       {{if .EventGenres}}<p><strong>All genres</strong>: {{genreNames .EventGenres ", "}}</p>{{end}}
     </div>
     <div class="detail-card">

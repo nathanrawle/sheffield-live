@@ -5,16 +5,26 @@ These recipes stay short on purpose. See [Command Reference](commands.md) for th
 ## Run the site
 
 ```bash
-go run ./cmd/web
+ADMIN_AUTH_DISABLED=1 go run ./cmd/web
 ```
 
 ## Run on a different address or database
 
 ```bash
-ADDR=:3000 DB_PATH=/tmp/sheffield-live.db go run ./cmd/web
+ADDR=:3000 DB_PATH=/tmp/sheffield-live.db ADMIN_AUTH_DISABLED=1 go run ./cmd/web
 ```
 
 Local copied images are served from `MEDIA_ROOT` at `MEDIA_URL_PREFIX`. Defaults are `./data/media` and `/media`.
+
+## Configure admin login
+
+Generate a bcrypt hash for the admin passphrase:
+
+```bash
+printf '%s' 'your admin passphrase' | go run ./cmd/admin-password-hash
+```
+
+Run the site with `ADMIN_PASSWORD_HASH` set to that output. Keep `ADMIN_COOKIE_SECURE=true` for HTTPS deployments; set `ADMIN_COOKIE_SECURE=false` only for local HTTP testing with auth enabled.
 
 ## Inspect the local SQLite DB
 
@@ -116,7 +126,7 @@ Stop the app, then remove only your local development DB file and start again. T
 
 ```bash
 rm -f ./data/sheffield-live.db
-go run ./cmd/web
+ADMIN_AUTH_DISABLED=1 go run ./cmd/web
 ```
 
 Use this only for a disposable local database. Do not delete a shared or production DB.

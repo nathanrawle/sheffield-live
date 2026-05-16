@@ -21,13 +21,14 @@ The current scope includes:
 - visible provenance and freshness on records
 - visibly tagged test and dev data
 - curated bootstrap venues and live records that are not tagged
+- simple admin login for the manual review and configuration surface
 - one lightweight SQLite driver dependency
 
 ## Non-Goals
 
 - broad source coverage
 - broad automated publishing without review
-- login or auth hardening
+- named admin accounts or external identity-provider integration
 - a recurring scheduler
 - remote media storage
 - a claim of complete Sheffield coverage

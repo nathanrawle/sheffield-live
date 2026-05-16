@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"fmt"
+	"html"
 	"strings"
 	"time"
 )
@@ -302,7 +303,15 @@ func cleanICSValue(value string) string {
 		`\;`, ";",
 		`\\`, `\`,
 	)
-	return replacer.Replace(value)
+	value = replacer.Replace(value)
+	for i := 0; i < 4; i++ {
+		decoded := html.UnescapeString(value)
+		if decoded == value {
+			break
+		}
+		value = decoded
+	}
+	return value
 }
 
 func formatTime(t time.Time) string {
