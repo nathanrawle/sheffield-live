@@ -2283,6 +2283,83 @@ func TestEventsDefaultShowsOngoingTodayEventsAndOmitsEndedDays(t *testing.T) {
 	assertNotContains(t, body, "No shows listed")
 }
 
+func TestEventsShowOngoingPriorDayEventsInCurrentDay(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:        "ended-overnight-show",
+				Name:        "Ended Overnight Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 21, 0),
+				End:         fixtureLocalTime(2026, time.April, 19, 23, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Ended before midnight.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/ended-overnight-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "ongoing-overnight-show",
+				Name:        "Ongoing Overnight Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 23, 0),
+				End:         fixtureLocalTime(2026, time.April, 20, 2, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Still running after midnight.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/ongoing-overnight-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "later-today-show",
+				Name:        "Later Today Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 20, 19, 0),
+				End:         fixtureLocalTime(2026, time.April, 20, 21, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Later today.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/later-today-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 20, 0, 30)
+	})
+
+	homeBody := renderPath(t, server, "/")
+	assertInOrder(t, homeBody, []string{
+		"Tonight",
+		"20 Apr - 2 shows",
+		"Ongoing Overnight Show",
+		"Later Today Show",
+	})
+	assertNotContains(t, homeBody, "Ended Overnight Show")
+	assertNotContains(t, homeBody, "19 Apr - 1 show")
+
+	filteredBody := renderPath(t, server, "/events?window=today")
+	assertInOrder(t, filteredBody, []string{
+		"Tonight",
+		"20 Apr - 2 shows",
+		"Ongoing Overnight Show",
+		"Later Today Show",
+	})
+	assertNotContains(t, filteredBody, "Ended Overnight Show")
+	assertNotContains(t, filteredBody, "19 Apr - 1 show")
+}
+
 func TestEventsDefaultOmitsTodayWhenNoCurrentOrUpcomingShowsRemain(t *testing.T) {
 	server := mustClockedServer(t, store.NewStore(
 		[]domain.Venue{{

@@ -2162,7 +2162,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		Venues:              venues,
 	}
 	if filtered {
-		data.EventGroups = groupEventsByLocalDate(events, s.localLocation)
+		data.EventGroups = groupEventsByDisplayDate(events, now, s.localLocation)
 	} else {
 		data.EventSections = buildEventBoardSections(events, now, s.localLocation)
 	}
@@ -2523,7 +2523,7 @@ func filterEventsByWindow(events []domain.Event, now time.Time, loc *time.Locati
 
 	out := make([]domain.Event, 0, len(events))
 	for _, event := range events {
-		if eventFallsInLocalRange(event, windowStart, end, loc) {
+		if eventFallsInCurrentOrLocalRange(event, windowStart, end, now, loc) {
 			out = append(out, event)
 		}
 	}
@@ -2553,7 +2553,7 @@ func excludeLocalDate(events []domain.Event, date time.Time, loc *time.Location)
 func buildEventBoardSections(events []domain.Event, now time.Time, loc *time.Location) []EventSection {
 	today := localDayStart(now, loc)
 	sections := []EventSection{}
-	if todayEvents := eventsInLocalRange(events, now.In(loc), today.AddDate(0, 0, 1), loc); len(todayEvents) > 0 {
+	if todayEvents := eventsCurrentOrStartingInLocalRange(events, now.In(loc), today.AddDate(0, 0, 1), now, loc); len(todayEvents) > 0 {
 		sections = append(sections, EventSection{
 			ID:     "tonight",
 			Title:  "Tonight",
@@ -2639,6 +2639,27 @@ func eventsInLocalRange(events []domain.Event, start, end time.Time, loc *time.L
 	return out
 }
 
+func eventsCurrentOrStartingInLocalRange(events []domain.Event, start, end, now time.Time, loc *time.Location) []domain.Event {
+	out := make([]domain.Event, 0, len(events))
+	for _, event := range events {
+		if eventFallsInCurrentOrLocalRange(event, start, end, now, loc) {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func eventFallsInCurrentOrLocalRange(event domain.Event, start, end, now time.Time, loc *time.Location) bool {
+	if eventFallsInLocalRange(event, start, end, loc) {
+		return true
+	}
+	nowLocal := now.In(loc)
+	if nowLocal.Before(start) || !nowLocal.Before(end) {
+		return false
+	}
+	return eventIsOngoingAt(event, now, loc)
+}
+
 func eventFallsInLocalRange(event domain.Event, start, end time.Time, loc *time.Location) bool {
 	eventStart := event.Start.In(loc)
 	if !eventStart.Before(start) && eventStart.Before(end) {
@@ -2649,6 +2670,16 @@ func eventFallsInLocalRange(event domain.Event, start, end time.Time, loc *time.
 		return hasEnd && eventEnd.After(start)
 	}
 	return false
+}
+
+func eventIsOngoingAt(event domain.Event, at time.Time, loc *time.Location) bool {
+	eventStart := event.Start.In(loc)
+	atLocal := at.In(loc)
+	if !eventStart.Before(atLocal) {
+		return false
+	}
+	eventEnd, hasEnd := eventDisplayEnd(event, loc)
+	return hasEnd && eventEnd.After(atLocal)
 }
 
 func eventIsCurrentOrUpcoming(event domain.Event, now time.Time, loc *time.Location) bool {
@@ -2672,16 +2703,25 @@ func eventDisplayEnd(event domain.Event, loc *time.Location) (time.Time, bool) {
 	return eventEnd, true
 }
 
-func groupEventsByLocalDate(events []domain.Event, loc *time.Location) []EventGroup {
+func groupEventsByDisplayDate(events []domain.Event, now time.Time, loc *time.Location) []EventGroup {
 	var groups []EventGroup
 	for _, event := range events {
-		date := localDayStart(event.Start, loc)
+		date := eventDisplayDate(event, now, loc)
 		if len(groups) == 0 || !sameLocalDate(groups[len(groups)-1].Date, date, loc) {
 			groups = append(groups, EventGroup{Date: date})
 		}
 		groups[len(groups)-1].Events = append(groups[len(groups)-1].Events, event)
 	}
 	return groups
+}
+
+func eventDisplayDate(event domain.Event, now time.Time, loc *time.Location) time.Time {
+	date := localDayStart(event.Start, loc)
+	today := localDayStart(now, loc)
+	if date.Before(today) && eventIsOngoingAt(event, now, loc) {
+		return today
+	}
+	return date
 }
 
 func dateSectionTitle(date, now time.Time, loc *time.Location) string {
