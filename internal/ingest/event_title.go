@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"html"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -14,6 +15,10 @@ var eventTitleVenueAliases = map[string][]string{
 	"greystones":         {"The Greystones", "Greystones"},
 	"sidney-and-matilda": {"Sidney & Matilda", "Sidney and Matilda"},
 	"yellow-arch":        {"Yellow Arch", "Yellow Arch Studios"},
+}
+
+var eventTitleBoilerplatePrefixes = map[string][]string{
+	"cafe-no-9": {"An evening with "},
 }
 
 func normalizeParseResultEventTitles(cfg sourceConfig, parse ParseResult) ParseResult {
@@ -47,43 +52,91 @@ func CleanEventTitleForVenue(title, venueSlug string) string {
 }
 
 func stripVenueNameFromEventTitle(title, venueSlug string) string {
-	original := strings.TrimSpace(title)
-	cleaned := normalizeEventTitleSpacing(original)
+	venueSlug = strings.TrimSpace(venueSlug)
+	cleaned := normalizeEventTitleSpacing(decodeEventTitleHTMLEntities(strings.TrimSpace(title)))
 	if cleaned == "" {
 		return ""
 	}
+	if trimmed := trimLeadingEventTitlePunctuation(cleaned); trimmed != "" {
+		cleaned = trimmed
+	}
 
-	for _, alias := range eventTitleVenueAliases[strings.TrimSpace(venueSlug)] {
+	cleaned = stripVenueAffixFromEventTitle(cleaned, venueSlug)
+	cleaned = stripEventTitleBoilerplatePrefix(cleaned, venueSlug)
+	return cleaned
+}
+
+func stripVenueAffixFromEventTitle(title, venueSlug string) string {
+	for _, alias := range eventTitleVenueAliases[venueSlug] {
 		alias = normalizeEventTitleSpacing(alias)
 		if alias == "" {
 			continue
 		}
-		if stripped, ok := stripVenueTitlePrefixColon(cleaned, alias); ok {
+		if stripped, ok := stripVenueTitlePrefixColon(title, alias); ok {
 			return stripped
 		}
-		if stripped, ok := stripVenueTitlePrefixDash(cleaned, alias); ok {
+		if stripped, ok := stripVenueTitlePrefixDash(title, alias); ok {
 			return stripped
 		}
-		if stripped, ok := stripVenueTitleParentheticalSuffix(cleaned, alias); ok {
+		if stripped, ok := stripVenueTitleParentheticalSuffix(title, alias); ok {
 			return stripped
 		}
-		if stripped, ok := stripVenueTitleOccurrenceSuffix(cleaned, alias); ok {
+		if stripped, ok := stripVenueTitleOccurrenceSuffix(title, alias); ok {
 			return stripped
 		}
-		if stripped, ok := stripVenueTitleSuffix(cleaned, alias, " - "); ok {
+		if stripped, ok := stripVenueTitleSuffix(title, alias, " - "); ok {
 			return stripped
 		}
-		if stripped, ok := stripVenueTitleSuffix(cleaned, alias, " @ "); ok {
+		if stripped, ok := stripVenueTitleSuffix(title, alias, " @ "); ok {
 			return stripped
 		}
-		if stripped, ok := stripVenueTitleSuffix(cleaned, alias, " // "); ok {
+		if stripped, ok := stripVenueTitleSuffix(title, alias, " // "); ok {
 			return stripped
 		}
-		if stripped, ok := stripVenueTitleSuffixAt(cleaned, alias); ok {
+		if stripped, ok := stripVenueTitleSuffixAt(title, alias); ok {
 			return stripped
 		}
 	}
-	return original
+	return title
+}
+
+func decodeEventTitleHTMLEntities(value string) string {
+	for i := 0; i < 4; i++ {
+		decoded := html.UnescapeString(value)
+		if decoded == value {
+			break
+		}
+		value = decoded
+	}
+	return value
+}
+
+func trimLeadingEventTitlePunctuation(value string) string {
+	trimmed := strings.TrimLeftFunc(value, func(r rune) bool {
+		switch r {
+		case '|', '-', '–', '—', ':', '•', '·':
+			return true
+		default:
+			return unicode.IsSpace(r)
+		}
+	})
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" {
+		return value
+	}
+	return trimmed
+}
+
+func stripEventTitleBoilerplatePrefix(title, venueSlug string) string {
+	for _, prefix := range eventTitleBoilerplatePrefixes[venueSlug] {
+		if len(title) < len(prefix) || !strings.EqualFold(title[:len(prefix)], prefix) {
+			continue
+		}
+		if stripped, ok := nonEmptyEventTitleRemainder(title[len(prefix):]); ok {
+			return stripped
+		}
+	}
+	return title
 }
 
 func stripVenueTitlePrefixColon(title, alias string) (string, bool) {

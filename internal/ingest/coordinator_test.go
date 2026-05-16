@@ -277,7 +277,7 @@ func TestRunManualCafeNo9ParsesListingsFromSourcePage(t *testing.T) {
 	if got, want := len(report.Calendars), 1; got != want {
 		t.Fatalf("calendars = %d, want %d", got, want)
 	}
-	if got, want := report.Calendars[0].Candidates[0].Summary, "An evening with Ellie Gowers"; got != want {
+	if got, want := report.Calendars[0].Candidates[0].Summary, "Ellie Gowers"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
 	if got, want := report.Calendars[0].Candidates[0].Location, "Cafe No9"; got != want {

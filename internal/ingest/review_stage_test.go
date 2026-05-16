@@ -355,7 +355,7 @@ func TestReviewGroupsFromReportClustersByFallback(t *testing.T) {
 	if got, want := len(groups[0].Candidates), 2; got != want {
 		t.Fatalf("candidates = %d, want %d", got, want)
 	}
-	if got, want := groups[0].Candidates[0].Name, "Big   Night"; got != want {
+	if got, want := groups[0].Candidates[0].Name, "Big Night"; got != want {
 		t.Fatalf("first candidate name = %q, want %q", got, want)
 	}
 	if got, want := groups[0].Candidates[1].Name, "big night"; got != want {

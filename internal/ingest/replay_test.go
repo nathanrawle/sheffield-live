@@ -317,7 +317,7 @@ func TestReplayImportRunRebuildsCafeNo9ReportFromSourcePageSnapshot(t *testing.T
 	if got, want := len(report.Calendars[0].Candidates), 2; got != want {
 		t.Fatalf("candidates = %d, want %d", got, want)
 	}
-	if got, want := report.Calendars[0].Candidates[0].Summary, "An evening with Ellie Gowers"; got != want {
+	if got, want := report.Calendars[0].Candidates[0].Summary, "Ellie Gowers"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
 	if got, want := report.Calendars[0].Candidates[0].Location, "Cafe No9"; got != want {
