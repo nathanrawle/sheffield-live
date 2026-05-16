@@ -2132,6 +2132,62 @@ func TestResolveReviewGroupPublishesRoomAssignment(t *testing.T) {
 	assertDraftChoice(t, final, review.FieldRoomSlugs, group.Candidates[0].ID, "factory")
 }
 
+func TestResolveReviewGroupRequiresRoomChoice(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	beforeEventCount := mustCount(t, db, "events")
+
+	groupID := mustCreatePublishableReviewGroup(t, st, "Missing room choice")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields)-1)
+	for _, choice := range fullReviewChoices(t, group) {
+		if choice.Field != review.FieldRoomSlugs {
+			choices = append(choices, choice)
+		}
+	}
+
+	err = st.ResolveReviewGroup(ctx, groupID, choices)
+	if err == nil {
+		t.Fatal("expected missing room choice to be rejected")
+	}
+	if !strings.Contains(err.Error(), "all review fields must be selected before resolving") {
+		t.Fatalf("error = %v, want missing fields error", err)
+	}
+
+	after, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group after failed resolve: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after failed resolve")
+	}
+	if after.Status != review.StatusOpen {
+		t.Fatalf("status = %q, want %q", after.Status, review.StatusOpen)
+	}
+	if len(after.DraftChoices) != 0 {
+		t.Fatalf("draft choices = %d, want 0", len(after.DraftChoices))
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount {
+		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
+	}
+}
+
 func TestResolveReviewGroupRejectsRoomChoiceFromDifferentVenue(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))

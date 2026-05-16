@@ -2813,7 +2813,6 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		return err
 	}
 	group.Candidates = candidates
-	choices = completeOptionalReviewRoomChoice(choices, candidates)
 	if len(choices) != len(review.CanonicalFields) {
 		return fmt.Errorf("all review fields must be selected before resolving")
 	}
@@ -2936,24 +2935,6 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		return err
 	}
 	return nil
-}
-
-func completeOptionalReviewRoomChoice(choices []review.DraftChoiceInput, candidates []review.Candidate) []review.DraftChoiceInput {
-	for _, choice := range choices {
-		if choice.Field == review.FieldRoomSlugs {
-			return choices
-		}
-	}
-	if len(candidates) == 0 || candidates[0].ID <= 0 {
-		return choices
-	}
-	completed := make([]review.DraftChoiceInput, 0, len(choices)+1)
-	completed = append(completed, choices...)
-	completed = append(completed, review.DraftChoiceInput{
-		Field:       review.FieldRoomSlugs,
-		CandidateID: candidates[0].ID,
-	})
-	return completed
 }
 
 func (s *Store) UpdateReviewGroupStatus(ctx context.Context, groupID int64, status string) error {

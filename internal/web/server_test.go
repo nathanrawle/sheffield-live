@@ -3487,6 +3487,38 @@ func TestAdminReviewResolveRequiresAllFields(t *testing.T) {
 	assertContains(t, rr.Body.String(), "all review fields must be selected before resolving")
 }
 
+func TestAdminReviewResolveRequiresRoomChoice(t *testing.T) {
+	st, server, groupID := mustReviewServerWithGroup(t)
+	defer st.Close()
+
+	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+
+	form := url.Values{}
+	form.Set("action", "resolved")
+	for _, field := range review.CanonicalFields {
+		if field == review.FieldRoomSlugs {
+			continue
+		}
+		form.Set("choice_"+string(field), strconvFormatInt(group.Candidates[0].ID))
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "all review fields must be selected before resolving")
+}
+
 func TestAdminReviewResolveRedirectsAndRemovesFromQueue(t *testing.T) {
 	st, server, groupID := mustReviewServerWithGroup(t)
 	defer st.Close()
@@ -3503,6 +3535,7 @@ func TestAdminReviewResolveRedirectsAndRemovesFromQueue(t *testing.T) {
 	form.Set("action", "resolved")
 	form.Set("choice_name", strconvFormatInt(group.Candidates[1].ID))
 	form.Set("choice_venue_slug", strconvFormatInt(group.Candidates[0].ID))
+	form.Set("choice_room_slugs", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_start_at", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_end_at", strconvFormatInt(group.Candidates[0].ID))
 	form.Set("choice_genre", strconvFormatInt(group.Candidates[1].ID))
@@ -3724,6 +3757,7 @@ func TestAdminReviewClosedGroupIsReadOnlyAndRejectsPost(t *testing.T) {
 	if err := st.ResolveReviewGroup(contextForTesting(), groupID, []review.DraftChoiceInput{
 		{Field: review.FieldName, CandidateID: group.Candidates[1].ID},
 		{Field: review.FieldVenueSlug, CandidateID: group.Candidates[0].ID},
+		{Field: review.FieldRoomSlugs, CandidateID: group.Candidates[0].ID},
 		{Field: review.FieldStartAt, CandidateID: group.Candidates[0].ID},
 		{Field: review.FieldEndAt, CandidateID: group.Candidates[0].ID},
 		{Field: review.FieldGenre, CandidateID: group.Candidates[1].ID},

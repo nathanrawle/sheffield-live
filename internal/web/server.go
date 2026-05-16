@@ -1987,9 +1987,6 @@ func reviewChoicesFromForm(group review.Group, form url.Values, requireAll bool)
 	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
 	for _, field := range review.CanonicalFields {
 		rawCandidateID := strings.TrimSpace(form.Get("choice_" + string(field)))
-		if rawCandidateID == "" && requireAll && field == review.FieldRoomSlugs && len(group.Candidates) > 0 {
-			rawCandidateID = strconv.FormatInt(group.Candidates[0].ID, 10)
-		}
 		if rawCandidateID == "" {
 			if requireAll {
 				return nil, fmt.Errorf("all review fields must be selected before resolving")
