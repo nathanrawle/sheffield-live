@@ -2183,7 +2183,7 @@ func TestEventsFiltersToday(t *testing.T) {
 	body := renderPath(t, server, "/events?window=today")
 
 	assertContains(t, body, "Tonight Leadmill")
-	assertContains(t, body, "Sunday, 19 April 2026")
+	assertContains(t, body, "19 Apr - 1 show")
 	assertNotContains(t, body, "Tomorrow Yellow Arch")
 	assertNotContains(t, body, "Friday Leadmill")
 }
@@ -2236,11 +2236,14 @@ func TestEventsGroupsByLocalDateInOrder(t *testing.T) {
 	body := renderPath(t, server, "/events?window=week")
 
 	assertInOrder(t, body, []string{
-		"Sunday, 19 April 2026",
+		"Tonight",
+		"19 Apr - 1 show",
 		"Tonight Leadmill",
-		"Monday, 20 April 2026",
+		"Tomorrow",
+		"20 Apr - 1 show",
 		"Tomorrow Yellow Arch",
-		"Friday, 24 April 2026",
+		"Friday",
+		"24 Apr - 1 show",
 		"Friday Leadmill",
 	})
 }
@@ -2315,7 +2318,7 @@ func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
 	}{
 		{name: "home", path: "/", cardClass: `class="event-card has-image"`},
 		{name: "events", path: "/events?window=today", cardClass: `class="event-card has-image"`},
-		{name: "venue", path: "/venues/leadmill", cardClass: `class="event-card has-image"`},
+		{name: "venue", path: "/venues/leadmill", cardClass: `class="event-card venue-event-card has-image"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := renderPath(t, server, tc.path)
@@ -2510,6 +2513,26 @@ func TestVenueDetailShowsEmptyState(t *testing.T) {
 	body := renderPath(t, server, "/venues/empty-room")
 
 	assertContains(t, body, "No upcoming shows listed for this venue.")
+}
+
+func TestVenueDetailEventCardsShowDates(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/venues/leadmill")
+
+	assertInOrder(t, body, []string{
+		"Today",
+		"19 Apr - 1 show",
+		"20:00",
+		"Friday",
+		"24 Apr - 1 show",
+		"21:00",
+		"Monday",
+		"27 Apr - 1 show",
+		"20:00",
+	})
+	assertNotContains(t, body, "Past Leadmill")
+	assertNotContains(t, body, "Nothing Listed")
+	assertNotContains(t, body, "19 Apr 2026 · 20:00")
 }
 
 func TestVenueAndEventDetailShowCoverageNote(t *testing.T) {

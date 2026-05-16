@@ -9,8 +9,8 @@
     {{range .EventGroups}}
     <section class="event-board-section date-group">
       <div class="event-day-heading">
-        <h2>{{dateLong .Date}}</h2>
-        <p>{{showCount (len .Events)}}</p>
+        <h2>{{dateSectionTitle .Date $.Now}}</h2>
+        <p>{{dateDayMonth .Date}} - {{showCount (len .Events)}}</p>
       </div>
       <div class="event-list">
         {{range .Events}}
