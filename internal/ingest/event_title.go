@@ -60,10 +60,16 @@ func stripVenueNameFromEventTitle(title, venueSlug string) string {
 		if stripped, ok := stripVenueTitlePrefixDash(cleaned, alias); ok {
 			return stripped
 		}
+		if stripped, ok := stripVenueTitleParentheticalSuffix(cleaned, alias); ok {
+			return stripped
+		}
 		if stripped, ok := stripVenueTitleSuffix(cleaned, alias, " - "); ok {
 			return stripped
 		}
 		if stripped, ok := stripVenueTitleSuffix(cleaned, alias, " @ "); ok {
+			return stripped
+		}
+		if stripped, ok := stripVenueTitleSuffix(cleaned, alias, " // "); ok {
 			return stripped
 		}
 		if stripped, ok := stripVenueTitleSuffixAt(cleaned, alias); ok {
@@ -89,9 +95,20 @@ func stripVenueTitlePrefixDash(title, alias string) (string, bool) {
 	return nonEmptyEventTitleRemainder(rest)
 }
 
+func stripVenueTitleParentheticalSuffix(title, alias string) (string, bool) {
+	if !strings.HasSuffix(title, ")") {
+		return "", false
+	}
+	start := strings.LastIndex(title, "(")
+	if start < 0 || !sameEventTitleText(title[start+1:len(title)-1], alias) {
+		return "", false
+	}
+	return nonEmptyEventTitleRemainder(title[:start])
+}
+
 func stripVenueTitleSuffix(title, alias, marker string) (string, bool) {
 	idx := strings.LastIndex(title, marker)
-	if idx < 0 || !sameEventTitleText(title[idx+len(marker):], alias) {
+	if idx < 0 || !eventTitleVenueSuffixMatches(title[idx+len(marker):], alias) {
 		return "", false
 	}
 	return nonEmptyEventTitleRemainder(title[:idx])
@@ -100,10 +117,34 @@ func stripVenueTitleSuffix(title, alias, marker string) (string, bool) {
 func stripVenueTitleSuffixAt(title, alias string) (string, bool) {
 	const marker = " at "
 	idx := strings.LastIndex(strings.ToLower(title), marker)
-	if idx < 0 || !sameEventTitleText(title[idx+len(marker):], alias) {
+	if idx < 0 || !eventTitleVenueSuffixMatches(title[idx+len(marker):], alias) {
 		return "", false
 	}
 	return nonEmptyEventTitleRemainder(title[:idx])
+}
+
+func eventTitleVenueSuffixMatches(suffix, alias string) bool {
+	if sameEventTitleText(suffix, alias) {
+		return true
+	}
+	if head, ok := eventTitleSuffixBeforeTrailingParenthetical(suffix); ok {
+		return sameEventTitleText(head, alias)
+	}
+	return false
+}
+
+func eventTitleSuffixBeforeTrailingParenthetical(suffix string) (string, bool) {
+	suffix = normalizeEventTitleSpacing(suffix)
+	if !strings.HasSuffix(suffix, ")") {
+		return "", false
+	}
+	start := strings.LastIndex(suffix, "(")
+	if start < 0 {
+		return "", false
+	}
+	head := strings.TrimSpace(suffix[:start])
+	qualifier := strings.TrimSpace(suffix[start+1 : len(suffix)-1])
+	return head, head != "" && qualifier != ""
 }
 
 func nonEmptyEventTitleRemainder(value string) (string, bool) {

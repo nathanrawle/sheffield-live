@@ -40,6 +40,36 @@ func TestStripVenueNameFromEventTitle(t *testing.T) {
 			want:      "An evening with Ellie Gowers",
 		},
 		{
+			name:      "suffix double slash",
+			title:     "Club Night // Yellow Arch",
+			venueSlug: "yellow-arch",
+			want:      "Club Night",
+		},
+		{
+			name:      "parenthetical venue suffix",
+			title:     "Club Night (Yellow Arch)",
+			venueSlug: "yellow-arch",
+			want:      "Club Night",
+		},
+		{
+			name:      "dash suffix with parenthetical qualifier",
+			title:     "PINS plus Gia Ford & Gelder - Yellow Arch (Rescheduled Date)",
+			venueSlug: "yellow-arch",
+			want:      "PINS plus Gia Ford & Gelder",
+		},
+		{
+			name:      "at suffix with first back to back qualifier",
+			title:     "An evening with Artist at Cafe No. 9 (the first of two back to back shows)",
+			venueSlug: "cafe-no-9",
+			want:      "An evening with Artist",
+		},
+		{
+			name:      "at suffix with second back to back qualifier",
+			title:     "An evening with Artist at Cafe No. 9 (the second of two back to back shows)",
+			venueSlug: "cafe-no-9",
+			want:      "An evening with Artist",
+		},
+		{
 			name:      "case and whitespace",
 			title:     "  maybe   gold   -   yellow   arch  ",
 			venueSlug: "yellow-arch",
@@ -62,6 +92,12 @@ func TestStripVenueNameFromEventTitle(t *testing.T) {
 			title:     "Jazz at The Lescar Quartet",
 			venueSlug: "lescar",
 			want:      "Jazz at The Lescar Quartet",
+		},
+		{
+			name:      "branded sidney and matilda abbreviation is preserved",
+			title:     "S&M Presents: Dealbreaker",
+			venueSlug: "sidney-and-matilda",
+			want:      "S&M Presents: Dealbreaker",
 		},
 		{
 			name:      "partial word is preserved",
