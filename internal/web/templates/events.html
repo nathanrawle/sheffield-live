@@ -48,7 +48,7 @@
         <span class="event-card-main">
           <span class="event-date">{{timeShort .Start}}</span>
           <span class="event-title">{{.Name}}</span>
-          <span class="event-meta">{{venueName $.VenueNames .VenueSlug}}{{with eventRoomText .}} · {{.}}{{end}} · {{.Genre}} · {{.Status}}</span>
+          <span class="event-meta">{{eventVenueName $.VenueNames .}} · {{.Genre}} · {{.Status}}</span>
           {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
         </span>
         {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async">{{end}}

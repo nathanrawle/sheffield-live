@@ -358,15 +358,10 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			return t.In(localLocation).Format("15:04")
 		},
 		"venueName": func(venueNames map[string]string, slug string) string {
-			if venueNames == nil {
-				return slug
-			}
-			if name := strings.TrimSpace(venueNames[slug]); name != "" {
-				return name
-			}
-			return slug
+			return venueDisplayName(venueNames, slug)
 		},
-		"eventRoomText": eventRoomText,
+		"eventVenueName": eventVenueName,
+		"eventRoomText":  eventRoomText,
 		"originText": func(origin domain.Origin) string {
 			return string(origin)
 		},
@@ -2073,6 +2068,24 @@ func eventRoomText(event domain.Event) string {
 		}
 	}
 	return strings.Join(names, " + ")
+}
+
+func eventVenueName(venueNames map[string]string, event domain.Event) string {
+	name := venueDisplayName(venueNames, event.VenueSlug)
+	if room := eventRoomText(event); room != "" {
+		return fmt.Sprintf("%s (%s)", name, room)
+	}
+	return name
+}
+
+func venueDisplayName(venueNames map[string]string, slug string) string {
+	if venueNames == nil {
+		return slug
+	}
+	if name := strings.TrimSpace(venueNames[slug]); name != "" {
+		return name
+	}
+	return slug
 }
 
 func sortEventsForDisplay(events []domain.Event) []domain.Event {
