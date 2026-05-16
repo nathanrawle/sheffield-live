@@ -119,6 +119,52 @@ func TestExtractSidneyAndMatildaRoomEvidence(t *testing.T) {
 	assertRoomEvidence(t, got["url:https://www.sidneyandmatilda.com/events/new-space"], "COURTYARD STAGE", []RoomCandidate{{Slug: "courtyard-stage", Name: "Courtyard Stage"}})
 }
 
+func TestSidneyRoomEvidenceSuppressesAmbiguousTitleFallback(t *testing.T) {
+	body := []byte(`
+		<article class="eventlist-event">
+			<a href="/events/club-night-early">Recurring Club Night</a>
+			<div class="eventlist-excerpt"><p>FACTORY</p></div>
+		</article>
+		<article class="eventlist-event">
+			<a href="/events/club-night-late">Recurring Club Night</a>
+			<div class="eventlist-excerpt"><p>BASEMENT</p></div>
+		</article>
+	`)
+
+	evidence := ExtractSidneyAndMatildaRoomEvidence("https://www.sidneyandmatilda.com/events/", body)
+
+	assertRoomEvidence(t, evidence["url:https://www.sidneyandmatilda.com/events/club-night-early"], "FACTORY", []RoomCandidate{{Slug: "factory", Name: "Factory"}})
+	assertRoomEvidence(t, evidence["url:https://www.sidneyandmatilda.com/events/club-night-late"], "BASEMENT", []RoomCandidate{{Slug: "basement", Name: "Basement"}})
+	if _, ok := evidence[roomEvidenceTitleKey("Recurring Club Night")]; ok {
+		t.Fatal("ambiguous title fallback evidence was stored")
+	}
+
+	merged := mergeRoomEvidence([]EventCandidate{
+		{
+			Summary: "Recurring Club Night",
+			StartAt: "2026-05-01T19:00:00Z",
+		},
+		{
+			Summary: "Recurring Club Night",
+			URL:     "https://www.sidneyandmatilda.com/events/club-night-early",
+			StartAt: "2026-05-01T21:00:00Z",
+		},
+	}, evidence)
+
+	if got := merged[0].RoomText; got != "" {
+		t.Fatalf("URL-less candidate room text = %q, want blank", got)
+	}
+	if len(merged[0].Rooms) != 0 {
+		t.Fatalf("URL-less candidate rooms = %#v, want none", merged[0].Rooms)
+	}
+	if got, want := merged[1].RoomText, "FACTORY"; got != want {
+		t.Fatalf("URL-matched candidate room text = %q, want %q", got, want)
+	}
+	if got, want := merged[1].Rooms, []RoomCandidate{{Slug: "factory", Name: "Factory"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("URL-matched candidate rooms = %#v, want %#v", got, want)
+	}
+}
+
 func assertRoomEvidence(t *testing.T, got sourceRoomEvidence, wantText string, wantRooms []RoomCandidate) {
 	t.Helper()
 

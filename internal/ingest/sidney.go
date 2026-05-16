@@ -57,6 +57,8 @@ func ExtractSidneyAndMatildaRoomEvidence(baseURL string, body []byte) map[string
 		return nil
 	}
 	out := make(map[string]sourceRoomEvidence)
+	titleEvidence := make(map[string]sourceRoomEvidence)
+	titleCounts := make(map[string]int)
 	for _, article := range sidneyEventArticlePattern.FindAllSubmatch(body, -1) {
 		detailURL, title := sidneyEventArticleIdentity(parsedBase, article[1])
 		if detailURL == "" && title == "" {
@@ -71,7 +73,14 @@ func ExtractSidneyAndMatildaRoomEvidence(baseURL string, body []byte) map[string
 			out["url:"+strings.TrimRight(detailURL, "/")] = evidence
 		}
 		if title != "" {
-			out[roomEvidenceTitleKey(title)] = evidence
+			key := roomEvidenceTitleKey(title)
+			titleEvidence[key] = evidence
+			titleCounts[key]++
+		}
+	}
+	for key, evidence := range titleEvidence {
+		if titleCounts[key] == 1 {
+			out[key] = evidence
 		}
 	}
 	return out
