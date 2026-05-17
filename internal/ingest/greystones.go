@@ -12,7 +12,7 @@ import (
 var greystonesAnchorPattern = regexp.MustCompile(`(?is)<a\b[^>]*>`)
 var greystonesMonthPathPattern = regexp.MustCompile(`^/(january|february|march|april|may|june|july|august|september|october|november|december)/?$`)
 var greystonesTitlePattern = regexp.MustCompile(`(?is)<h1\b[^>]*>(.*?)</h1>`)
-var greystonesMetaPattern = regexp.MustCompile(`(?is)<h4\b[^>]*>(.*?)</h4>`)
+var greystonesMetaPattern = regexp.MustCompile(`(?is)<h[34]\b[^>]*>(.*?)</h[34]>`)
 var greystonesParagraphPattern = regexp.MustCompile(`(?is)<p\b[^>]*>(.*?)</p>`)
 var greystonesPageYearPattern = regexp.MustCompile(`(?i)\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b`)
 var greystonesTagPattern = regexp.MustCompile(`(?is)<[^>]+>`)
@@ -120,19 +120,18 @@ func greystonesPageYear(raw []byte) (int, error) {
 
 func greystonesCandidateFromSection(pageURL string, section, imageRegion []byte, year int) (EventCandidate, ParseSkip, error) {
 	title := greystonesMatchText(greystonesTitlePattern.FindSubmatch(section))
-	meta := greystonesMatchText(greystonesMetaPattern.FindSubmatch(section))
 	skip := ParseSkip{Summary: title}
 
-	switch {
-	case title == "":
+	if title == "" {
 		skip.Reason = "missing event title"
-		return EventCandidate{}, skip, nil
-	case meta == "":
-		skip.Reason = "missing event metadata"
 		return EventCandidate{}, skip, nil
 	}
 
-	startAt, err := greystonesStartAt(meta, year)
+	startAt, hasMeta, err := greystonesSectionStartAt(section, year)
+	if !hasMeta {
+		skip.Reason = "missing event metadata"
+		return EventCandidate{}, skip, nil
+	}
 	if err != nil {
 		return EventCandidate{}, ParseSkip{}, fmt.Errorf("parse The Greystones metadata for %q: %w", title, err)
 	}
@@ -147,6 +146,28 @@ func greystonesCandidateFromSection(pageURL string, section, imageRegion []byte,
 		Status:         "Listed",
 		StartAt:        formatTime(startAt),
 	}, ParseSkip{}, nil
+}
+
+func greystonesSectionStartAt(section []byte, year int) (time.Time, bool, error) {
+	matches := greystonesMetaPattern.FindAllSubmatch(section, -1)
+	var firstErr error
+	for _, match := range matches {
+		meta := greystonesMatchText(match)
+		if !strings.Contains(meta, "/") {
+			continue
+		}
+		startAt, err := greystonesStartAt(meta, year)
+		if err == nil {
+			return startAt, true, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return time.Time{}, true, firstErr
+	}
+	return time.Time{}, false, nil
 }
 
 func greystonesStartAt(meta string, year int) (time.Time, error) {

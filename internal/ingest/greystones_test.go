@@ -140,3 +140,47 @@ func TestParseTheGreystonesMonthPageParsesDottedTimes(t *testing.T) {
 		t.Fatalf("second start = %q, want %q", got, want)
 	}
 }
+
+func TestParseTheGreystonesMonthPageParsesH3Metadata(t *testing.T) {
+	result := ParseTheGreystonesMonthPage("https://www.mygreystones.co.uk/october/", []byte(`
+		<html><body>
+		<h1>OCTOBER 2026</h1>
+		<h1>CALLAGHAN</h1>
+		<h3><span>Monday 26th October / 8pm / £20</span></h3>
+		<p>Show description.</p>
+		<h4>Footer heading outside the event shape</h4>
+		</body></html>
+	`))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := result.Candidates[0].StartAt, "2026-10-26T20:00:00Z"; got != want {
+		t.Fatalf("start = %q, want %q", got, want)
+	}
+}
+
+func TestParseTheGreystonesMonthPageSkipsSubtitleHeadingBeforeMetadata(t *testing.T) {
+	result := ParseTheGreystonesMonthPage("https://www.mygreystones.co.uk/may/", []byte(`
+		<html><body>
+		<h1>MAY 2026</h1>
+		<h1>KING PLEASURE &amp; THE BISCUIT BOYS</h1>
+		<h3><strong><em>Special 40th Anniversary Tour</em></strong></h3>
+		<h4><span>Friday 15th May / 8pm / £22</span></h4>
+		<p>Show description.</p>
+		</body></html>
+	`))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := result.Candidates[0].StartAt, "2026-05-15T19:00:00Z"; got != want {
+		t.Fatalf("start = %q, want %q", got, want)
+	}
+}
