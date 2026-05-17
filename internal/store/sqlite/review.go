@@ -2909,6 +2909,15 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 		if err := upsertEventSecondarySourceInfoTx(ctx, tx, canonicalEventID, primarySourceIdentity(event), matchingStaged, now); err != nil {
 			return err
 		}
+		if authoritative, ok := authoritativeTitleRepairLinkFromCandidates(group, staged); ok {
+			sourceID, err := ensureSourceTx(ctx, tx, authoritative.SourceName, authoritative.SourceURL)
+			if err != nil {
+				return err
+			}
+			if err := ensureEventSourceLinkTx(ctx, tx, canonicalEventID, sourceID, authoritative.SourceEventKey, now); err != nil {
+				return err
+			}
+		}
 		if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, canonicalEventID, event.Description, now); err != nil {
 			return err
 		}
@@ -3501,6 +3510,16 @@ func authoritativeLinkFromStoredReviewCandidate(group review.Group, candidate re
 		SourceURL:      sourceURL,
 		SourceEventKey: sourceEventKey,
 	}, true
+}
+
+func authoritativeTitleRepairLinkFromCandidates(group review.Group, candidates []review.Candidate) (reviewGroupAuthoritativeLink, bool) {
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.Provenance) != eventTitleRepairAuthoritativeCleanedProvenance {
+			continue
+		}
+		return authoritativeLinkFromStoredReviewCandidate(group, candidate)
+	}
+	return reviewGroupAuthoritativeLink{}, false
 }
 
 func replaceEventSecondarySourceInfoTx(ctx context.Context, tx interface {

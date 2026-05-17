@@ -5997,6 +5997,149 @@ func TestRepairEventTitlesFromReportStagesSupportingReviewWhenCleanDuplicateExis
 	}
 }
 
+func TestRepairEventTitlesFromReportStagesAuthoritativeReviewWhenCleanDuplicateExists(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAt   = "2026-05-10T18:30:00Z"
+		source    = "Yellow Arch manual ingest"
+		sourceURL = "https://www.yellowarch.com/event/late-junction/"
+		dirty     = "Late Junction - Yellow Arch Studios"
+		clean     = "Late Junction"
+	)
+	sourceID := mustEnsureSourceID(t, st, source, sourceURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "yellow-arch", startAt)
+	cleanSlug := mustLiveEventSlug(t, clean, "yellow-arch", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "yellow-arch", dirty, startAt, "Dirty duplicate.")
+	mustInsertRepairLegacyEvent(t, db, sourceID, cleanSlug, "yellow-arch", clean, startAt, "Clean duplicate.")
+
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustReviewCatalog(t), yellowArchTitleRepairReport(startAt, dirty), true)
+	if err != nil {
+		t.Fatalf("repair event titles: %v", err)
+	}
+	if got, want := repair.ReviewGroupsCreated, 1; got != want {
+		t.Fatalf("review groups created = %d, want %d", got, want)
+	}
+	if got, want := repair.Changes[0].Result, "review_created"; got != want {
+		t.Fatalf("result = %q, want %q", got, want)
+	}
+
+	groupID := repair.Changes[0].ReviewGroupID
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load title repair review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("title repair review group not found")
+	}
+	if got, want := len(group.Candidates), 3; got != want {
+		t.Fatalf("review candidates = %d, want %d", got, want)
+	}
+	if got, want := group.Candidates[0].Provenance, eventTitleRepairAuthoritativeCleanedProvenance; got != want {
+		t.Fatalf("cleaned candidate provenance = %q, want %q", got, want)
+	}
+	if got, want := group.Candidates[0].ExternalID, sourceURL; got != want {
+		t.Fatalf("cleaned candidate external ID = %q, want %q", got, want)
+	}
+
+	beforeEventCount := mustCount(t, db, "events")
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve title repair group: %v", err)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEventCount-1 {
+		t.Fatalf("events rows = %d, want merged duplicate count %d", got, beforeEventCount-1)
+	}
+	if _, ok := st.EventBySlug(dirtySlug); ok {
+		t.Fatalf("dirty slug %q still exists", dirtySlug)
+	}
+	event, ok := st.EventBySlug(cleanSlug)
+	if !ok {
+		t.Fatalf("missing clean slug %q", cleanSlug)
+	}
+	if event.Name != clean {
+		t.Fatalf("event name = %q, want %q", event.Name, clean)
+	}
+
+	var cleanEventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, cleanSlug).Scan(&cleanEventID); err != nil {
+		t.Fatalf("lookup clean event id: %v", err)
+	}
+	var linkedEventID int64
+	if err := db.QueryRow(`
+		SELECT event_id
+		FROM event_source_links
+		WHERE source_event_key = ?
+	`, sourceURL).Scan(&linkedEventID); err != nil {
+		t.Fatalf("lookup authoritative source link: %v", err)
+	}
+	if linkedEventID != cleanEventID {
+		t.Fatalf("source link event_id = %d, want clean event %d", linkedEventID, cleanEventID)
+	}
+}
+
+func TestRepairEventTitlesFromReportSkipsAuthoritativeConflictWithDifferentIdentity(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAt       = "2026-05-10T18:30:00Z"
+		conflictStart = "2026-05-11T18:30:00Z"
+		source        = "Yellow Arch manual ingest"
+		sourceURL     = "https://www.yellowarch.com/event/late-junction/"
+		dirty         = "Late Junction - Yellow Arch Studios"
+		clean         = "Late Junction"
+	)
+	sourceID := mustEnsureSourceID(t, st, source, sourceURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "yellow-arch", startAt)
+	cleanSlug := mustLiveEventSlug(t, clean, "yellow-arch", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "yellow-arch", dirty, startAt, "Dirty duplicate.")
+	mustInsertRepairLegacyEvent(t, db, sourceID, cleanSlug, "yellow-arch", "Different Late Junction", conflictStart, "Different event.")
+
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustReviewCatalog(t), yellowArchTitleRepairReport(startAt, dirty), true)
+	if err != nil {
+		t.Fatalf("repair event titles: %v", err)
+	}
+	if got, want := repair.Skipped, 1; got != want {
+		t.Fatalf("skipped = %d, want %d", got, want)
+	}
+	if got, want := repair.Changes[0].Reason, "target slug already belongs to another event"; got != want {
+		t.Fatalf("reason = %q, want %q", got, want)
+	}
+	if got := mustCount(t, db, "review_groups"); got != 0 {
+		t.Fatalf("review groups = %d, want 0", got)
+	}
+	if _, ok := st.EventBySlug(dirtySlug); !ok {
+		t.Fatalf("dirty slug %q should remain", dirtySlug)
+	}
+}
+
 func TestRepairEventTitlesFromReportDoesNotStageSupportingReviewForAuthoritativeEvent(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")

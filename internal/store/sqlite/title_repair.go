@@ -40,6 +40,13 @@ type EventTitleRepairChange struct {
 	NewTitle      string `json:"new_title,omitempty"`
 }
 
+const (
+	eventTitleRepairCleanedProvenance              = "Cleaned title from title repair"
+	eventTitleRepairAuthoritativeCleanedProvenance = "Authoritative cleaned title from title repair"
+	eventTitleRepairExistingCleanProvenance        = "Existing live event with cleaned title"
+	eventTitleRepairCanonicalProvenance            = "Canonical live event snapshot"
+)
+
 func (s *Store) RepairEventTitlesFromReport(ctx context.Context, catalog *ingest.Catalog, report ingest.Report, apply bool) (EventTitleRepairReport, error) {
 	repair := EventTitleRepairReport{
 		DryRun:  !apply,
@@ -78,7 +85,7 @@ func (s *Store) RepairEventTitlesFromReport(ctx context.Context, catalog *ingest
 			if strings.TrimSpace(single.AuthoritativeSourceName) != "" &&
 				strings.TrimSpace(single.AuthoritativeSourceURL) != "" &&
 				strings.TrimSpace(single.AuthoritativeSourceEventKey) != "" {
-				change, err = s.repairAuthoritativeEventTitle(ctx, event, single.AuthoritativeSourceEventKey, apply, now)
+				change, err = s.repairAuthoritativeEventTitle(ctx, single, event, single.AuthoritativeSourceEventKey, apply, now)
 			} else {
 				change, err = s.stageSupportingEventTitleRepair(ctx, single, event, apply, now)
 			}
@@ -112,7 +119,7 @@ func singleCandidateTitleRepairGroup(group review.GroupInput, candidate review.C
 	return group
 }
 
-func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, incoming domain.Event, sourceEventKey string, apply bool, now time.Time) (EventTitleRepairChange, error) {
+func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, group review.GroupInput, incoming domain.Event, sourceEventKey string, apply bool, now time.Time) (EventTitleRepairChange, error) {
 	change := titleRepairChangeForIncoming(incoming)
 	change.MatchKind = "authoritative"
 
@@ -162,8 +169,28 @@ func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, incoming doma
 	if conflict, ok, err := loadEventRecordBySlugTx(ctx, tx, incoming.Slug); err != nil {
 		return EventTitleRepairChange{}, err
 	} else if ok && conflict.ID != record.ID {
-		change.Result = "skipped"
-		change.Reason = "target slug already belongs to another event"
+		if !eventRecordHasResolvedIdentity(conflict, incoming) {
+			change.Result = "skipped"
+			change.Reason = "target slug already belongs to another event"
+			return change, nil
+		}
+		if !apply {
+			change.Result = "would_create_review"
+			return change, nil
+		}
+		groupID, created, err := stageEventTitleRepairReviewGroupTx(ctx, tx, group, record, incoming, now)
+		if err != nil {
+			return EventTitleRepairChange{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return EventTitleRepairChange{}, err
+		}
+		change.ReviewGroupID = groupID
+		if created {
+			change.Result = "review_created"
+		} else {
+			change.Result = "review_reused"
+		}
 		return change, nil
 	}
 	if !apply {
@@ -202,7 +229,7 @@ func (s *Store) stageSupportingEventTitleRepair(ctx context.Context, group revie
 	if err != nil {
 		return EventTitleRepairChange{}, err
 	}
-	record, found, ambiguous := selectSupportingTitleRepairRecord(records, incoming)
+	record, found, ambiguous := selectTitleRepairRecord(records, incoming)
 	if ambiguous {
 		change.Result = "skipped"
 		change.Reason = "ambiguous supporting match"
@@ -251,7 +278,7 @@ func (s *Store) stageSupportingEventTitleRepair(ctx context.Context, group revie
 	return change, nil
 }
 
-func selectSupportingTitleRepairRecord(records []eventRecord, incoming domain.Event) (eventRecord, bool, bool) {
+func selectTitleRepairRecord(records []eventRecord, incoming domain.Event) (eventRecord, bool, bool) {
 	if len(records) == 0 {
 		return eventRecord{}, false, false
 	}
@@ -302,14 +329,14 @@ func findAuthoritativeEventForTitleRepairTx(ctx context.Context, q queryer, sour
 	if err != nil {
 		return eventRecord{}, "same_source_clean_title", false, false, err
 	}
-	switch len(records) {
-	case 0:
-		return eventRecord{}, "same_source_clean_title", false, false, nil
-	case 1:
-		return records[0], "same_source_clean_title", true, false, nil
-	default:
+	record, found, ambiguous := selectTitleRepairRecord(records, incoming)
+	if ambiguous {
 		return eventRecord{}, "same_source_clean_title", false, true, nil
 	}
+	if !found {
+		return eventRecord{}, "same_source_clean_title", false, false, nil
+	}
+	return record, "same_source_clean_title", true, false, nil
 }
 
 func matchingLiveEventRecordsByCleanTitleAndSourceTx(ctx context.Context, q queryer, sourceID int64, incoming domain.Event) ([]eventRecord, error) {
@@ -504,15 +531,33 @@ func stageEventTitleRepairReviewGroupTx(ctx context.Context, tx interface {
 }
 
 func eventTitleRepairReviewCandidatesTx(ctx context.Context, q queryer, input review.GroupInput, record eventRecord, incoming domain.Event) ([]review.CandidateInput, error) {
+	externalID := ""
+	if len(input.Candidates) > 0 {
+		externalID = strings.TrimSpace(input.Candidates[0].ExternalID)
+	}
+	provenance := eventTitleRepairCleanedProvenance
+	if authoritative, ok := reviewGroupInputAuthoritativeSource(input); ok {
+		externalID = authoritative.SourceEventKey
+		provenance = eventTitleRepairAuthoritativeCleanedProvenance
+	}
+	cleaned := reviewCandidateInputFromEvent(incoming, externalID, provenance)
+	if authoritative, ok := reviewGroupInputAuthoritativeSource(input); ok {
+		cleaned.SourceName = authoritative.SourceName
+		if ingest.IsCalendarURL(authoritative.SourceURL) {
+			cleaned.CalendarURL = authoritative.SourceURL
+		} else {
+			cleaned.SourceURL = authoritative.SourceURL
+		}
+	}
 	candidates := []review.CandidateInput{
-		reviewCandidateInputFromEvent(incoming, input.Candidates[0].ExternalID, "Cleaned title from title repair"),
+		cleaned,
 	}
 	if conflict, ok, err := loadEventRecordBySlugTx(ctx, q, incoming.Slug); err != nil {
 		return nil, err
 	} else if ok && conflict.ID != record.ID && eventRecordHasResolvedIdentity(conflict, incoming) {
-		candidates = append(candidates, reviewCandidateInputFromEvent(conflict.Event, "", "Existing live event with cleaned title"))
+		candidates = append(candidates, reviewCandidateInputFromEvent(conflict.Event, "", eventTitleRepairExistingCleanProvenance))
 	}
-	canonical := reviewCandidateInputFromEvent(record.Event, "", "Canonical live event snapshot")
+	canonical := reviewCandidateInputFromEvent(record.Event, "", eventTitleRepairCanonicalProvenance)
 	canonical.CanonicalEventID = record.ID
 	candidates = append(candidates, canonical)
 	return candidates, nil
