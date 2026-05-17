@@ -42,7 +42,7 @@ func TestRoutes(t *testing.T) {
 	}{
 		{name: "home", path: "/", code: http.StatusOK, body: "Upcoming shows"},
 		{name: "events", path: "/events", code: http.StatusOK, body: "Upcoming shows"},
-		{name: "venues", path: "/venues", code: http.StatusOK, body: "Sheffield rooms"},
+		{name: "venues", path: "/venues", code: http.StatusOK, body: "Sheffield venues"},
 		{name: "venue detail", path: "/venues/leadmill", code: http.StatusOK, body: "Leadmill"},
 		{name: "static css", path: "/static/site.css", code: http.StatusOK, body: "color-scheme"},
 		{name: "static js", path: "/static/site.js", code: http.StatusOK, body: "data-venue-timeline"},
@@ -1103,8 +1103,12 @@ func TestSQLitePublicVenuePagesRenderDerivedProvisionalVenueAddress(t *testing.T
 
 	venuesBody := renderPath(t, server, "/venues")
 	assertContains(t, venuesBody, "Memorial Hall")
-	assertContains(t, venuesBody, "City Centre · Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
-	assertNotContains(t, venuesBody, "City Centre · Memorial Hall,\nBarkers Pool")
+	assertContains(t, venuesBody, `<span class="venue-area">City Centre</span>`)
+	assertContains(t, venuesBody, `<span class="venue-address">Barkers Pool,
+Sheffield City Centre,
+Sheffield,
+S1 2JA</span>`)
+	assertNotContains(t, venuesBody, "Memorial Hall,\nBarkers Pool")
 }
 
 func TestStoredDuplicateVenueAddressLineIsHiddenAcrossPages(t *testing.T) {
@@ -1139,8 +1143,10 @@ func TestStoredDuplicateVenueAddressLineIsHiddenAcrossPages(t *testing.T) {
 	assertNotContains(t, eventBody, "Imaginary Hall marketing copy,\n1 Void Street")
 
 	venuesBody := renderPath(t, server, "/venues")
-	assertContains(t, venuesBody, "City Centre · 1 Void Street,\nSheffield")
-	assertNotContains(t, venuesBody, "City Centre · Imaginary Hall marketing copy,\n1 Void Street")
+	assertContains(t, venuesBody, `<span class="venue-area">City Centre</span>`)
+	assertContains(t, venuesBody, `<span class="venue-address">1 Void Street,
+Sheffield</span>`)
+	assertNotContains(t, venuesBody, "Imaginary Hall marketing copy,\n1 Void Street")
 }
 
 func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T) {

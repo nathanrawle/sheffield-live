@@ -495,6 +495,13 @@ a:focus-visible {
   text-decoration: none;
 }
 
+.venue-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-height: 7.5rem;
+}
+
 .event-card {
   container-type: inline-size;
   display: grid;
@@ -570,7 +577,40 @@ a:focus-visible {
 }
 
 .venue-meta {
-  min-height: 1.2em;
+  display: grid;
+  gap: 0.16rem;
+  min-height: 0;
+}
+
+.venue-area {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.venue-address {
+  white-space: pre-line;
+}
+
+.venue-card-action {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: auto;
+  color: var(--accent);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.82rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.venue-card .origin-badge {
+  margin-top: 0;
+}
+
+.venue-card:hover .venue-card-action,
+.venue-card:focus-visible .venue-card-action {
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.16em;
 }
 
 .event-status {

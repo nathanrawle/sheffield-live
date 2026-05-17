@@ -1,7 +1,7 @@
 <section class="page-head">
   <p class="eyebrow">Venues</p>
-  <h1>Sheffield rooms</h1>
-  <p class="lede">A small starting set of venues with upcoming live music.</p>
+  <h1>Sheffield venues</h1>
+  <p class="lede">Places hosting upcoming live music, with room-level listings where we have them.</p>
 </section>
 
 <section class="section-block">
@@ -9,8 +9,12 @@
     {{range .Venues}}
     <a class="venue-card wide" href="/venues/{{.Slug}}">
       <span class="venue-title">{{.Name}}</span>
-      <span class="venue-meta">{{.Neighbourhood}} · {{displayAddress .Name .Address}}</span>
+      <span class="venue-meta">
+        {{with .Neighbourhood}}<span class="venue-area">{{.}}</span>{{end}}
+        {{with displayAddress .Name .Address}}<span class="venue-address">{{.}}</span>{{end}}
+      </span>
       {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+      <span class="venue-card-action">Upcoming shows</span>
     </a>
     {{end}}
   </div>
