@@ -163,7 +163,7 @@ Live ingest:
 - fetches the selected source page
 - Sidney & Matilda snapshots the source page, fetched ICS payloads, and linked event detail pages. ICS remains authoritative for event identity/times; detail pages enrich blank descriptions from clean schema.org `Event` JSON-LD or bounded event content only. The source page also supplies room evidence for known room labels such as Factory, Basement, and Gallery.
 - Cafe No. 9 snapshots the WeGotTickets organiser page, follows pagination, snapshots event detail pages, and enriches descriptions from the detail page `Event information` section.
-- Jazz at The Lescar snapshots the source page and parses repeated listing blocks into review candidates without authoritative source event IDs
+- Jazz at The Lescar snapshots the source page and parses repeated listing blocks into review candidates, using page text-fragment URLs as authoritative event identity
 - The Greystones snapshots the events hub, discovers linked month pages, snapshots those pages, and parses repeated month-page listing rows into review candidates
 - Leadmill snapshots the source page and fetched ICS payloads, then keeps only `Live` listings with Sheffield locations
 - Yellow Arch snapshots the source page, parses embedded JSON-LD event data from that page, then snapshots candidate detail pages for description enrichment

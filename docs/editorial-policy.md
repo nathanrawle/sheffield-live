@@ -53,7 +53,6 @@ Supporting singleton auto-promotion is intentionally narrower than authoritative
 - it does not create secondary-source info rows
 - it can create provisional venue rows immediately when the venue evidence is uniquely new
 - it may fill blank live fields on later exact matches, but conflicting populated fields stay in review
-- Jazz at The Lescar remains a non-authoritative, program-only source even when its first-seen singletons auto-publish
 
 Canonical-backed duplicate resolution follows two precedence rules:
 

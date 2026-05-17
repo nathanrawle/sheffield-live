@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -4462,7 +4463,7 @@ func TestPromoteSingletonReviewGroupIfMissingPublishesNonAuthoritativeSingletonW
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path)
+	st, err := Open(path, testSupportingSourceMetadata{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -4477,17 +4478,17 @@ func TestPromoteSingletonReviewGroupIfMissingPublishesNonAuthoritativeSingletonW
 	beforeEventCount := mustCount(t, db, "events")
 
 	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "The Greystones singleton",
-		SourceName: "The Greystones manual ingest",
-		SourceURL:  "https://www.mygreystones.co.uk/events/",
+		Title:      "Fixture supporting singleton",
+		SourceName: testSupportingSourceName,
+		SourceURL:  testSupportingSourceURL,
 		Candidates: []review.CandidateInput{{
-			ExternalID:  "greystones-1",
+			ExternalID:  "supporting-1",
 			Name:        "Roots Night",
-			VenueSlug:   "greystones",
+			VenueSlug:   "leadmill",
 			StartAt:     "2026-05-16T19:30:00Z",
 			EndAt:       "2026-05-16T22:00:00Z",
 			Status:      "Listed",
-			Description: "Initial Greystones listing",
+			Description: "Initial supporting listing",
 		}},
 	})
 	if err != nil {
@@ -4513,7 +4514,7 @@ func TestPromoteSingletonReviewGroupIfMissingPublishesNonAuthoritativeSingletonW
 	if !ok {
 		t.Fatalf("missing published event %q", eventSlug)
 	}
-	if got, want := event.VenueSlug, "greystones"; got != want {
+	if got, want := event.VenueSlug, "leadmill"; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
 	}
 	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
@@ -4525,7 +4526,7 @@ func TestPromoteSingletonReviewGroupIfMissingIgnoresInferredGenreSummaryConflict
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path)
+	st, err := Open(path, testSupportingSourceMetadata{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -4543,8 +4544,8 @@ func TestPromoteSingletonReviewGroupIfMissingIgnoresInferredGenreSummaryConflict
 		SELECT id
 		FROM venues
 		WHERE slug = ?
-	`, "greystones").Scan(&venueID); err != nil {
-		t.Fatalf("lookup greystones venue: %v", err)
+	`, "leadmill").Scan(&venueID); err != nil {
+		t.Fatalf("lookup leadmill venue: %v", err)
 	}
 	if _, err := db.Exec(`
 		INSERT INTO events (
@@ -4557,22 +4558,22 @@ func TestPromoteSingletonReviewGroupIfMissingIgnoresInferredGenreSummaryConflict
 			genre,
 			status,
 			description,
-			last_checked_at,
-			origin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, "live-roots-night-greystones-20260516193000", venueID, sourceID, "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z", "Jazz, Funk", "Listed", "Jazz and funk from the existing listing.", "2026-05-15T10:00:00Z", string(domain.OriginLive)); err != nil {
+		last_checked_at,
+		origin
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "live-roots-night-leadmill-20260516193000", venueID, sourceID, "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z", "Jazz, Funk", "Listed", "Jazz and funk from the existing listing.", "2026-05-15T10:00:00Z", string(domain.OriginLive)); err != nil {
 		t.Fatalf("insert existing event: %v", err)
 	}
 	beforeEventCount := mustCount(t, db, "events")
 
 	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "The Greystones singleton",
-		SourceName: "The Greystones manual ingest",
-		SourceURL:  "https://www.mygreystones.co.uk/events/",
+		Title:      "Fixture supporting singleton",
+		SourceName: testSupportingSourceName,
+		SourceURL:  testSupportingSourceURL,
 		Candidates: []review.CandidateInput{{
-			ExternalID:  "greystones-genre-1",
+			ExternalID:  "supporting-genre-1",
 			Name:        "Roots Night",
-			VenueSlug:   "greystones",
+			VenueSlug:   "leadmill",
 			StartAt:     "2026-05-16T19:30:00Z",
 			EndAt:       "2026-05-16T22:00:00Z",
 			Genre:       "Jazz",
@@ -4586,7 +4587,7 @@ func TestPromoteSingletonReviewGroupIfMissingIgnoresInferredGenreSummaryConflict
 	if !promoted {
 		t.Fatal("promoted = false, want true")
 	}
-	if got, want := eventSlug, "live-roots-night-greystones-20260516193000"; got != want {
+	if got, want := eventSlug, "live-roots-night-leadmill-20260516193000"; got != want {
 		t.Fatalf("event slug = %q, want %q", got, want)
 	}
 	if got := mustCount(t, db, "events"); got != beforeEventCount {
@@ -4598,7 +4599,7 @@ func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenNonAuthoritativeSlugEx
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path)
+	st, err := Open(path, testSupportingSourceMetadata{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -4612,13 +4613,13 @@ func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenNonAuthoritativeSlugEx
 	defer db.Close()
 
 	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "The Greystones singleton",
-		SourceName: "The Greystones manual ingest",
-		SourceURL:  "https://www.mygreystones.co.uk/events/",
+		Title:      "Fixture supporting singleton",
+		SourceName: testSupportingSourceName,
+		SourceURL:  testSupportingSourceURL,
 		Candidates: []review.CandidateInput{{
-			ExternalID:  "greystones-existing-1",
+			ExternalID:  "supporting-existing-1",
 			Name:        "Roots Night",
-			VenueSlug:   "greystones",
+			VenueSlug:   "leadmill",
 			StartAt:     "2026-05-16T19:30:00Z",
 			EndAt:       "2026-05-16T22:00:00Z",
 			Status:      "Listed",
@@ -4634,13 +4635,13 @@ func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenNonAuthoritativeSlugEx
 	beforeEventCount := mustCount(t, db, "events")
 
 	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "The Greystones singleton updated",
-		SourceName: "The Greystones manual ingest",
-		SourceURL:  "https://www.mygreystones.co.uk/events/",
+		Title:      "Fixture supporting singleton updated",
+		SourceName: testSupportingSourceName,
+		SourceURL:  testSupportingSourceURL,
 		Candidates: []review.CandidateInput{{
-			ExternalID:  "greystones-existing-2",
+			ExternalID:  "supporting-existing-2",
 			Name:        "Roots Night",
-			VenueSlug:   "greystones",
+			VenueSlug:   "leadmill",
 			StartAt:     "2026-05-16T19:30:00Z",
 			EndAt:       "2026-05-16T22:00:00Z",
 			Status:      "Sold out",
@@ -4678,7 +4679,7 @@ func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenNonAuthoritativeSlugEx
 	}
 }
 
-func TestPromoteSingletonReviewGroupIfMissingPublishesJazzAtTheLescarSingletonWhenAbsent(t *testing.T) {
+func TestPromoteSingletonReviewGroupIfMissingPublishesJazzAtTheLescarSingletonAuthoritatively(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -4721,8 +4722,8 @@ func TestPromoteSingletonReviewGroupIfMissingPublishesJazzAtTheLescarSingletonWh
 	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
 		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
 	}
-	if got := mustCount(t, db, "event_source_links"); got != 0 {
-		t.Fatalf("event_source_links rows = %d, want 0", got)
+	if got := mustCount(t, db, "event_source_links"); got != 1 {
+		t.Fatalf("event_source_links rows = %d, want 1", got)
 	}
 
 	event, ok := st.EventBySlug(eventSlug)
@@ -4732,7 +4733,7 @@ func TestPromoteSingletonReviewGroupIfMissingPublishesJazzAtTheLescarSingletonWh
 	if !event.End.IsZero() {
 		t.Fatalf("end = %v, want zero time for unknown end", event.End)
 	}
-	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
+	if got, want := event.PublicationState, domain.PublicationStateReviewed; got != want {
 		t.Fatalf("publication state = %q, want %q", got, want)
 	}
 
@@ -4749,7 +4750,7 @@ func TestPromoteSingletonReviewGroupIfMissingCreatesNoNewStagedGroupForNonAuthor
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path)
+	st, err := Open(path, testSupportingSourceMetadata{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -4764,7 +4765,7 @@ func TestPromoteSingletonReviewGroupIfMissingCreatesNoNewStagedGroupForNonAuthor
 	beforeEventCount := mustCount(t, db, "events")
 	beforeReviewGroupCount := mustCount(t, db, "review_groups")
 
-	groupInput := mustGreystonesSingletonReviewGroupInput(t, 99, "greystones-direct-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
+	groupInput := mustSupportingSingletonReviewGroupInput(99, "supporting-direct-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
 	if groupInput.StagingKey == "" {
 		t.Fatal("staging key = empty, want populated")
 	}
@@ -4794,7 +4795,7 @@ func TestPromoteSingletonReviewGroupIfMissingResolvesMatchingStaleNonAuthoritati
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path)
+	st, err := Open(path, testSupportingSourceMetadata{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -4807,8 +4808,8 @@ func TestPromoteSingletonReviewGroupIfMissingResolvesMatchingStaleNonAuthoritati
 	mustInsertImportRunFixture(t, st, 98)
 	mustInsertImportRunFixture(t, st, 99)
 
-	staleInput := mustGreystonesSingletonReviewGroupInput(t, 98, "greystones-stale-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
-	currentInput := mustGreystonesSingletonReviewGroupInput(t, 99, "greystones-stale-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
+	staleInput := mustSupportingSingletonReviewGroupInput(98, "supporting-stale-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
+	currentInput := mustSupportingSingletonReviewGroupInput(99, "supporting-stale-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
 	if staleInput.StagingKey != currentInput.StagingKey {
 		t.Fatalf("staging key mismatch: stale %q current %q", staleInput.StagingKey, currentInput.StagingKey)
 	}
@@ -4862,7 +4863,7 @@ func TestPromoteSingletonReviewGroupIfMissingLinksMatchingStaleNonAuthoritativeS
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path)
+	st, err := Open(path, testSupportingSourceMetadata{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -4875,8 +4876,8 @@ func TestPromoteSingletonReviewGroupIfMissingLinksMatchingStaleNonAuthoritativeS
 	mustInsertImportRunFixture(t, st, 98)
 	mustInsertImportRunFixture(t, st, 99)
 
-	staleInput := mustGreystonesSingletonReviewGroupInput(t, 98, "greystones-link-1", "Roots Night", "2026-05-18T19:30:00Z", "2026-05-18T22:00:00Z")
-	currentInput := mustGreystonesSingletonReviewGroupInput(t, 99, "greystones-link-1", "Roots Night", "2026-05-18T19:30:00Z", "2026-05-18T22:00:00Z")
+	staleInput := mustSupportingSingletonReviewGroupInput(98, "supporting-link-1", "Roots Night", "2026-05-18T19:30:00Z", "2026-05-18T22:00:00Z")
+	currentInput := mustSupportingSingletonReviewGroupInput(99, "supporting-link-1", "Roots Night", "2026-05-18T19:30:00Z", "2026-05-18T22:00:00Z")
 
 	stageResult, err := st.StageReviewGroup(ctx, staleInput)
 	if err != nil {
@@ -5019,7 +5020,7 @@ func TestPromoteSingletonReviewGroupIfMissingLeavesDifferentNonAuthoritativeStag
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path)
+	st, err := Open(path, testSupportingSourceMetadata{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -5032,9 +5033,9 @@ func TestPromoteSingletonReviewGroupIfMissingLeavesDifferentNonAuthoritativeStag
 	mustInsertImportRunFixture(t, st, 98)
 	mustInsertImportRunFixture(t, st, 99)
 
-	matchingStaleInput := mustGreystonesSingletonReviewGroupInput(t, 98, "greystones-match-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
-	matchingCurrentInput := mustGreystonesSingletonReviewGroupInput(t, 99, "greystones-match-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
-	otherInput := mustGreystonesSingletonReviewGroupInput(t, 98, "greystones-other-1", "Early Show", "2026-05-17T18:30:00Z", "2026-05-17T21:30:00Z")
+	matchingStaleInput := mustSupportingSingletonReviewGroupInput(98, "supporting-match-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
+	matchingCurrentInput := mustSupportingSingletonReviewGroupInput(99, "supporting-match-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
+	otherInput := mustSupportingSingletonReviewGroupInput(98, "supporting-other-1", "Early Show", "2026-05-17T18:30:00Z", "2026-05-17T21:30:00Z")
 
 	if matchingStaleInput.StagingKey == otherInput.StagingKey {
 		t.Fatalf("staging key collision: matching and other both %q", otherInput.StagingKey)
@@ -5947,7 +5948,7 @@ func TestRepairEventTitlesFromReportStagesSupportingReview(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path)
+	st, err := Open(path, testSupportingSourceMetadata{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -5962,13 +5963,13 @@ func TestRepairEventTitlesFromReportStagesSupportingReview(t *testing.T) {
 
 	const (
 		startAt = "2026-05-10T18:30:00Z"
-		dirty   = "Late Junction at The Lescar"
+		dirty   = "Late Junction at The Leadmill"
 	)
-	sourceID := mustEnsureSourceID(t, st, "Jazz at The Lescar manual ingest", "https://www.jazzatthelescar.com/index.html")
-	dirtySlug := mustLiveEventSlug(t, dirty, "lescar", startAt)
-	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "lescar", dirty, startAt, "Existing description.")
+	sourceID := mustEnsureSourceID(t, st, testSupportingSourceName, testSupportingSourceURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "leadmill", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "leadmill", dirty, startAt, "Existing description.")
 
-	repair, err := st.RepairEventTitlesFromReport(ctx, mustReviewCatalog(t), lescarTitleRepairReport(startAt, dirty), true)
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReport(startAt, dirty), true)
 	if err != nil {
 		t.Fatalf("repair event titles: %v", err)
 	}
@@ -5992,7 +5993,7 @@ func TestRepairEventTitlesFromReportStagesSupportingReview(t *testing.T) {
 		t.Fatalf("name = %q, want unchanged %q", event.Name, dirty)
 	}
 
-	repair, err = st.RepairEventTitlesFromReport(ctx, mustReviewCatalog(t), lescarTitleRepairReport(startAt, dirty), true)
+	repair, err = st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReport(startAt, dirty), true)
 	if err != nil {
 		t.Fatalf("repair event titles again: %v", err)
 	}
@@ -6008,7 +6009,7 @@ func TestRepairEventTitlesFromReportStagesSupportingReviewWhenCleanDuplicateExis
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path)
+	st, err := Open(path, testSupportingSourceMetadata{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -6023,16 +6024,16 @@ func TestRepairEventTitlesFromReportStagesSupportingReviewWhenCleanDuplicateExis
 
 	const (
 		startAt = "2026-05-10T18:30:00Z"
-		dirty   = "Late Junction at The Lescar"
+		dirty   = "Late Junction at The Leadmill"
 		clean   = "Late Junction"
 	)
-	sourceID := mustEnsureSourceID(t, st, "Jazz at The Lescar manual ingest", "https://www.jazzatthelescar.com/index.html")
-	dirtySlug := mustLiveEventSlug(t, dirty, "lescar", startAt)
-	cleanSlug := mustLiveEventSlug(t, clean, "lescar", startAt)
-	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "lescar", dirty, startAt, "Dirty duplicate.")
-	mustInsertRepairLegacyEvent(t, db, sourceID, cleanSlug, "lescar", clean, startAt, "Clean duplicate.")
+	sourceID := mustEnsureSourceID(t, st, testSupportingSourceName, testSupportingSourceURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "leadmill", startAt)
+	cleanSlug := mustLiveEventSlug(t, clean, "leadmill", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "leadmill", dirty, startAt, "Dirty duplicate.")
+	mustInsertRepairLegacyEvent(t, db, sourceID, cleanSlug, "leadmill", clean, startAt, "Clean duplicate.")
 
-	repair, err := st.RepairEventTitlesFromReport(ctx, mustReviewCatalog(t), lescarTitleRepairReport(startAt, dirty), true)
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReport(startAt, dirty), true)
 	if err != nil {
 		t.Fatalf("repair event titles: %v", err)
 	}
@@ -6223,7 +6224,7 @@ func TestRepairEventTitlesFromReportDoesNotStageSupportingReviewForAuthoritative
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path)
+	st, err := Open(path, testSupportingSourceMetadata{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -6238,18 +6239,18 @@ func TestRepairEventTitlesFromReportDoesNotStageSupportingReviewForAuthoritative
 
 	const (
 		startAt = "2026-05-10T18:30:00Z"
-		dirty   = "Late Junction at The Lescar"
+		dirty   = "Late Junction at The Leadmill"
 	)
-	sourceID := mustEnsureSourceID(t, st, "Jazz at The Lescar manual ingest", "https://www.jazzatthelescar.com/index.html")
-	dirtySlug := mustLiveEventSlug(t, dirty, "lescar", startAt)
-	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "lescar", dirty, startAt, "Existing description.")
+	sourceID := mustEnsureSourceID(t, st, testSupportingSourceName, testSupportingSourceURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "leadmill", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "leadmill", dirty, startAt, "Existing description.")
 	event, ok := st.EventBySlug(dirtySlug)
 	if !ok {
 		t.Fatalf("missing dirty slug %q", dirtySlug)
 	}
 	mustInsertAuthoritativeSourceLink(t, db, event.Slug, "External authoritative source", "https://authority.example.test/events", "authority-1")
 
-	repair, err := st.RepairEventTitlesFromReport(ctx, mustReviewCatalog(t), lescarTitleRepairReport(startAt, dirty), true)
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReport(startAt, dirty), true)
 	if err != nil {
 		t.Fatalf("repair event titles: %v", err)
 	}
@@ -6956,6 +6957,29 @@ func mustReviewCatalog(t *testing.T) *ingest.Catalog {
 	return catalog
 }
 
+func mustSupportingReviewCatalog(t *testing.T) *ingest.Catalog {
+	t.Helper()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "01-fixture-supporting.yaml"), []byte(`key: fixture-supporting
+name: Fixture supporting listings
+url: https://fixture.example.test/listings/
+review_stage_source_name: Fixture supporting manual ingest
+import_run_notes: fixture supporting ingest
+non_authoritative_singleton_venue_slug: leadmill
+mode: source_page
+source_page:
+  source_page_parser: jazz_at_the_lescar
+`), 0o600); err != nil {
+		t.Fatalf("write supporting source catalog: %v", err)
+	}
+	catalog, err := ingest.LoadCatalog(dir)
+	if err != nil {
+		t.Fatalf("load supporting source catalog: %v", err)
+	}
+	return catalog
+}
+
 func cafeNo9RepairSourceURL(uid string) string {
 	return "https://www.wegottickets.com/event/" + uid
 }
@@ -7039,18 +7063,18 @@ func leadmillTitleRepairReport(startAt, uid, summary, detailURL string) ingest.R
 	}
 }
 
-func lescarTitleRepairReport(startAt, summary string) ingest.Report {
+func supportingTitleRepairReport(startAt, summary string) ingest.Report {
 	return ingest.Report{
-		Source:      ingest.JazzAtTheLescarSource,
-		SourceURL:   "https://www.jazzatthelescar.com/index.html",
+		Source:      "fixture-supporting",
+		SourceURL:   testSupportingSourceURL,
 		ImportRunID: 43,
 		Status:      "succeeded",
 		Calendars: []ingest.CalendarReport{{
-			URL: "https://www.jazzatthelescar.com/index.html",
+			URL: testSupportingSourceURL,
 			Candidates: []ingest.EventCandidate{{
 				Summary:  summary,
-				Location: "The Lescar",
-				URL:      "https://www.jazzatthelescar.com/index.html#late-junction",
+				Location: "The Leadmill",
+				URL:      testSupportingSourceURL + "#late-junction",
 				StartAt:  startAt,
 				Status:   "Listed",
 			}},
@@ -7361,29 +7385,70 @@ func mustInsertImportRunFixture(t *testing.T, st *Store, importRunID int64) {
 	}
 }
 
-func mustGreystonesSingletonReviewGroupInput(t *testing.T, importRunID int64, uid, summary, startAt, endAt string) review.GroupInput {
-	t.Helper()
+const (
+	testSupportingSourceName = "Fixture supporting manual ingest"
+	testSupportingSourceURL  = "https://fixture.example.test/listings/"
+)
 
-	groups := ingest.ReviewGroupsFromReport(ingest.Report{
-		Source:      ingest.TheGreystonesSource,
-		SourceURL:   "https://www.mygreystones.co.uk/events/",
-		ImportRunID: importRunID,
-		Status:      "succeeded",
-		Calendars: []ingest.CalendarReport{{
-			URL: "https://www.mygreystones.co.uk/events/",
-			Candidates: []ingest.EventCandidate{{
-				UID:      uid,
-				Summary:  summary,
-				Location: "The Greystones",
-				StartAt:  startAt,
-				EndAt:    endAt,
-			}},
-		}},
-	})
-	if got, want := len(groups), 1; got != want {
-		t.Fatalf("review groups = %d, want %d", got, want)
+type testSupportingSourceMetadata struct{}
+
+func (testSupportingSourceMetadata) OwnedVenueSlugForSource(string) string { return "" }
+
+func (testSupportingSourceMetadata) ReviewStageSourceNameForSource(source string) string {
+	return strings.TrimSpace(source)
+}
+
+func (testSupportingSourceMetadata) OwnedVenueSlugForReviewStageSourceName(string) string {
+	return ""
+}
+
+func (testSupportingSourceMetadata) NonAuthoritativeSingletonVenueSlugForSource(string) string {
+	return ""
+}
+
+func (testSupportingSourceMetadata) NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName string) string {
+	if strings.TrimSpace(sourceName) == testSupportingSourceName {
+		return "leadmill"
 	}
-	return groups[0]
+	return ""
+}
+
+func (testSupportingSourceMetadata) ListingsURLForSourceName(sourceName string) string {
+	if strings.TrimSpace(sourceName) == testSupportingSourceName {
+		return testSupportingSourceURL
+	}
+	return ""
+}
+
+func mustSupportingSingletonReviewGroupInput(importRunID int64, uid, summary, startAt, endAt string) review.GroupInput {
+	return review.GroupInput{
+		Title:       "Fixture supporting singleton: " + summary,
+		SourceName:  testSupportingSourceName,
+		SourceURL:   testSupportingSourceURL,
+		ImportRunID: importRunID,
+		StagingKey: strings.Join([]string{
+			"fixture-supporting",
+			uid,
+			normalizeTestStagingKeyPart(summary),
+			startAt,
+		}, "\x00"),
+		Candidates: []review.CandidateInput{{
+			ExternalID:  uid,
+			Name:        summary,
+			VenueSlug:   "leadmill",
+			StartAt:     startAt,
+			EndAt:       endAt,
+			Status:      "Listed",
+			Description: "Fixture supporting listing",
+			SourceName:  testSupportingSourceName,
+			SourceURL:   testSupportingSourceURL,
+			Provenance:  "fixture UID " + uid,
+		}},
+	}
+}
+
+func normalizeTestStagingKeyPart(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
 func mustCreatePublishableSingletonReviewGroup(t *testing.T, st *Store, title string) int64 {

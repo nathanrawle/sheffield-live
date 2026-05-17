@@ -624,6 +624,15 @@ func TestReviewGroupsFromReportUsesPerCalendarPageFallbackWhenCandidateHasNoDeta
 	if got := groups[0].Candidates[0].CalendarURL; got != "" {
 		t.Fatalf("candidate calendar url = %q, want empty", got)
 	}
+	if got, want := groups[0].AuthoritativeSourceName, "The Greystones manual ingest"; got != want {
+		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := groups[0].AuthoritativeSourceURL, "https://www.mygreystones.co.uk/april/#:~:text=April%20Night"; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := groups[0].AuthoritativeSourceEventKey, "https://www.mygreystones.co.uk/april/#:~:text=April%20Night"; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
 }
 
 func TestReviewGroupsFromLeadmillReportTruncatesEscapedCommaVenueHeadSlug(t *testing.T) {
