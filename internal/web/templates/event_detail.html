@@ -1,20 +1,20 @@
 <article class="detail">
-  <header class="event-detail-head{{if .Event.ImageURL}}{{if eventImagePortrait .Event}} portrait-image{{else}} hero-image{{end}}{{end}}">
+  <header class="{{.EventDetail.HeaderClass}}">
     <div class="event-detail-title">
       <p class="eyebrow">Event</p>
-      <h1>{{eventTitle .Event .VenueNames}}</h1>
-      {{with originLabel .Event.Origin}}<p class="origin-badge">{{.}}</p>{{end}}
+      <h1>{{.EventDetail.Title}}</h1>
+      {{with .EventDetail.OriginLabel}}<p class="origin-badge">{{.}}</p>{{end}}
     </div>
-    {{if .Event.ImageURL}}
+    {{if .EventDetail.Image.URL}}
     <figure class="event-detail-media">
-      <img src="{{.Event.ImageURL}}" alt="{{eventImageAlt .Event}}" style="{{imageFocusStyle .Event.ImageFocusX .Event.ImageFocusY}}" loading="eager" decoding="async">
+      <img src="{{.EventDetail.Image.URL}}" alt="{{.EventDetail.Image.Alt}}" style="{{.EventDetail.Image.FocusStyle}}" loading="eager" decoding="async">
     </figure>
     {{end}}
     <div class="event-detail-copy">
-      <div class="lede description-copy">{{descriptionHTML .Event.Description}}</div>
+      <div class="lede description-copy">{{.EventDetail.DescriptionHTML}}</div>
       <p class="event-actions">
-        {{with .Event.OfficialListingURL}}<a class="primary-button" href="{{.}}">View official listing</a>{{end}}
-        {{with .Event.CalendarURL}}
+        {{with .EventDetail.OfficialListingURL}}<a class="primary-button" href="{{.}}">View official listing</a>{{end}}
+        {{with .EventDetail.CalendarURL}}
         <a class="icon-button" href="{{.}}" aria-label="Open calendar item" title="Open calendar item">
           <svg aria-hidden="true" viewBox="0 0 24 24">
             <path d="M8 2v4"></path>
@@ -25,24 +25,24 @@
         </a>
         {{end}}
       </p>
-      <p class="review-group-meta">Checked from {{.Event.SourceName}} on {{dateShort .Event.LastChecked}}.</p>
+      {{with .EventDetail.SourceCheckedLabel}}<p class="review-group-meta">{{.}}</p>{{end}}
     </div>
   </header>
 
   <section class="detail-grid">
     <div class="detail-card">
       <h2>When</h2>
-      <p>{{dateLong .Event.Start}}</p>
-      <p>{{if .Event.HasEnd}}{{timeShort .Event.Start}} to {{timeShort .Event.End}}{{else}}Starts at {{timeShort .Event.Start}}{{end}}</p>
-      {{with eventDetailMeta .Event}}<p>{{.}}</p>{{end}}
+      <p>{{.EventDetail.WhenDateLabel}}</p>
+      <p>{{.EventDetail.WhenTimeLabel}}</p>
+      {{with .EventDetail.Meta}}<p>{{.}}</p>{{end}}
       {{if .EventGenres}}<p><strong>All genres</strong>: {{genreNames .EventGenres ", "}}</p>{{end}}
     </div>
     <div class="detail-card">
       <h2>Where</h2>
-      <p><a href="/venues/{{.Venue.Slug}}">{{.Venue.Name}}</a></p>
-      {{with eventRoomText .Event}}<p><strong>Room</strong>: {{.}}</p>{{end}}
-      <p class="address-text">{{displayAddress .Venue.Name .Venue.Address}}</p>
-      <p>{{.Venue.Neighbourhood}}</p>
+      {{with .EventDetail.Location.Room}}<p class="event-detail-room">{{.}}</p>{{end}}
+      {{with .EventDetail.Location.Venue}}<p class="event-detail-venue"><a href="{{$.EventDetail.Location.VenueURL}}">{{.}}</a></p>{{end}}
+      {{with .EventDetail.Location.Area}}<p class="event-detail-area">{{.}}</p>{{end}}
+      {{with .EventDetail.Location.Address}}<p class="address-text">{{.}}</p>{{end}}
     </div>
   </section>
 

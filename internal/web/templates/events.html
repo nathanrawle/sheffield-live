@@ -14,25 +14,26 @@
       </div>
       <div class="event-list">
         {{range .Events}}
-        <a class="event-card{{if .ImageURL}} has-image{{else}} missing-image{{end}}{{if eventStatusLabel .}} has-status{{end}}" href="/events/{{.Slug}}">
-          {{if .ImageURL}}
-          <span class="event-card-media"><img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async"></span>
+        <a class="{{.Classes}}" href="/events/{{.Slug}}">
+          {{if .Image.URL}}
+          <span class="event-card-media"><img class="event-card-image" src="{{.Image.URL}}" alt="{{.Image.Alt}}" style="{{.Image.FocusStyle}}" loading="lazy" decoding="async"></span>
           {{else}}
           <span class="event-card-media event-card-placeholder" aria-hidden="true"></span>
           {{end}}
           <span class="event-card-main">
             <span class="event-card-topline">
-              <time class="event-time" datetime="{{dateTimeAttr .Start}}">{{timeShort .Start}}</time>
-              {{with eventStatusLabel .}}<span class="event-status">{{.}}</span>{{end}}
+              <time class="event-time" datetime="{{.DateTimeAttr}}">{{.TimeLabel}}</time>
+              {{with .StatusLabel}}<span class="event-status">{{.}}</span>{{end}}
             </span>
-            <span class="event-title">{{eventTitle . $.VenueNames}}</span>
-            {{if eventRoomText .}}
-            <span class="event-venue has-room"><span class="event-location-line"><span class="event-room">{{eventRoomText .}}</span><span class="event-location-separator">, </span><span class="event-venue-name">{{venueName $.VenueNames .VenueSlug}}</span></span>{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
-            {{else}}
-            <span class="event-venue">{{venueName $.VenueNames .VenueSlug}}{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
+            <span class="event-title">{{.Title}}</span>
+            {{if .Location.HasSummary}}
+            <span class="{{.Location.Classes}}">
+              {{if .Location.HasPrimary}}<span class="event-location-primary">{{with .Location.Venue}}<span class="event-location-venue">{{.}}</span>{{end}}{{if and .Location.Venue .Location.Room}}<span class="event-location-separator">:</span>{{end}}{{with .Location.Room}}<span class="event-location-room">{{.}}</span>{{end}}</span>{{end}}
+              {{with .Location.Area}}<span class="event-location-area">{{.}}</span>{{end}}
+            </span>
             {{end}}
             {{with .Genre}}<span class="event-genre">{{.}}</span>{{end}}
-            {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+            {{with .OriginLabel}}<span class="origin-badge">{{.}}</span>{{end}}
           </span>
         </a>
         {{end}}
@@ -50,25 +51,26 @@
       </div>
       <div class="event-list">
         {{range .Events}}
-        <a class="event-card{{if .ImageURL}} has-image{{else}} missing-image{{end}}{{if eventStatusLabel .}} has-status{{end}}" href="/events/{{.Slug}}">
-          {{if .ImageURL}}
-          <span class="event-card-media"><img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async"></span>
+        <a class="{{.Classes}}" href="/events/{{.Slug}}">
+          {{if .Image.URL}}
+          <span class="event-card-media"><img class="event-card-image" src="{{.Image.URL}}" alt="{{.Image.Alt}}" style="{{.Image.FocusStyle}}" loading="lazy" decoding="async"></span>
           {{else}}
           <span class="event-card-media event-card-placeholder" aria-hidden="true"></span>
           {{end}}
           <span class="event-card-main">
             <span class="event-card-topline">
-              <time class="event-time" datetime="{{dateTimeAttr .Start}}">{{timeShort .Start}}</time>
-              {{with eventStatusLabel .}}<span class="event-status">{{.}}</span>{{end}}
+              <time class="event-time" datetime="{{.DateTimeAttr}}">{{.TimeLabel}}</time>
+              {{with .StatusLabel}}<span class="event-status">{{.}}</span>{{end}}
             </span>
-            <span class="event-title">{{eventTitle . $.VenueNames}}</span>
-            {{if eventRoomText .}}
-            <span class="event-venue has-room"><span class="event-location-line"><span class="event-room">{{eventRoomText .}}</span><span class="event-location-separator">, </span><span class="event-venue-name">{{venueName $.VenueNames .VenueSlug}}</span></span>{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
-            {{else}}
-            <span class="event-venue">{{venueName $.VenueNames .VenueSlug}}{{with venueArea $.VenueAreas .VenueSlug}}<span class="event-area">{{.}}</span>{{end}}</span>
+            <span class="event-title">{{.Title}}</span>
+            {{if .Location.HasSummary}}
+            <span class="{{.Location.Classes}}">
+              {{if .Location.HasPrimary}}<span class="event-location-primary">{{with .Location.Venue}}<span class="event-location-venue">{{.}}</span>{{end}}{{if and .Location.Venue .Location.Room}}<span class="event-location-separator">:</span>{{end}}{{with .Location.Room}}<span class="event-location-room">{{.}}</span>{{end}}</span>{{end}}
+              {{with .Location.Area}}<span class="event-location-area">{{.}}</span>{{end}}
+            </span>
             {{end}}
             {{with .Genre}}<span class="event-genre">{{.}}</span>{{end}}
-            {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+            {{with .OriginLabel}}<span class="origin-badge">{{.}}</span>{{end}}
           </span>
         </a>
         {{end}}

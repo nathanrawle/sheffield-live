@@ -131,6 +131,7 @@ type PageData struct {
 	EventSections            []EventSection
 	EventFilters             EventFilters
 	EventFiltersApplied      bool
+	EventDetail              EventDetailView
 	VenueNames               map[string]string
 	VenueAreas               map[string]string
 	Areas                    []string
@@ -169,19 +170,19 @@ type PageData struct {
 
 type EventGroup struct {
 	Date   time.Time
-	Events []domain.Event
+	Events []EventCardView
 }
 
 type EventSection struct {
 	ID     string
 	Title  string
 	Date   time.Time
-	Events []domain.Event
+	Events []EventCardView
 }
 
 type VenueTimelineSection struct {
 	Dates  []time.Time
-	Events []domain.Event
+	Events []EventCardView
 }
 
 type EventFilters struct {
@@ -329,16 +330,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			}
 			return t.In(localLocation).Format("2 Jan 2006")
 		},
-		"originLabel": func(origin domain.Origin) string {
-			switch origin {
-			case domain.OriginTest:
-				return "Test data"
-			case domain.OriginDev:
-				return "Development data"
-			default:
-				return ""
-			}
-		},
+		"originLabel": originLabel,
 		"blankValue": func(value string) string {
 			if strings.TrimSpace(value) == "" {
 				return "(blank)"
@@ -411,26 +403,13 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"originText": func(origin domain.Origin) string {
 			return string(origin)
 		},
-		"eventImageAlt": func(event domain.Event) string {
-			if alt := strings.TrimSpace(event.ImageAlt); alt != "" {
-				return alt
-			}
-			return event.Name
-		},
-		"eventImagePortrait": func(event domain.Event) bool {
-			return event.ImageWidth > 0 && event.ImageHeight > event.ImageWidth
-		},
-		"imageFocusStyle": func(x, y int) template.CSS {
-			focus := ingest.ImageFocus{
-				X: ingest.NormalizeExplicitImageFocusValue(x),
-				Y: ingest.NormalizeExplicitImageFocusValue(y),
-			}
-			return template.CSS(fmt.Sprintf("--image-focus-x: %d%%; --image-focus-y: %d%%;", focus.X, focus.Y))
-		},
-		"year":            func(t time.Time) string { return t.In(localLocation).Format("2006") },
-		"joinStrings":     func(values []string, sep string) string { return strings.Join(values, sep) },
-		"genreNames":      func(values []genre.Match, sep string) string { return strings.Join(genre.Names(values), sep) },
-		"descriptionHTML": descriptionHTML,
+		"eventImageAlt":      eventImageAlt,
+		"eventImagePortrait": eventImagePortrait,
+		"imageFocusStyle":    imageFocusStyle,
+		"year":               func(t time.Time) string { return t.In(localLocation).Format("2006") },
+		"joinStrings":        func(values []string, sep string) string { return strings.Join(values, sep) },
+		"genreNames":         func(values []genre.Match, sep string) string { return strings.Join(genre.Names(values), sep) },
+		"descriptionHTML":    descriptionHTML,
 	}
 
 	layout, err := template.New("layout.html").Funcs(funcs).ParseFS(templateFS, "templates/layout.html")
@@ -2140,6 +2119,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	filters := parseEventFilters(r, venues)
 	venueNames := venueNameMap(venues)
 	venueAreas := venueAreaMap(venues)
+	presenter := newEventPresenter(venueNames, venueAreas, s.localLocation)
 	filtered := hasEventFilterQuery(r)
 	events = filterEventsByVenue(events, filters.Venue)
 	events = filterEventsByArea(events, venues, filters.Area)
@@ -2162,9 +2142,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		Venues:              venues,
 	}
 	if filtered {
-		data.EventGroups = groupEventsByDisplayDate(events, now, s.localLocation)
+		data.EventGroups = groupEventsByDisplayDate(events, now, s.localLocation, presenter)
 	} else {
-		data.EventSections = buildEventBoardSections(events, now, s.localLocation)
+		data.EventSections = buildEventBoardSections(events, now, s.localLocation, presenter)
 	}
 	s.renderPage(w, "templates/events.html", data)
 }
@@ -2220,6 +2200,7 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 		Active:                "events",
 		Now:                   s.now(),
 		Event:                 event,
+		EventDetail:           newEventPresenter(venueNames, map[string]string{venue.Slug: venue.Neighbourhood}, s.localLocation).Detail(event, venue),
 		VenueNames:            venueNames,
 		EventSecondarySources: secondarySources,
 		EventGenres:           eventGenres,
@@ -2293,6 +2274,9 @@ func (s *Server) handleVenueDetail(w http.ResponseWriter, r *http.Request, slug 
 		return
 	}
 	venueEvents := sortEventsForDisplay(upcomingEvents(events, now, s.localLocation))
+	venueNames := map[string]string{venue.Slug: venue.Name}
+	venueAreas := map[string]string{venue.Slug: venue.Neighbourhood}
+	presenter := newEventPresenter(venueNames, venueAreas, s.localLocation)
 	data := PageData{
 		SiteName:        "Sheffield Live",
 		PageTitle:       venue.Name,
@@ -2300,13 +2284,14 @@ func (s *Server) handleVenueDetail(w http.ResponseWriter, r *http.Request, slug 
 		Active:          "venues",
 		Now:             now,
 		Venue:           venue,
-		VenueNames:      map[string]string{venue.Slug: venue.Name},
-		VenueAreas:      map[string]string{venue.Slug: venue.Neighbourhood},
+		VenueNames:      venueNames,
+		VenueAreas:      venueAreas,
 		VenueEvents:     venueEvents,
 		VenueTimelineSections: buildVenueTimelineSections(
 			venueEvents,
 			now,
 			s.localLocation,
+			presenter,
 		),
 	}
 	s.renderPage(w, "templates/venue_detail.html", data)
@@ -2550,7 +2535,7 @@ func excludeLocalDate(events []domain.Event, date time.Time, loc *time.Location)
 	return out
 }
 
-func buildEventBoardSections(events []domain.Event, now time.Time, loc *time.Location) []EventSection {
+func buildEventBoardSections(events []domain.Event, now time.Time, loc *time.Location, presenter eventPresenter) []EventSection {
 	today := localDayStart(now, loc)
 	sections := []EventSection{}
 	if todayEvents := eventsCurrentOrStartingInLocalRange(events, now.In(loc), today.AddDate(0, 0, 1), now, loc); len(todayEvents) > 0 {
@@ -2558,7 +2543,7 @@ func buildEventBoardSections(events []domain.Event, now time.Time, loc *time.Loc
 			ID:     "tonight",
 			Title:  "Tonight",
 			Date:   today,
-			Events: todayEvents,
+			Events: presenter.Cards(todayEvents, eventCardLocationFull),
 		})
 	}
 
@@ -2578,13 +2563,13 @@ func buildEventBoardSections(events []domain.Event, now time.Time, loc *time.Loc
 			ID:     id,
 			Title:  title,
 			Date:   date,
-			Events: dayEvents,
+			Events: presenter.Cards(dayEvents, eventCardLocationFull),
 		})
 	}
 	return sections
 }
 
-func buildVenueTimelineSections(events []domain.Event, now time.Time, loc *time.Location) []VenueTimelineSection {
+func buildVenueTimelineSections(events []domain.Event, now time.Time, loc *time.Location, presenter eventPresenter) []VenueTimelineSection {
 	today := localDayStart(now, loc)
 	windowEnd := today.AddDate(0, 0, 8)
 	eventsByDate := make(map[time.Time][]domain.Event)
@@ -2605,7 +2590,7 @@ func buildVenueTimelineSections(events []domain.Event, now time.Time, loc *time.
 		}
 		sections = append(sections, VenueTimelineSection{
 			Dates:  []time.Time{date},
-			Events: dayEvents,
+			Events: presenter.Cards(dayEvents, eventCardLocationVenuePage),
 		})
 		delete(eventsByDate, date)
 	}
@@ -2622,7 +2607,7 @@ func buildVenueTimelineSections(events []domain.Event, now time.Time, loc *time.
 	for _, date := range laterDates {
 		sections = append(sections, VenueTimelineSection{
 			Dates:  []time.Time{date},
-			Events: eventsByDate[date],
+			Events: presenter.Cards(eventsByDate[date], eventCardLocationVenuePage),
 		})
 	}
 
@@ -2703,14 +2688,14 @@ func eventDisplayEnd(event domain.Event, loc *time.Location) (time.Time, bool) {
 	return eventEnd, true
 }
 
-func groupEventsByDisplayDate(events []domain.Event, now time.Time, loc *time.Location) []EventGroup {
+func groupEventsByDisplayDate(events []domain.Event, now time.Time, loc *time.Location, presenter eventPresenter) []EventGroup {
 	var groups []EventGroup
 	for _, event := range events {
 		date := eventDisplayDate(event, now, loc)
 		if len(groups) == 0 || !sameLocalDate(groups[len(groups)-1].Date, date, loc) {
 			groups = append(groups, EventGroup{Date: date})
 		}
-		groups[len(groups)-1].Events = append(groups[len(groups)-1].Events, event)
+		groups[len(groups)-1].Events = append(groups[len(groups)-1].Events, presenter.Card(event, eventCardLocationFull))
 	}
 	return groups
 }
