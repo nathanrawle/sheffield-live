@@ -3,7 +3,7 @@ name: Jazz at The Lescar listings
 url: http://www.jazzatthelescar.com/index.html
 review_stage_source_name: Jazz at The Lescar manual ingest
 import_run_notes: manual Jazz at The Lescar source-page parse report
-non_authoritative_singleton_venue_slug: lescar
+owned_venue_slug: lescar
 mode: source_page
 source_page:
   source_page_parser: jazz_at_the_lescar

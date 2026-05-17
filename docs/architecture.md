@@ -140,7 +140,7 @@ Raw source snapshots feed review groups, and review resolution publishes canonic
 - canonical event images are copied asset URLs, not hotlinks to source sites
 - the live slug is deterministic and derived from name, venue, and UTC time
 - canonical-backed duplicate resolution can update a matched live event in place and rejects slug collisions with other event IDs
-- venue coverage semantics are data-backed; most venues are full-venue coverage, while The Lescar is marked program-only with a UI note even when Jazz at The Lescar singletons auto-publish
+- venue coverage semantics are data-backed; most venues are full-venue coverage, while The Lescar is marked program-only because Jazz at The Lescar is authoritative only for that programme
 
 ## Visibility
 

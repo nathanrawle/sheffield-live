@@ -3,7 +3,7 @@ name: The Greystones listings
 url: https://www.mygreystones.co.uk/events/
 review_stage_source_name: The Greystones manual ingest
 import_run_notes: manual The Greystones snapshot + month-page parse report
-non_authoritative_singleton_venue_slug: greystones
+owned_venue_slug: greystones
 mode: linked_detail_pages
 linked_detail_pages:
   secondary_source_name: The Greystones month page
