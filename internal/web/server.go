@@ -128,20 +128,19 @@ type PageData struct {
 	Now                      time.Time
 	Events                   []domain.Event
 	EventGroups              []EventGroup
+	EventSections            []EventSection
 	EventFilters             EventFilters
+	EventFiltersApplied      bool
 	VenueNames               map[string]string
+	VenueAreas               map[string]string
 	Areas                    []string
 	Event                    domain.Event
 	EventSecondarySources    []store.EventSecondarySourceInfo
 	EventGenres              []genre.Match
 	Venues                   []domain.Venue
 	Venue                    domain.Venue
-	FeaturedEvent            domain.Event
-	TodayEvents              []domain.Event
-	TonightEvents            []domain.Event
-	ThisWeekEvents           []domain.Event
-	ThisWeekendEvents        []domain.Event
 	VenueEvents              []domain.Event
+	VenueTimelineSections    []VenueTimelineSection
 	ReviewGroups             []review.GroupSummary
 	ReviewHistoryRows        []ReviewHistoryRow
 	ReviewDetail             ReviewDetail
@@ -170,6 +169,18 @@ type PageData struct {
 
 type EventGroup struct {
 	Date   time.Time
+	Events []domain.Event
+}
+
+type EventSection struct {
+	ID     string
+	Title  string
+	Date   time.Time
+	Events []domain.Event
+}
+
+type VenueTimelineSection struct {
+	Dates  []time.Time
 	Events []domain.Event
 }
 
@@ -299,6 +310,19 @@ func NewServer(deps ServerDeps) (*Server, error) {
 	funcs := template.FuncMap{
 		"dateLong":  func(t time.Time) string { return t.In(localLocation).Format("Monday, 2 January 2006") },
 		"dateShort": func(t time.Time) string { return t.In(localLocation).Format("2 Jan 2006") },
+		"dateDayMonth": func(t time.Time) string {
+			return t.In(localLocation).Format("2 Jan")
+		},
+		"dateSectionTitle": func(date, now time.Time) string {
+			return dateSectionTitle(date, now, localLocation)
+		},
+		"venueTimelineTitle": func(section VenueTimelineSection, now time.Time) string {
+			return venueTimelineTitle(section, now, localLocation)
+		},
+		"venueTimelineMeta": func(section VenueTimelineSection) string {
+			return venueTimelineMeta(section, localLocation)
+		},
+		"venueTimelineToneClass": venueTimelineToneClass,
 		"dateShortPtr": func(t *time.Time) string {
 			if t == nil {
 				return ""
@@ -365,14 +389,25 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			return fmt.Sprintf("Duplicate review - %d candidates", count)
 		},
 		"timeShort": func(t time.Time) string { return t.In(localLocation).Format("15:04") },
+		"dateTimeAttr": func(t time.Time) string {
+			return t.In(localLocation).Format("2006-01-02T15:04:05-07:00")
+		},
 		"timeShortPtr": func(t *time.Time) string {
 			if t == nil {
 				return ""
 			}
 			return t.In(localLocation).Format("15:04")
 		},
-		"venueName":     publicVenueName,
-		"eventRoomText": eventRoomText,
+		"venueName": publicVenueName,
+		"venueArea": func(venueAreas map[string]string, slug string) string {
+			if venueAreas == nil {
+				return ""
+			}
+			return strings.TrimSpace(venueAreas[slug])
+		},
+		"eventRoomText":    eventRoomText,
+		"eventStatusLabel": eventStatusLabel,
+		"showCount":        showCount,
 		"originText": func(origin domain.Origin) string {
 			return string(origin)
 		},
@@ -404,7 +439,6 @@ func NewServer(deps ServerDeps) (*Server, error) {
 	}
 
 	pageFiles := []string{
-		"templates/home.html",
 		"templates/events.html",
 		"templates/event_detail.html",
 		"templates/venues.html",
@@ -930,7 +964,7 @@ func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case cleaned == "/":
-		s.handleHome(w, r)
+		s.handleEvents(w, r)
 	case cleaned == "/events":
 		s.handleEvents(w, r)
 	case cleaned == "/venues":
@@ -1511,6 +1545,8 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 		MetaDescription:       venue.Description,
 		Now:                   s.now(),
 		Venue:                 venue,
+		VenueNames:            map[string]string{venue.Slug: venue.Name},
+		VenueAreas:            map[string]string{venue.Slug: venue.Neighbourhood},
 		VenueEvents:           sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
 		HasImportHistory:      s.importRunStore != nil,
 		HasReviewStorage:      s.reviewStore != nil,
@@ -2087,47 +2123,6 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 	s.renderPage(w, "templates/admin_review_detail.html", data)
 }
 
-func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	now := s.now()
-	venues, err := s.catalog.ListVenues(r.Context())
-	if err != nil {
-		s.logRequestError(r, "load venues", err)
-		http.Error(w, "load venues", http.StatusInternalServerError)
-		return
-	}
-	events, err := s.catalog.ListEvents(r.Context())
-	if err != nil {
-		s.logRequestError(r, "load events", err)
-		http.Error(w, "load events", http.StatusInternalServerError)
-		return
-	}
-	events = sortEventsForDisplay(upcomingEvents(events, now, s.localLocation))
-	todayEvents := filterEventsByWindow(events, now, s.localLocation, "today")
-	tonightEvents := filterEventsByWindow(events, now, s.localLocation, "tonight")
-	thisWeekEvents := filterEventsByWindow(events, now, s.localLocation, "week")
-	thisWeekendEvents := filterEventsByWindow(events, now, s.localLocation, "weekend")
-	thisWeekEvents = excludeLocalDate(thisWeekEvents, localDayStart(now, s.localLocation), s.localLocation)
-	if len(events) > 3 {
-		events = events[:3]
-	}
-	data := PageData{
-		SiteName:          "Sheffield Live",
-		PageTitle:         "Sheffield live music",
-		MetaDescription:   "Upcoming live music in Sheffield, grouped by date and linked back to venue sources.",
-		Active:            "home",
-		Now:               now,
-		VenueNames:        venueNameMap(venues),
-		Venues:            venues,
-		Events:            events,
-		FeaturedEvent:     firstEvent(events),
-		TodayEvents:       todayEvents,
-		TonightEvents:     tonightEvents,
-		ThisWeekEvents:    thisWeekEvents,
-		ThisWeekendEvents: thisWeekendEvents,
-	}
-	s.renderPage(w, "templates/home.html", data)
-}
-
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	venues, err := s.catalog.ListVenues(r.Context())
@@ -2144,22 +2139,32 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	filters := parseEventFilters(r, venues)
 	venueNames := venueNameMap(venues)
+	venueAreas := venueAreaMap(venues)
+	filtered := hasEventFilterQuery(r)
 	events = filterEventsByVenue(events, filters.Venue)
 	events = filterEventsByArea(events, venues, filters.Area)
-	events = filterEventsByWindow(events, now, s.localLocation, filters.Window)
+	if filtered {
+		events = filterEventsByWindow(events, now, s.localLocation, filters.Window)
+	}
 	events = sortEventsForDisplay(events)
 	data := PageData{
-		SiteName:        "Sheffield Live",
-		PageTitle:       "Events",
-		MetaDescription: "Browse Sheffield live music by date window and venue.",
-		Active:          "events",
-		Now:             now,
-		Events:          events,
-		EventGroups:     groupEventsByLocalDate(events, s.localLocation),
-		EventFilters:    filters,
-		VenueNames:      venueNames,
-		Areas:           venueAreas(venues),
-		Venues:          venues,
+		SiteName:            "Sheffield Live",
+		PageTitle:           "Events",
+		MetaDescription:     "Browse Sheffield live music by date and venue.",
+		Active:              "events",
+		Now:                 now,
+		Events:              events,
+		EventFilters:        filters,
+		EventFiltersApplied: filtered,
+		VenueNames:          venueNames,
+		VenueAreas:          venueAreas,
+		Areas:               venueAreasList(venues),
+		Venues:              venues,
+	}
+	if filtered {
+		data.EventGroups = groupEventsByDisplayDate(events, now, s.localLocation)
+	} else {
+		data.EventSections = buildEventBoardSections(events, now, s.localLocation)
 	}
 	s.renderPage(w, "templates/events.html", data)
 }
@@ -2287,6 +2292,7 @@ func (s *Server) handleVenueDetail(w http.ResponseWriter, r *http.Request, slug 
 		http.Error(w, "load venue events", http.StatusInternalServerError)
 		return
 	}
+	venueEvents := sortEventsForDisplay(upcomingEvents(events, now, s.localLocation))
 	data := PageData{
 		SiteName:        "Sheffield Live",
 		PageTitle:       venue.Name,
@@ -2295,7 +2301,13 @@ func (s *Server) handleVenueDetail(w http.ResponseWriter, r *http.Request, slug 
 		Now:             now,
 		Venue:           venue,
 		VenueNames:      map[string]string{venue.Slug: venue.Name},
-		VenueEvents:     sortEventsForDisplay(upcomingEvents(events, now, s.localLocation)),
+		VenueAreas:      map[string]string{venue.Slug: venue.Neighbourhood},
+		VenueEvents:     venueEvents,
+		VenueTimelineSections: buildVenueTimelineSections(
+			venueEvents,
+			now,
+			s.localLocation,
+		),
 	}
 	s.renderPage(w, "templates/venue_detail.html", data)
 }
@@ -2347,13 +2359,6 @@ func (s *Server) renderPage(w http.ResponseWriter, pageKey string, data PageData
 	_, _ = w.Write(layoutBuf.Bytes())
 }
 
-func firstEvent(events []domain.Event) domain.Event {
-	if len(events) == 0 {
-		return domain.Event{}
-	}
-	return events[0]
-}
-
 func (s *Server) now() time.Time {
 	if s.clock == nil {
 		return time.Now().UTC()
@@ -2398,6 +2403,14 @@ func parseEventFilters(r *http.Request, venues []domain.Venue) EventFilters {
 	}
 
 	return EventFilters{Window: window, Venue: venue, Area: area}
+}
+
+func hasEventFilterQuery(r *http.Request) bool {
+	query := r.URL.Query()
+	_, hasWindow := query["window"]
+	_, hasVenue := query["venue"]
+	_, hasArea := query["area"]
+	return hasWindow || hasVenue || hasArea
 }
 
 func filterEventsByVenue(events []domain.Event, venueSlug string) []domain.Event {
@@ -2497,12 +2510,11 @@ func filterEventsByWindow(events []domain.Event, now time.Time, loc *time.Locati
 	}
 
 	today := localDayStart(now, loc)
-	windowStart := today
+	windowStart := now.In(loc)
 	end := today.AddDate(0, 0, 1)
 	switch window {
 	case "today":
 	case "tonight":
-		windowStart = now.In(loc)
 	case "week":
 		end = today.AddDate(0, 0, 7)
 	case "weekend":
@@ -2511,8 +2523,7 @@ func filterEventsByWindow(events []domain.Event, now time.Time, loc *time.Locati
 
 	out := make([]domain.Event, 0, len(events))
 	for _, event := range events {
-		eventStart := event.Start.In(loc)
-		if !eventStart.Before(windowStart) && eventStart.Before(end) {
+		if eventFallsInCurrentOrLocalRange(event, windowStart, end, now, loc) {
 			out = append(out, event)
 		}
 	}
@@ -2520,10 +2531,9 @@ func filterEventsByWindow(events []domain.Event, now time.Time, loc *time.Locati
 }
 
 func upcomingEvents(events []domain.Event, now time.Time, loc *time.Location) []domain.Event {
-	today := localDayStart(now, loc)
 	out := make([]domain.Event, 0, len(events))
 	for _, event := range events {
-		if !event.Start.In(loc).Before(today) {
+		if eventIsCurrentOrUpcoming(event, now, loc) {
 			out = append(out, event)
 		}
 	}
@@ -2540,16 +2550,235 @@ func excludeLocalDate(events []domain.Event, date time.Time, loc *time.Location)
 	return out
 }
 
-func groupEventsByLocalDate(events []domain.Event, loc *time.Location) []EventGroup {
-	var groups []EventGroup
+func buildEventBoardSections(events []domain.Event, now time.Time, loc *time.Location) []EventSection {
+	today := localDayStart(now, loc)
+	sections := []EventSection{}
+	if todayEvents := eventsCurrentOrStartingInLocalRange(events, now.In(loc), today.AddDate(0, 0, 1), now, loc); len(todayEvents) > 0 {
+		sections = append(sections, EventSection{
+			ID:     "tonight",
+			Title:  "Tonight",
+			Date:   today,
+			Events: todayEvents,
+		})
+	}
+
+	for offset := 1; offset <= 8; offset++ {
+		date := today.AddDate(0, 0, offset)
+		title := date.Format("Monday")
+		id := "day-" + date.Format("2006-01-02")
+		if offset == 1 {
+			title = "Tomorrow"
+			id = "tomorrow"
+		}
+		dayEvents := eventsInLocalRange(events, date, date.AddDate(0, 0, 1), loc)
+		if len(dayEvents) == 0 {
+			continue
+		}
+		sections = append(sections, EventSection{
+			ID:     id,
+			Title:  title,
+			Date:   date,
+			Events: dayEvents,
+		})
+	}
+	return sections
+}
+
+func buildVenueTimelineSections(events []domain.Event, now time.Time, loc *time.Location) []VenueTimelineSection {
+	today := localDayStart(now, loc)
+	windowEnd := today.AddDate(0, 0, 8)
+	eventsByDate := make(map[time.Time][]domain.Event)
 	for _, event := range events {
 		date := localDayStart(event.Start, loc)
+		if date.Before(today) && eventIsCurrentOrUpcoming(event, now, loc) {
+			date = today
+		}
+		eventsByDate[date] = append(eventsByDate[date], event)
+	}
+
+	sections := []VenueTimelineSection{}
+	for offset := 0; offset <= 8; offset++ {
+		date := today.AddDate(0, 0, offset)
+		dayEvents := eventsByDate[date]
+		if len(dayEvents) == 0 {
+			continue
+		}
+		sections = append(sections, VenueTimelineSection{
+			Dates:  []time.Time{date},
+			Events: dayEvents,
+		})
+		delete(eventsByDate, date)
+	}
+
+	laterDates := make([]time.Time, 0, len(eventsByDate))
+	for date := range eventsByDate {
+		if date.After(windowEnd) {
+			laterDates = append(laterDates, date)
+		}
+	}
+	sort.Slice(laterDates, func(i, j int) bool {
+		return laterDates[i].Before(laterDates[j])
+	})
+	for _, date := range laterDates {
+		sections = append(sections, VenueTimelineSection{
+			Dates:  []time.Time{date},
+			Events: eventsByDate[date],
+		})
+	}
+
+	return sections
+}
+
+func eventsInLocalRange(events []domain.Event, start, end time.Time, loc *time.Location) []domain.Event {
+	out := make([]domain.Event, 0, len(events))
+	for _, event := range events {
+		if eventFallsInLocalRange(event, start, end, loc) {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func eventsCurrentOrStartingInLocalRange(events []domain.Event, start, end, now time.Time, loc *time.Location) []domain.Event {
+	out := make([]domain.Event, 0, len(events))
+	for _, event := range events {
+		if eventFallsInCurrentOrLocalRange(event, start, end, now, loc) {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func eventFallsInCurrentOrLocalRange(event domain.Event, start, end, now time.Time, loc *time.Location) bool {
+	if eventFallsInLocalRange(event, start, end, loc) {
+		return true
+	}
+	nowLocal := now.In(loc)
+	if nowLocal.Before(start) || !nowLocal.Before(end) {
+		return false
+	}
+	return eventIsOngoingAt(event, now, loc)
+}
+
+func eventFallsInLocalRange(event domain.Event, start, end time.Time, loc *time.Location) bool {
+	eventStart := event.Start.In(loc)
+	if !eventStart.Before(start) && eventStart.Before(end) {
+		return true
+	}
+	if eventStart.Before(start) && sameLocalDate(eventStart, start, loc) {
+		eventEnd, hasEnd := eventDisplayEnd(event, loc)
+		return hasEnd && eventEnd.After(start)
+	}
+	return false
+}
+
+func eventIsOngoingAt(event domain.Event, at time.Time, loc *time.Location) bool {
+	eventStart := event.Start.In(loc)
+	atLocal := at.In(loc)
+	if !eventStart.Before(atLocal) {
+		return false
+	}
+	eventEnd, hasEnd := eventDisplayEnd(event, loc)
+	return hasEnd && eventEnd.After(atLocal)
+}
+
+func eventIsCurrentOrUpcoming(event domain.Event, now time.Time, loc *time.Location) bool {
+	eventStart := event.Start.In(loc)
+	if !eventStart.Before(now.In(loc)) {
+		return true
+	}
+	eventEnd, hasEnd := eventDisplayEnd(event, loc)
+	return hasEnd && eventEnd.After(now.In(loc))
+}
+
+func eventDisplayEnd(event domain.Event, loc *time.Location) (time.Time, bool) {
+	eventStart := event.Start.In(loc)
+	if event.End.IsZero() {
+		return localDayStart(eventStart, loc).AddDate(0, 0, 1), true
+	}
+	eventEnd := event.End.In(loc)
+	if eventEnd.Before(eventStart) {
+		return eventStart, false
+	}
+	return eventEnd, true
+}
+
+func groupEventsByDisplayDate(events []domain.Event, now time.Time, loc *time.Location) []EventGroup {
+	var groups []EventGroup
+	for _, event := range events {
+		date := eventDisplayDate(event, now, loc)
 		if len(groups) == 0 || !sameLocalDate(groups[len(groups)-1].Date, date, loc) {
 			groups = append(groups, EventGroup{Date: date})
 		}
 		groups[len(groups)-1].Events = append(groups[len(groups)-1].Events, event)
 	}
 	return groups
+}
+
+func eventDisplayDate(event domain.Event, now time.Time, loc *time.Location) time.Time {
+	date := localDayStart(event.Start, loc)
+	today := localDayStart(now, loc)
+	if date.Before(today) && eventIsOngoingAt(event, now, loc) {
+		return today
+	}
+	return date
+}
+
+func dateSectionTitle(date, now time.Time, loc *time.Location) string {
+	day := localDayStart(date, loc)
+	today := localDayStart(now, loc)
+	switch {
+	case sameLocalDate(day, today, loc):
+		return "Tonight"
+	case sameLocalDate(day, today.AddDate(0, 0, 1), loc):
+		return "Tomorrow"
+	default:
+		return day.Format("Monday")
+	}
+}
+
+func venueTimelineTitle(section VenueTimelineSection, now time.Time, loc *time.Location) string {
+	titles := make([]string, 0, len(section.Dates))
+	for _, date := range section.Dates {
+		titles = append(titles, venueTimelineDayTitle(date, now, loc))
+	}
+	return strings.Join(titles, " · ")
+}
+
+func venueTimelineDayTitle(date, now time.Time, loc *time.Location) string {
+	day := localDayStart(date, loc)
+	today := localDayStart(now, loc)
+	switch {
+	case sameLocalDate(day, today, loc):
+		return "Today"
+	case sameLocalDate(day, today.AddDate(0, 0, 1), loc):
+		return "Tomorrow"
+	default:
+		return day.Format("Monday")
+	}
+}
+
+func venueTimelineMeta(section VenueTimelineSection, loc *time.Location) string {
+	return fmt.Sprintf("%s - %s", venueTimelineDateLabel(section.Dates, loc), showCount(len(section.Events)))
+}
+
+func venueTimelineToneClass(index int) string {
+	return fmt.Sprintf("venue-day-tone-%d", index%4)
+}
+
+func venueTimelineDateLabel(dates []time.Time, loc *time.Location) string {
+	if len(dates) == 0 {
+		return ""
+	}
+	start := dates[0].In(loc)
+	end := dates[len(dates)-1].In(loc)
+	if sameLocalDate(start, end, loc) {
+		return start.Format("2 Jan")
+	}
+	if start.Year() == end.Year() && start.Month() == end.Month() {
+		return fmt.Sprintf("%d-%d %s", start.Day(), end.Day(), start.Format("Jan"))
+	}
+	return fmt.Sprintf("%s-%s", start.Format("2 Jan"), end.Format("2 Jan"))
 }
 
 func localDayStart(t time.Time, loc *time.Location) time.Time {
@@ -2571,7 +2800,15 @@ func venueNameMap(venues []domain.Venue) map[string]string {
 	return names
 }
 
-func venueAreas(venues []domain.Venue) []string {
+func venueAreaMap(venues []domain.Venue) map[string]string {
+	areas := make(map[string]string, len(venues))
+	for _, venue := range venues {
+		areas[venue.Slug] = strings.TrimSpace(venue.Neighbourhood)
+	}
+	return areas
+}
+
+func venueAreasList(venues []domain.Venue) []string {
 	seen := make(map[string]struct{}, len(venues))
 	areas := make([]string, 0, len(venues))
 	for _, venue := range venues {
@@ -2587,6 +2824,24 @@ func venueAreas(venues []domain.Venue) []string {
 	}
 	sort.Strings(areas)
 	return areas
+}
+
+func eventStatusLabel(event domain.Event) string {
+	status := publicEventStatus(event.Status)
+	if event.PublicationState == domain.PublicationStateProvisional {
+		if status != "" {
+			return status + " · Unconfirmed"
+		}
+		return "Unconfirmed"
+	}
+	return status
+}
+
+func showCount(count int) string {
+	if count == 1 {
+		return "1 show"
+	}
+	return fmt.Sprintf("%d shows", count)
 }
 
 func weekendWindow(now time.Time, loc *time.Location) (time.Time, time.Time) {

@@ -20,13 +20,13 @@ Set `ADMIN_COOKIE_SECURE=false` only when testing login over local plain HTTP.
 
 Current surface:
 
-- home, event list/detail, and venue list/detail pages
+- home and `/events` event board, event detail, and venue list/detail pages
 - passphrase-protected `/admin` tools for review, provisional venues and rooms, import history, and genre configuration
 - `GET /healthz`
 - `GET /readyz`
 - embedded stylesheet at `/static/site.css`
 - test and development records are labelled; curated bootstrap venues and live records are untagged
-- `/events` supports `window=today|tonight|week|weekend|all`, `venue=...`, and `area=...`
+- `/events` defaults to a Tonight/Tomorrow/next-seven-days board and still supports `window=today|tonight|week|weekend|all`, `venue=...`, and `area=...` query URLs
 
 Manual ingest supports live ingest, snapshot replay, and fixture-based offline review data. See [Command reference](docs/commands.md) or [Common tasks](docs/common-tasks.md) for the short versions.
 Live ingest currently supports `sidney-and-matilda`, `yellow-arch`, `cafe-no-9`, `jazz-at-the-lescar`, `the-greystones`, `leadmill`, and `corporation`.

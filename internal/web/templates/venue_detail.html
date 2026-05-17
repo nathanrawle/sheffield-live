@@ -23,18 +23,49 @@
   {{end}}
 
   <section class="section-block">
-    <h2>Coming up here</h2>
-    <div class="event-list compact">
-      {{range .VenueEvents}}
-      <a class="event-card{{if .ImageURL}} has-image{{end}}" href="/events/{{.Slug}}">
-        <span class="event-card-main">
-          <span class="event-date">{{dateShort .Start}} · {{timeShort .Start}}</span>
-          <span class="event-title">{{eventTitle . $.VenueNames}}</span>
-          {{with eventRoomText .}}<span class="event-meta">{{.}}</span>{{end}}
-          {{with originLabel .Origin}}<span class="origin-badge">{{.}}</span>{{end}}
-        </span>
-        {{if .ImageURL}}<img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async">{{end}}
-      </a>
+    <div class="section-head">
+      <h2>Coming up here</h2>
+    </div>
+    <div class="venue-timeline" data-venue-timeline>
+      {{range $sectionIndex, $section := .VenueTimelineSections}}
+      {{if .Events}}
+        {{range $index, $event := .Events}}
+        <div class="venue-timeline-item{{if eq $index 0}} venue-timeline-day-start{{end}} {{venueTimelineToneClass $sectionIndex}}" data-venue-day="{{$sectionIndex}}">
+          {{if eq $index 0}}
+          <span class="venue-day-marker">
+            <span class="venue-day-pill">
+              <span class="venue-day-title">{{venueTimelineTitle $section $.Now}}</span>
+              {{with venueTimelineMeta $section}}<span class="venue-day-meta">{{.}}</span>{{end}}
+            </span>
+          </span>
+          {{else}}
+          <span class="venue-day-marker venue-day-marker-spacer" aria-hidden="true">
+            <span class="venue-day-pill">
+              <span class="venue-day-title">{{venueTimelineTitle $section $.Now}}</span>
+              {{with venueTimelineMeta $section}}<span class="venue-day-meta">{{.}}</span>{{end}}
+            </span>
+          </span>
+          {{end}}
+          <a class="event-card venue-event-card{{if $event.ImageURL}} has-image{{else}} missing-image{{end}}{{if eventStatusLabel $event}} has-status{{end}}" href="/events/{{$event.Slug}}">
+            {{if $event.ImageURL}}
+            <span class="event-card-media"><img class="event-card-image" src="{{$event.ImageURL}}" alt="{{eventImageAlt $event}}" style="{{imageFocusStyle $event.ImageFocusX $event.ImageFocusY}}" loading="lazy" decoding="async"></span>
+            {{else}}
+            <span class="event-card-media event-card-placeholder" aria-hidden="true"></span>
+            {{end}}
+            <span class="event-card-main">
+              <span class="event-card-topline">
+                <time class="event-time" datetime="{{dateTimeAttr $event.Start}}">{{timeShort $event.Start}}</time>
+                {{with eventStatusLabel $event}}<span class="event-status">{{.}}</span>{{end}}
+              </span>
+              <span class="event-title">{{eventTitle $event $.VenueNames}}</span>
+              {{with eventRoomText $event}}<span class="event-meta">{{.}}</span>{{end}}
+              {{with $event.Genre}}<span class="event-genre">{{.}}</span>{{end}}
+              {{with originLabel $event.Origin}}<span class="origin-badge">{{.}}</span>{{end}}
+            </span>
+          </a>
+        </div>
+        {{end}}
+      {{end}}
       {{else}}
       <p class="empty-state">No upcoming shows listed for this venue.</p>
       {{end}}

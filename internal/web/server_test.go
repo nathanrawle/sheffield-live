@@ -40,11 +40,12 @@ func TestRoutes(t *testing.T) {
 		code int
 		body string
 	}{
-		{name: "home", path: "/", code: http.StatusOK, body: "Sheffield live music"},
+		{name: "home", path: "/", code: http.StatusOK, body: "Upcoming shows"},
 		{name: "events", path: "/events", code: http.StatusOK, body: "Upcoming shows"},
 		{name: "venues", path: "/venues", code: http.StatusOK, body: "Sheffield rooms"},
 		{name: "venue detail", path: "/venues/leadmill", code: http.StatusOK, body: "Leadmill"},
 		{name: "static css", path: "/static/site.css", code: http.StatusOK, body: "color-scheme"},
+		{name: "static js", path: "/static/site.js", code: http.StatusOK, body: "data-venue-timeline"},
 		{name: "admin missing", path: "/admin", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "admin import history missing", path: "/admin/import-runs", code: http.StatusNotFound, body: "404 page not found"},
 		{name: "admin review history missing", path: "/admin/review/history", code: http.StatusNotFound, body: "404 page not found"},
@@ -1904,61 +1905,20 @@ func TestAdminConfigurationPostLogsStoreFailure(t *testing.T) {
 	}
 }
 
-func TestHomeShowsTodayAndThisWeekWithFixedClock(t *testing.T) {
+func TestHomeShowsDefaultEventBoard(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/")
 
-	assertContains(t, body, "<h2>Today</h2>")
-	assertContains(t, body, "Tonight Leadmill")
-	assertContains(t, body, "<h2>This week</h2>")
-	assertContains(t, body, "Tomorrow Yellow Arch")
-	assertContains(t, body, "Friday Leadmill")
-	assertNotContains(t, body, "Later Leadmill")
-}
-
-func TestHomeShowsEmptyStatesWithFixedClock(t *testing.T) {
-	server := mustClockedServer(t, store.NewStore(nil, nil))
-	body := renderPath(t, server, "/")
-
-	assertContains(t, body, "No shows listed for today.")
-	assertContains(t, body, "No more shows listed this week.")
-}
-
-func TestHomeVenueCardsUseAddressFallbackMeta(t *testing.T) {
-	server := mustClockedServer(t, store.NewStore([]domain.Venue{
-		{
-			Slug:          "neighbourhood-room",
-			Name:          "Neighbourhood Room",
-			Address:       "1 Neighbourhood Road, Sheffield",
-			Neighbourhood: "Kelham",
-		},
-		{
-			Slug:    "address-room",
-			Name:    "Address Room",
-			Address: "12 Address Street, Sheffield",
-		},
-		{
-			Slug:    "duplicate-room",
-			Name:    "Duplicate Room",
-			Address: "Duplicate Room, Hidden Lane, Sheffield",
-		},
-		{
-			Slug: "blank-room",
-			Name: "Blank Room",
-		},
-	}, nil))
-
-	body := renderPath(t, server, "/")
-
-	assertContains(t, body, `<span class="venue-title">Neighbourhood Room</span>`)
-	assertContains(t, body, `<span class="venue-meta">Kelham</span>`)
-	assertContains(t, body, `<span class="venue-title">Address Room</span>`)
-	assertContains(t, body, `<span class="venue-meta">12 Address Street</span>`)
-	assertContains(t, body, `<span class="venue-title">Duplicate Room</span>`)
-	assertContains(t, body, `<span class="venue-meta">Hidden Lane</span>`)
-	assertNotContains(t, body, `<span class="venue-meta">Duplicate Room</span>`)
-	assertContains(t, body, `<span class="venue-title">Blank Room</span>
-      <span class="venue-meta"></span>`)
+	assertContains(t, body, "Upcoming shows")
+	assertInOrder(t, body, []string{
+		"Tonight",
+		"Tonight Leadmill",
+		"Tomorrow",
+		"Tomorrow Yellow Arch",
+		"Friday",
+		"Friday Leadmill",
+	})
+	assertContains(t, body, `<a class="active" aria-current="page" href="/">Events</a>`)
 }
 
 func TestEventPagesRenderVenueRoom(t *testing.T) {
@@ -1993,11 +1953,12 @@ func TestEventPagesRenderVenueRoom(t *testing.T) {
 	}))
 
 	eventsBody := renderPath(t, server, "/events")
-	assertContains(t, eventsBody, "Sidney &amp; Matilda (Factory) · Experimental")
+	assertContains(t, eventsBody, `<span class="event-venue has-room"><span class="event-location-line"><span class="event-room">Factory</span><span class="event-location-separator">, </span><span class="event-venue-name">Sidney &amp; Matilda</span></span><span class="event-area">Cultural Industries Quarter</span></span>`)
 	assertNotContains(t, eventsBody, "Experimental · Listed")
 
 	eventBody := renderPath(t, server, "/events/parallel-delusion")
-	assertContains(t, eventBody, `<p><a href="/venues/sidney-and-matilda">Sidney &amp; Matilda</a> (Factory)</p>`)
+	assertContains(t, eventBody, `<p><a href="/venues/sidney-and-matilda">Sidney &amp; Matilda</a></p>`)
+	assertContains(t, eventBody, `<p><strong>Room</strong>: Factory</p>`)
 
 	venueBody := renderPath(t, server, "/venues/sidney-and-matilda")
 	assertContains(t, venueBody, `<span class="event-meta">Factory</span>`)
@@ -2197,16 +2158,17 @@ func TestPublicPagesCleanEventPresentationLeaks(t *testing.T) {
 	homeBody := renderPath(t, server, "/")
 	assertContains(t, homeBody, `S&amp;M Presents: Dealbreaker`)
 	assertNotContains(t, homeBody, `S&amp;amp;M Presents`)
-	assertContains(t, homeBody, `<span class="event-meta">Sidney &amp; Matilda</span>`)
+	assertContains(t, homeBody, `<span class="event-venue">Sidney &amp; Matilda<span class="event-area">Cultural Industries Quarter</span></span>`)
 	assertNotContains(t, homeBody, `Sidney &amp; Matilda ·`)
 
 	eventsBody := renderPath(t, server, "/events?window=all")
 	assertContains(t, eventsBody, `Dansette Springs`)
-	assertContains(t, eventsBody, `<span class="event-meta">Foundry · Blues</span>`)
+	assertContains(t, eventsBody, `<span class="event-venue">Foundry<span class="event-area">Broomhall</span></span>`)
+	assertContains(t, eventsBody, `<span class="event-genre">Blues</span>`)
 	assertNotContains(t, eventsBody, `Blues · Listed`)
 	assertContains(t, eventsBody, `Marmozets`)
 	assertNotContains(t, eventsBody, `Marmozets - Foundry`)
-	assertContains(t, eventsBody, `Foundry · Postponed`)
+	assertContains(t, eventsBody, `<span class="event-status">Postponed</span>`)
 
 	detailBody := renderPath(t, server, "/events/double-escaped")
 	assertContains(t, detailBody, `<h1>S&amp;M Presents: Dealbreaker</h1>`)
@@ -2223,9 +2185,332 @@ func TestEventsFiltersToday(t *testing.T) {
 	body := renderPath(t, server, "/events?window=today")
 
 	assertContains(t, body, "Tonight Leadmill")
-	assertContains(t, body, "Sunday, 19 April 2026")
+	assertContains(t, body, "19 Apr - 1 show")
 	assertNotContains(t, body, "Tomorrow Yellow Arch")
 	assertNotContains(t, body, "Friday Leadmill")
+}
+
+func TestEventsDefaultShowsOnlyDaysWithCurrentOrUpcomingEvents(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/events")
+
+	assertInOrder(t, body, []string{
+		"Tonight",
+		"19 Apr - 1 show",
+		"Tonight Leadmill",
+		"Tomorrow",
+		"20 Apr - 1 show",
+		"Tomorrow Yellow Arch",
+		"Friday",
+		"24 Apr - 1 show",
+		"Friday Leadmill",
+		"Monday",
+		"27 Apr - 1 show",
+		"Later Leadmill",
+	})
+	assertNotContains(t, body, "Past Leadmill")
+	assertNotContains(t, body, "No shows listed")
+	assertNotContains(t, body, "21 Apr - 0 shows")
+}
+
+func TestEventsDefaultShowsOngoingTodayEventsAndOmitsEndedDays(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:        "ended-show",
+				Name:        "Ended Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 18, 0),
+				End:         fixtureLocalTime(2026, time.April, 19, 20, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Ended today.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/ended-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "ongoing-show",
+				Name:        "Ongoing Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+				End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Still running.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/ongoing-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "tomorrow-show",
+				Name:        "Tomorrow Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 20, 19, 0),
+				End:         fixtureLocalTime(2026, time.April, 20, 21, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Tomorrow.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/tomorrow-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 19, 21, 0)
+	})
+
+	body := renderPath(t, server, "/events")
+
+	assertInOrder(t, body, []string{
+		"Tonight",
+		"19 Apr - 1 show",
+		"Ongoing Show",
+		"Tomorrow",
+		"20 Apr - 1 show",
+		"Tomorrow Show",
+	})
+	assertNotContains(t, body, "Ended Show")
+	assertNotContains(t, body, "No shows listed")
+}
+
+func TestEventsShowOngoingPriorDayEventsInCurrentDay(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:        "ended-overnight-show",
+				Name:        "Ended Overnight Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 21, 0),
+				End:         fixtureLocalTime(2026, time.April, 19, 23, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Ended before midnight.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/ended-overnight-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "ongoing-overnight-show",
+				Name:        "Ongoing Overnight Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 23, 0),
+				End:         fixtureLocalTime(2026, time.April, 20, 2, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Still running after midnight.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/ongoing-overnight-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "later-today-show",
+				Name:        "Later Today Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 20, 19, 0),
+				End:         fixtureLocalTime(2026, time.April, 20, 21, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Later today.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/later-today-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 20, 0, 30)
+	})
+
+	homeBody := renderPath(t, server, "/")
+	assertInOrder(t, homeBody, []string{
+		"Tonight",
+		"20 Apr - 2 shows",
+		"Ongoing Overnight Show",
+		"Later Today Show",
+	})
+	assertNotContains(t, homeBody, "Ended Overnight Show")
+	assertNotContains(t, homeBody, "19 Apr - 1 show")
+
+	filteredBody := renderPath(t, server, "/events?window=today")
+	assertInOrder(t, filteredBody, []string{
+		"Tonight",
+		"20 Apr - 2 shows",
+		"Ongoing Overnight Show",
+		"Later Today Show",
+	})
+	assertNotContains(t, filteredBody, "Ended Overnight Show")
+	assertNotContains(t, filteredBody, "19 Apr - 1 show")
+}
+
+func TestEventsKeepStartOnlyShowsVisibleThroughLocalDay(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:        "start-only-yesterday",
+				Name:        "Start Only Yesterday",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Started yesterday with no listed end time.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/start-only-yesterday",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "start-only-today",
+				Name:        "Start Only Today",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 20, 20, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Started today with no listed end time.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/start-only-today",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "tomorrow-show",
+				Name:        "Tomorrow Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 21, 19, 0),
+				End:         fixtureLocalTime(2026, time.April, 21, 21, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Tomorrow.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/tomorrow-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 20, 21, 0)
+	})
+
+	homeBody := renderPath(t, server, "/")
+	assertInOrder(t, homeBody, []string{
+		"Tonight",
+		"20 Apr - 1 show",
+		"Start Only Today",
+	})
+	assertNotContains(t, homeBody, "Start Only Yesterday")
+
+	filteredBody := renderPath(t, server, "/events?window=today")
+	assertInOrder(t, filteredBody, []string{
+		"Tonight",
+		"20 Apr - 1 show",
+		"Start Only Today",
+	})
+	assertNotContains(t, filteredBody, "Start Only Yesterday")
+
+	venueBody := renderPath(t, server, "/venues/leadmill")
+	assertInOrder(t, venueBody, []string{
+		"Today",
+		"20 Apr - 1 show",
+		"Start Only Today",
+	})
+	assertNotContains(t, venueBody, "Start Only Yesterday")
+}
+
+func TestEventsDefaultOmitsTodayWhenNoCurrentOrUpcomingShowsRemain(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:        "ended-show",
+				Name:        "Ended Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 19, 18, 0),
+				End:         fixtureLocalTime(2026, time.April, 19, 20, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Ended today.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/ended-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+			{
+				Slug:        "tomorrow-show",
+				Name:        "Tomorrow Show",
+				VenueSlug:   "leadmill",
+				Start:       fixtureLocalTime(2026, time.April, 20, 19, 0),
+				End:         fixtureLocalTime(2026, time.April, 20, 21, 0),
+				Genre:       "Indie",
+				Status:      "Listed",
+				Description: "Tomorrow.",
+				SourceName:  "Leadmill listings",
+				SourceURL:   "https://example.test/tomorrow-show",
+				LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			},
+		},
+	))
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 19, 21, 0)
+	})
+
+	body := renderPath(t, server, "/events")
+
+	assertInOrder(t, body, []string{
+		"Tomorrow",
+		"20 Apr - 1 show",
+		"Tomorrow Show",
+	})
+	assertNotContains(t, body, "Tonight")
+	assertNotContains(t, body, "Ended Show")
+	assertNotContains(t, body, "No shows listed")
+}
+
+func TestEventsDefaultShowsEmptyState(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{},
+	))
+
+	body := renderPath(t, server, "/events")
+
+	assertContains(t, body, "No upcoming shows listed.")
+	assertNotContains(t, body, "No shows match these filters.")
 }
 
 func TestEventsFiltersTonight(t *testing.T) {
@@ -2233,7 +2518,6 @@ func TestEventsFiltersTonight(t *testing.T) {
 	body := renderPath(t, server, "/events?window=tonight")
 
 	assertContains(t, body, "Tonight Leadmill")
-	assertContains(t, body, `option value="tonight" selected`)
 	assertNotContains(t, body, "Tomorrow Yellow Arch")
 	assertNotContains(t, body, "Friday Leadmill")
 }
@@ -2244,8 +2528,6 @@ func TestEventsFiltersWeekAndVenue(t *testing.T) {
 
 	assertContains(t, body, "Tonight Leadmill")
 	assertContains(t, body, "Friday Leadmill")
-	assertContains(t, body, `option value="week" selected`)
-	assertContains(t, body, `option value="leadmill" selected`)
 	assertNotContains(t, body, "Tomorrow Yellow Arch")
 	assertNotContains(t, body, "Later Leadmill")
 }
@@ -2255,11 +2537,14 @@ func TestEventsGroupsByLocalDateInOrder(t *testing.T) {
 	body := renderPath(t, server, "/events?window=week")
 
 	assertInOrder(t, body, []string{
-		"Sunday, 19 April 2026",
+		"Tonight",
+		"19 Apr - 1 show",
 		"Tonight Leadmill",
-		"Monday, 20 April 2026",
+		"Tomorrow",
+		"20 Apr - 1 show",
 		"Tomorrow Yellow Arch",
-		"Friday, 24 April 2026",
+		"Friday",
+		"24 Apr - 1 show",
 		"Friday Leadmill",
 	})
 }
@@ -2281,7 +2566,6 @@ func TestEventsFiltersWeekendAndArea(t *testing.T) {
 
 	areaBody := renderPath(t, server, "/events?area=Neepsend")
 	assertContains(t, areaBody, "Tomorrow Yellow Arch")
-	assertContains(t, areaBody, `option value="Neepsend" selected`)
 	assertNotContains(t, areaBody, "Tonight Leadmill")
 }
 
@@ -2293,8 +2577,6 @@ func TestEventsUnknownVenueBehavesLikeAllVenues(t *testing.T) {
 	assertContains(t, body, "Tomorrow Yellow Arch")
 	assertContains(t, body, "Friday Leadmill")
 	assertContains(t, body, "Later Leadmill")
-	assertContains(t, body, `<option value="">All venues</option>`)
-	assertNotContains(t, body, `option value="missing" selected`)
 	assertNotContains(t, body, "No shows match these filters.")
 }
 
@@ -2336,8 +2618,8 @@ func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
 		cardClass string
 	}{
 		{name: "home", path: "/", cardClass: `class="event-card has-image"`},
-		{name: "events", path: "/events?window=today", cardClass: `class="event-card wide has-image"`},
-		{name: "venue", path: "/venues/leadmill", cardClass: `class="event-card has-image"`},
+		{name: "events", path: "/events?window=today", cardClass: `class="event-card has-image"`},
+		{name: "venue", path: "/venues/leadmill", cardClass: `class="event-card venue-event-card has-image"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := renderPath(t, server, tc.path)
@@ -2345,6 +2627,105 @@ func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
 			assertContains(t, body, `<img class="event-card-image" src="/media/events/poster.jpg" alt="Poster Show artwork" style="--image-focus-x: 35%; --image-focus-y: 65%;" loading="lazy" decoding="async">`)
 		})
 	}
+}
+
+func TestEventCardsRenderMissingImagePlaceholder(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{{
+			Slug:        "no-poster-show",
+			Name:        "No Poster Show",
+			VenueSlug:   "leadmill",
+			Start:       fixtureLocalTime(2026, time.April, 19, 20, 0),
+			End:         fixtureLocalTime(2026, time.April, 19, 22, 0),
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "No poster description.",
+			SourceName:  "Fixture listings",
+			SourceURL:   "https://example.test/no-poster-show",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+			Origin:      domain.OriginLive,
+		}},
+	))
+
+	body := renderPath(t, server, "/events?window=today")
+
+	assertContains(t, body, `class="event-card missing-image"`)
+	assertContains(t, body, `<span class="event-card-media event-card-placeholder" aria-hidden="true"></span>`)
+	assertNotContains(t, body, "No image")
+}
+
+func TestEventCardsShowOnlyPublicUnconfirmedStatus(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:             "listed-show",
+				Name:             "Listed Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 20, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 22, 0),
+				Genre:            "Indie",
+				Status:           "Listed",
+				Description:      "Listed description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/listed-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateReviewed,
+			},
+			{
+				Slug:             "provisional-show",
+				Name:             "Provisional Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 21, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 23, 0),
+				Genre:            "Rock",
+				Status:           "Listed",
+				Description:      "Provisional description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/provisional-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateProvisional,
+			},
+			{
+				Slug:             "cancelled-provisional-show",
+				Name:             "Cancelled Provisional Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 22, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 23, 30),
+				Genre:            "Rock",
+				Status:           "Cancelled",
+				Description:      "Cancelled provisional description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/cancelled-provisional-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateProvisional,
+			},
+		},
+	))
+
+	body := renderPath(t, server, "/events?window=today")
+
+	assertContains(t, body, `<span class="event-status">Unconfirmed</span>`)
+	assertContains(t, body, `<span class="event-status">Cancelled · Unconfirmed</span>`)
+	assertNotContains(t, body, `>Listed<`)
 }
 
 func TestEventCardsPreserveExplicitTopLeftImageFocus(t *testing.T) {
@@ -2449,6 +2830,70 @@ func TestVenueDetailShowsEmptyState(t *testing.T) {
 	body := renderPath(t, server, "/venues/empty-room")
 
 	assertContains(t, body, "No upcoming shows listed for this venue.")
+}
+
+func TestVenueDetailEventCardsShowDates(t *testing.T) {
+	server := mustFixtureServer(t)
+	body := renderPath(t, server, "/venues/leadmill")
+
+	assertInOrder(t, body, []string{
+		"Today",
+		"19 Apr - 1 show",
+		"20:00",
+		"Friday",
+		"24 Apr - 1 show",
+		"21:00",
+		"Monday",
+		"27 Apr - 1 show",
+		"20:00",
+	})
+	assertContains(t, body, `data-venue-timeline`)
+	assertContains(t, body, `class="venue-timeline-item venue-timeline-day-start venue-day-tone-0" data-venue-day="0"`)
+	assertContains(t, body, `class="venue-timeline-item venue-timeline-day-start venue-day-tone-1" data-venue-day="1"`)
+	assertNotContains(t, body, "Past Leadmill")
+	assertNotContains(t, body, "Nothing Listed")
+	assertNotContains(t, body, "19 Apr 2026 · 20:00")
+	assertNotContains(t, body, `class="event-venue"`)
+}
+
+func TestVenueDetailShowsOngoingPriorDayEventsInTodaySection(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{{
+			Slug:        "overnight-leadmill",
+			Name:        "Overnight Leadmill",
+			VenueSlug:   "leadmill",
+			Start:       fixtureLocalTime(2026, time.April, 19, 23, 0),
+			End:         fixtureLocalTime(2026, time.April, 20, 2, 0),
+			Genre:       "Indie",
+			Status:      "Listed",
+			Description: "Still running after midnight.",
+			SourceName:  "Leadmill listings",
+			SourceURL:   "https://example.test/overnight-leadmill",
+			LastChecked: fixtureLocalTime(2026, time.April, 19, 9, 0),
+		}},
+	))
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 20, 0, 30)
+	})
+
+	body := renderPath(t, server, "/venues/leadmill")
+
+	assertInOrder(t, body, []string{
+		"Today",
+		"20 Apr - 1 show",
+		"23:00",
+		"Overnight Leadmill",
+	})
+	assertNotContains(t, body, "19 Apr - 1 show")
+	assertNotContains(t, body, "No upcoming shows listed for this venue.")
 }
 
 func TestVenueAndEventDetailShowCoverageNote(t *testing.T) {
@@ -2642,12 +3087,13 @@ func TestReadyzLogsReadinessFailure(t *testing.T) {
 
 func TestLayoutMetadataAndActiveNav(t *testing.T) {
 	server := mustFixtureServer(t)
-	body := renderPath(t, server, "/events")
+	body := renderPath(t, server, "/")
 
-	assertContains(t, body, `<meta name="description" content="Browse Sheffield live music by date window and venue.">`)
+	assertContains(t, body, `<meta name="description" content="Browse Sheffield live music by date and venue.">`)
 	assertContains(t, body, `<a class="skip-link" href="#main">Skip to content</a>`)
 	assertContains(t, body, `<main id="main" class="shell main">`)
-	assertContains(t, body, `<a class="active" aria-current="page" href="/events">Events</a>`)
+	assertContains(t, body, `<a class="active" aria-current="page" href="/">Events</a>`)
+	assertNotContains(t, body, `href="/">Home</a>`)
 }
 
 func TestAdminReviewListDetailAndSave(t *testing.T) {

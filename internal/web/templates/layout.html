@@ -6,6 +6,7 @@
   {{with .MetaDescription}}<meta name="description" content="{{.}}">{{end}}
   <title>{{if .PageTitle}}{{.PageTitle}} · {{end}}{{.SiteName}}</title>
   <link rel="stylesheet" href="/static/site.css">
+  <script src="/static/site.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -13,8 +14,7 @@
     <div class="shell topbar-inner">
       <a class="brand" href="/">Sheffield Live</a>
       <nav class="nav">
-        <a class="{{if eq .Active "home"}}active{{end}}" {{if eq .Active "home"}}aria-current="page"{{end}} href="/">Home</a>
-        <a class="{{if eq .Active "events"}}active{{end}}" {{if eq .Active "events"}}aria-current="page"{{end}} href="/events">Events</a>
+        <a class="{{if eq .Active "events"}}active{{end}}" {{if eq .Active "events"}}aria-current="page"{{end}} href="/">Events</a>
         <a class="{{if eq .Active "venues"}}active{{end}}" {{if eq .Active "venues"}}aria-current="page"{{end}} href="/venues">Venues</a>
         {{if .AdminAuthenticated}}
         <form class="nav-logout" method="post" action="/admin/logout">
