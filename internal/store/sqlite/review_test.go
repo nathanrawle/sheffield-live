@@ -3460,6 +3460,113 @@ func TestResolveReviewGroupRollsBackProvisionalVenueWhenLaterCanonicalUpdateFail
 	}
 }
 
+func TestResolveReviewGroupMergesCanonicalSlugConflictWithSameIdentity(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const startAt = "2026-05-03T19:00:00Z"
+	sourceID := mustEnsureReviewTestSource(t, db)
+	dirtySlug := mustLiveEventSlug(t, "Solo Show at Sidney and Matilda", "sidney-and-matilda", startAt)
+	cleanSlug := mustLiveEventSlug(t, "Solo Show", "sidney-and-matilda", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "sidney-and-matilda", "Solo Show at Sidney and Matilda", startAt, "Dirty duplicate.")
+	mustInsertRepairLegacyEvent(t, db, sourceID, cleanSlug, "sidney-and-matilda", "Solo Show", startAt, "Clean duplicate.")
+
+	var duplicateEventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, dirtySlug).Scan(&duplicateEventID); err != nil {
+		t.Fatalf("lookup duplicate event: %v", err)
+	}
+	var targetEventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, cleanSlug).Scan(&targetEventID); err != nil {
+		t.Fatalf("lookup target event: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			source_id,
+			event_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, sourceID, duplicateEventID, "legacy-solo", "2026-05-01T10:00:00Z", "2026-05-01T10:00:00Z"); err != nil {
+		t.Fatalf("insert duplicate source link: %v", err)
+	}
+
+	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Canonical duplicate merge")
+	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("load review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found")
+	}
+	if _, err := db.Exec(`
+		UPDATE review_candidates
+		SET canonical_event_id = ?
+		WHERE id = ?
+	`, duplicateEventID, group.Candidates[0].ID); err != nil {
+		t.Fatalf("set canonical event id: %v", err)
+	}
+	group, ok, err = st.LoadReviewGroup(ctx, groupID)
+	if err != nil {
+		t.Fatalf("reload review group: %v", err)
+	}
+	if !ok {
+		t.Fatal("review group not found after canonical update")
+	}
+
+	beforeEventCount := mustCount(t, db, "events")
+	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
+		t.Fatalf("resolve review group: %v", err)
+	}
+
+	if got := mustCount(t, db, "events"); got != beforeEventCount-1 {
+		t.Fatalf("events rows = %d, want merged duplicate count %d", got, beforeEventCount-1)
+	}
+	if _, ok := st.EventBySlug(dirtySlug); ok {
+		t.Fatalf("dirty duplicate slug %q still exists", dirtySlug)
+	}
+	event, ok := st.EventBySlug(cleanSlug)
+	if !ok {
+		t.Fatalf("missing target event %q", cleanSlug)
+	}
+	if event.Description != "One listing" {
+		t.Fatalf("description = %q, want resolved candidate description", event.Description)
+	}
+
+	var linkedEventID int64
+	if err := db.QueryRow(`
+		SELECT event_id
+		FROM event_source_links
+		WHERE source_event_key = ?
+	`, "legacy-solo").Scan(&linkedEventID); err != nil {
+		t.Fatalf("lookup moved source link: %v", err)
+	}
+	if linkedEventID != targetEventID {
+		t.Fatalf("source link event_id = %d, want target %d", linkedEventID, targetEventID)
+	}
+	var staleCandidateRefs int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM review_candidates
+		WHERE canonical_event_id = ?
+	`, duplicateEventID).Scan(&staleCandidateRefs); err != nil {
+		t.Fatalf("count stale canonical candidate refs: %v", err)
+	}
+	if staleCandidateRefs != 0 {
+		t.Fatalf("review candidates still reference merged event = %d, want 0", staleCandidateRefs)
+	}
+}
+
 func TestResolveReviewGroupCreatesProvisionalVenueWhenVenueIsMissing(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -5815,6 +5922,78 @@ func TestRepairEventTitlesFromReportStagesSupportingReview(t *testing.T) {
 	}
 	if got := mustCount(t, db, "review_groups"); got != 1 {
 		t.Fatalf("review groups after rerun = %d, want 1", got)
+	}
+}
+
+func TestRepairEventTitlesFromReportStagesSupportingReviewWhenCleanDuplicateExists(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAt = "2026-05-10T18:30:00Z"
+		dirty   = "Late Junction at The Lescar"
+		clean   = "Late Junction"
+	)
+	sourceID := mustEnsureSourceID(t, st, "Jazz at The Lescar manual ingest", "https://www.jazzatthelescar.com/index.html")
+	dirtySlug := mustLiveEventSlug(t, dirty, "lescar", startAt)
+	cleanSlug := mustLiveEventSlug(t, clean, "lescar", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "lescar", dirty, startAt, "Dirty duplicate.")
+	mustInsertRepairLegacyEvent(t, db, sourceID, cleanSlug, "lescar", clean, startAt, "Clean duplicate.")
+
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustReviewCatalog(t), lescarTitleRepairReport(startAt, dirty), true)
+	if err != nil {
+		t.Fatalf("repair event titles: %v", err)
+	}
+	if got, want := repair.ReviewGroupsCreated, 1; got != want {
+		t.Fatalf("review groups created = %d, want %d", got, want)
+	}
+	if got, want := repair.Changes[0].Result, "review_created"; got != want {
+		t.Fatalf("result = %q, want %q", got, want)
+	}
+	if got := mustCount(t, db, "events"); got != 2 {
+		t.Fatalf("events = %d, want dirty and clean duplicates", got)
+	}
+	if got := mustCount(t, db, "review_candidates"); got != 3 {
+		t.Fatalf("review candidates = %d, want cleaned candidate, existing clean event, and canonical snapshot", got)
+	}
+
+	var canonicalName string
+	if err := db.QueryRow(`
+		SELECT name
+		FROM review_candidates
+		WHERE canonical_event_id IS NOT NULL
+		LIMIT 1
+	`).Scan(&canonicalName); err != nil {
+		t.Fatalf("load canonical review candidate: %v", err)
+	}
+	if canonicalName != dirty {
+		t.Fatalf("canonical snapshot name = %q, want dirty title %q", canonicalName, dirty)
+	}
+	var existingCleanCandidateCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM review_candidates
+		WHERE canonical_event_id IS NULL
+		  AND provenance = ?
+		  AND name = ?
+	`, "Existing live event with cleaned title", clean).Scan(&existingCleanCandidateCount); err != nil {
+		t.Fatalf("count existing clean candidates: %v", err)
+	}
+	if existingCleanCandidateCount != 1 {
+		t.Fatalf("existing clean candidate count = %d, want 1", existingCleanCandidateCount)
 	}
 }
 

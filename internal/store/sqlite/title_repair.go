@@ -202,19 +202,18 @@ func (s *Store) stageSupportingEventTitleRepair(ctx context.Context, group revie
 	if err != nil {
 		return EventTitleRepairChange{}, err
 	}
-	switch len(records) {
-	case 0:
-		change.Result = "skipped"
-		change.Reason = "no supporting match"
-		return change, nil
-	case 1:
-	default:
+	record, found, ambiguous := selectSupportingTitleRepairRecord(records, incoming)
+	if ambiguous {
 		change.Result = "skipped"
 		change.Reason = "ambiguous supporting match"
 		return change, nil
 	}
+	if !found {
+		change.Result = "skipped"
+		change.Reason = "no supporting match"
+		return change, nil
+	}
 
-	record := records[0]
 	change.EventID = record.ID
 	change.OldSlug = record.Event.Slug
 	change.OldTitle = record.Event.Name
@@ -229,13 +228,6 @@ func (s *Store) stageSupportingEventTitleRepair(ctx context.Context, group revie
 	if hasAuthoritative {
 		change.Result = "skipped"
 		change.Reason = "matched event has authoritative source link"
-		return change, nil
-	}
-	if conflict, ok, err := loadEventRecordBySlugTx(ctx, tx, incoming.Slug); err != nil {
-		return EventTitleRepairChange{}, err
-	} else if ok && conflict.ID != record.ID {
-		change.Result = "skipped"
-		change.Reason = "target slug already belongs to another event"
 		return change, nil
 	}
 	if !apply {
@@ -257,6 +249,31 @@ func (s *Store) stageSupportingEventTitleRepair(ctx context.Context, group revie
 		change.Result = "review_reused"
 	}
 	return change, nil
+}
+
+func selectSupportingTitleRepairRecord(records []eventRecord, incoming domain.Event) (eventRecord, bool, bool) {
+	if len(records) == 0 {
+		return eventRecord{}, false, false
+	}
+	var repairable []eventRecord
+	var unchanged []eventRecord
+	for _, record := range records {
+		if titleRepairUnchanged(record.Event, incoming) {
+			unchanged = append(unchanged, record)
+			continue
+		}
+		repairable = append(repairable, record)
+	}
+	switch {
+	case len(repairable) == 1:
+		return repairable[0], true, false
+	case len(repairable) > 1:
+		return eventRecord{}, false, true
+	case len(unchanged) == 1:
+		return unchanged[0], true, false
+	default:
+		return eventRecord{}, false, true
+	}
 }
 
 func titleRepairChangeForIncoming(incoming domain.Event) EventTitleRepairChange {
@@ -470,11 +487,10 @@ func stageEventTitleRepairReviewGroupTx(ctx context.Context, tx interface {
 	if err != nil {
 		return 0, false, err
 	}
-	candidates := []review.CandidateInput{
-		reviewCandidateInputFromEvent(incoming, input.Candidates[0].ExternalID, "Cleaned title from title repair"),
-		reviewCandidateInputFromEvent(record.Event, "", "Canonical live event snapshot"),
+	candidates, err := eventTitleRepairReviewCandidatesTx(ctx, tx, input, record, incoming)
+	if err != nil {
+		return 0, false, err
 	}
-	candidates[1].CanonicalEventID = record.ID
 	if err := insertReviewCandidatesTx(ctx, tx, groupID, candidates, incoming.SourceName, incoming.SourceURL); err != nil {
 		return 0, false, err
 	}
@@ -485,6 +501,21 @@ func stageEventTitleRepairReviewGroupTx(ctx context.Context, tx interface {
 		return 0, false, err
 	}
 	return groupID, true, nil
+}
+
+func eventTitleRepairReviewCandidatesTx(ctx context.Context, q queryer, input review.GroupInput, record eventRecord, incoming domain.Event) ([]review.CandidateInput, error) {
+	candidates := []review.CandidateInput{
+		reviewCandidateInputFromEvent(incoming, input.Candidates[0].ExternalID, "Cleaned title from title repair"),
+	}
+	if conflict, ok, err := loadEventRecordBySlugTx(ctx, q, incoming.Slug); err != nil {
+		return nil, err
+	} else if ok && conflict.ID != record.ID && eventRecordHasResolvedIdentity(conflict, incoming) {
+		candidates = append(candidates, reviewCandidateInputFromEvent(conflict.Event, "", "Existing live event with cleaned title"))
+	}
+	canonical := reviewCandidateInputFromEvent(record.Event, "", "Canonical live event snapshot")
+	canonical.CanonicalEventID = record.ID
+	candidates = append(candidates, canonical)
+	return candidates, nil
 }
 
 func reviewCandidateInputFromEvent(event domain.Event, externalID, provenance string) review.CandidateInput {
