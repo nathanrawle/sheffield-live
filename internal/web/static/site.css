@@ -495,7 +495,15 @@ a:focus-visible {
   text-decoration: none;
 }
 
+.venue-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-height: 7.5rem;
+}
+
 .event-card {
+  container-type: inline-size;
   display: grid;
   grid-template-rows: 8.5rem minmax(13.5rem, auto);
   min-width: 0;
@@ -569,7 +577,40 @@ a:focus-visible {
 }
 
 .venue-meta {
-  min-height: 1.2em;
+  display: grid;
+  gap: 0.16rem;
+  min-height: 0;
+}
+
+.venue-area {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.venue-address {
+  white-space: pre-line;
+}
+
+.venue-card-action {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: auto;
+  color: var(--accent);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.82rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.venue-card .origin-badge {
+  margin-top: 0;
+}
+
+.venue-card:hover .venue-card-action,
+.venue-card:focus-visible .venue-card-action {
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.16em;
 }
 
 .event-status {
@@ -617,6 +658,7 @@ a:focus-visible {
   line-height: 1.15;
 }
 
+.event-location,
 .event-venue {
   display: grid;
   gap: 0.1rem;
@@ -626,29 +668,54 @@ a:focus-visible {
   font-weight: 800;
 }
 
-.event-venue.has-room {
-  display: grid;
-  gap: 0.1rem;
-}
-
+.event-location-primary,
 .event-location-line {
   display: flex;
   min-width: 0;
-  flex-wrap: wrap;
   align-items: baseline;
 }
 
-.event-location-separator {
-  margin-right: 0.25rem;
-  color: var(--text);
-}
-
+.event-location-room,
+.event-location-venue,
+.event-location-area,
 .event-area,
 .event-genre {
   display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-location-room {
+  color: var(--text);
+}
+
+.event-location-separator {
+  flex: 0 0 auto;
+  margin-right: 0.25em;
+  color: var(--muted);
+}
+
+.event-location-area,
+.event-area,
+.event-genre {
   color: var(--muted);
   font-family: ui-sans-serif, system-ui, sans-serif;
   font-size: 0.9rem;
+}
+
+@container (max-width: 18rem) {
+  .event-location-area {
+    display: none;
+  }
+}
+
+@container (max-width: 15rem) {
+  .event-location.has-venue .event-location-room,
+  .event-location.has-venue .event-location-separator {
+    display: none;
+  }
 }
 
 .event-card-empty {

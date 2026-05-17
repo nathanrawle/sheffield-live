@@ -42,7 +42,7 @@ func TestRoutes(t *testing.T) {
 	}{
 		{name: "home", path: "/", code: http.StatusOK, body: "Upcoming shows"},
 		{name: "events", path: "/events", code: http.StatusOK, body: "Upcoming shows"},
-		{name: "venues", path: "/venues", code: http.StatusOK, body: "Sheffield rooms"},
+		{name: "venues", path: "/venues", code: http.StatusOK, body: "Sheffield venues"},
 		{name: "venue detail", path: "/venues/leadmill", code: http.StatusOK, body: "Leadmill"},
 		{name: "static css", path: "/static/site.css", code: http.StatusOK, body: "color-scheme"},
 		{name: "static js", path: "/static/site.js", code: http.StatusOK, body: "data-venue-timeline"},
@@ -1103,8 +1103,12 @@ func TestSQLitePublicVenuePagesRenderDerivedProvisionalVenueAddress(t *testing.T
 
 	venuesBody := renderPath(t, server, "/venues")
 	assertContains(t, venuesBody, "Memorial Hall")
-	assertContains(t, venuesBody, "City Centre · Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
-	assertNotContains(t, venuesBody, "City Centre · Memorial Hall,\nBarkers Pool")
+	assertContains(t, venuesBody, `<span class="venue-area">City Centre</span>`)
+	assertContains(t, venuesBody, `<span class="venue-address">Barkers Pool,
+Sheffield City Centre,
+Sheffield,
+S1 2JA</span>`)
+	assertNotContains(t, venuesBody, "Memorial Hall,\nBarkers Pool")
 }
 
 func TestStoredDuplicateVenueAddressLineIsHiddenAcrossPages(t *testing.T) {
@@ -1139,8 +1143,10 @@ func TestStoredDuplicateVenueAddressLineIsHiddenAcrossPages(t *testing.T) {
 	assertNotContains(t, eventBody, "Imaginary Hall marketing copy,\n1 Void Street")
 
 	venuesBody := renderPath(t, server, "/venues")
-	assertContains(t, venuesBody, "City Centre · 1 Void Street,\nSheffield")
-	assertNotContains(t, venuesBody, "City Centre · Imaginary Hall marketing copy,\n1 Void Street")
+	assertContains(t, venuesBody, `<span class="venue-area">City Centre</span>`)
+	assertContains(t, venuesBody, `<span class="venue-address">1 Void Street,
+Sheffield</span>`)
+	assertNotContains(t, venuesBody, "Imaginary Hall marketing copy,\n1 Void Street")
 }
 
 func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T) {
@@ -1953,15 +1959,23 @@ func TestEventPagesRenderVenueRoom(t *testing.T) {
 	}))
 
 	eventsBody := renderPath(t, server, "/events")
-	assertContains(t, eventsBody, `<span class="event-venue has-room"><span class="event-location-line"><span class="event-room">Factory</span><span class="event-location-separator">, </span><span class="event-venue-name">Sidney &amp; Matilda</span></span><span class="event-area">Cultural Industries Quarter</span></span>`)
+	assertContains(t, eventsBody, `<span class="event-location has-room has-venue has-area">`)
+	assertContains(t, eventsBody, `<span class="event-location-venue">Sidney &amp; Matilda</span><span class="event-location-separator">:</span><span class="event-location-room">Factory</span>`)
+	assertContains(t, eventsBody, `<span class="event-location-area">Cultural Industries Quarter</span>`)
 	assertNotContains(t, eventsBody, "Experimental · Listed")
 
 	eventBody := renderPath(t, server, "/events/parallel-delusion")
-	assertContains(t, eventBody, `<p><a href="/venues/sidney-and-matilda">Sidney &amp; Matilda</a></p>`)
-	assertContains(t, eventBody, `<p><strong>Room</strong>: Factory</p>`)
+	assertInOrder(t, eventBody, []string{
+		`<p class="event-detail-room">Factory</p>`,
+		`<p class="event-detail-venue"><a href="/venues/sidney-and-matilda">Sidney &amp; Matilda</a></p>`,
+		`<p class="event-detail-area">Cultural Industries Quarter</p>`,
+		`<p class="address-text">Rivelin Works`,
+	})
 
 	venueBody := renderPath(t, server, "/venues/sidney-and-matilda")
-	assertContains(t, venueBody, `<span class="event-meta">Factory</span>`)
+	assertContains(t, venueBody, `<span class="event-location has-room">`)
+	assertContains(t, venueBody, `<span class="event-location-room">Factory</span>`)
+	assertNotContains(t, venueBody, `<span class="event-location-venue">Sidney &amp; Matilda</span>`)
 }
 
 func TestPublicEventTitleCleansSourcePresentationLeaks(t *testing.T) {
@@ -2158,12 +2172,15 @@ func TestPublicPagesCleanEventPresentationLeaks(t *testing.T) {
 	homeBody := renderPath(t, server, "/")
 	assertContains(t, homeBody, `S&amp;M Presents: Dealbreaker`)
 	assertNotContains(t, homeBody, `S&amp;amp;M Presents`)
-	assertContains(t, homeBody, `<span class="event-venue">Sidney &amp; Matilda<span class="event-area">Cultural Industries Quarter</span></span>`)
+	assertContains(t, homeBody, `<span class="event-location has-venue has-area">`)
+	assertContains(t, homeBody, `<span class="event-location-venue">Sidney &amp; Matilda</span>`)
+	assertContains(t, homeBody, `<span class="event-location-area">Cultural Industries Quarter</span>`)
 	assertNotContains(t, homeBody, `Sidney &amp; Matilda ·`)
 
 	eventsBody := renderPath(t, server, "/events?window=all")
 	assertContains(t, eventsBody, `Dansette Springs`)
-	assertContains(t, eventsBody, `<span class="event-venue">Foundry<span class="event-area">Broomhall</span></span>`)
+	assertContains(t, eventsBody, `<span class="event-location-venue">Foundry</span>`)
+	assertContains(t, eventsBody, `<span class="event-location-area">Broomhall</span>`)
 	assertContains(t, eventsBody, `<span class="event-genre">Blues</span>`)
 	assertNotContains(t, eventsBody, `Blues · Listed`)
 	assertContains(t, eventsBody, `Marmozets`)
