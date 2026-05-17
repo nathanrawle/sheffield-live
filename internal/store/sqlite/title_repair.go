@@ -85,7 +85,7 @@ func (s *Store) RepairEventTitlesFromReport(ctx context.Context, catalog *ingest
 			if strings.TrimSpace(single.AuthoritativeSourceName) != "" &&
 				strings.TrimSpace(single.AuthoritativeSourceURL) != "" &&
 				strings.TrimSpace(single.AuthoritativeSourceEventKey) != "" {
-				change, err = s.repairAuthoritativeEventTitle(ctx, single, event, single.AuthoritativeSourceEventKey, apply, now)
+				change, err = s.repairAuthoritativeEventTitle(ctx, single, event, apply, now)
 			} else {
 				change, err = s.stageSupportingEventTitleRepair(ctx, single, event, apply, now)
 			}
@@ -119,9 +119,19 @@ func singleCandidateTitleRepairGroup(group review.GroupInput, candidate review.C
 	return group
 }
 
-func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, group review.GroupInput, incoming domain.Event, sourceEventKey string, apply bool, now time.Time) (EventTitleRepairChange, error) {
+func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, group review.GroupInput, incoming domain.Event, apply bool, now time.Time) (EventTitleRepairChange, error) {
 	change := titleRepairChangeForIncoming(incoming)
 	change.MatchKind = "authoritative"
+	authoritative, ok := reviewGroupInputAuthoritativeSource(group)
+	if !ok {
+		authoritative = reviewGroupAuthoritativeLink{
+			SourceName:     strings.TrimSpace(incoming.SourceName),
+			SourceURL:      strings.TrimSpace(incoming.SourceURL),
+			SourceEventKey: strings.TrimSpace(authoritativeSourceEventKey(group)),
+		}
+	}
+	change.SourceName = authoritative.SourceName
+	change.SourceURL = authoritative.SourceURL
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -131,7 +141,7 @@ func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, group review.
 		_ = tx.Rollback()
 	}()
 
-	sourceID, ok, err := loadSourceIDByNameURLTx(ctx, tx, incoming.SourceName, incoming.SourceURL)
+	sourceID, ok, err := loadSourceIDByNameURLTx(ctx, tx, authoritative.SourceName, authoritative.SourceURL)
 	if err != nil {
 		return EventTitleRepairChange{}, err
 	}
@@ -141,7 +151,7 @@ func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, group review.
 		return change, nil
 	}
 
-	record, matchKind, found, ambiguous, err := findAuthoritativeEventForTitleRepairTx(ctx, tx, sourceID, incoming, sourceEventKey)
+	record, matchKind, found, ambiguous, err := findAuthoritativeEventForTitleRepairTx(ctx, tx, sourceID, incoming, authoritative.SourceEventKey)
 	if err != nil {
 		return EventTitleRepairChange{}, err
 	}
@@ -201,7 +211,7 @@ func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, group review.
 	if err := updateEventTitleTx(ctx, tx, record.ID, incoming.Slug, incoming.Name, now); err != nil {
 		return EventTitleRepairChange{}, err
 	}
-	if sourceEventKey = strings.TrimSpace(sourceEventKey); sourceEventKey != "" {
+	if sourceEventKey := strings.TrimSpace(authoritative.SourceEventKey); sourceEventKey != "" {
 		if err := ensureEventSourceLinkTx(ctx, tx, record.ID, sourceID, sourceEventKey, now); err != nil {
 			return EventTitleRepairChange{}, err
 		}

@@ -5864,6 +5864,85 @@ func TestRepairEventTitlesFromReportAppliesAuthoritativeLegacyEvent(t *testing.T
 	}
 }
 
+func TestRepairEventTitlesFromReportUsesAuthoritativeSourceForLinkedICS(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAt   = "2026-05-10T18:30:00Z"
+		source    = "The Leadmill manual ingest"
+		feedURL   = "https://leadmill.co.uk/listings/?ical=1"
+		detailURL = "https://leadmill.co.uk/event/feed-detail/"
+		uid       = "leadmill-feed-1"
+		dirty     = "Feed Detail - The Leadmill"
+		clean     = "Feed Detail"
+	)
+	sourceID := mustEnsureSourceID(t, st, source, feedURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "leadmill", startAt)
+	cleanSlug := mustLiveEventSlug(t, clean, "leadmill", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "leadmill", dirty, startAt, "Existing description.")
+	mustInsertAuthoritativeSourceLink(t, db, dirtySlug, source, feedURL, uid)
+
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustReviewCatalog(t), leadmillTitleRepairReport(startAt, uid, dirty, detailURL), true)
+	if err != nil {
+		t.Fatalf("repair event titles: %v", err)
+	}
+
+	if got, want := repair.Repaired, 1; got != want {
+		t.Fatalf("repaired = %d, want %d", got, want)
+	}
+	if got, want := repair.Changes[0].Result, "repaired"; got != want {
+		t.Fatalf("result = %q, want %q", got, want)
+	}
+	if got, want := repair.Changes[0].MatchKind, "authoritative_link"; got != want {
+		t.Fatalf("match kind = %q, want %q", got, want)
+	}
+	if got, want := repair.Changes[0].SourceURL, feedURL; got != want {
+		t.Fatalf("repair source URL = %q, want authoritative feed %q", got, want)
+	}
+	if _, ok := st.EventBySlug(dirtySlug); ok {
+		t.Fatalf("dirty slug %q still exists", dirtySlug)
+	}
+	event, ok := st.EventBySlug(cleanSlug)
+	if !ok {
+		t.Fatalf("missing clean slug %q", cleanSlug)
+	}
+	if event.Name != clean {
+		t.Fatalf("name = %q, want %q", event.Name, clean)
+	}
+
+	var linkedSourceURL string
+	var linkedSourceEventKey string
+	if err := db.QueryRow(`
+		SELECT s.url, l.source_event_key
+		FROM events e
+		JOIN event_source_links l ON l.event_id = e.id
+		JOIN sources s ON s.id = l.source_id
+		WHERE e.slug = ?
+	`, cleanSlug).Scan(&linkedSourceURL, &linkedSourceEventKey); err != nil {
+		t.Fatalf("load repaired event source link: %v", err)
+	}
+	if linkedSourceURL != feedURL {
+		t.Fatalf("linked source URL = %q, want %q", linkedSourceURL, feedURL)
+	}
+	if linkedSourceEventKey != uid {
+		t.Fatalf("linked source event key = %q, want %q", linkedSourceEventKey, uid)
+	}
+}
+
 func TestRepairEventTitlesFromReportStagesSupportingReview(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
@@ -6933,6 +7012,26 @@ func yellowArchTitleRepairReport(startAt, summary string) ingest.Report {
 				Summary:  summary,
 				Location: "Yellow Arch Studios",
 				URL:      "https://www.yellowarch.com/event/late-junction/",
+				StartAt:  startAt,
+				Status:   "Listed",
+			}},
+		}},
+	}
+}
+
+func leadmillTitleRepairReport(startAt, uid, summary, detailURL string) ingest.Report {
+	return ingest.Report{
+		Source:      ingest.LeadmillSource,
+		SourceURL:   "https://leadmill.co.uk/live/",
+		ImportRunID: 44,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://leadmill.co.uk/listings/?ical=1",
+			Candidates: []ingest.EventCandidate{{
+				UID:      uid,
+				Summary:  summary,
+				Location: "The Leadmill",
+				URL:      detailURL,
 				StartAt:  startAt,
 				Status:   "Listed",
 			}},
