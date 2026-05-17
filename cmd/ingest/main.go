@@ -49,6 +49,8 @@ type ingestCommandConfig struct {
 	reviewTitle        string
 	stageReviewGroups  bool
 	repairDescriptions bool
+	repairEventTitles  bool
+	applyTitleRepairs  bool
 	backfillImageFocus bool
 	importRunID        int64
 	imageFetcher       ingest.Fetcher
@@ -189,6 +191,9 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 		if err != nil {
 			return err
 		}
+		if cfg.repairEventTitles {
+			return runAllSourcesTitleRepair(context.Background(), st, fetcher, catalog, cfg, stdout, logger, &summary)
+		}
 		if err := configureImageIngest(&cfg); err != nil {
 			return err
 		}
@@ -203,6 +208,10 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 		if cfg.repairDescriptions {
 			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
 			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
+		}
+		if cfg.repairEventTitles {
+			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
+			return runEventTitleRepair(context.Background(), st, stdout, catalog, report, runErr, cfg.applyTitleRepairs)
 		}
 		result = manualRunExecution{Report: report, Err: runErr}
 		if cfg.stageReviewGroups && !(runErr != nil && report.ImportRunID == 0) {
@@ -229,6 +238,14 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 			})
 			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
 			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
+		}
+		if cfg.repairEventTitles {
+			report, runErr := runManualImport(context.Background(), st, fetcher, catalog, ingest.Options{
+				Source: cfg.source,
+				Limit:  cfg.limit,
+			})
+			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
+			return runEventTitleRepair(context.Background(), st, stdout, catalog, report, runErr, cfg.applyTitleRepairs)
 		}
 		if err := configureImageIngest(&cfg); err != nil {
 			return err
@@ -284,6 +301,8 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	fs.Var(&canonicalStage, "stage-review-groups", "stage ingest candidates into admin review groups")
 	fs.Var(&aliasStage, "stage-review", "stage ingest candidates into admin review groups")
 	fs.BoolVar(&cfg.repairDescriptions, "repair-descriptions", false, "repair existing event descriptions from ingest candidates without staging or promotion")
+	fs.BoolVar(&cfg.repairEventTitles, "repair-event-titles", false, "repair existing event titles from ingest candidates; dry-run unless -apply-title-repairs is set")
+	fs.BoolVar(&cfg.applyTitleRepairs, "apply-title-repairs", false, "apply event title repairs instead of reporting a dry-run")
 	fs.BoolVar(&cfg.backfillImageFocus, "backfill-image-focus", false, "recompute focus points for copied local images and update stored image metadata")
 	fs.Int64Var(&cfg.importRunID, "import-run-id", 0, "replay an existing import run from stored snapshots")
 
@@ -337,11 +356,23 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	if cfg.repairDescriptions && cfg.stageReviewGroups {
 		return ingestCommandConfig{}, errors.New("-repair-descriptions and -stage-review-groups are mutually exclusive")
 	}
+	if cfg.repairEventTitles && cfg.stageReviewGroups {
+		return ingestCommandConfig{}, errors.New("-repair-event-titles and -stage-review-groups are mutually exclusive")
+	}
 	if cfg.repairDescriptions && cfg.allSources {
 		return ingestCommandConfig{}, errors.New("-repair-descriptions and -all-sources are mutually exclusive")
 	}
 	if cfg.repairDescriptions && strings.TrimSpace(cfg.reviewICSFixture) != "" {
 		return ingestCommandConfig{}, errors.New("-repair-descriptions and -review-ics-fixture are mutually exclusive")
+	}
+	if cfg.repairEventTitles && cfg.repairDescriptions {
+		return ingestCommandConfig{}, errors.New("-repair-event-titles and -repair-descriptions are mutually exclusive")
+	}
+	if cfg.repairEventTitles && strings.TrimSpace(cfg.reviewICSFixture) != "" {
+		return ingestCommandConfig{}, errors.New("-repair-event-titles and -review-ics-fixture are mutually exclusive")
+	}
+	if cfg.applyTitleRepairs && !cfg.repairEventTitles {
+		return ingestCommandConfig{}, errors.New("-apply-title-repairs requires -repair-event-titles")
 	}
 	if cfg.repairDescriptions && cfg.importRunID == 0 {
 		source := strings.TrimSpace(cfg.source)
@@ -367,6 +398,9 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 		}
 		if cfg.repairDescriptions {
 			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -repair-descriptions are mutually exclusive")
+		}
+		if cfg.repairEventTitles {
+			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -repair-event-titles are mutually exclusive")
 		}
 	}
 	return cfg, nil
@@ -470,6 +504,11 @@ type descriptionRepairRunReport struct {
 	DescriptionRepair sqlite.DescriptionRepairReport `json:"description_repair"`
 }
 
+type titleRepairRunReport struct {
+	Report      ingest.Report                 `json:"report"`
+	TitleRepair sqlite.EventTitleRepairReport `json:"title_repair"`
+}
+
 type imageFocusBackfillReport struct {
 	Updated        int      `json:"updated"`
 	Defaulted      int      `json:"defaulted"`
@@ -506,10 +545,11 @@ type batchManualIngestReport struct {
 }
 
 type batchManualIngestResult struct {
-	Source      string             `json:"source"`
-	Report      ingest.Report      `json:"report"`
-	ReviewStage *reviewStageReport `json:"review_stage,omitempty"`
-	Error       string             `json:"error,omitempty"`
+	Source      string                         `json:"source"`
+	Report      ingest.Report                  `json:"report"`
+	ReviewStage *reviewStageReport             `json:"review_stage,omitempty"`
+	TitleRepair *sqlite.EventTitleRepairReport `json:"title_repair,omitempty"`
+	Error       string                         `json:"error,omitempty"`
 }
 
 type reviewStageReport struct {
@@ -572,6 +612,12 @@ func ingestMode(cfg ingestCommandConfig) string {
 		return "description_repair_replay"
 	case cfg.repairDescriptions:
 		return "description_repair_live"
+	case cfg.repairEventTitles && cfg.importRunID > 0:
+		return "title_repair_replay"
+	case cfg.repairEventTitles && cfg.allSources:
+		return "title_repair_all_sources"
+	case cfg.repairEventTitles:
+		return "title_repair_live"
 	case cfg.importRunID > 0:
 		return "replay"
 	default:
@@ -716,6 +762,33 @@ func runDescriptionRepair(ctx context.Context, st *sqlite.Store, stdout io.Write
 	return runErr
 }
 
+func runEventTitleRepair(ctx context.Context, st *sqlite.Store, stdout io.Writer, catalog *ingest.Catalog, report ingest.Report, runErr error, apply bool) error {
+	if runErr != nil && report.ImportRunID == 0 {
+		return runErr
+	}
+	repair := sqlite.EventTitleRepairReport{
+		DryRun:  !apply,
+		Applied: apply,
+		Changes: []sqlite.EventTitleRepairChange{},
+	}
+	if runErr == nil {
+		var err error
+		repair, err = st.RepairEventTitlesFromReport(ctx, catalog, report, apply)
+		if err != nil {
+			return err
+		}
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(titleRepairRunReport{
+		Report:      report,
+		TitleRepair: repair,
+	}); err != nil {
+		return err
+	}
+	return runErr
+}
+
 func runImageFocusBackfill(ctx context.Context, st *sqlite.Store, stdout io.Writer, mediaRoot string) error {
 	assets, err := st.ListImageAssets(ctx)
 	if err != nil {
@@ -824,6 +897,64 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 	}
 	if failed {
 		return errors.New("one or more source ingests failed")
+	}
+	return nil
+}
+
+func runAllSourcesTitleRepair(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
+	logger = logging.EnsureLogger(logger)
+	results := make([]batchManualIngestResult, 0, len(catalog.Keys()))
+	var failed bool
+	failedSources := 0
+	for _, source := range catalog.Keys() {
+		report, runErr := runManualImport(ctx, st, fetcher, catalog, ingest.Options{
+			Source: source,
+			Limit:  cfg.limit,
+		})
+		batchResult := batchManualIngestResult{
+			Source: source,
+			Report: report,
+		}
+		if runErr == nil {
+			repair, err := st.RepairEventTitlesFromReport(ctx, catalog, report, cfg.applyTitleRepairs)
+			if err != nil {
+				runErr = err
+			} else {
+				batchResult.TitleRepair = &repair
+			}
+		}
+		if runErr != nil {
+			batchResult.Error = runErr.Error()
+			failed = true
+			failedSources++
+		}
+		results = append(results, batchResult)
+		logIngestSourceFinished(logger, source, manualRunExecution{Report: report, Err: runErr})
+	}
+	if summary != nil {
+		summary.Source = ""
+		summary.Status = "succeeded"
+		summary.SourceCount = len(results)
+		summary.FailedSourceCount = failedSources
+		if failed {
+			summary.Status = "failed"
+		}
+		for _, result := range results {
+			summary.Totals.Links += result.Report.Totals.Links
+			summary.Totals.Snapshots += result.Report.Totals.Snapshots
+			summary.Totals.Candidates += result.Report.Totals.Candidates
+			summary.Totals.Skips += result.Report.Totals.Skips
+			summary.Totals.Errors += result.Report.Totals.Errors
+		}
+	}
+
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(batchManualIngestReport{Results: results}); err != nil {
+		return err
+	}
+	if failed {
+		return errors.New("one or more source title repairs failed")
 	}
 	return nil
 }

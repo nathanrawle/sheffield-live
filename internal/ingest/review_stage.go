@@ -38,6 +38,7 @@ func ReviewGroupsFromReportWithCatalog(catalog *Catalog, report Report) []review
 
 	for _, calendar := range report.Calendars {
 		for _, candidate := range calendar.Candidates {
+			candidate.Summary = cleanEventCandidateSummaryForCatalog(catalog, report.Source, candidate)
 			key, ok := reviewStageKey(catalog, report.Source, candidate)
 			if !ok {
 				continue

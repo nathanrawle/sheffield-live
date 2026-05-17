@@ -224,6 +224,18 @@ Description repair:
 - emits `description_repair` with `description_repaired`, `description_unchanged`, `description_skipped`, and repaired event slugs
 - mutually exclusive with `-stage-review-groups`, `-all-sources`, and `-review-ics-fixture`
 
+Event title repair:
+
+- primary flag: `-repair-event-titles`
+- dry-run by default; add `-apply-title-repairs` to update rows or stage repair reviews
+- live mode supports `-source <key>` and `-all-sources`
+- replay mode supports `-import-run-id <id> -repair-event-titles`
+- authoritative source matches may update existing `events.name` and derived `events.slug` directly
+- non-authoritative matches never overwrite events with authoritative source links; eligible supporting matches create or reuse an admin review group
+- does not create new public events
+- emits `title_repair` with dry-run/apply state, counts, and per-event change rows
+- mutually exclusive with `-stage-review-groups`, `-repair-descriptions`, `-review-ics-fixture`, and `-backfill-image-focus`
+
 Image focus backfill:
 
 - primary flag: `-backfill-image-focus`

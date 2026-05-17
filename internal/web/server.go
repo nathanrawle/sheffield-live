@@ -623,6 +623,9 @@ func trimLeadingTitlePunctuation(value string) string {
 }
 
 func stripPublicEventVenueSuffix(title, venueName string) string {
+	if stripped := ingest.CleanEventTitleForVenue(title, ingest.VenueSlugFromText(venueName)); stripped != title {
+		title = stripped
+	}
 	if stripped := stripTrailingParentheticalVenue(title, venueName); stripped != title {
 		title = stripped
 	}
@@ -665,7 +668,7 @@ func stripTrailingLiveAtVenue(title, venueName string) string {
 }
 
 func stripTrailingDelimitedVenue(title, venueName string) string {
-	delimiters := []string{" - ", " – ", " — ", " | ", ", "}
+	delimiters := []string{" - ", " – ", " — ", " | ", ", ", " // "}
 	for _, delimiter := range delimiters {
 		for searchEnd := len(title); searchEnd > 0; {
 			idx := strings.LastIndex(title[:searchEnd], delimiter)
@@ -694,7 +697,24 @@ func publicVenueSuffixMatches(suffix, venueName string) bool {
 	if head, _, ok := strings.Cut(suffix, ","); ok && samePublicVenueName(head, venueName) {
 		return true
 	}
+	if head, ok := publicVenueSuffixBeforeTrailingParenthetical(suffix); ok && samePublicVenueName(head, venueName) {
+		return true
+	}
 	return false
+}
+
+func publicVenueSuffixBeforeTrailingParenthetical(suffix string) (string, bool) {
+	suffix = normalizePublicText(suffix)
+	if !strings.HasSuffix(suffix, ")") {
+		return "", false
+	}
+	start := strings.LastIndex(suffix, "(")
+	if start < 0 {
+		return "", false
+	}
+	head := strings.TrimSpace(suffix[:start])
+	qualifier := strings.TrimSpace(suffix[start+1 : len(suffix)-1])
+	return head, head != "" && qualifier != ""
 }
 
 func samePublicVenueName(left, right string) bool {

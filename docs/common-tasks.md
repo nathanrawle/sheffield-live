@@ -112,6 +112,16 @@ go run ./cmd/ingest -import-run-id 42 -repair-descriptions
 
 This updates only eligible existing event descriptions from live ingest or replayed snapshots. It does not stage review groups, auto-promote events, create new events, or mutate non-description event fields. Use this for owned authoritative sources when an earlier ingest left descriptions blank or filled with generated markup/CSS.
 
+## Repair existing event titles
+
+```bash
+go run ./cmd/ingest -source yellow-arch -repair-event-titles
+go run ./cmd/ingest -all-sources -repair-event-titles
+go run ./cmd/ingest -import-run-id 42 -repair-event-titles
+```
+
+Title repair is a dry run unless `-apply-title-repairs` is also passed. Authoritative matches can update event names and slugs directly; non-authoritative matches do not overwrite authoritative event names and instead create or reuse an admin review group when there is one safe target.
+
 ## Create an offline review group from a local ICS file
 
 ```bash

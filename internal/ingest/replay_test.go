@@ -317,6 +317,9 @@ func TestReplayImportRunRebuildsCafeNo9ReportFromSourcePageSnapshot(t *testing.T
 	if got, want := len(report.Calendars[0].Candidates), 2; got != want {
 		t.Fatalf("candidates = %d, want %d", got, want)
 	}
+	if got, want := report.Calendars[0].Candidates[0].Summary, "Ellie Gowers"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
 	if got, want := report.Calendars[0].Candidates[0].Location, "Cafe No9"; got != want {
 		t.Fatalf("location = %q, want %q", got, want)
 	}
@@ -925,6 +928,9 @@ func TestReplayImportRunRebuildsLeadmillReportFromStoredLinkedICS(t *testing.T) 
 	}
 	if got, want := len(report.Calendars[0].Skips), 1; got != want {
 		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Summary, "Maybe Gold"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
 	}
 	if got, want := report.Calendars[0].Candidates[0].Location, "Yellow Arch"; got != want {
 		t.Fatalf("location = %q, want %q", got, want)

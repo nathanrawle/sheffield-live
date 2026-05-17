@@ -1980,6 +1980,7 @@ func TestEventPagesRenderVenueRoom(t *testing.T) {
 
 func TestPublicEventTitleCleansSourcePresentationLeaks(t *testing.T) {
 	venueNames := map[string]string{
+		"cafe-no-9":           "Cafe No. 9",
 		"foundry":             "Foundry",
 		"hallamshire-hotel":   "Hallamshire Hotel",
 		"memorial-hall":       "Memorial Hall",
@@ -2048,10 +2049,46 @@ func TestPublicEventTitleCleansSourcePresentationLeaks(t *testing.T) {
 			want:      "Tom Smith (Editors)",
 		},
 		{
-			name:      "non matching venue text remains",
+			name:      "double slash venue suffix",
+			eventName: "Club Night // Yellow Arch",
+			venueSlug: "yellow-arch-studios",
+			want:      "Club Night",
+		},
+		{
+			name:      "parenthetical alias venue suffix",
+			eventName: "Club Night (Yellow Arch)",
+			venueSlug: "yellow-arch-studios",
+			want:      "Club Night",
+		},
+		{
+			name:      "venue suffix with parenthetical qualifier",
 			eventName: "PINS plus Gia Ford & Gelder - Yellow Arch (Rescheduled Date)",
 			venueSlug: "yellow-arch-studios",
-			want:      "PINS plus Gia Ford & Gelder - Yellow Arch (Rescheduled Date)",
+			want:      "PINS plus Gia Ford & Gelder",
+		},
+		{
+			name:      "at venue suffix with back to back qualifier",
+			eventName: "An evening with Artist at Cafe No. 9 (the first of two back to back shows)",
+			venueSlug: "cafe-no-9",
+			want:      "Artist",
+		},
+		{
+			name:      "at venue suffix with dash qualifier",
+			eventName: "An evening with The 20ft Squid Blues Band at Cafe No9 - The first of two back to back shows",
+			venueSlug: "cafe-no-9",
+			want:      "The 20ft Squid Blues Band",
+		},
+		{
+			name:      "cafe no 9 house prefix without venue suffix",
+			eventName: "An evening with Ellie Gowers",
+			venueSlug: "cafe-no-9",
+			want:      "Ellie Gowers",
+		},
+		{
+			name:      "cafe no 9 house prefix is venue scoped",
+			eventName: "An evening with Ellie Gowers",
+			venueSlug: "sidney-and-matilda",
+			want:      "An evening with Ellie Gowers",
 		},
 	}
 

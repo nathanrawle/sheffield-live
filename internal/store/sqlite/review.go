@@ -2901,14 +2901,24 @@ func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices [
 			// The authoritative target wins when it disagrees with the canonical slug match.
 		}
 	} else if hasCanonicalCandidate {
-		if err := updateCanonicalMatchedEventTx(ctx, tx, canonicalCandidate.CanonicalEventID, event); err != nil {
+		canonicalEventID, err := updateCanonicalMatchedEventTx(ctx, tx, canonicalCandidate.CanonicalEventID, event, now)
+		if err != nil {
 			return err
 		}
 		matchingStaged := reviewCandidatesMatchingEvent(staged, event)
-		if err := upsertEventSecondarySourceInfoTx(ctx, tx, canonicalCandidate.CanonicalEventID, primarySourceIdentity(event), matchingStaged, now); err != nil {
+		if err := upsertEventSecondarySourceInfoTx(ctx, tx, canonicalEventID, primarySourceIdentity(event), matchingStaged, now); err != nil {
 			return err
 		}
-		if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, canonicalCandidate.CanonicalEventID, event.Description, now); err != nil {
+		if authoritative, ok := authoritativeTitleRepairLinkFromCandidates(group, staged); ok {
+			sourceID, err := ensureSourceTx(ctx, tx, authoritative.SourceName, authoritative.SourceURL)
+			if err != nil {
+				return err
+			}
+			if err := ensureEventSourceLinkTx(ctx, tx, canonicalEventID, sourceID, authoritative.SourceEventKey, now); err != nil {
+				return err
+			}
+		}
+		if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, canonicalEventID, event.Description, now); err != nil {
 			return err
 		}
 	} else {
@@ -3502,6 +3512,16 @@ func authoritativeLinkFromStoredReviewCandidate(group review.Group, candidate re
 	}, true
 }
 
+func authoritativeTitleRepairLinkFromCandidates(group review.Group, candidates []review.Candidate) (reviewGroupAuthoritativeLink, bool) {
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.Provenance) != eventTitleRepairAuthoritativeCleanedProvenance {
+			continue
+		}
+		return authoritativeLinkFromStoredReviewCandidate(group, candidate)
+	}
+	return reviewGroupAuthoritativeLink{}, false
+}
+
 func replaceEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 	execer
 	queryer
@@ -3887,28 +3907,54 @@ func upsertEventTx(ctx context.Context, tx interface {
 func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, eventID int64, event domain.Event) error {
+}, eventID int64, event domain.Event, now time.Time) (int64, error) {
 	if eventID <= 0 {
-		return errors.New("canonical event ID is required")
+		return 0, errors.New("canonical event ID is required")
 	}
 	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !ok {
-		return fmt.Errorf("venue %q not found", event.VenueSlug)
+		return 0, fmt.Errorf("venue %q not found", event.VenueSlug)
 	}
 	sourceID, err := ensureSourceTx(ctx, tx, event.SourceName, event.SourceURL)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if conflict, ok, err := loadEventRecordBySlugTx(ctx, tx, event.Slug); err != nil {
-		return err
+		return 0, err
 	} else if ok && conflict.ID != eventID {
-		return fmt.Errorf("review event slug %q already belongs to a different event", event.Slug)
+		if !eventRecordHasResolvedIdentity(conflict, event) {
+			return 0, fmt.Errorf("review event slug %q already belongs to a different event", event.Slug)
+		}
+		if err := updateEventRecordFieldsTx(ctx, tx, conflict.ID, venueID, sourceID, event); err != nil {
+			return 0, err
+		}
+		if err := mergeDuplicateEventRecordTx(ctx, tx, eventID, conflict.ID, now); err != nil {
+			return 0, err
+		}
+		return conflict.ID, nil
 	}
+	if err := updateEventRecordFieldsTx(ctx, tx, eventID, venueID, sourceID, event); err != nil {
+		return 0, err
+	}
+	return eventID, nil
+}
+
+func eventRecordHasResolvedIdentity(record eventRecord, event domain.Event) bool {
+	return strings.TrimSpace(record.Event.Slug) == strings.TrimSpace(event.Slug) &&
+		strings.TrimSpace(record.Event.VenueSlug) == strings.TrimSpace(event.VenueSlug) &&
+		record.Event.Start.Equal(event.Start) &&
+		record.Event.Origin == domain.OriginLive
+}
+
+func updateEventRecordFieldsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, eventID, venueID, sourceID int64, event domain.Event) error {
 	incomingImageURL := strings.TrimSpace(event.ImageURL)
-	_, err = tx.ExecContext(ctx, `
+	_, err := tx.ExecContext(ctx, `
 		UPDATE events
 		SET slug = ?,
 			venue_id = ?,
@@ -3953,6 +3999,47 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 		return err
 	}
 	return replaceEventRoomsTx(ctx, tx, eventID, event)
+}
+
+func mergeDuplicateEventRecordTx(ctx context.Context, tx execer, duplicateEventID, targetEventID int64, now time.Time) error {
+	if duplicateEventID <= 0 {
+		return errors.New("duplicate event ID is required")
+	}
+	if targetEventID <= 0 {
+		return errors.New("target event ID is required")
+	}
+	if duplicateEventID == targetEventID {
+		return nil
+	}
+	nowText := formatRFC3339UTC(now)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE event_source_links
+		SET event_id = ?,
+			updated_at = ?
+		WHERE event_id = ?
+	`, targetEventID, nowText, duplicateEventID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE event_secondary_source_info
+		SET event_id = ?,
+			updated_at = ?
+		WHERE event_id = ?
+	`, targetEventID, nowText, duplicateEventID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE review_candidates
+		SET canonical_event_id = ?
+		WHERE canonical_event_id = ?
+	`, targetEventID, duplicateEventID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+		DELETE FROM events
+		WHERE id = ?
+	`, duplicateEventID)
+	return err
 }
 
 func loadVenueIDBySlugTx(ctx context.Context, q queryer, slug string) (int64, bool, error) {
