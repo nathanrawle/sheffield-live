@@ -29,6 +29,8 @@ description: One-line outline of assumptions made while refining the review-clus
 - Review clusters are the decisive product direction.
 - Legacy review-group UI compatibility is not required.
 - Legacy staging flag compatibility is not required.
+- Public event routes are not suitable for admin review context involving withheld records.
+- Operators may navigate from staged report `cluster_id` values to the open review cluster.
 - Historical duplicate repair discovery is out of scope as a CLI feature.
 - Existing singleton auto-promotion remains desirable.
 - Only the legacy duplicate auto-resolution cases `canonical_exact_match` and `unanimous_duplicate` are worth preserving.
@@ -47,6 +49,7 @@ description: One-line outline of assumptions made while refining the review-clus
 
 ## Validation
 
+- Documentation cleanup scope is public docs plus `DECISIONS.md` and `ASSUMPTIONS.md`, not historical plan and chunk artifacts.
 - `GOCACHE=/tmp/sheffield-live-gocache go test ./cmd/ingest ./internal/store/sqlite ./internal/web` is the smallest relevant focused validation.
 - `GOCACHE=/tmp/sheffield-live-gocache go test ./...` remains the final broad validation.
 - Migration tests can cover fresh pre-cluster migration and incompatible branch DB fail-fast behavior.
