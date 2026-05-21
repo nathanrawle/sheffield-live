@@ -81,7 +81,7 @@ Use `-contact you@example.com` to override the contact detail in the derived def
 go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-event-reviews
 ```
 
-This stages duplicate event-review clusters and any singleton clusters that were not auto-promoted after a successful ingest. Any singleton may auto-publish first when it is the first matching live event seen; authoritative sources can also upgrade existing provisional events in place, while supporting-source conflicts stay in review. Duplicate staging can also auto-resolve an exact canonical match or a unanimous staged duplicate and records those outcomes separately in `review_stage.event_review_clusters_auto_resolved`. Reruns reuse existing staging keys when the staged content matches, refresh open-cluster canonical snapshot/default state, preserve manual draft choices, and record the new import-run link in the persisted provenance table.
+This stages duplicate event-review clusters and any singleton clusters that were not auto-promoted after a successful ingest. Any singleton may auto-publish first when it is the first matching live event seen; authoritative sources can also upgrade existing provisional events in place, while supporting-source conflicts stay in review. Duplicate staging can also auto-resolve an exact canonical match or a unanimous staged duplicate and records those outcomes separately in `review_stage.event_review_clusters_auto_resolved`. Use `review_stage.event_review_clusters[].cluster_id` for open review follow-up; auto-resolved rows are terminal history/reporting rows. Reruns reuse existing staging keys when the staged content matches, refresh open-cluster canonical snapshot/default state, preserve manual draft choices, and record the new import-run link in the persisted provenance table.
 `-stage-event-reviews` can also create provisional venue rows immediately from uniquely new venue evidence, even when no event is published yet, so `/admin/venues` may show rows with `0` upcoming events.
 
 ## Replay a stored ingest run
@@ -145,7 +145,7 @@ Open `/admin/review` in the browser for the event-review cluster queue.
 - when venue writes are unavailable, `/admin/venues/{slug}` remains read-only and hides save/validate controls
 - cluster resolution publishes one canonical public event when the selected event-review action is eligible
 - manual resolution reuses an existing venue when the selected evidence yields one unique match, otherwise it creates a provisional venue in the same transaction if staging or singleton auto-promotion did not already do so
-- ambiguous venue evidence fails closed and leaves the group unresolved
+- ambiguous venue evidence fails closed and leaves the cluster unresolved
 - singleton auto-promotion can now create a provisional venue row immediately for a uniquely new venue
 - resolving a duplicate can persist secondary-source genre and description evidence from matching non-selected candidates; matching uses venue slug, start time, and case/whitespace-normalized title
 - non-authoritative secondary evidence is cumulative, so a missing source in a later resolved review record is not treated as deletion

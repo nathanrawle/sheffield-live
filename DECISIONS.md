@@ -10,6 +10,7 @@ description: One-line record of the major design decisions agreed while refining
 - Active runtime code must not read from or write to `review_groups` or `import_run_review_groups`.
 - `/admin/review` remains the event-review cluster queue.
 - `/admin/event-review/{id}` and `/admin/event-review/history` are the only review detail and history surfaces.
+- Event-review detail event-context links use `/admin/events/{slug}` rather than public event routes.
 - `/admin/legacy-review*`, `/admin/review/history`, and `/admin/review/{id}` return 404 after admin auth.
 - Non-GET requests to `/admin/review` return 405.
 - `-stage-event-reviews` is the only staging flag.
@@ -21,6 +22,7 @@ description: One-line record of the major design decisions agreed while refining
 - Active functions, config fields, report structs, tests, docs, and UI wording use event-review cluster language.
 - Legacy review-group store APIs, web interfaces, handlers, templates, tests, import-run readers, startup backfills, and validators are removed.
 - Duplicate auto-resolution report fields become `event_review_clusters_auto_resolved_count` and `event_review_clusters_auto_resolved[]`.
+- Staged-cluster report rows prefer the open/actionable `cluster_id`; duplicate auto-resolution rows keep their terminal cluster ID.
 - Old `duplicate_auto_resolved*` JSON and log fields are removed.
 - Auto-resolved clusters still count as created or reused according to the staging action.
 - Duplicate auto-resolution result values are exactly `canonical_exact_match` and `unanimous_duplicate`.
