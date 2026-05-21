@@ -214,6 +214,9 @@ func TestCreateEventReviewClustersFromReportReportsAutoResolvedClusters(t *testi
 	if got, want := row.CandidateCount, 2; got != want {
 		t.Fatalf("auto-resolved candidate count = %d, want %d", got, want)
 	}
+	if got, want := row.ClusterID, int64(301); got != want {
+		t.Fatalf("auto-resolved cluster id = %d, want %d", got, want)
+	}
 	if got, want := len(st.finalizedCalls), 1; got != want {
 		t.Fatalf("finalized calls = %d, want %d", got, want)
 	}
@@ -298,6 +301,9 @@ func TestCreateEventReviewClustersFromReportFinalizesOnlyOpenClusterInMixedResul
 	}
 	if got, want := len(stage.EventReviewClusters), 1; got != want {
 		t.Fatalf("event-review clusters = %d, want %d", got, want)
+	}
+	if got, want := stage.EventReviewClusters[0].ClusterID, int64(302); got != want {
+		t.Fatalf("stage cluster id = %d, want open cluster id %d", got, want)
 	}
 	if got, want := len(st.finalizedCalls), 1; got != want {
 		t.Fatalf("finalize calls = %d, want %d", got, want)

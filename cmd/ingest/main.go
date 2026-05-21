@@ -1009,9 +1009,11 @@ func createEventReviewClustersFromReport(ctx context.Context, st eventReviewClus
 
 		reportResult := "reused"
 		clusterID := int64(0)
+		openClusterID := int64(0)
 		openClusterEvidenceIDs := make(map[int64]map[int64]struct{})
 		autoResolved := false
 		autoResolvedResult := ""
+		autoResolvedClusterID := int64(0)
 		autoResolvedCanonicalSlug := ""
 		for _, result := range results {
 			if clusterID == 0 && result.ClusterID != 0 {
@@ -1023,10 +1025,14 @@ func createEventReviewClustersFromReport(ctx context.Context, st eventReviewClus
 			if result.AutoResolved && result.ClusterStatus != seedstore.EventReviewClusterStatusOpen && !autoResolved {
 				autoResolved = true
 				autoResolvedResult = result.AutoResolvedResult
+				autoResolvedClusterID = result.ClusterID
 				autoResolvedCanonicalSlug = result.CanonicalEventSlug
 			}
 			if result.ClusterStatus != seedstore.EventReviewClusterStatusOpen || result.ClusterID == 0 || result.EvidenceID == 0 {
 				continue
+			}
+			if openClusterID == 0 {
+				openClusterID = result.ClusterID
 			}
 			evidenceIDs, ok := openClusterEvidenceIDs[result.ClusterID]
 			if !ok {
@@ -1045,10 +1051,13 @@ func createEventReviewClustersFromReport(ctx context.Context, st eventReviewClus
 			stage.EventReviewClustersAutoResolved = append(stage.EventReviewClustersAutoResolved, eventReviewClusterAutoResolvedReport{
 				Title:              cluster.Title,
 				Result:             autoResolvedResult,
-				ClusterID:          clusterID,
+				ClusterID:          autoResolvedClusterID,
 				CandidateCount:     len(cluster.Candidates),
 				CanonicalEventSlug: autoResolvedCanonicalSlug,
 			})
+		}
+		if openClusterID != 0 {
+			clusterID = openClusterID
 		}
 		supersededClusterIDs := mergeStageSupersededClusterIDs(results)
 		stage.EventReviewClusters = append(stage.EventReviewClusters, eventReviewClusterReportItem{
