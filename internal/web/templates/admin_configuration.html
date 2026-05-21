@@ -3,10 +3,10 @@
   <h1>Configuration</h1>
   <p class="lede">Genre inference rules used to match event descriptions.</p>
   <p class="review-group-meta">
-    {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
-    {{if and .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasEventReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if and .HasEventReviewStorage .HasImportHistory}} · {{end}}
     {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
-    {{if or .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if or .HasEventReviewStorage .HasImportHistory}} · {{end}}
     {{if .HasVenueAdmin}}<a href="/admin/venues">Provisional venues</a>{{end}}
   </p>
 </section>

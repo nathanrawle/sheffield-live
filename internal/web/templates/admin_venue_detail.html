@@ -2,10 +2,10 @@
   <p class="eyebrow">Admin</p>
   <h1>{{blankValue .Venue.Name}}</h1>
   <p class="lede">
-    {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
-    {{if and .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasEventReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if and .HasEventReviewStorage .HasImportHistory}} · {{end}}
     {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
-    {{if or .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if or .HasEventReviewStorage .HasImportHistory}} · {{end}}
     <a href="/admin/venues">Back to provisional venues</a>
     {{if .HasRoomAdmin}} · <a href="/admin/rooms">Provisional rooms</a>{{end}}
     {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
@@ -126,7 +126,7 @@
   {{if .VenueEvents}}
   <div class="event-list compact">
     {{range .VenueEvents}}
-    <a class="event-card{{if .ImageURL}} has-image{{else}} missing-image{{end}}{{if eventStatusLabel .}} has-status{{end}}" href="/events/{{.Slug}}">
+    <a class="event-card{{if .ImageURL}} has-image{{else}} missing-image{{end}}{{if eventStatusLabel .}} has-status{{end}}" href="/admin/events/{{.Slug}}">
       {{if .ImageURL}}
       <span class="event-card-media"><img class="event-card-image" src="{{.ImageURL}}" alt="{{eventImageAlt .}}" style="{{imageFocusStyle .ImageFocusX .ImageFocusY}}" loading="lazy" decoding="async"></span>
       {{else}}

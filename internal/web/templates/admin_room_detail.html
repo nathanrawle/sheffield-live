@@ -2,10 +2,10 @@
   <p class="eyebrow">Admin</p>
   <h1>{{blankValue .Room.Name}}</h1>
   <p class="lede">
-    {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
-    {{if and .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasEventReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if and .HasEventReviewStorage .HasImportHistory}} · {{end}}
     {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
-    {{if or .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if or .HasEventReviewStorage .HasImportHistory}} · {{end}}
     <a href="/admin/rooms">Back to provisional rooms</a>
     {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
   </p>
@@ -86,7 +86,7 @@
   {{if .RoomEvents}}
   <div class="event-list compact">
     {{range .RoomEvents}}
-    <a class="event-card{{if .ImageURL}} has-image{{end}}" href="/events/{{.Slug}}">
+    <a class="event-card{{if .ImageURL}} has-image{{end}}" href="/admin/events/{{.Slug}}">
       <span class="event-card-main">
         <span class="event-date">{{dateLong .Start}} {{timeShort .Start}}</span>
         <span class="event-title">{{.Name}}</span>

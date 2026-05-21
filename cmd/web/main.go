@@ -76,10 +76,8 @@ func runWithLogger(logger *slog.Logger) error {
 
 	server, err := web.NewServer(web.ServerDeps{
 		Catalog:                   st,
-		ReviewStore:               st,
 		ImportRunStore:            st,
 		ReplayStore:               st,
-		ImportRunReviewGroupStore: st,
 		EventSecondarySourceStore: st,
 		EventGenreStore:           st,
 		GenreConfigurationStore:   st,
