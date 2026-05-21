@@ -1,0 +1,74 @@
+---
+title: Review Cluster Design Decisions
+description: One-line record of the major design decisions agreed while refining the review-clusters cleanup plan.
+---
+
+# Review Cluster Design Decisions
+
+- `event_review_clusters` is the only active review model for this branch.
+- Legacy `review_groups` tables remain only as frozen historical schema.
+- Active runtime code must not read from or write to `review_groups` or `import_run_review_groups`.
+- `/admin/review` remains the event-review cluster queue.
+- `/admin/event-review/{id}` and `/admin/event-review/history` are the only review detail and history surfaces.
+- `/admin/legacy-review*`, `/admin/review/history`, and `/admin/review/{id}` return 404 after admin auth.
+- Non-GET requests to `/admin/review` return 405.
+- `-stage-event-reviews` is the only staging flag.
+- `-stage-review-groups` and `-stage-review` aliases are removed.
+- Fixture review flags `-review-ics-fixture`, `-review-fixture`, and `-review-title` are removed.
+- Historical duplicate repair CLI flags are removed.
+- Low-level repair-run and duplicate-withhold primitives remain only where cluster resolution needs them.
+- Active staging gets cluster-native DTOs instead of relying on `review.GroupInput`.
+- Active functions, config fields, report structs, tests, docs, and UI wording use event-review cluster language.
+- Legacy review-group store APIs, web interfaces, handlers, templates, tests, import-run readers, startup backfills, and validators are removed.
+- Duplicate auto-resolution report fields become `event_review_clusters_auto_resolved_count` and `event_review_clusters_auto_resolved[]`.
+- Old `duplicate_auto_resolved*` JSON and log fields are removed.
+- Auto-resolved clusters still count as created or reused according to the staging action.
+- Duplicate auto-resolution result values are exactly `canonical_exact_match` and `unanimous_duplicate`.
+- Finish logs and all-source JSON summaries aggregate cluster created, reused, auto-promoted, and auto-resolved counts.
+- Fresh ingest evidence wins over stale open cluster state.
+- Compatible open clusters merge into the lowest-id survivor.
+- Superseded open cluster IDs are reported as `superseded_cluster_ids`.
+- Open restaging prunes stale source identity choices, event choices, evidence choices, and manual literal field choices.
+- Terminal cluster statuses are `resolved`, `discarded`, and `superseded`.
+- Terminal clusters are immutable.
+- Terminal successor creation does not mutate `superseded_by_cluster_id` on the terminal cluster.
+- Evidence linked only to open clusters may refresh in place when the fingerprint is unchanged.
+- Evidence linked to any terminal cluster is frozen across payload, source, event association, timestamps, and identity-key links.
+- Changed payload under a terminal-linked fingerprint creates a new evidence revision encoded in `evidence_fingerprint`.
+- Evidence revisions keep `fingerprint_version = 1` unless the whole fingerprint algorithm changes.
+- Import and repair run-evidence provenance tables are added.
+- Run-evidence provenance links store run, cluster, evidence, link time, and link reason without changing cluster active evidence.
+- `import_run_event_review_evidence` primary key is `(import_run_id, cluster_id, evidence_id)`.
+- `repair_run_event_review_evidence` primary key is `(repair_run_id, cluster_id, evidence_id)`.
+- Compatible fresh terminal evidence is persisted through run-evidence provenance and not active-linked to the terminal cluster.
+- Terminal reuse and exact replay matching searches both active terminal cluster evidence and run-evidence provenance evidence.
+- `staging_key` and `staging_key_version` are immutable creation keys.
+- Import cluster creation keys use the initial sorted evidence identity-key set plus conflict type and reason.
+- Repair and title cluster creation keys use their repair staging material.
+- Successor creation keys use the fresh evidence identity set plus `previous_cluster_id` and conflict type and reason.
+- Open restaging and merges do not update staging keys.
+- Reruns reuse by exact staging key first and then by active evidence or identity links.
+- `staging_key_version` changes only when the creation-key algorithm changes.
+- Exact terminal replay links the run to the existing terminal cluster and does not create a successor.
+- Changed payload under the same terminal-linked fingerprint creates a new open successor.
+- Compatible new evidence for the same terminal outcome is persisted for provenance and reuses the terminal cluster.
+- Conflicting new evidence for a terminal outcome creates a new open successor.
+- Evidence crossing an active separation or manual split returns a retryable conflict.
+- Fresh evidence pointing at a superseded cluster follows lineage to the current survivor when possible.
+- Duplicate auto-resolution is ported only for `canonical_exact_match` and `unanimous_duplicate`.
+- Cluster-native duplicate auto-resolution preserves legacy live side effects.
+- Cluster persistence, live side effects, observations, and resolution snapshot insertion happen in one transaction.
+- Reruns of terminal auto-resolved clusters are idempotent and do not repeat non-idempotent live mutations.
+- Auto-resolved outcomes persist immutable event-review resolution snapshots.
+- `-repair-event-titles` stays.
+- Authoritative title fixes may update directly.
+- Supporting and conflict title repair cases stage event-review clusters only.
+- Title repair reports expose cluster fields only.
+- Branch-only historical duplicate review-group migration is deleted.
+- Event-review migrations are renumbered into the next branch migration sequence.
+- Incompatible branch DB schemas fail fast before normal migration.
+- Fail-fast detection covers old v26 historical duplicate review-group markers.
+- Fail-fast detection covers old v27 event-review schema without the staging-key marker.
+- Fail-fast detection covers old v28 staging-key branch schema with abandoned numbering.
+- Fail-fast detection covers schema versions newer than current.
+- Fail-fast errors tell operators to reset or recreate the local DB.

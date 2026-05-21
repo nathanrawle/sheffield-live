@@ -113,44 +113,6 @@ func resolvedVenueSlugMatch(matches []domain.Venue) venueMatchResult {
 	}
 }
 
-func (m venueMatcher) matchSharedVenue(candidates []review.Candidate) venueMatchResult {
-	var selected venueMatchResult
-	haveSelected := false
-	for _, candidate := range candidates {
-		if candidate.CanonicalEventID != 0 {
-			continue
-		}
-		match := m.matchCandidate(candidate)
-		switch match.status {
-		case venueMatchNoMatch:
-			return venueMatchResult{status: venueMatchNoMatch}
-		case venueMatchAmbiguous:
-			return venueMatchResult{status: venueMatchAmbiguous}
-		case venueMatchResolved:
-			if !haveSelected {
-				selected = match
-				haveSelected = true
-				continue
-			}
-			if selected.slug != match.slug {
-				return venueMatchResult{status: venueMatchAmbiguous}
-			}
-		}
-	}
-	if !haveSelected {
-		return venueMatchResult{status: venueMatchNoMatch}
-	}
-	return selected
-}
-
-func loadReviewGroupSharedVenue(ctx context.Context, q queryer, matcher venueMatcher, groupID int64) (venueMatchResult, error) {
-	candidates, err := loadReviewCandidates(ctx, q, groupID)
-	if err != nil {
-		return venueMatchResult{}, err
-	}
-	return matcher.matchSharedVenue(candidates), nil
-}
-
 func ensureProvisionalVenueForCandidateTx(ctx context.Context, tx interface {
 	execer
 	queryer
@@ -362,6 +324,8 @@ func (m *venueMatcher) removeVenue(slug string) {
 
 func reviewCandidateFromInput(input review.CandidateInput) review.Candidate {
 	return review.Candidate{
+		CanonicalEventID: input.CanonicalEventID,
+		ExistingEventID:  input.ExistingEventID,
 		ExternalID:       strings.TrimSpace(input.ExternalID),
 		Name:             strings.TrimSpace(input.Name),
 		VenueSlug:        strings.TrimSpace(input.VenueSlug),

@@ -1,22 +1,23 @@
 <section class="page-head">
   <p class="eyebrow">Admin</p>
   <h1>Admin</h1>
-  <p class="lede">Review staged listings, inspect ingest runs, and validate provisional venues and rooms.</p>
+  <p class="lede">Review event-review clusters, inspect ingest runs, and validate provisional venues and rooms.</p>
 </section>
 
 <section class="section-block">
   <div class="admin-card-grid">
-    {{if .HasReviewStorage}}
+    {{if .HasEventReviewStorage}}
     <a class="admin-card" href="/admin/review">
       <span class="admin-card-title">Review queue</span>
-      <span class="admin-card-meta">Resolve duplicate groups and accept or reject new listings.</span>
-    </a>
-    <a class="admin-card" href="/admin/review/history">
-      <span class="admin-card-title">Review history</span>
-      <span class="admin-card-meta">Read resolved and rejected review groups.</span>
+      <span class="admin-card-meta">Review open event-review clusters.</span>
     </a>
     {{end}}
-
+    {{if .HasEventReviewStorage}}
+    <a class="admin-card" href="/admin/event-review/history">
+      <span class="admin-card-title">Event review history</span>
+      <span class="admin-card-meta">Read resolved, discarded, and superseded event-review clusters.</span>
+    </a>
+    {{end}}
     {{if .HasImportHistory}}
     <a class="admin-card" href="/admin/import-runs">
       <span class="admin-card-title">Import history</span>

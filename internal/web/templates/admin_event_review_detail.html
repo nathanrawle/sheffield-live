@@ -1,0 +1,1184 @@
+<section class="page-head">
+  <p class="eyebrow">Admin review</p>
+  <h1>Event review cluster #{{.EventReviewDetail.Summary.ID}}</h1>
+  <p class="lede">Event review detail.</p>
+  <p class="review-group-meta">
+    {{if .HasEventReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if .HasEventReviewStorage}} · <a href="/admin/event-review/history">Event review history</a>{{end}}
+    {{if and .HasEventReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
+    {{if or .HasEventReviewStorage .HasImportHistory}} · {{end}}
+    <a href="/admin/venues">Provisional venues</a>
+    {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
+  </p>
+</section>
+
+{{with .Flash}}
+<section class="section-block">
+  <p class="notice">{{.}}</p>
+</section>
+{{end}}
+
+<section class="section-block">
+  {{if eq .EventReviewDetail.Summary.Status "open"}}
+  <p class="notice">This cluster is open. You can discard it{{if .EventReviewCanAcceptImportListing}}, or accept the stored new listing{{end}}{{if .EventReviewCanAcceptSelectedImportCandidate}}, or accept the selected candidate{{end}}{{if and .EventReviewDetail.TitleRepairReadiness .EventReviewDetail.TitleRepairReadiness.Eligible}}, or apply the stored title repair{{else if .EventReviewCanResolveLiveActions}}, or apply its stored historical-duplicate live actions{{end}}.</p>
+  {{else}}
+  <p class="notice">This cluster is {{.EventReviewDetail.Summary.Status}} and read-only. Discard, resolve, and supersede actions are not available.</p>
+  {{end}}
+</section>
+
+<section class="section-block">
+  <h2>Event summary</h2>
+  <div class="review-summary">
+    <div class="review-summary-row">
+      <div class="review-summary-label">Title</div>
+      <div class="review-summary-value">{{if .EventReviewDetail.Summary.DisplayTitle}}{{.EventReviewDetail.Summary.DisplayTitle}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">{{with .EventReviewDetail.Summary.CanonicalEventID}}event #{{.}}{{else}}&mdash;{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Venue</div>
+      <div class="review-summary-value">{{if .EventReviewDetail.Summary.DisplayVenueName}}{{.EventReviewDetail.Summary.DisplayVenueName}}{{else if .EventReviewDetail.Summary.DisplayVenueSlug}}{{.EventReviewDetail.Summary.DisplayVenueSlug}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">{{if .EventReviewDetail.Summary.DisplayVenueSlug}}slug {{.EventReviewDetail.Summary.DisplayVenueSlug}}{{else}}&mdash;{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Start</div>
+      <div class="review-summary-value">{{with .EventReviewDetail.Summary.DisplayStartAt}}{{dateShortPtr .}} {{timeShortPtr .}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Conflict</div>
+      <div class="review-summary-value">{{blankValue .EventReviewDetail.Summary.ConflictType}}</div>
+      <div class="review-summary-candidate">{{blankValue .EventReviewDetail.Summary.ConflictReason}}</div>
+    </div>
+  </div>
+</section>
+
+{{with .EventReviewDetail.ImportReadiness}}
+<section class="section-block">
+  <h2>Import review readiness</h2>
+  <p class="notice">This section shows whether the cluster is in scope for the new-listing resolver. It is read-only and does not apply any changes; the resolver rechecks conflicts before inserting an event.</p>
+  <div class="review-summary">
+    <div class="review-summary-row">
+      <div class="review-summary-label">Candidate count</div>
+      <div class="review-summary-value">{{.CandidateCount}} active evidence row{{if ne .CandidateCount 1}}s{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Ready for new-listing resolver</div>
+      <div class="review-summary-value">{{if .NewListingScope}}yes{{else}}no{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Blocking reasons</div>
+      <div class="review-summary-value">
+        {{if .BlockingReasons}}
+        <ul>
+          {{range .BlockingReasons}}<li>{{.}}</li>{{end}}
+        </ul>
+        {{else}}No blocking reasons.{{end}}
+      </div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Payload warnings</div>
+      <div class="review-summary-value">
+        {{if .PayloadWarnings}}
+        <ul>
+          {{range .PayloadWarnings}}<li>{{.}}</li>{{end}}
+        </ul>
+        {{else}}No payload warnings.{{end}}
+      </div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+  </div>
+  <h3>Active evidence candidates</h3>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Evidence</th>
+          <th scope="col">Source</th>
+          <th scope="col">Authority</th>
+          <th scope="col">Existing event</th>
+          <th scope="col">External ID</th>
+          <th scope="col">Title</th>
+          <th scope="col">Venue</th>
+          <th scope="col">Start</th>
+          <th scope="col">End</th>
+          <th scope="col">Calendar URL</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Candidates}}
+        <tr>
+          <th scope="row">evidence #{{.EvidenceID}}<br><small><code>{{.EvidenceFingerprint}}</code></small></th>
+          <td>{{if .SourceName}}{{.SourceName}}<br>{{end}}{{if .SourceURL}}<code>{{.SourceURL}}</code>{{else}}&mdash;{{end}}</td>
+          <td>{{if .SourceAuthority}}{{.SourceAuthority}}{{else}}&mdash;{{end}}</td>
+          <td>{{if .EventID}}{{if .EventSlug}}<a href="/admin/events/{{.EventSlug}}">event #{{.EventID}}<br><small>{{.EventSlug}}</small></a>{{else}}event #{{.EventID}}{{end}}{{else}}&mdash;{{end}}</td>
+          <td>{{if .ExternalID}}<code>{{.ExternalID}}</code>{{else}}&mdash;{{end}}</td>
+          <td>{{blankValue .Title}}</td>
+          <td>{{if .VenueSlug}}<code>{{.VenueSlug}}</code>{{if .VenueText}}<br>{{.VenueText}}{{end}}{{else if .VenueText}}{{.VenueText}}{{else}}&mdash;{{end}}</td>
+          <td>{{with .StartAt}}{{dateShortPtr .}} {{timeShortPtr .}}{{else}}&mdash;{{end}}</td>
+          <td>{{with .EndAt}}{{dateShortPtr .}} {{timeShortPtr .}}{{else}}&mdash;{{end}}</td>
+          <td>{{if .CalendarURL}}<code>{{.CalendarURL}}</code>{{else}}&mdash;{{end}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="10" class="empty-state">No active evidence candidates.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{if or .CandidateComparisonScope (gt .CandidateCount 1)}}
+  <h3>Normalized identity comparison</h3>
+  <p class="notice">This comparison centers normalized title, venue, date, start, and exact identity values. It is read-only and does not imply the cluster can be accepted yet.</p>
+  <div class="review-summary">
+    <div class="review-summary-row">
+      <div class="review-summary-label">Comparison scope</div>
+      <div class="review-summary-value">{{if .CandidateComparisonScope}}yes{{else}}no{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Comparison blocking reasons</div>
+      <div class="review-summary-value">
+        {{if .ComparisonBlockingReasons}}
+        <ul>
+          {{range .ComparisonBlockingReasons}}<li>{{.}}</li>{{end}}
+        </ul>
+        {{else}}No blocking reasons.{{end}}
+      </div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+  </div>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Field</th>
+          <th scope="col">Values</th>
+          <th scope="col">Consensus</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .IdentityRows}}
+        <tr>
+          <th scope="row">{{.Label}}</th>
+          <td>
+            <ul>
+              {{range .Values}}
+              <li>evidence #{{.EvidenceID}}<br>
+                {{if .Normalized}}<code>{{.Normalized}}</code>{{else}}&mdash;{{end}}
+                {{if .Raw}}<br><small>raw: <code>{{.Raw}}</code></small>{{end}}
+                {{if .Warning}}<br><small class="notice">{{.Warning}}</small>{{end}}
+              </li>
+              {{end}}
+            </ul>
+          </td>
+          <td>{{if .Consensus}}same{{else}}differs{{end}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="3" class="empty-state">No normalized identity comparison rows.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  <h3>Source values</h3>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Field</th>
+          <th scope="col">Values</th>
+          <th scope="col">Consensus</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .RawRows}}
+        <tr>
+          <th scope="row">{{.Label}}</th>
+          <td>
+            <ul>
+              {{range .Values}}
+              <li>evidence #{{.EvidenceID}}<br>
+                {{if .Value}}<code>{{.Value}}</code>{{else}}&mdash;{{end}}
+              </li>
+              {{end}}
+            </ul>
+          </td>
+          <td>{{if .Consensus}}same{{else}}differs{{end}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="3" class="empty-state">No source value rows.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  <h3>Candidate identity status</h3>
+  <p class="notice">This section correlates active evidence rows with exact and source identity keys. The source identity choice form below updates selected keys; the evidence rows remain read-only.</p>
+  {{if $.EventReviewCanSaveSourceIdentityChoices}}
+  <h4>Save source identity choices</h4>
+  <p class="notice">Unchecked source identity keys will be saved as not selected for this cluster.</p>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="save_source_identity_choices">
+    <div class="review-matrix-wrap">
+      <table class="review-matrix">
+        <thead>
+          <tr>
+            <th scope="col">Source</th>
+            <th scope="col">Source identity key</th>
+            <th scope="col">Choice</th>
+            <th scope="col">Linked event</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range $.EventReviewSourceIdentityChoices}}
+          <tr>
+            <td>
+              <strong>{{if .SourceName}}{{.SourceName}}{{else}}Source #{{.SourceID}}{{end}}</strong>
+            </td>
+            <td><code>{{.SourceIdentityKey}}</code></td>
+            <td>
+              <label>
+                <input type="checkbox" name="source_identity_choice" value="{{printf "%d|%s" .SourceID (queryEscape .SourceIdentityKey)}}"{{if .ChoiceSelected}} checked{{end}}>
+                selected
+              </label>
+              <br><small>{{if .ChoiceSelected}}selected{{else}}not selected{{end}}</small>
+              {{if .ChoiceReason}}<br><small>{{.ChoiceReason}}</small>{{end}}
+              {{with .ChoiceUpdatedAt}}<br><small>{{dateShortPtr .}} {{timeShortPtr .}}</small>{{end}}
+            </td>
+            <td>
+              {{if .LinkedEventID}}
+                {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
+                <br><small>{{if .Authoritative}}authoritative{{else}}supporting{{end}}</small>
+              {{else}}
+                No source link
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  <button type="submit" class="button">Save source identity choices</button>
+  </form>
+  {{end}}
+  {{with .SelectedCandidateReadiness}}
+  <section class="section-block">
+    <h3>Selected candidate readiness</h3>
+    <div class="review-summary">
+      <div class="review-summary-row">
+        <div class="review-summary-label">Ready to accept selected candidate</div>
+        <div class="review-summary-value">{{if .Eligible}}yes{{else}}no{{end}}</div>
+        <div class="review-summary-candidate">&nbsp;</div>
+      </div>
+      <div class="review-summary-row">
+        <div class="review-summary-label">Blocking reasons</div>
+        <div class="review-summary-value">
+          {{if .BlockingReasons}}
+          <ul>
+            {{range .BlockingReasons}}<li>{{.}}</li>{{end}}
+          </ul>
+          {{else}}No blocking reasons.{{end}}
+        </div>
+        <div class="review-summary-candidate">&nbsp;</div>
+      </div>
+      <div class="review-summary-row">
+        <div class="review-summary-label">Selected evidence</div>
+        <div class="review-summary-value">{{if .EvidenceID}}evidence #{{.EvidenceID}}<br><small><code>{{.EvidenceFingerprint}}</code></small>{{else}}&mdash;{{end}}</div>
+        <div class="review-summary-candidate">&nbsp;</div>
+      </div>
+      <div class="review-summary-row">
+        <div class="review-summary-label">Title</div>
+        <div class="review-summary-value">{{blankValue .Title}}</div>
+        <div class="review-summary-candidate">&nbsp;</div>
+      </div>
+      <div class="review-summary-row">
+        <div class="review-summary-label">Venue</div>
+        <div class="review-summary-value">{{if .VenueSlug}}<code>{{.VenueSlug}}</code>{{if .VenueText}}<br>{{.VenueText}}{{end}}{{else if .VenueText}}{{.VenueText}}{{else}}&mdash;{{end}}</div>
+        <div class="review-summary-candidate">&nbsp;</div>
+      </div>
+      <div class="review-summary-row">
+        <div class="review-summary-label">Start</div>
+        <div class="review-summary-value">{{with .StartAt}}{{dateShortPtr .}} {{timeShortPtr .}}{{else}}&mdash;{{end}}</div>
+        <div class="review-summary-candidate">&nbsp;</div>
+      </div>
+    </div>
+    {{if and (eq $.EventReviewDetail.Summary.Status "open") $.EventReviewCanAcceptSelectedImportCandidate}}
+    <h4>Accept selected candidate</h4>
+    <p class="notice">The store will recheck the selected candidate and current cluster version before applying the resolution.</p>
+    <form method="post" class="review-form">
+      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+      <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+      <input type="hidden" name="action" value="resolve_import_selected_candidate">
+      <button type="submit" class="button">Accept selected candidate</button>
+    </form>
+    {{end}}
+    <h4>Selected source keys</h4>
+    <div class="review-matrix-wrap">
+      <table class="review-matrix">
+        <thead>
+          <tr>
+            <th scope="col">Source identity key</th>
+            <th scope="col">Choice</th>
+            <th scope="col">Existing event</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{if .SelectedSourceKeys}}
+          {{range .SelectedSourceKeys}}
+          <tr>
+            <td>
+              <code>{{.SourceIdentityKey}}</code><br>
+              <small>{{if .SourceName}}{{.SourceName}}{{else}}Source #{{.SourceID}}{{end}}</small>
+            </td>
+            <td>
+              {{if .ChoiceReason}}<small>{{.ChoiceReason}}</small>{{else}}&mdash;{{end}}
+              {{with .ChoiceUpdatedAt}}<br><small>{{dateShortPtr .}} {{timeShortPtr .}}</small>{{end}}
+            </td>
+            <td>
+              {{if .LinkedEventID}}
+                {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
+              {{else}}
+                No source link
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+          {{else}}
+          <tr>
+            <td colspan="3" class="empty-state">No selected source keys.</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    <h4>Exact identity keys</h4>
+    <div class="review-matrix-wrap">
+      <table class="review-matrix">
+        <thead>
+          <tr>
+            <th scope="col">Exact identity key</th>
+            <th scope="col">Hash</th>
+            <th scope="col">Existing event</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{if .ExactKeys}}
+          {{range .ExactKeys}}
+          <tr>
+            <td><code>{{.NormalizedKey}}</code></td>
+            <td><code>{{.IdentityKeyHash}}</code></td>
+            <td>
+              {{if .LinkedEventID}}
+                {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
+              {{else}}
+                No live match
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+          {{else}}
+          <tr>
+            <td colspan="3" class="empty-state">No exact identity keys.</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    <h4>Source identity keys</h4>
+    <div class="review-matrix-wrap">
+      <table class="review-matrix">
+        <thead>
+          <tr>
+            <th scope="col">Source identity key</th>
+            <th scope="col">Source</th>
+            <th scope="col">Existing event</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{if .SourceKeys}}
+          {{range .SourceKeys}}
+          <tr>
+            <td><code>{{.SourceIdentityKey}}</code></td>
+            <td>{{if .SourceName}}{{.SourceName}}{{else}}Source #{{.SourceID}}{{end}}</td>
+            <td>
+              {{if .LinkedEventID}}
+                {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
+                <br><small>{{if .Authoritative}}authoritative{{else}}supporting{{end}}</small>
+              {{else}}
+                No source link
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+          {{else}}
+          <tr>
+            <td colspan="3" class="empty-state">No source identity keys.</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {{end}}
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Evidence</th>
+          <th scope="col">Candidate</th>
+          <th scope="col">Exact identity keys</th>
+          <th scope="col">Source identity keys</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .CandidateIdentityStatuses}}
+        <tr>
+          <td>
+            <strong>Evidence #{{.EvidenceID}}</strong>
+            <small><code>{{.EvidenceFingerprint}}</code></small>
+            <small>{{if .SourceName}}{{.SourceName}}{{else}}Source #{{.SourceID}}{{end}}</small>
+          </td>
+          <td>
+            {{if .ParseWarning}}
+              <small class="notice">{{.ParseWarning}}</small>
+            {{else}}
+              {{if .Title}}<strong>{{.Title}}</strong>{{else}}&mdash;{{end}}
+              {{if .VenueSlug}}<br><small>venue <code>{{.VenueSlug}}</code></small>{{end}}
+              {{with .StartAt}}<br><small>{{dateShortPtr .}} {{timeShortPtr .}}</small>{{end}}
+            {{end}}
+          </td>
+          <td>
+            {{if .ExactKeys}}
+            <ul>
+              {{range .ExactKeys}}
+              <li>
+                <code>{{.NormalizedKey}}</code><br>
+                <small>hash <code>{{.IdentityKeyHash}}</code></small><br>
+                {{if .LinkedEventID}}
+                  {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                  {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
+                {{else}}
+                  No live match
+                {{end}}
+              </li>
+              {{end}}
+            </ul>
+            {{else}}
+              No exact identity keys.
+            {{end}}
+          </td>
+          <td>
+            {{if .SourceKeys}}
+            <ul>
+              {{range .SourceKeys}}
+              <li>
+                <code>{{.SourceIdentityKey}}</code><br>
+                <small>{{if .SourceName}}{{.SourceName}}{{else}}Source #{{.SourceID}}{{end}}</small><br>
+                {{if .LinkedEventID}}
+                  {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                  {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
+                  <br><small>{{if .Authoritative}}authoritative{{else}}supporting{{end}}</small>
+                {{else}}
+                  No source link
+                {{end}}
+              </li>
+              {{end}}
+            </ul>
+            {{else}}
+              No source identity keys.
+            {{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="4" class="empty-state">No candidate identity statuses recorded.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{if and (eq $.EventReviewDetail.Summary.Status "open") $.EventReviewCanAcceptImportListing}}
+  <h3>Accept new listing</h3>
+  <p class="notice">The store will recheck slug, exact identity, source, and near-match conflicts before insertion.</p>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="resolve_import_new_listing">
+    <button type="submit" class="button">Accept new listing</button>
+  </form>
+  {{end}}
+</section>
+{{end}}
+
+{{with .EventReviewDetail.TitleRepairReadiness}}
+<section class="section-block">
+  <h2>Title repair readiness</h2>
+  <p class="notice">This section shows whether the stored title repair is eligible to be applied.</p>
+  <div class="review-summary">
+    <div class="review-summary-row">
+      <div class="review-summary-label">Current event</div>
+      <div class="review-summary-value">{{if .CurrentTitle}}{{.CurrentTitle}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">{{if .CanonicalEventID}}event #{{.CanonicalEventID}}{{else}}&mdash;{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Current slug</div>
+      <div class="review-summary-value">{{if .CurrentSlug}}{{.CurrentSlug}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">live/non-withheld: {{if .CurrentEventLive}}yes{{else}}no{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Proposed title</div>
+      <div class="review-summary-value">{{if .DraftTitle}}{{.DraftTitle}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Proposed slug</div>
+      <div class="review-summary-value">{{if .DraftSlug}}{{.DraftSlug}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Ready to apply</div>
+      <div class="review-summary-value">{{if .Eligible}}yes{{else}}no{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Blocking reasons</div>
+      <div class="review-summary-value">
+        {{if .BlockingReasons}}
+        <ul>
+          {{range .BlockingReasons}}<li>{{.}}</li>{{end}}
+        </ul>
+        {{else}}No blocking reasons.{{end}}
+      </div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    {{if .SlugConflictEventID}}
+    <div class="review-summary-row">
+      <div class="review-summary-label">Slug conflict</div>
+      <div class="review-summary-value">{{if .SlugConflictEventSlug}}<a href="/admin/events/{{.SlugConflictEventSlug}}">event #{{.SlugConflictEventID}}</a>{{else}}event #{{.SlugConflictEventID}}{{end}}</div>
+      <div class="review-summary-candidate">{{if .SlugConflictEventSlug}}{{.SlugConflictEventSlug}}{{else}}&mdash;{{end}}</div>
+    </div>
+    {{end}}
+  </div>
+  {{if and (eq $.EventReviewDetail.Summary.Status "open") .Eligible}}
+  <h3>Apply title repair</h3>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="resolve_title_repair">
+    <button type="submit" class="button">Apply title repair</button>
+  </form>
+  {{end}}
+</section>
+{{end}}
+
+{{if eq .EventReviewDetail.Summary.Status "open"}}
+<section class="section-block">
+  <h2>Discard cluster</h2>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="discard">
+    <label class="form-field">
+      <span>Discard reason</span>
+      <textarea name="discard_reason" rows="4" required></textarea>
+    </label>
+    <button type="submit" class="button danger">Discard cluster</button>
+  </form>
+</section>
+
+<section class="section-block">
+  <h2>Supersede cluster</h2>
+  <p class="notice">Mark this cluster as superseded by another event-review cluster. Enter the target cluster ID directly.</p>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="supersede">
+    <label class="form-field">
+      <span>Superseded by cluster ID</span>
+      <input type="number" name="superseded_by_cluster_id" min="1" step="1" required>
+    </label>
+    <button type="submit" class="button">Supersede cluster</button>
+  </form>
+</section>
+{{end}}
+
+{{if .EventReviewCanResolveLiveActions}}
+<section class="section-block">
+  <h2>Apply stored live actions</h2>
+  <p class="notice">Apply the stored keep separate and withhold actions for this historical duplicate cluster.</p>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="resolve_live_actions">
+    <button type="submit" class="button">Apply stored live actions</button>
+  </form>
+</section>
+{{end}}
+
+{{with .EventReviewDetail.Resolution}}
+<section class="section-block">
+  <h2>Resolution</h2>
+  <div class="review-summary">
+    <div class="review-summary-row">
+      <div class="review-summary-label">Status</div>
+      <div class="review-summary-value">{{.Status}}</div>
+      <div class="review-summary-candidate">resolution #{{.ID}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Recorded</div>
+      <div class="review-summary-value">{{dateShort .CreatedAt}} {{timeShort .CreatedAt}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Updated</div>
+      <div class="review-summary-value">{{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Discard reason</div>
+      <div class="review-summary-value">{{blankValue .DiscardReason}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Repair run</div>
+      <div class="review-summary-value">{{with .RepairRunID}}run #{{.}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    {{with .AppliedImportListing}}
+    <div class="review-summary-row">
+      <div class="review-summary-label">Applied import listing</div>
+      <div class="review-summary-value">event #{{.EventID}}{{with .EventSlug}} <small>{{.}}</small>{{end}}</div>
+      <div class="review-summary-candidate">{{with .SourceName}}{{.}}{{else}}&mdash;{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Title</div>
+      <div class="review-summary-value">{{blankValue .Title}}</div>
+      <div class="review-summary-candidate">{{if .VenueSlug}}<code>{{.VenueSlug}}</code>{{if .VenueName}}<br>{{.VenueName}}{{end}}{{else if .VenueName}}{{.VenueName}}{{else}}&mdash;{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Start</div>
+      <div class="review-summary-value">{{dateShort .StartAt}} {{timeShort .StartAt}}</div>
+      <div class="review-summary-candidate">evidence #{{.EvidenceID}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Source</div>
+      <div class="review-summary-value">{{with .SourceURL}}<code>{{.}}</code>{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">source #{{.SourceID}}</div>
+    </div>
+    {{end}}
+    {{with .AppliedTitleRepair}}
+    <div class="review-summary-row">
+      <div class="review-summary-label">Applied title repair</div>
+      <div class="review-summary-value">event #{{.EventID}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Old title</div>
+      <div class="review-summary-value">{{blankValue .OldTitle}}</div>
+      <div class="review-summary-candidate">{{blankValue .OldSlug}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">New title</div>
+      <div class="review-summary-value">{{blankValue .NewTitle}}</div>
+      <div class="review-summary-candidate">{{blankValue .NewSlug}}</div>
+    </div>
+    {{end}}
+    <div class="review-summary-row">
+      <div class="review-summary-label">Superseded by</div>
+      <div class="review-summary-value">{{with .SupersededByClusterID}}<a href="/admin/event-review/{{.}}">cluster #{{.}}</a>{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+  </div>
+  {{if .SnapshotParseWarning}}
+  <p class="notice">Resolution snapshot warning: {{.SnapshotParseWarning}}</p>
+  <p class="notice"><strong>Raw snapshot</strong></p>
+  <pre>{{.SnapshotRaw}}</pre>
+  {{end}}
+  {{if .AppliedLiveActions}}
+  <h3>Applied live actions</h3>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Event</th>
+          <th scope="col">Action</th>
+          <th scope="col">Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .AppliedLiveActions}}
+        <tr>
+          <th scope="row">event #{{.EventID}}{{with .EventSlug}}<small>{{.}}</small>{{end}}</th>
+          <td>{{.Action}}</td>
+          <td>{{blankValue .Reason}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="3" class="empty-state">No applied live actions recorded.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+<section class="section-block">
+  <h2>Cluster summary</h2>
+  <div class="review-summary">
+    <div class="review-summary-row">
+      <div class="review-summary-label">Status</div>
+      <div class="review-summary-value">{{.EventReviewDetail.Summary.Status}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Version</div>
+      <div class="review-summary-value">{{.EventReviewDetail.Summary.Version}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Staging key</div>
+      <div class="review-summary-value">{{with .EventReviewDetail.Summary.StagingKey}}{{.}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">v{{.EventReviewDetail.Summary.StagingKeyVersion}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Canonical event</div>
+      <div class="review-summary-value">{{with .EventReviewDetail.Summary.CanonicalEventSlug}}{{.}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">{{with .EventReviewDetail.Summary.CanonicalEventID}}event #{{.}}{{else}}&mdash;{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Conflict</div>
+      <div class="review-summary-value">{{blankValue .EventReviewDetail.Summary.ConflictType}}</div>
+      <div class="review-summary-candidate">{{blankValue .EventReviewDetail.Summary.ConflictReason}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Evidence</div>
+      <div class="review-summary-value">{{.EventReviewDetail.Summary.EvidenceCount}} active evidence link{{if ne .EventReviewDetail.Summary.EvidenceCount 1}}s{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Updated</div>
+      <div class="review-summary-value">{{dateShort .EventReviewDetail.Summary.UpdatedAt}} {{timeShort .EventReviewDetail.Summary.UpdatedAt}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Latest import run</div>
+      <div class="review-summary-value">{{with .EventReviewDetail.Summary.LatestImportRunID}}{{if $.HasImportRunDetail}}<a href="/admin/import-runs/{{.}}">run #{{.}}</a>{{else}}run #{{.}}{{end}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Latest repair run</div>
+      <div class="review-summary-value">{{with .EventReviewDetail.Summary.LatestRepairRunID}}run #{{.}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+  </div>
+</section>
+
+<section class="section-block">
+  <h2>Active evidence</h2>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Source</th>
+          <th scope="col">Event</th>
+          <th scope="col">Fingerprint</th>
+          <th scope="col">Payload</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EventReviewDetail.Evidence}}
+        <tr>
+          <td>
+            <strong>{{blankValue .SourceName}}</strong>
+            <small>Source #{{.SourceID}}</small>
+            {{with .SourceURL}}<small><a href="{{.}}">{{.}}</a></small>{{end}}
+          </td>
+          <td>
+            {{with .EventID}}<strong>Event #{{.}}</strong>{{else}}&mdash;{{end}}
+            {{with .EventSlug}}<small>{{.}}</small>{{end}}
+          </td>
+          <td><code>{{.EvidenceFingerprint}}</code></td>
+          <td><pre>{{blankValue .Payload}}</pre></td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="4" class="empty-state">No active evidence links.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section-block">
+  <h2>Cluster identity keys</h2>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Kind</th>
+          <th scope="col">Version</th>
+          <th scope="col">Normalized key</th>
+          <th scope="col">Hash</th>
+          <th scope="col">Linked</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EventReviewDetail.ClusterIdentityKeys}}
+        <tr>
+          <td>{{.KeyKind}}</td>
+          <td>{{.KeyVersion}}</td>
+          <td><code>{{.NormalizedKey}}</code></td>
+          <td><code>{{.IdentityKeyHash}}</code></td>
+          <td>{{dateShort .LinkedAt}} {{timeShort .LinkedAt}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="5" class="empty-state">No active cluster identity keys.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section-block">
+  <h2>Evidence identity keys</h2>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Evidence</th>
+          <th scope="col">Role</th>
+          <th scope="col">Kind</th>
+          <th scope="col">Normalized key</th>
+          <th scope="col">Source ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EventReviewDetail.EvidenceIdentityKeys}}
+        <tr>
+          <td>
+            <strong>Evidence #{{.EvidenceID}}</strong>
+            <small><code>{{.EvidenceFingerprint}}</code></small>
+          </td>
+          <td>{{.Role}}</td>
+          <td>{{.KeyKind}} v{{.KeyVersion}}</td>
+          <td><code>{{.NormalizedKey}}</code></td>
+          <td>{{with .SourceID}}source #{{.}}{{else}}&mdash;{{end}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="5" class="empty-state">No active evidence identity keys.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section-block">
+  <h2>Exact identity matches</h2>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Exact key</th>
+          <th scope="col">Evidence</th>
+          <th scope="col">Live match</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EventReviewDetail.ExactIdentityMatches}}
+        <tr>
+          {{$match := .}}
+          <td>
+            <strong>Identity #{{$match.IdentityKeyID}}</strong>
+            <small>v{{$match.KeyVersion}}</small>
+            <small><code>{{$match.IdentityKeyHash}}</code></small>
+            <small><code>{{$match.NormalizedKey}}</code></small>
+          </td>
+          <td>{{$match.EvidenceCount}} evidence row{{if ne $match.EvidenceCount 1}}s{{end}}</td>
+          <td>
+            {{with $match.LinkedEventID}}
+              {{if $match.LinkedEventSlug}}<a href="/admin/events/{{$match.LinkedEventSlug}}">event #{{.}}</a>{{else}}event #{{.}}{{end}}
+              {{with $match.LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
+              {{with $match.LinkedEventVenueSlug}}<br><small>venue {{.}}</small>{{end}}
+              {{with $match.LinkedEventStartAt}}<br><small>{{dateShortPtr .}} {{timeShortPtr .}}</small>{{end}}
+            {{else}}
+              No live match
+            {{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="3" class="empty-state">No exact identity keys recorded for this cluster.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section-block">
+  <h2>Source observations</h2>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Source</th>
+          <th scope="col">Run scope</th>
+          <th scope="col">Field</th>
+          <th scope="col">Incoming</th>
+          <th scope="col">Canonical before</th>
+          <th scope="col">Outcome</th>
+          <th scope="col">Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EventReviewDetail.Observations}}
+        <tr>
+          <td>
+            <strong>{{blankValue .SourceName}}</strong>
+            <small>Source #{{.SourceID}}</small>
+            {{with .SourceURL}}<small><a href="{{.}}">{{.}}</a></small>{{end}}
+            {{with .SourceIdentityKey}}<small><code>{{.}}</code></small>{{end}}
+            <small>{{.SourceAuthority}}</small>
+          </td>
+          <td><code>{{.RunScope}}</code></td>
+          <td>{{blankValue .FieldName}}</td>
+          <td>
+            {{if .IncomingRaw}}<small>raw</small><br><code>{{.IncomingRaw}}</code>{{else}}&mdash;{{end}}
+            {{if .IncomingNormalized}}<br><small>normalized</small><br><code>{{.IncomingNormalized}}</code>{{end}}
+          </td>
+          <td>
+            {{if or .CanonicalBeforeRaw .CanonicalBeforeNormalized}}
+              {{if .CanonicalBeforeRaw}}<small>raw</small><br><code>{{.CanonicalBeforeRaw}}</code>{{end}}
+              {{if .CanonicalBeforeNormalized}}<br><small>normalized</small><br><code>{{.CanonicalBeforeNormalized}}</code>{{end}}
+            {{else}}
+              &mdash;
+            {{end}}
+          </td>
+          <td>
+            {{blankValue .Outcome}}
+            {{if .IsConflict}}<br><small class="notice">conflict</small>{{end}}
+          </td>
+          <td>{{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="7" class="empty-state">No source observations recorded for this cluster.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section-block">
+  <h2>Source identity links</h2>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Source</th>
+          <th scope="col">Source identity key</th>
+          <th scope="col">Evidence</th>
+          <th scope="col">Linked event</th>
+          <th scope="col">Status</th>
+          <th scope="col">Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EventReviewDetail.SourceIdentityLinks}}
+        <tr>
+          {{$link := .}}
+          <td>
+            <strong>{{blankValue $link.SourceName}}</strong>
+            <small>Source #{{$link.SourceID}}</small>
+            {{with $link.SourceURL}}<small><a href="{{.}}">{{.}}</a></small>{{end}}
+          </td>
+          <td><code>{{$link.SourceIdentityKey}}</code></td>
+          <td>{{$link.EvidenceCount}} evidence row{{if ne $link.EvidenceCount 1}}s{{end}}</td>
+          <td>
+            {{with $link.LinkedEventID}}
+              {{if $link.LinkedEventSlug}}<a href="/admin/events/{{$link.LinkedEventSlug}}">event #{{.}}{{with $link.LinkedEventTitle}}<br><small>{{.}}</small>{{end}}</a>{{else}}event #{{.}}{{end}}
+            {{else}}
+              not linked
+            {{end}}
+          </td>
+          <td>{{if $link.LinkedEventID}}{{if $link.Authoritative}}authoritative{{else}}supporting{{end}}{{else}}unlinked{{end}}</td>
+          <td>{{with $link.LinkUpdatedAt}}{{dateShortPtr .}} {{timeShortPtr .}}{{else}}&mdash;{{end}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="6" class="empty-state">No source identity links recorded for this cluster.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section-block">
+  <h2>Separations</h2>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Endpoint A</th>
+          <th scope="col">Endpoint B</th>
+          <th scope="col">Reason</th>
+          <th scope="col">Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EventReviewDetail.Separations}}
+        <tr>
+          <td>
+            {{$endpointA := .EndpointA}}
+            {{if eq .EndpointA.Kind "event"}}
+              {{with .EndpointA.EventID}}event #{{.}}{{else}}{{.EndpointA.Key}}{{end}}{{with .EndpointA.EventSlug}}<br><small>{{.}}</small>{{end}}
+            {{else if eq .EndpointA.Kind "evidence"}}
+              {{with .EndpointA.EvidenceID}}evidence #{{.}}{{else}}{{.EndpointA.Key}}{{end}}{{with .EndpointA.EvidenceFingerprint}}<br><small><code>{{.}}</code></small>{{end}}
+            {{else if eq .EndpointA.Kind "identity_key"}}
+              {{with .EndpointA.IdentityKeyID}}identity #{{.}}{{else}}{{.EndpointA.Key}}{{end}}{{with .EndpointA.IdentityKeyKind}}<br><small>{{.}}</small>{{end}}{{with .EndpointA.NormalizedKey}}<br><code>{{.}}</code>{{end}}{{with .EndpointA.IdentityKeyHash}}<br><code>{{.}}</code>{{end}}
+            {{else}}
+              <code>{{.EndpointA.Key}}</code>
+            {{end}}
+            {{with .EndpointA.CanonicalEventID}}<br><small>canonical event #{{.}}{{if $endpointA.CanonicalEventSlug}} {{$endpointA.CanonicalEventSlug}}{{end}}</small>{{end}}
+          </td>
+          <td>
+            {{$endpointB := .EndpointB}}
+            {{if eq .EndpointB.Kind "event"}}
+              {{with .EndpointB.EventID}}event #{{.}}{{else}}{{.EndpointB.Key}}{{end}}{{with .EndpointB.EventSlug}}<br><small>{{.}}</small>{{end}}
+            {{else if eq .EndpointB.Kind "evidence"}}
+              {{with .EndpointB.EvidenceID}}evidence #{{.}}{{else}}{{.EndpointB.Key}}{{end}}{{with .EndpointB.EvidenceFingerprint}}<br><small><code>{{.}}</code></small>{{end}}
+            {{else if eq .EndpointB.Kind "identity_key"}}
+              {{with .EndpointB.IdentityKeyID}}identity #{{.}}{{else}}{{.EndpointB.Key}}{{end}}{{with .EndpointB.IdentityKeyKind}}<br><small>{{.}}</small>{{end}}{{with .EndpointB.NormalizedKey}}<br><code>{{.}}</code>{{end}}{{with .EndpointB.IdentityKeyHash}}<br><code>{{.}}</code>{{end}}
+            {{else}}
+              <code>{{.EndpointB.Key}}</code>
+            {{end}}
+            {{with .EndpointB.CanonicalEventID}}<br><small>canonical event #{{.}}{{if $endpointB.CanonicalEventSlug}} {{$endpointB.CanonicalEventSlug}}{{end}}</small>{{end}}
+          </td>
+          <td>{{blankValue .Reason}}</td>
+          <td>{{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="4" class="empty-state">No active separations related to this cluster.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section-block">
+  <h2>Canonical choices</h2>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Field</th>
+          <th scope="col">Kind</th>
+          <th scope="col">Event</th>
+          <th scope="col">Evidence</th>
+          <th scope="col">Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EventReviewDetail.CanonicalChoices}}
+        <tr>
+          <th scope="row">{{.FieldName}}</th>
+          <td>{{.ChoiceKind}}</td>
+          <td>{{with .EventID}}event #{{.}}{{else}}&mdash;{{end}}{{with .EventSlug}}<small>{{.}}</small>{{end}}</td>
+          <td>{{with .EvidenceID}}evidence #{{.}}{{else}}&mdash;{{end}}{{with .EvidenceFingerprint}}<small>{{.}}</small>{{end}}</td>
+          <td>{{blankValue .Value}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="5" class="empty-state">No canonical choices stored.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section-block">
+  <h2>Draft choices</h2>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Field</th>
+          <th scope="col">Kind</th>
+          <th scope="col">Event</th>
+          <th scope="col">Evidence</th>
+          <th scope="col">Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EventReviewDetail.DraftChoices}}
+        <tr>
+          <th scope="row">{{.FieldName}}</th>
+          <td>{{.ChoiceKind}}</td>
+          <td>{{with .EventID}}event #{{.}}{{else}}&mdash;{{end}}{{with .EventSlug}}<small>{{.}}</small>{{end}}</td>
+          <td>{{with .EvidenceID}}evidence #{{.}}{{else}}&mdash;{{end}}{{with .EvidenceFingerprint}}<small>{{.}}</small>{{end}}</td>
+          <td>{{blankValue .Value}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="5" class="empty-state">No draft choices stored.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section-block">
+  <h2>Stored/planned live actions</h2>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Event</th>
+          <th scope="col">Action</th>
+          <th scope="col">Reason</th>
+          <th scope="col">Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EventReviewDetail.LiveActions}}
+        <tr>
+          <th scope="row">event #{{.EventID}}{{with .EventSlug}}<small>{{.}}</small>{{end}}</th>
+          <td>{{.Action}}</td>
+          <td>{{blankValue .Reason}}</td>
+          <td>{{dateShort .CreatedAt}} {{timeShort .CreatedAt}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="4" class="empty-state">No live actions stored.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>

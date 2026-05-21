@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sheffield-live/internal/domain"
+	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/review"
 	seedstore "sheffield-live/internal/store"
 )
@@ -80,11 +81,67 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	if got := mustCount(t, db, "review_draft_choices"); got != 0 {
 		t.Fatalf("review_draft_choices rows = %d, want 0", got)
 	}
+	for _, table := range []string{
+		"event_review_clusters",
+		"event_review_evidence",
+		"event_review_cluster_evidence",
+		"event_review_identity_keys",
+		"event_review_evidence_identity_keys",
+		"event_review_cluster_identity_keys",
+		"event_review_canonical_choices",
+		"event_review_draft_choices",
+		"event_review_live_actions",
+		"event_review_source_identity_choices",
+		"event_review_separations",
+		"event_review_resolutions",
+		"import_run_event_review_clusters",
+		"repair_run_event_review_clusters",
+		"import_run_event_review_evidence",
+		"repair_run_event_review_evidence",
+	} {
+		ok, err := tableExists(context.Background(), db, table)
+		if err != nil {
+			t.Fatalf("check table %s: %v", table, err)
+		}
+		if !ok {
+			t.Fatalf("table %s does not exist", table)
+		}
+	}
+	for _, check := range []struct {
+		table  string
+		column string
+	}{
+		{table: "event_review_clusters", column: "staging_key"},
+		{table: "event_review_clusters", column: "staging_key_version"},
+	} {
+		ok, err := columnExists(context.Background(), db, check.table, check.column)
+		if err != nil {
+			t.Fatalf("check column %s.%s: %v", check.table, check.column, err)
+		}
+		if !ok {
+			t.Fatalf("column %s.%s does not exist", check.table, check.column)
+		}
+	}
 	if got := mustCount(t, db, "event_source_links"); got != 0 {
 		t.Fatalf("event_source_links rows = %d, want 0", got)
 	}
 	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
 		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "event_review_clusters"); got != 0 {
+		t.Fatalf("event_review_clusters rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "event_review_evidence"); got != 0 {
+		t.Fatalf("event_review_evidence rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "import_run_event_review_evidence"); got != 0 {
+		t.Fatalf("import_run_event_review_evidence rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_run_event_review_evidence"); got != 0 {
+		t.Fatalf("repair_run_event_review_evidence rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 0 {
+		t.Fatalf("repair_runs rows = %d, want 0", got)
 	}
 }
 
@@ -223,6 +280,254 @@ func TestOpenReopensPersistentData(t *testing.T) {
 	}
 	if got := st.EventsForVenue("persisted-venue"); len(got) != 1 || got[0].Slug != "persisted-event" {
 		t.Fatalf("events for venue = %#v, want one persisted event", got)
+	}
+}
+
+func TestOpenBackfillsSecondarySourceCompatibilityObservations(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	db := mustRawDB(t, path)
+	if _, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Source A", "https://example.test/event/a"); err != nil {
+		t.Fatalf("insert source A: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Source B", "https://example.test/event/b"); err != nil {
+		t.Fatalf("insert source B: %v", err)
+	}
+	var sourceAID int64
+	if err := db.QueryRow(`SELECT id FROM sources WHERE name = ? AND url = ?`, "Source A", "https://example.test/event/a").Scan(&sourceAID); err != nil {
+		t.Fatalf("lookup source A id: %v", err)
+	}
+	var sourceBID int64
+	if err := db.QueryRow(`SELECT id FROM sources WHERE name = ? AND url = ?`, "Source B", "https://example.test/event/b").Scan(&sourceBID); err != nil {
+		t.Fatalf("lookup source B id: %v", err)
+	}
+	venueID := lookupStoreVenueID(t, db, "leadmill")
+	insertLegacyEvent(t, db, "compatibility-backfill-event", venueID, sourceAID, domain.OriginLive)
+
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, "compatibility-backfill-event").Scan(&eventID); err != nil {
+		t.Fatalf("lookup event id: %v", err)
+	}
+	if err := insertStoreTestSecondarySourceInfoRows(t, db, eventID, sourceAID, "leadmill", "Legacy Event A", time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC), []secondarySourceInfoRow{
+		{InfoType: "description", Value: "Line one"},
+	}); err != nil {
+		t.Fatalf("insert legacy secondary source info A: %v", err)
+	}
+	if err := insertStoreTestSecondarySourceInfoRows(t, db, eventID, sourceBID, "leadmill", "Legacy Event B", time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC), []secondarySourceInfoRow{
+		{InfoType: "description", Value: "Line two"},
+	}); err != nil {
+		t.Fatalf("insert legacy secondary source info B: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+
+	db = mustRawDB(t, path)
+
+	legacy, err := st.EventSecondarySourceInfoByEventSlug(ctx, "compatibility-backfill-event")
+	if err != nil {
+		t.Fatalf("load legacy secondary source info: %v", err)
+	}
+	if got, want := len(legacy), 2; got != want {
+		t.Fatalf("legacy secondary source groups = %d, want %d", got, want)
+	}
+	observations, err := loadEventSecondarySourceInfoBySlugFromObservations(ctx, db, "compatibility-backfill-event")
+	if err != nil {
+		t.Fatalf("load observation secondary source info: %v", err)
+	}
+	if !reflect.DeepEqual(observations, legacy) {
+		t.Fatalf("observation secondary source info = %#v, want %#v", observations, legacy)
+	}
+	if got, want := mustCount(t, db, "event_source_attribute_observations"), 2; got != want {
+		t.Fatalf("observation rows = %d, want %d", got, want)
+	}
+	canonicalA, ok := ingest.SourceIdentityKey("https://example.test/event/a")
+	if !ok {
+		t.Fatal("canonical identity for source A not derived")
+	}
+	canonicalB, ok := ingest.SourceIdentityKey("https://example.test/event/b")
+	if !ok {
+		t.Fatal("canonical identity for source B not derived")
+	}
+	var storedKeys []string
+	rows, err := db.Query(`
+		SELECT source_identity_key
+		FROM event_source_attribute_observations
+		WHERE event_id = ?
+		ORDER BY source_id, id
+	`, eventID)
+	if err != nil {
+		t.Fatalf("query observation identity keys: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			t.Fatalf("scan observation identity key: %v", err)
+		}
+		storedKeys = append(storedKeys, key)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate observation identity keys: %v", err)
+	}
+	if got, want := len(storedKeys), 2; got != want {
+		t.Fatalf("stored identity keys = %d, want %d", got, want)
+	}
+	if storedKeys[0] != canonicalA {
+		t.Fatalf("stored identity key[0] = %q, want %q", storedKeys[0], canonicalA)
+	}
+	if storedKeys[1] != canonicalB {
+		t.Fatalf("stored identity key[1] = %q, want %q", storedKeys[1], canonicalB)
+	}
+	if got, want := mustCount(t, db, "repair_runs"), 1; got != want {
+		t.Fatalf("repair runs = %d, want %d", got, want)
+	}
+
+	if err := st.Close(); err != nil {
+		t.Fatalf("close reopened store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close reopened raw db: %v", err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("open store again: %v", err)
+	}
+	defer st.Close()
+
+	db = mustRawDB(t, path)
+	defer db.Close()
+
+	if got, want := mustCount(t, db, "event_source_attribute_observations"), 2; got != want {
+		t.Fatalf("observation rows after reopen = %d, want %d", got, want)
+	}
+	if got, want := mustCount(t, db, "repair_runs"), 1; got != want {
+		t.Fatalf("repair runs after reopen = %d, want %d", got, want)
+	}
+}
+
+func TestOpenSkipsSecondarySourceCompatibilityBackfillWithoutStableIdentity(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	db := mustRawDB(t, path)
+	if _, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Leadmill listing feed", "https://leadmill.co.uk/listings/?ical=1"); err != nil {
+		t.Fatalf("insert unstable source: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Leadmill event page", "https://leadmill.co.uk/event/feed-detail/"); err != nil {
+		t.Fatalf("insert stable source: %v", err)
+	}
+	var unstableSourceID int64
+	if err := db.QueryRow(`SELECT id FROM sources WHERE name = ? AND url = ?`, "Leadmill listing feed", "https://leadmill.co.uk/listings/?ical=1").Scan(&unstableSourceID); err != nil {
+		t.Fatalf("lookup unstable source id: %v", err)
+	}
+	var stableSourceID int64
+	if err := db.QueryRow(`SELECT id FROM sources WHERE name = ? AND url = ?`, "Leadmill event page", "https://leadmill.co.uk/event/feed-detail/").Scan(&stableSourceID); err != nil {
+		t.Fatalf("lookup stable source id: %v", err)
+	}
+	venueID := lookupStoreVenueID(t, db, "leadmill")
+	insertLegacyEvent(t, db, "compatibility-backfill-event", venueID, unstableSourceID, domain.OriginLive)
+
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, "compatibility-backfill-event").Scan(&eventID); err != nil {
+		t.Fatalf("lookup event id: %v", err)
+	}
+	if err := insertStoreTestSecondarySourceInfoRows(t, db, eventID, unstableSourceID, "leadmill", "Legacy Event Unstable", time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC), []secondarySourceInfoRow{
+		{InfoType: "description", Value: "Unstable line"},
+	}); err != nil {
+		t.Fatalf("insert unstable secondary source info: %v", err)
+	}
+	if err := insertStoreTestSecondarySourceInfoRows(t, db, eventID, stableSourceID, "leadmill", "Legacy Event Stable", time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC), []secondarySourceInfoRow{
+		{InfoType: "description", Value: "Stable line"},
+	}); err != nil {
+		t.Fatalf("insert stable secondary source info: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer st.Close()
+
+	db = mustRawDB(t, path)
+	defer db.Close()
+
+	legacy, err := st.EventSecondarySourceInfoByEventSlug(ctx, "compatibility-backfill-event")
+	if err != nil {
+		t.Fatalf("load legacy secondary source info: %v", err)
+	}
+	if got, want := len(legacy), 2; got != want {
+		t.Fatalf("legacy secondary source groups = %d, want %d", got, want)
+	}
+	legacyRows := loadSecondarySourceInfoRows(t, db)
+	if got, want := len(legacyRows), 2; got != want {
+		t.Fatalf("legacy secondary source rows = %d, want %d", got, want)
+	}
+
+	observations, err := loadEventSecondarySourceInfoBySlugFromObservations(ctx, db, "compatibility-backfill-event")
+	if err != nil {
+		t.Fatalf("load observation secondary source info: %v", err)
+	}
+	if got, want := len(observations), 1; got != want {
+		t.Fatalf("observation secondary source info groups = %d, want %d", got, want)
+	}
+	stableKey := ingest.SourceIdentities(ingest.SourceIdentityInput{SourceURL: "https://leadmill.co.uk/event/feed-detail/"}).PrimaryKey()
+	if stableKey == "" {
+		t.Fatal("stable identity for leadmill event page not derived")
+	}
+	var storedStableKey string
+	if err := db.QueryRow(`
+		SELECT source_identity_key
+		FROM event_source_attribute_observations
+		WHERE event_id = ? AND source_id = ?
+	`, eventID, stableSourceID).Scan(&storedStableKey); err != nil {
+		t.Fatalf("lookup stable observation identity key: %v", err)
+	}
+	if storedStableKey != stableKey {
+		t.Fatalf("stable observation identity key = %q, want %q", storedStableKey, stableKey)
+	}
+	var unstableCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM event_source_attribute_observations
+		WHERE event_id = ? AND source_id = ?
+	`, eventID, unstableSourceID).Scan(&unstableCount); err != nil {
+		t.Fatalf("count unstable observations: %v", err)
+	}
+	if unstableCount != 0 {
+		t.Fatalf("unstable observation rows = %d, want 0", unstableCount)
+	}
+	if got, want := mustCount(t, db, "event_source_attribute_observations"), 1; got != want {
+		t.Fatalf("observation rows = %d, want %d", got, want)
+	}
+	if got, want := mustCount(t, db, "repair_runs"), 1; got != want {
+		t.Fatalf("repair runs = %d, want %d", got, want)
 	}
 }
 
@@ -376,25 +681,21 @@ func TestOpenMigratesVersion12DatabaseAddsReviewCandidateVenueEvidence(t *testin
 	if got := mustCount(t, db, "schema_migrations"); got != schemaVersionCurrent {
 		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionCurrent)
 	}
-
-	group, ok, err := st.LoadReviewGroup(context.Background(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
+	var title, sourceName, sourceURL, status, notes string
+	if err := db.QueryRow(`
+		SELECT title, source_name, source_url, status, notes
+		FROM review_groups
+		WHERE id = ?
+	`, groupID).Scan(&title, &sourceName, &sourceURL, &status, &notes); err != nil {
+		t.Fatalf("scan review group: %v", err)
 	}
-	if !ok {
-		t.Fatal("review group not found")
+	if title != "Venue evidence migration" || sourceName != "Fixture ICS" || sourceURL != "file:migration.ics" {
+		t.Fatalf("review group = %q/%q/%q, want migrated values", title, sourceName, sourceURL)
 	}
-	if len(group.Candidates) != 1 {
-		t.Fatalf("candidate count = %d, want 1", len(group.Candidates))
+	if status != string(review.StatusOpen) || notes != "Preserved notes" {
+		t.Fatalf("review group status/notes = %q/%q, want open/preserved", status, notes)
 	}
-	if group.Candidates[0].VenueText != "" {
-		t.Fatalf("candidate venue text = %q, want empty", group.Candidates[0].VenueText)
-	}
-	if group.Candidates[0].VenueLocationRaw != "" {
-		t.Fatalf("candidate venue location raw = %q, want empty", group.Candidates[0].VenueLocationRaw)
-	}
-	var venueText string
-	var venueLocationRaw string
+	var venueText, venueLocationRaw string
 	if err := db.QueryRow(`SELECT venue_text, venue_location_raw FROM review_candidates WHERE group_id = ?`, groupID).Scan(&venueText, &venueLocationRaw); err != nil {
 		t.Fatalf("scan review candidate venue evidence: %v", err)
 	}
@@ -766,35 +1067,40 @@ func TestOpenMigratesVersion2DatabasePreservesReviewDataAndAddsStagingKey(t *tes
 		t.Fatalf("event_source_links rows = %d, want 0", got)
 	}
 
-	group, ok, err := st.LoadReviewGroup(context.Background(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if group.Status != review.StatusOpen {
-		t.Fatalf("status = %q, want %q", group.Status, review.StatusOpen)
-	}
-	if group.Notes != "Preserved notes" {
-		t.Fatalf("notes = %q, want %q", group.Notes, "Preserved notes")
-	}
-	if len(group.Candidates) != 1 {
-		t.Fatalf("candidate count = %d, want 1", len(group.Candidates))
-	}
-	if got := len(group.DraftChoices); got != 1 {
-		t.Fatalf("draft choice count = %d, want 1", got)
-	}
-	if _, ok := group.DraftChoices[review.FieldName]; !ok {
-		t.Fatal("missing draft choice after migration")
-	}
-
+	var status, notes string
 	var stagingKey sql.NullString
-	if err := db.QueryRow(`SELECT staging_key FROM review_groups WHERE id = ?`, groupID).Scan(&stagingKey); err != nil {
-		t.Fatalf("scan staging key: %v", err)
+	if err := db.QueryRow(`SELECT status, notes, staging_key FROM review_groups WHERE id = ?`, groupID).Scan(&status, &notes, &stagingKey); err != nil {
+		t.Fatalf("scan review group: %v", err)
+	}
+	if status != string(review.StatusOpen) {
+		t.Fatalf("status = %q, want %q", status, review.StatusOpen)
+	}
+	if notes != "Preserved notes" {
+		t.Fatalf("notes = %q, want %q", notes, "Preserved notes")
 	}
 	if stagingKey.Valid {
 		t.Fatalf("staging key valid = true, want false")
+	}
+
+	var candidateCount, draftChoiceCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM review_candidates WHERE group_id = ?`, groupID).Scan(&candidateCount); err != nil {
+		t.Fatalf("scan review candidate count: %v", err)
+	}
+	if candidateCount != 1 {
+		t.Fatalf("candidate count = %d, want 1", candidateCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM review_draft_choices WHERE group_id = ?`, groupID).Scan(&draftChoiceCount); err != nil {
+		t.Fatalf("scan review draft choice count: %v", err)
+	}
+	if draftChoiceCount != 1 {
+		t.Fatalf("draft choice count = %d, want 1", draftChoiceCount)
+	}
+	var draftFieldCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM review_draft_choices WHERE group_id = ? AND field = ?`, groupID, string(review.FieldName)).Scan(&draftFieldCount); err != nil {
+		t.Fatalf("scan review draft choice field count: %v", err)
+	}
+	if draftFieldCount != 1 {
+		t.Fatal("missing draft choice after migration")
 	}
 
 	rows, err := db.Query(`PRAGMA table_info(review_groups)`)
@@ -1043,32 +1349,28 @@ func TestOpenMigratesVersion4DatabaseAddsReviewGroupAuthoritativeLinkColumns(t *
 		t.Fatalf("schema_migrations rows = %d, want %d", got, schemaVersionCurrent)
 	}
 
-	group, ok, err := st.LoadReviewGroup(context.Background(), openGroupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
+	var openName, openURL, openEventKey sql.NullString
+	if err := db.QueryRow(`
+		SELECT authoritative_source_name, authoritative_source_url, authoritative_source_event_key
+		FROM review_groups
+		WHERE id = ?
+	`, openGroupID).Scan(&openName, &openURL, &openEventKey); err != nil {
+		t.Fatalf("scan open review group: %v", err)
 	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if got, want := group.AuthoritativeSourceName, "Sidney & Matilda manual ingest"; got != want {
-		t.Fatalf("authoritative source name = %q, want %q", got, want)
-	}
-	if got, want := group.AuthoritativeSourceURL, "https://calendar.example.test/live.ics"; got != want {
-		t.Fatalf("authoritative source url = %q, want %q", got, want)
-	}
-	if got, want := group.AuthoritativeSourceEventKey, "shared-uid"; got != want {
-		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	if openName.Valid || openURL.Valid || openEventKey.Valid {
+		t.Fatalf("open authoritative fields = %#v %#v %#v, want empty", openName, openURL, openEventKey)
 	}
 
-	closed, ok, err := st.LoadReviewGroup(context.Background(), closedGroupID)
-	if err != nil {
-		t.Fatalf("load closed review group: %v", err)
+	var closedName, closedURL, closedEventKey sql.NullString
+	if err := db.QueryRow(`
+		SELECT authoritative_source_name, authoritative_source_url, authoritative_source_event_key
+		FROM review_groups
+		WHERE id = ?
+	`, closedGroupID).Scan(&closedName, &closedURL, &closedEventKey); err != nil {
+		t.Fatalf("scan closed review group: %v", err)
 	}
-	if !ok {
-		t.Fatal("closed review group not found")
-	}
-	if closed.AuthoritativeSourceName != "" || closed.AuthoritativeSourceURL != "" || closed.AuthoritativeSourceEventKey != "" {
-		t.Fatalf("closed authoritative fields = %#v, want empty", closed)
+	if closedName.Valid || closedURL.Valid || closedEventKey.Valid {
+		t.Fatalf("closed authoritative fields = %#v %#v %#v, want empty", closedName, closedURL, closedEventKey)
 	}
 
 	rows, err := db.Query(`PRAGMA table_info(review_groups)`)
@@ -1454,7 +1756,85 @@ func TestOpenRejectsCanonicalEqualTimeEndOutsideOwnedVenueBackfill(t *testing.T)
 	}
 }
 
-func TestOpenBackfillsImportRunReviewGroupLinksFromLegacyNotes(t *testing.T) {
+func TestOpenRejectsAbandonedHistoricalDuplicateBranchSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	db := mustRawDB(t, path)
+	applyMigrationsThrough(t, db, schemaVersionV5)
+	insertMigrationRowsThrough(t, db, schemaVersionV5, time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC))
+	if _, err := db.Exec(`ALTER TABLE review_groups ADD COLUMN kind TEXT NOT NULL DEFAULT 'standard'`); err != nil {
+		t.Fatalf("add review_groups.kind: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE review_historical_duplicate_actions (
+			group_id INTEGER NOT NULL,
+			existing_event_id INTEGER NOT NULL,
+			is_canonical INTEGER NOT NULL DEFAULT 0,
+			action TEXT,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY(group_id, existing_event_id)
+		)
+	`); err != nil {
+		t.Fatalf("create historical duplicate actions table: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO schema_migrations (version, applied_at)
+		VALUES (?, ?)
+	`, schemaVersionV26, "2026-04-20T10:30:00Z"); err != nil {
+		t.Fatalf("insert v26 migration row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "reset or recreate the local DB") {
+		t.Fatalf("open error = %v, want abandoned-branch reset guidance", err)
+	}
+}
+
+func TestOpenRejectsAbandonedEventReviewBranchWithoutStagingKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	db := mustRawDB(t, path)
+	applyMigrationsThrough(t, db, schemaVersionV26)
+	insertMigrationRowsThrough(t, db, schemaVersionV26, time.Date(2026, time.May, 15, 9, 0, 0, 0, time.UTC))
+	if _, err := db.Exec(`
+		INSERT INTO schema_migrations (version, applied_at)
+		VALUES (?, ?)
+	`, schemaVersionV27, "2026-05-15T09:30:00Z"); err != nil {
+		t.Fatalf("insert v27 migration row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "reset or recreate the local DB") {
+		t.Fatalf("open error = %v, want abandoned-branch reset guidance", err)
+	}
+}
+
+func TestOpenRejectsNewerSchemaVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	db := mustRawDB(t, path)
+	applyMigrationsThrough(t, db, schemaVersionV27)
+	insertMigrationRowsThrough(t, db, schemaVersionV27, time.Date(2026, time.May, 15, 9, 0, 0, 0, time.UTC))
+	if _, err := db.Exec(`
+		INSERT INTO schema_migrations (version, applied_at)
+		VALUES (?, ?)
+	`, schemaVersionCurrent+1, "2026-05-15T09:45:00Z"); err != nil {
+		t.Fatalf("insert newer migration row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "reset or recreate the local DB") {
+		t.Fatalf("open error = %v, want newer-schema reset guidance", err)
+	}
+}
+
+func TestOpenDoesNotBackfillImportRunReviewGroupLinksFromLegacyNotes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
 	st, err := Open(path)
@@ -1512,21 +1892,10 @@ func TestOpenBackfillsImportRunReviewGroupLinksFromLegacyNotes(t *testing.T) {
 	}
 	defer st.Close()
 
-	groups, err := st.ListReviewGroupsForImportRun(context.Background(), 12)
-	if err != nil {
-		t.Fatalf("list review groups for import run: %v", err)
-	}
-	if got, want := len(groups), 1; got != want {
-		t.Fatalf("review groups = %d, want %d", got, want)
-	}
-	if groups[0].ID != groupID {
-		t.Fatalf("group id = %d, want %d", groups[0].ID, groupID)
-	}
-
 	db = mustRawDB(t, path)
 	defer db.Close()
-	if got := mustCount(t, db, "import_run_review_groups"); got != 1 {
-		t.Fatalf("import_run_review_groups rows = %d, want 1", got)
+	if got := mustCount(t, db, "import_run_review_groups"); got != 0 {
+		t.Fatalf("import_run_review_groups rows = %d, want 0", got)
 	}
 }
 
@@ -1678,6 +2047,29 @@ func insertStoreTestEvent(t *testing.T, db *sql.DB, slug, venueSlug string) {
 	sourceID := insertStoreTestSource(t, db)
 	venueID := lookupStoreVenueID(t, db, venueSlug)
 	insertLegacyEvent(t, db, slug, venueID, sourceID, domain.OriginLive)
+}
+
+func insertStoreTestSecondarySourceInfoRows(t *testing.T, db *sql.DB, eventID, sourceID int64, venueSlug, eventName string, startAt time.Time, rows []secondarySourceInfoRow) error {
+	t.Helper()
+
+	for _, row := range rows {
+		if _, err := db.Exec(`
+			INSERT INTO event_secondary_source_info (
+				event_id,
+				source_id,
+				venue_slug,
+				event_name,
+				start_at,
+				info_type,
+				value,
+				created_at,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, eventID, sourceID, venueSlug, eventName, formatRFC3339UTC(startAt), row.InfoType, row.Value, "2026-05-10T19:00:00Z", "2026-05-10T19:05:00Z"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func insertStoreTestSource(t *testing.T, db *sql.DB) int64 {

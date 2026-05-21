@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -36,6 +37,8 @@ type sourceConfig struct {
 	OwnedVenueSlug                                 string
 	NonAuthoritativeSingletonVenueSlug             string
 	NonAuthoritativeSingletonAutoPromotionDisabled bool
+	GuardedNearMatchDisabled                       bool
+	GuardedNearMatchWindowMinutes                  int
 	CalendarSourceName                             string
 	LinkedPageSourceName                           string
 	PageMode                                       pageProcessMode
@@ -55,6 +58,17 @@ func (cfg sourceConfig) nonAuthoritativeSingletonVenueSlug() string {
 		return ""
 	}
 	return strings.TrimSpace(cfg.NonAuthoritativeSingletonVenueSlug)
+}
+
+func (cfg sourceConfig) guardedNearMatchDisabled() bool {
+	return cfg.GuardedNearMatchDisabled
+}
+
+func (cfg sourceConfig) guardedNearMatchWindow() time.Duration {
+	if cfg.GuardedNearMatchWindowMinutes > 0 {
+		return time.Duration(cfg.GuardedNearMatchWindowMinutes) * time.Minute
+	}
+	return 75 * time.Minute
 }
 
 func (cfg sourceConfig) matchesReplayPageSnapshot(snapshot decodedReplaySnapshot) bool {
@@ -99,6 +113,8 @@ type sourceDefinition struct {
 	OwnedVenueSlug                                 string                              `yaml:"owned_venue_slug"`
 	NonAuthoritativeSingletonVenueSlug             string                              `yaml:"non_authoritative_singleton_venue_slug"`
 	NonAuthoritativeSingletonAutoPromotionDisabled bool                                `yaml:"non_authoritative_singleton_auto_promotion_disabled"`
+	GuardedNearMatchDisabled                       bool                                `yaml:"guarded_near_match_disabled"`
+	GuardedNearMatchWindowMinutes                  int                                 `yaml:"guarded_near_match_window_minutes"`
 	Mode                                           pageProcessMode                     `yaml:"mode"`
 	LinkedICS                                      *linkedICSRuntimeDefinition         `yaml:"linked_ics"`
 	SourcePage                                     *sourcePageRuntimeDefinition        `yaml:"source_page"`
@@ -117,6 +133,10 @@ type SourceMetadataLookup interface {
 	OwnedVenueSlugForReviewStageSourceName(sourceName string) string
 	NonAuthoritativeSingletonVenueSlugForSource(source string) string
 	NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName string) string
+	GuardedNearMatchDisabledForSource(source string) bool
+	GuardedNearMatchWindowForSource(source string) time.Duration
+	GuardedNearMatchDisabledForReviewStageSourceName(sourceName string) bool
+	GuardedNearMatchWindowForReviewStageSourceName(sourceName string) time.Duration
 	ListingsURLForSourceName(sourceName string) string
 }
 
@@ -212,9 +232,11 @@ func sourceConfigFromDefinition(def sourceDefinition) (sourceConfig, error) {
 		OwnedVenueSlug:                     strings.TrimSpace(def.OwnedVenueSlug),
 		NonAuthoritativeSingletonVenueSlug: strings.TrimSpace(def.NonAuthoritativeSingletonVenueSlug),
 		NonAuthoritativeSingletonAutoPromotionDisabled: def.NonAuthoritativeSingletonAutoPromotionDisabled,
-		PageMode:              def.Mode,
-		ReviewStageSourceName: strings.TrimSpace(def.ReviewStageSourceName),
-		ImportRunNotes:        strings.TrimSpace(def.ImportRunNotes),
+		GuardedNearMatchDisabled:                       def.GuardedNearMatchDisabled,
+		GuardedNearMatchWindowMinutes:                  def.GuardedNearMatchWindowMinutes,
+		PageMode:                                       def.Mode,
+		ReviewStageSourceName:                          strings.TrimSpace(def.ReviewStageSourceName),
+		ImportRunNotes:                                 strings.TrimSpace(def.ImportRunNotes),
 	}
 
 	switch {
@@ -232,6 +254,9 @@ func sourceConfigFromDefinition(def sourceDefinition) (sourceConfig, error) {
 
 	if cfg.OwnedVenueSlug != "" && cfg.NonAuthoritativeSingletonVenueSlug != "" {
 		return sourceConfig{}, errors.New("owned_venue_slug and non_authoritative_singleton_venue_slug cannot both be set")
+	}
+	if cfg.GuardedNearMatchWindowMinutes < 0 {
+		return sourceConfig{}, errors.New("guarded_near_match_window_minutes must not be negative")
 	}
 
 	switch cfg.PageMode {
@@ -420,6 +445,60 @@ func (c *Catalog) NonAuthoritativeSingletonVenueSlugForSource(source string) str
 
 func (c *Catalog) NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName string) string {
 	return c.nonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName)
+}
+
+func (c *Catalog) guardedNearMatchDisabledForSource(source string) bool {
+	cfg, err := c.configForSource(source)
+	if err != nil {
+		return false
+	}
+	return cfg.guardedNearMatchDisabled()
+}
+
+func (c *Catalog) GuardedNearMatchDisabledForSource(source string) bool {
+	return c.guardedNearMatchDisabledForSource(source)
+}
+
+func (c *Catalog) guardedNearMatchWindowForSource(source string) time.Duration {
+	cfg, err := c.configForSource(source)
+	if err != nil {
+		return 75 * time.Minute
+	}
+	return cfg.guardedNearMatchWindow()
+}
+
+func (c *Catalog) GuardedNearMatchWindowForSource(source string) time.Duration {
+	return c.guardedNearMatchWindowForSource(source)
+}
+
+func (c *Catalog) guardedNearMatchDisabledForReviewStageSourceName(sourceName string) bool {
+	if c == nil {
+		return false
+	}
+	cfg, ok := c.byReviewStageSourceName[strings.TrimSpace(sourceName)]
+	if !ok {
+		return false
+	}
+	return cfg.guardedNearMatchDisabled()
+}
+
+func (c *Catalog) GuardedNearMatchDisabledForReviewStageSourceName(sourceName string) bool {
+	return c.guardedNearMatchDisabledForReviewStageSourceName(sourceName)
+}
+
+func (c *Catalog) guardedNearMatchWindowForReviewStageSourceName(sourceName string) time.Duration {
+	if c == nil {
+		return 75 * time.Minute
+	}
+	cfg, ok := c.byReviewStageSourceName[strings.TrimSpace(sourceName)]
+	if !ok {
+		return 75 * time.Minute
+	}
+	return cfg.guardedNearMatchWindow()
+}
+
+func (c *Catalog) GuardedNearMatchWindowForReviewStageSourceName(sourceName string) time.Duration {
+	return c.guardedNearMatchWindowForReviewStageSourceName(sourceName)
 }
 
 func (c *Catalog) ListingsURLForSourceName(sourceName string) string {
@@ -612,6 +691,38 @@ func NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName strin
 		return ""
 	}
 	return catalog.nonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName)
+}
+
+func GuardedNearMatchDisabledForSource(source string) bool {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		return false
+	}
+	return catalog.guardedNearMatchDisabledForSource(source)
+}
+
+func GuardedNearMatchWindowForSource(source string) time.Duration {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		return 75 * time.Minute
+	}
+	return catalog.guardedNearMatchWindowForSource(source)
+}
+
+func GuardedNearMatchDisabledForReviewStageSourceName(sourceName string) bool {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		return false
+	}
+	return catalog.guardedNearMatchDisabledForReviewStageSourceName(sourceName)
+}
+
+func GuardedNearMatchWindowForReviewStageSourceName(sourceName string) time.Duration {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		return 75 * time.Minute
+	}
+	return catalog.guardedNearMatchWindowForReviewStageSourceName(sourceName)
 }
 
 func ListingsURLForSourceName(sourceName string) string {

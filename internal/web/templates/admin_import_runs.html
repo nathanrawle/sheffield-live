@@ -3,8 +3,8 @@
   <h1>Import history</h1>
   <p class="lede">Read-only history of ingest runs and stored snapshot counts.</p>
   <p class="review-group-meta">
-    {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
-    {{if .HasReviewStorage}} · {{end}}
+    {{if .HasEventReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if .HasEventReviewStorage}} · {{end}}
     <a href="/admin/venues">Provisional venues</a>
     {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
   </p>
@@ -20,8 +20,8 @@
         <th scope="col">Started</th>
         <th scope="col">Finished</th>
         <th scope="col">Snapshots</th>
-        {{if .HasImportRunReviewGroups}}
-        <th scope="col">Review groups</th>
+        {{if .HasImportRunEventReviewClusters}}
+        <th scope="col">Event reviews</th>
         {{end}}
         <th scope="col">Notes</th>
       </tr>
@@ -34,8 +34,8 @@
         <td>{{dateShort .StartedAt}} {{timeShort .StartedAt}}</td>
         <td>{{if .FinishedAt}}{{dateShortPtr .FinishedAt}} {{timeShortPtr .FinishedAt}}{{else}}&mdash;{{end}}</td>
         <td>{{snapshotCountLabel .SnapshotCount}}</td>
-        {{if $.HasImportRunReviewGroups}}
-        <td>{{if $.HasImportRunDetail}}<a href="/admin/import-runs/{{.ID}}">{{.ReviewGroupStatusSummary}}</a>{{else}}{{.ReviewGroupStatusSummary}}{{end}}</td>
+        {{if $.HasImportRunEventReviewClusters}}
+        <td>{{if $.HasImportRunDetail}}<a href="/admin/import-runs/{{.ID}}">{{.EventReviewStatusSummary}}</a>{{else}}{{.EventReviewStatusSummary}}{{end}}</td>
         {{end}}
         <td>{{blankValue .Notes}}</td>
       </tr>

@@ -1,0 +1,44 @@
+<section class="page-head">
+  <p class="eyebrow">Admin review</p>
+  <h1>Event review history</h1>
+  <p class="lede">Read-only history of terminal event review clusters.</p>
+  <p class="review-group-meta">
+    {{if .HasEventReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if and .HasEventReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
+    {{if or .HasEventReviewStorage .HasImportHistory}} · {{end}}
+    <a href="/admin/venues">Provisional venues</a>
+    {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
+  </p>
+</section>
+
+<section class="section-block">
+  <div class="review-list">
+    {{range .EventReviewHistoryRows}}
+    <a class="review-group-link" href="/admin/event-review/{{.ID}}">
+      <span class="review-group-title">{{if .DisplayTitle}}{{.DisplayTitle}}{{else}}Cluster #{{.ID}}{{end}}</span>
+      <span class="review-group-meta">
+        {{if .DisplayVenueName}}{{.DisplayVenueName}}{{else}}{{if .DisplayVenueSlug}}{{.DisplayVenueSlug}}{{else}}No venue{{end}}{{end}}
+        {{with .DisplayStartAt}} · {{dateShortPtr .}} {{timeShortPtr .}}{{else}} · no start time{{end}}
+      </span>
+      <span class="review-group-meta">resolution #{{.ResolutionID}} · {{.ResolutionStatus}} · recorded {{dateShort .ResolutionCreatedAt}} {{timeShort .ResolutionCreatedAt}}</span>
+      <span class="review-group-meta">cluster {{.Status}} · version {{.Version}} · {{.EvidenceCount}} active evidence link{{if ne .EvidenceCount 1}}s{{end}} · updated {{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</span>
+      <span class="review-group-meta">
+        {{if .CanonicalEventID}}canonical event #{{.CanonicalEventID}}{{with .CanonicalEventSlug}}: {{.}}{{end}}{{else}}no canonical event{{end}}
+        · {{blankValue .ConflictType}}
+        · {{blankValue .ConflictReason}}
+      </span>
+      <span class="review-group-meta">
+        {{with .StagingKey}}staging key {{.}}{{else}}no staging key{{end}} · v{{.StagingKeyVersion}}
+        · resolved {{dateShort .ResolvedAt}} {{timeShort .ResolvedAt}}
+        {{with .SupersededByClusterID}} · superseded by cluster #{{.}}{{end}}
+        {{with .LatestImportRunID}} · import run #{{.}}{{end}}
+        {{with .LatestRepairRunID}} · repair run #{{.}}{{end}}
+      </span>
+      <span class="review-group-meta">{{with .DiscardReason}}discard reason: {{.}}{{else}}no discard reason{{end}}</span>
+    </a>
+    {{else}}
+    <p class="empty-state">No terminal event-review clusters.</p>
+    {{end}}
+  </div>
+</section>

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
@@ -149,6 +150,22 @@ source_page:
 			},
 			wantErr: "field venue_normaliser not found",
 		},
+		{
+			name: "negative guarded near-match window",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+guarded_near_match_window_minutes: -1
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+`) + "\n",
+			},
+			wantErr: "guarded_near_match_window_minutes must not be negative",
+		},
 	}
 
 	for _, tc := range tests {
@@ -179,4 +196,46 @@ mode: source_page
 source_page:
   source_page_parser: yellow_arch_jsonld
 `) + "\n"
+}
+
+func TestLoadCatalogAppliesGuardedNearMatchDefaultsAndOverrides(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"01-default.yaml": minimalSourceYAML("default", "Default", "https://default.example.test/", "Default manual ingest"),
+		"02-custom.yaml": strings.TrimSpace(`
+key: custom
+name: Custom
+url: https://custom.example.test/
+review_stage_source_name: Custom manual ingest
+guarded_near_match_disabled: true
+guarded_near_match_window_minutes: 30
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+`) + "\n",
+	}
+	for name, body := range files {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	catalog, err := LoadCatalog(dir)
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	if got, want := catalog.GuardedNearMatchWindowForSource("default"), 75*time.Minute; got != want {
+		t.Fatalf("default source near-match window = %s, want %s", got, want)
+	}
+	if got := catalog.GuardedNearMatchDisabledForSource("default"); got {
+		t.Fatal("default source near-match disabled = true, want false")
+	}
+	if got, want := catalog.GuardedNearMatchWindowForReviewStageSourceName("Custom manual ingest"), 30*time.Minute; got != want {
+		t.Fatalf("custom review-stage near-match window = %s, want %s", got, want)
+	}
+	if got := catalog.GuardedNearMatchDisabledForReviewStageSourceName("Custom manual ingest"); !got {
+		t.Fatal("custom review-stage near-match disabled = false, want true")
+	}
 }

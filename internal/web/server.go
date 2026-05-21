@@ -25,7 +25,6 @@ import (
 	"sheffield-live/internal/genre"
 	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/logging"
-	"sheffield-live/internal/review"
 	"sheffield-live/internal/store"
 )
 
@@ -36,33 +35,34 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type Server struct {
-	catalog                   store.CatalogStore
-	reviewStore               ReviewStore
-	importRunStore            ingest.ImportRunStore
-	replayStore               ingest.ReplayStore
-	importRunReviewGroupStore ImportRunReviewGroupStore
-	secondarySourceStore      EventSecondarySourceInfoStore
-	eventGenreStore           EventGenreStore
-	genreConfigStore          GenreConfigurationStore
-	readyChecker              ReadyChecker
-	localLocation             *time.Location
-	clock                     func() time.Time
-	layout                    *template.Template
-	pages                     map[string]*template.Template
-	fileServer                http.Handler
-	mediaServer               http.Handler
-	mediaURLPrefix            string
-	logger                    *slog.Logger
-	adminAuth                 *adminAuthenticator
+	catalog                          store.CatalogStore
+	eventReviewStore                 EventReviewAdminStore
+	importRunStore                   ingest.ImportRunStore
+	replayStore                      ingest.ReplayStore
+	importRunEventReviewClusterStore ImportRunEventReviewClusterStore
+	secondarySourceStore             EventSecondarySourceInfoStore
+	eventGenreStore                  EventGenreStore
+	genreConfigStore                 GenreConfigurationStore
+	readyChecker                     ReadyChecker
+	localLocation                    *time.Location
+	clock                            func() time.Time
+	layout                           *template.Template
+	pages                            map[string]*template.Template
+	fileServer                       http.Handler
+	mediaServer                      http.Handler
+	mediaURLPrefix                   string
+	logger                           *slog.Logger
+	adminAuth                        *adminAuthenticator
 }
 
-type ReviewStore interface {
-	ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary, error)
-	ListClosedReviewGroups(ctx context.Context, limit int) ([]review.GroupSummary, error)
-	LoadReviewGroup(ctx context.Context, id int64) (review.Group, bool, error)
-	SaveReviewDraftChoices(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
-	ResolveReviewGroup(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error
-	UpdateReviewGroupStatus(ctx context.Context, groupID int64, status string) error
+type EventReviewAdminStore interface {
+	ListOpenEventReviewClusters(ctx context.Context) ([]store.EventReviewClusterSummary, error)
+	ListClosedEventReviewClusters(ctx context.Context, limit int) ([]store.EventReviewClusterHistorySummary, error)
+	LoadEventReviewCluster(ctx context.Context, id int64) (store.EventReviewClusterDetail, bool, error)
+	SetEventReviewSourceIdentityChoices(ctx context.Context, input store.SetEventReviewSourceIdentityChoicesInput) error
+	DiscardEventReviewCluster(ctx context.Context, input store.EventReviewDiscardInput) error
+	ResolveEventReviewCluster(ctx context.Context, input store.EventReviewResolutionInput) error
+	SupersedeEventReviewCluster(ctx context.Context, input store.EventReviewSupersedeInput) error
 }
 
 type VenueAdminStore interface {
@@ -79,9 +79,10 @@ type RoomAdminStore interface {
 }
 
 const adminReviewHistoryLimit = 50
+const adminEventReviewHistoryLimit = 50
 
-type ImportRunReviewGroupStore interface {
-	ListReviewGroupsForImportRun(ctx context.Context, importRunID int64) ([]review.GroupSummary, error)
+type ImportRunEventReviewClusterStore interface {
+	ListEventReviewClustersForImportRun(ctx context.Context, importRunID int64) ([]store.EventReviewClusterSummary, error)
 }
 
 type EventSecondarySourceInfoStore interface {
@@ -103,69 +104,77 @@ type ReadyChecker interface {
 	Ready(ctx context.Context) error
 }
 
+type EventSlugAliasResolver interface {
+	ResolveEventSlugAlias(ctx context.Context, aliasSlug string) (targetSlug string, ok bool, err error)
+}
+
 type ServerDeps struct {
-	Catalog                   store.CatalogStore
-	ReviewStore               ReviewStore
-	ImportRunStore            ingest.ImportRunStore
-	ReplayStore               ingest.ReplayStore
-	ImportRunReviewGroupStore ImportRunReviewGroupStore
-	EventSecondarySourceStore EventSecondarySourceInfoStore
-	EventGenreStore           EventGenreStore
-	GenreConfigurationStore   GenreConfigurationStore
-	ReadyChecker              ReadyChecker
-	MediaRoot                 string
-	MediaURLPrefix            string
-	AdminAuth                 AdminAuthConfig
-	Logger                    *slog.Logger
+	Catalog                          store.CatalogStore
+	ImportRunStore                   ingest.ImportRunStore
+	ReplayStore                      ingest.ReplayStore
+	ImportRunEventReviewClusterStore ImportRunEventReviewClusterStore
+	EventSecondarySourceStore        EventSecondarySourceInfoStore
+	EventGenreStore                  EventGenreStore
+	GenreConfigurationStore          GenreConfigurationStore
+	ReadyChecker                     ReadyChecker
+	MediaRoot                        string
+	MediaURLPrefix                   string
+	AdminAuth                        AdminAuthConfig
+	Logger                           *slog.Logger
 }
 
 type PageData struct {
-	SiteName                 string
-	PageTitle                string
-	MetaDescription          string
-	Active                   string
-	Content                  template.HTML
-	Now                      time.Time
-	Events                   []domain.Event
-	EventGroups              []EventGroup
-	EventSections            []EventSection
-	EventFilters             EventFilters
-	EventFiltersApplied      bool
-	EventDetail              EventDetailView
-	VenueNames               map[string]string
-	VenueAreas               map[string]string
-	Areas                    []string
-	Event                    domain.Event
-	EventSecondarySources    []store.EventSecondarySourceInfo
-	EventGenres              []genre.Match
-	Venues                   []domain.Venue
-	Venue                    domain.Venue
-	VenueEvents              []domain.Event
-	VenueTimelineSections    []VenueTimelineSection
-	ReviewGroups             []review.GroupSummary
-	ReviewHistoryRows        []ReviewHistoryRow
-	ReviewDetail             ReviewDetail
-	ProvisionalVenues        []ProvisionalVenueRow
-	ProvisionalRooms         []ProvisionalRoomRow
-	Room                     domain.VenueRoom
-	RoomEvents               []domain.Event
-	ImportRunRows            []ImportRunRow
-	ImportRunDetail          ImportRunDetail
-	GenreRules               []genre.Rule
-	LatestImport             *ingest.ImportRunSummary
-	HasImportHistory         bool
-	HasImportRunDetail       bool
-	HasImportRunReviewGroups bool
-	HasReviewStorage         bool
-	HasVenueAdmin            bool
-	HasVenueAdminWrites      bool
-	HasRoomAdmin             bool
-	HasGenreConfiguration    bool
-	AdminAuthenticated       bool
-	CSRFToken                string
-	LoginNext                string
-	LoginError               string
-	Flash                    string
+	SiteName                                    string
+	PageTitle                                   string
+	MetaDescription                             string
+	Active                                      string
+	Content                                     template.HTML
+	Now                                         time.Time
+	Events                                      []domain.Event
+	EventGroups                                 []EventGroup
+	EventSections                               []EventSection
+	EventFilters                                EventFilters
+	EventFiltersApplied                         bool
+	EventDetail                                 EventDetailView
+	VenueNames                                  map[string]string
+	VenueAreas                                  map[string]string
+	Areas                                       []string
+	Event                                       domain.Event
+	EventSecondarySources                       []store.EventSecondarySourceInfo
+	EventGenres                                 []genre.Match
+	Venues                                      []domain.Venue
+	Venue                                       domain.Venue
+	VenueEvents                                 []domain.Event
+	VenueTimelineSections                       []VenueTimelineSection
+	EventReviewClusters                         []store.EventReviewClusterSummary
+	EventReviewHistoryRows                      []store.EventReviewClusterHistorySummary
+	EventReviewDetail                           store.EventReviewClusterDetail
+	EventReviewCanAcceptImportListing           bool
+	EventReviewCanAcceptSelectedImportCandidate bool
+	EventReviewCanSaveSourceIdentityChoices     bool
+	EventReviewCanResolveLiveActions            bool
+	EventReviewSourceIdentityChoices            []store.EventReviewImportCandidateSourceIdentityStatus
+	ProvisionalVenues                           []ProvisionalVenueRow
+	ProvisionalRooms                            []ProvisionalRoomRow
+	Room                                        domain.VenueRoom
+	RoomEvents                                  []domain.Event
+	ImportRunRows                               []ImportRunRow
+	ImportRunDetail                             ImportRunDetail
+	GenreRules                                  []genre.Rule
+	LatestImport                                *ingest.ImportRunSummary
+	HasImportHistory                            bool
+	HasImportRunDetail                          bool
+	HasImportRunEventReviewClusters             bool
+	HasEventReviewStorage                       bool
+	HasVenueAdmin                               bool
+	HasVenueAdminWrites                         bool
+	HasRoomAdmin                                bool
+	HasGenreConfiguration                       bool
+	AdminAuthenticated                          bool
+	CSRFToken                                   string
+	LoginNext                                   string
+	LoginError                                  string
+	Flash                                       string
 }
 
 type EventGroup struct {
@@ -191,16 +200,6 @@ type EventFilters struct {
 	Area   string
 }
 
-type ReviewDetail struct {
-	Group                review.Group
-	IsDuplicate          bool
-	IsSingleton          bool
-	CanonicalSummaryRows []ReviewCanonicalSummaryRow
-	Rows                 []ReviewFieldRow
-	Preview              []ReviewPreviewRow
-	SingleCandidateRows  []ReviewSingleCandidateRow
-}
-
 type ProvisionalVenueRow struct {
 	Venue              domain.Venue
 	UpcomingEventCount int
@@ -214,58 +213,20 @@ type ProvisionalRoomRow struct {
 	NextEvent          *domain.Event
 }
 
-type ReviewHistoryRow struct {
-	review.GroupSummary
-}
-
-type ReviewFieldRow struct {
-	Field review.Field
-	Label string
-	Cells []ReviewChoiceCell
-}
-
-type ReviewChoiceCell struct {
-	CandidateID       int64
-	Value             string
-	Checked           bool
-	Consensus         bool
-	SelectedConsensus bool
-	Provenance        string
-}
-
-type ReviewPreviewRow struct {
-	Label     string
-	Value     string
-	Candidate string
-}
-
-type ReviewCanonicalSummaryRow struct {
-	Label     string
-	Value     string
-	Candidate string
-	Selected  bool
-	Defaulted bool
-}
-
-type ReviewSingleCandidateRow struct {
-	Label string
-	Value string
-}
-
 type ImportRunRow struct {
 	ingest.ImportRunSummary
-	ReviewGroupStatusSummary string
+	EventReviewStatusSummary string
 }
 
 type ImportRunDetail struct {
-	ID            int64
-	Status        string
-	StartedAt     time.Time
-	FinishedAt    *time.Time
-	Notes         string
-	SnapshotCount int
-	ReviewGroups  []review.GroupSummary
-	Snapshots     []ImportRunSnapshotRow
+	ID                  int64
+	Status              string
+	StartedAt           time.Time
+	FinishedAt          *time.Time
+	Notes               string
+	SnapshotCount       int
+	EventReviewClusters []store.EventReviewClusterSummary
+	Snapshots           []ImportRunSnapshotRow
 }
 
 type ImportRunSnapshotRow struct {
@@ -349,36 +310,11 @@ func NewServer(deps ServerDeps) (*Server, error) {
 			return publicEventCardMeta(event, venueNames)
 		},
 		"eventDetailMeta": publicEventDetailMeta,
-		"candidateDisplayLabel": func(candidate review.Candidate) string {
-			if candidate.IsCanonicalSnapshot() {
-				return "Live canonical snapshot"
-			}
-			return fmt.Sprintf("Candidate %d", candidate.Position)
-		},
-		"choiceCellClass": func(cell ReviewChoiceCell) string {
-			classes := []string{"choice-cell"}
-			if cell.Checked {
-				classes = append(classes, "selected-choice")
-			}
-			if cell.Consensus {
-				classes = append(classes, "consensus")
-			}
-			if cell.SelectedConsensus {
-				classes = append(classes, "selected-consensus")
-			}
-			return strings.Join(classes, " ")
-		},
 		"snapshotCountLabel": func(count int) string {
 			if count == 1 {
 				return "1 snapshot"
 			}
 			return fmt.Sprintf("%d snapshots", count)
-		},
-		"candidateCountLabel": func(count int) string {
-			if count == 1 {
-				return "New listing review - 1 candidate"
-			}
-			return fmt.Sprintf("Duplicate review - %d candidates", count)
 		},
 		"timeShort": func(t time.Time) string { return t.In(localLocation).Format("15:04") },
 		"dateTimeAttr": func(t time.Time) string {
@@ -410,6 +346,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"joinStrings":        func(values []string, sep string) string { return strings.Join(values, sep) },
 		"genreNames":         func(values []genre.Match, sep string) string { return strings.Join(genre.Names(values), sep) },
 		"descriptionHTML":    descriptionHTML,
+		"queryEscape":        url.QueryEscape,
 	}
 
 	layout, err := template.New("layout.html").Funcs(funcs).ParseFS(templateFS, "templates/layout.html")
@@ -425,7 +362,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"templates/admin_login.html",
 		"templates/admin.html",
 		"templates/admin_review.html",
-		"templates/admin_review_history.html",
+		"templates/admin_event_review_history.html",
 		"templates/admin_venues.html",
 		"templates/admin_venue_detail.html",
 		"templates/admin_rooms.html",
@@ -433,7 +370,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		"templates/admin_configuration.html",
 		"templates/admin_import_runs.html",
 		"templates/admin_import_run_detail.html",
-		"templates/admin_review_detail.html",
+		"templates/admin_event_review_detail.html",
 	}
 	pages := make(map[string]*template.Template, len(pageFiles))
 	for _, file := range pageFiles {
@@ -458,25 +395,30 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		return nil, err
 	}
 
+	importRunEventReviewClusterStore := deps.ImportRunEventReviewClusterStore
+	if importRunEventReviewClusterStore == nil {
+		importRunEventReviewClusterStore = importRunEventReviewClusterStoreFromCatalog(deps.Catalog)
+	}
+
 	return &Server{
-		catalog:                   deps.Catalog,
-		reviewStore:               deps.ReviewStore,
-		importRunStore:            deps.ImportRunStore,
-		replayStore:               deps.ReplayStore,
-		importRunReviewGroupStore: deps.ImportRunReviewGroupStore,
-		secondarySourceStore:      deps.EventSecondarySourceStore,
-		eventGenreStore:           deps.EventGenreStore,
-		genreConfigStore:          deps.GenreConfigurationStore,
-		readyChecker:              deps.ReadyChecker,
-		localLocation:             localLocation,
-		clock:                     func() time.Time { return time.Now().UTC() },
-		layout:                    layout,
-		pages:                     pages,
-		fileServer:                http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
-		mediaServer:               mediaServer,
-		mediaURLPrefix:            mediaURLPrefix,
-		logger:                    logging.EnsureLogger(deps.Logger),
-		adminAuth:                 adminAuth,
+		catalog:                          deps.Catalog,
+		eventReviewStore:                 eventReviewAdminStoreFromCatalog(deps.Catalog),
+		importRunStore:                   deps.ImportRunStore,
+		replayStore:                      deps.ReplayStore,
+		importRunEventReviewClusterStore: importRunEventReviewClusterStore,
+		secondarySourceStore:             deps.EventSecondarySourceStore,
+		eventGenreStore:                  deps.EventGenreStore,
+		genreConfigStore:                 deps.GenreConfigurationStore,
+		readyChecker:                     deps.ReadyChecker,
+		localLocation:                    localLocation,
+		clock:                            func() time.Time { return time.Now().UTC() },
+		layout:                           layout,
+		pages:                            pages,
+		fileServer:                       http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
+		mediaServer:                      mediaServer,
+		mediaURLPrefix:                   mediaURLPrefix,
+		logger:                           logging.EnsureLogger(deps.Logger),
+		adminAuth:                        adminAuth,
 	}, nil
 }
 
@@ -892,7 +834,29 @@ func (s *Server) SetClockForTesting(clock func() time.Time) {
 }
 
 func (s *Server) hasVenueAdmin() bool {
-	return s.reviewStore != nil || s.importRunStore != nil || s.replayStore != nil || s.venueAdminStore() != nil
+	return s.importRunStore != nil || s.replayStore != nil || s.venueAdminStore() != nil
+}
+
+func eventReviewAdminStoreFromCatalog(catalog store.CatalogStore) EventReviewAdminStore {
+	if catalog == nil {
+		return nil
+	}
+	store, ok := catalog.(EventReviewAdminStore)
+	if !ok {
+		return nil
+	}
+	return store
+}
+
+func importRunEventReviewClusterStoreFromCatalog(catalog store.CatalogStore) ImportRunEventReviewClusterStore {
+	if catalog == nil {
+		return nil
+	}
+	store, ok := catalog.(ImportRunEventReviewClusterStore)
+	if !ok {
+		return nil
+	}
+	return store
 }
 
 func (s *Server) venueAdminStore() VenueAdminStore {
@@ -941,6 +905,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 	cleaned := path.Clean(r.URL.Path)
+	rawPath := r.URL.Path
 	if cleaned == "/admin/login" {
 		s.handleAdminLogin(w, r)
 		return
@@ -974,10 +939,15 @@ func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleReadyz(w, r)
 	case cleaned == "/admin":
 		s.handleAdmin(w, r)
-	case cleaned == "/admin/review":
+	case rawPath == "/admin/review":
 		s.handleAdminReview(w, r)
-	case cleaned == "/admin/review/history":
-		s.handleAdminReviewHistory(w, r)
+	case rawPath == "/admin/review/history" || strings.HasPrefix(rawPath, "/admin/review/") || rawPath == "/admin/legacy-review" || rawPath == "/admin/legacy-review/history" || strings.HasPrefix(rawPath, "/admin/legacy-review/"):
+		http.NotFound(w, r)
+		return
+	case cleaned == "/admin/event-review/history":
+		s.handleAdminEventReviewHistory(w, r)
+	case strings.HasPrefix(cleaned, "/admin/event-review/"):
+		s.handleAdminEventReviewDetail(w, r, strings.TrimPrefix(cleaned, "/admin/event-review/"))
 	case cleaned == "/admin/venues":
 		s.handleAdminVenues(w, r)
 	case cleaned == "/admin/rooms":
@@ -988,12 +958,12 @@ func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminImportRuns(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/import-runs/"):
 		s.handleAdminImportRunDetail(w, r)
+	case strings.HasPrefix(cleaned, "/admin/events/"):
+		s.handleAdminEventDetail(w, r, strings.TrimPrefix(cleaned, "/admin/events/"))
 	case strings.HasPrefix(cleaned, "/admin/venues/"):
 		s.handleAdminVenueDetail(w, r, strings.TrimPrefix(cleaned, "/admin/venues/"))
 	case strings.HasPrefix(cleaned, "/admin/rooms/"):
 		s.handleAdminRoomDetail(w, r, strings.TrimPrefix(cleaned, "/admin/rooms/"))
-	case strings.HasPrefix(cleaned, "/admin/review/"):
-		s.handleAdminReviewDetail(w, r, strings.TrimPrefix(cleaned, "/admin/review/"))
 	case strings.HasPrefix(cleaned, "/events/"):
 		s.handleEventDetail(w, r, strings.TrimPrefix(cleaned, "/events/"))
 	case strings.HasPrefix(cleaned, "/venues/"):
@@ -1009,6 +979,28 @@ func (s *Server) routeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func methodNotAllowedAllowGet(w http.ResponseWriter) {
+	w.Header().Set("Allow", http.MethodGet)
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+func parsePositivePathID(rawID string) (int64, bool) {
+	rawID = strings.TrimSpace(rawID)
+	if rawID == "" {
+		return 0, false
+	}
+	for _, r := range rawID {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
 }
 
 type responseLogWriter struct {
@@ -1143,7 +1135,7 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	if !s.hasVenueAdmin() {
+	if s.eventReviewStore == nil && s.importRunStore == nil && s.replayStore == nil && !s.hasVenueAdmin() && !s.hasRoomAdmin() && !s.hasGenreConfiguration() {
 		http.NotFound(w, r)
 		return
 	}
@@ -1152,62 +1144,60 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := PageData{
-		SiteName:            "Sheffield Live",
-		PageTitle:           "Admin",
-		MetaDescription:     "Admin tools for Sheffield Live.",
-		Active:              "admin",
-		Now:                 s.now(),
-		HasImportHistory:    s.importRunStore != nil,
-		HasImportRunDetail:  s.replayStore != nil,
-		HasReviewStorage:    s.reviewStore != nil,
-		HasVenueAdmin:       s.hasVenueAdmin(),
-		HasVenueAdminWrites: s.canWriteVenueAdmin(),
-		HasRoomAdmin:        s.hasRoomAdmin(),
+		SiteName:              "Sheffield Live",
+		PageTitle:             "Admin",
+		MetaDescription:       "Admin tools for Sheffield Live.",
+		Active:                "admin",
+		Now:                   s.now(),
+		HasImportHistory:      s.importRunStore != nil,
+		HasImportRunDetail:    s.replayStore != nil,
+		HasEventReviewStorage: s.eventReviewStore != nil,
+		HasVenueAdmin:         s.hasVenueAdmin(),
+		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
+		HasRoomAdmin:          s.hasRoomAdmin(),
 	}
 	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin.html", data)
 }
 
 func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
-	if s.reviewStore == nil {
+	if r.Method != http.MethodGet {
+		methodNotAllowedAllowGet(w)
+		return
+	}
+	if s.eventReviewStore == nil {
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	groups, err := s.reviewStore.ListOpenReviewGroups(r.Context())
+	eventReviewClusters, err := s.eventReviewStore.ListOpenEventReviewClusters(r.Context())
 	if err != nil {
-		s.logRequestError(r, "load review groups", err)
-		http.Error(w, "load review groups", http.StatusInternalServerError)
+		s.logRequestError(r, "load event review clusters", err)
+		http.Error(w, "load event review clusters", http.StatusInternalServerError)
 		return
 	}
 	flash := ""
 	switch {
-	case r.URL.Query().Get("saved") == "1":
-		flash = "Draft saved."
-	case r.URL.Query().Get("resolved") == "1":
-		flash = "Marked resolved."
-	case r.URL.Query().Get("accepted") == "1":
-		flash = "Accepted new listing."
-	case r.URL.Query().Get("rejected") == "1":
-		flash = "Rejected."
+	case r.URL.Query().Get("event_review_discarded") == "1":
+		flash = "Discarded event review cluster."
+	case r.URL.Query().Get("event_review_resolved") == "1":
+		flash = "Resolved event review cluster."
+	case r.URL.Query().Get("event_review_superseded") == "1":
+		flash = "Superseded event review cluster."
 	}
 	data := PageData{
 		SiteName:              "Sheffield Live",
-		PageTitle:             "Review",
-		MetaDescription:       "Review open staged event candidates.",
+		PageTitle:             "Review queue",
+		MetaDescription:       "Review open event-review clusters.",
 		Active:                "admin-review",
 		Now:                   s.now(),
-		ReviewGroups:          groups,
 		HasImportHistory:      s.importRunStore != nil,
 		HasImportRunDetail:    s.replayStore != nil,
-		HasReviewStorage:      s.reviewStore != nil,
+		HasEventReviewStorage: true,
 		HasVenueAdmin:         s.hasVenueAdmin(),
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasGenreConfiguration: s.hasGenreConfiguration(),
 		Flash:                 flash,
+		EventReviewClusters:   eventReviewClusters,
 	}
 	if s.importRunStore != nil {
 		latest, err := s.importRunStore.LatestSuccessfulImport(r.Context())
@@ -1220,6 +1210,39 @@ func (s *Server) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 	}
 	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_review.html", data)
+}
+
+func (s *Server) handleAdminEventReviewHistory(w http.ResponseWriter, r *http.Request) {
+	if s.eventReviewStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rows, err := s.eventReviewStore.ListClosedEventReviewClusters(r.Context(), adminEventReviewHistoryLimit)
+	if err != nil {
+		s.logRequestError(r, "load event review history", err)
+		http.Error(w, "load event review history", http.StatusInternalServerError)
+		return
+	}
+	data := PageData{
+		SiteName:               "Sheffield Live",
+		PageTitle:              "Event review history",
+		MetaDescription:        "Read-only history of terminal event review clusters.",
+		Active:                 "admin-review",
+		Now:                    s.now(),
+		EventReviewHistoryRows: rows,
+		HasImportHistory:       s.importRunStore != nil,
+		HasImportRunDetail:     s.replayStore != nil,
+		HasEventReviewStorage:  s.eventReviewStore != nil,
+		HasVenueAdmin:          s.hasVenueAdmin(),
+		HasVenueAdminWrites:    s.canWriteVenueAdmin(),
+		HasGenreConfiguration:  s.hasGenreConfiguration(),
+	}
+	s.populateAdminAuthData(r, &data)
+	s.renderPage(w, "templates/admin_event_review_history.html", data)
 }
 
 func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
@@ -1255,7 +1278,7 @@ func (s *Server) handleAdminVenues(w http.ResponseWriter, r *http.Request) {
 		Now:                   now,
 		HasImportHistory:      s.importRunStore != nil,
 		HasImportRunDetail:    s.replayStore != nil,
-		HasReviewStorage:      s.reviewStore != nil,
+		HasEventReviewStorage: s.eventReviewStore != nil,
 		HasVenueAdmin:         s.hasVenueAdmin(),
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasRoomAdmin:          s.hasRoomAdmin(),
@@ -1312,7 +1335,7 @@ func (s *Server) handleAdminRooms(w http.ResponseWriter, r *http.Request) {
 		Now:                   now,
 		HasImportHistory:      s.importRunStore != nil,
 		HasImportRunDetail:    s.replayStore != nil,
-		HasReviewStorage:      s.reviewStore != nil,
+		HasEventReviewStorage: s.eventReviewStore != nil,
 		HasVenueAdmin:         s.hasVenueAdmin(),
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasRoomAdmin:          s.hasRoomAdmin(),
@@ -1369,7 +1392,7 @@ func (s *Server) handleAdminConfiguration(w http.ResponseWriter, r *http.Request
 		GenreRules:            rules,
 		HasImportHistory:      s.importRunStore != nil,
 		HasImportRunDetail:    s.replayStore != nil,
-		HasReviewStorage:      s.reviewStore != nil,
+		HasEventReviewStorage: s.eventReviewStore != nil,
 		HasVenueAdmin:         s.hasVenueAdmin(),
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasRoomAdmin:          s.hasRoomAdmin(),
@@ -1457,39 +1480,6 @@ func genreRuleInputFromForm(form url.Values) (genre.RuleInput, error) {
 	return input, nil
 }
 
-func (s *Server) handleAdminReviewHistory(w http.ResponseWriter, r *http.Request) {
-	if s.reviewStore == nil {
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	groups, err := s.reviewStore.ListClosedReviewGroups(r.Context(), adminReviewHistoryLimit)
-	if err != nil {
-		s.logRequestError(r, "load review history", err)
-		http.Error(w, "load review history", http.StatusInternalServerError)
-		return
-	}
-	data := PageData{
-		SiteName:              "Sheffield Live",
-		PageTitle:             "Review history",
-		MetaDescription:       "Read-only history of resolved and rejected review groups.",
-		Active:                "admin-review",
-		Now:                   s.now(),
-		ReviewHistoryRows:     buildReviewHistoryRows(groups),
-		HasImportHistory:      s.importRunStore != nil,
-		HasImportRunDetail:    s.replayStore != nil,
-		HasReviewStorage:      s.reviewStore != nil,
-		HasVenueAdmin:         s.hasVenueAdmin(),
-		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
-		HasGenreConfiguration: s.hasGenreConfiguration(),
-	}
-	s.populateAdminAuthData(r, &data)
-	s.renderPage(w, "templates/admin_review_history.html", data)
-}
-
 func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, slug string) {
 	if s.catalog == nil || !s.hasVenueAdmin() {
 		http.NotFound(w, r)
@@ -1548,7 +1538,7 @@ func (s *Server) handleAdminVenueDetail(w http.ResponseWriter, r *http.Request, 
 		VenueAreas:            map[string]string{venue.Slug: venue.Neighbourhood},
 		VenueEvents:           sortEventsForDisplay(upcomingEvents(events, s.now(), s.localLocation)),
 		HasImportHistory:      s.importRunStore != nil,
-		HasReviewStorage:      s.reviewStore != nil,
+		HasEventReviewStorage: s.eventReviewStore != nil,
 		HasVenueAdmin:         s.hasVenueAdmin(),
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasGenreConfiguration: s.hasGenreConfiguration(),
@@ -1625,7 +1615,7 @@ func (s *Server) handleAdminRoomDetail(w http.ResponseWriter, r *http.Request, r
 		Room:                  room,
 		RoomEvents:            sortEventsForDisplay(upcomingEvents(filterEventsByRoom(events, room.Slug), s.now(), s.localLocation)),
 		HasImportHistory:      s.importRunStore != nil,
-		HasReviewStorage:      s.reviewStore != nil,
+		HasEventReviewStorage: s.eventReviewStore != nil,
 		HasVenueAdmin:         s.hasVenueAdmin(),
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasRoomAdmin:          s.hasRoomAdmin(),
@@ -1651,24 +1641,24 @@ func (s *Server) handleAdminImportRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load import runs", http.StatusInternalServerError)
 		return
 	}
-	importRunRows, err := buildImportRunRows(r.Context(), importRuns, s.importRunReviewGroupStore)
+	importRunRows, err := buildImportRunRows(r.Context(), importRuns, s.importRunEventReviewClusterStore)
 	if err != nil {
-		s.logRequestError(r, "load import run review groups", err)
-		http.Error(w, "load import run review groups", http.StatusInternalServerError)
+		s.logRequestError(r, "load import run summaries", err)
+		http.Error(w, "load import run summaries", http.StatusInternalServerError)
 		return
 	}
 	data := PageData{
-		SiteName:                 "Sheffield Live",
-		PageTitle:                "Import history",
-		MetaDescription:          "Read-only history of import runs and snapshot counts.",
-		Now:                      s.now(),
-		ImportRunRows:            importRunRows,
-		HasImportRunDetail:       s.replayStore != nil,
-		HasImportRunReviewGroups: s.importRunReviewGroupStore != nil,
-		HasReviewStorage:         s.reviewStore != nil,
-		HasVenueAdmin:            s.hasVenueAdmin(),
-		HasVenueAdminWrites:      s.canWriteVenueAdmin(),
-		HasGenreConfiguration:    s.hasGenreConfiguration(),
+		SiteName:                        "Sheffield Live",
+		PageTitle:                       "Import history",
+		MetaDescription:                 "Read-only history of import runs and snapshot counts.",
+		Now:                             s.now(),
+		ImportRunRows:                   importRunRows,
+		HasImportRunDetail:              s.replayStore != nil,
+		HasImportRunEventReviewClusters: s.importRunEventReviewClusterStore != nil,
+		HasEventReviewStorage:           s.eventReviewStore != nil,
+		HasVenueAdmin:                   s.hasVenueAdmin(),
+		HasVenueAdminWrites:             s.canWriteVenueAdmin(),
+		HasGenreConfiguration:           s.hasGenreConfiguration(),
 	}
 	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_import_runs.html", data)
@@ -1700,28 +1690,29 @@ func (s *Server) handleAdminImportRunDetail(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	detail := buildImportRunDetail(run)
-	if s.importRunReviewGroupStore != nil {
-		groups, err := s.importRunReviewGroupStore.ListReviewGroupsForImportRun(r.Context(), run.ID)
+	if s.importRunEventReviewClusterStore != nil {
+		clusters, err := s.importRunEventReviewClusterStore.ListEventReviewClustersForImportRun(r.Context(), run.ID)
 		if err != nil {
-			s.logRequestError(r, "load import run review groups", err, "import_run_id", run.ID)
-			http.Error(w, "load import run review groups", http.StatusInternalServerError)
+			s.logRequestError(r, "load import run event review clusters", err, "import_run_id", run.ID)
+			http.Error(w, "load import run event review clusters", http.StatusInternalServerError)
 			return
 		}
-		detail.ReviewGroups = groups
+		detail.EventReviewClusters = clusters
 	}
 
 	data := PageData{
-		SiteName:              "Sheffield Live",
-		PageTitle:             fmt.Sprintf("Import run #%d", run.ID),
-		MetaDescription:       "Read-only import run snapshot metadata.",
-		Now:                   s.now(),
-		ImportRunDetail:       detail,
-		HasImportHistory:      s.importRunStore != nil,
-		HasImportRunDetail:    s.replayStore != nil,
-		HasReviewStorage:      s.reviewStore != nil,
-		HasVenueAdmin:         s.hasVenueAdmin(),
-		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
-		HasGenreConfiguration: s.hasGenreConfiguration(),
+		SiteName:                        "Sheffield Live",
+		PageTitle:                       fmt.Sprintf("Import run #%d", run.ID),
+		MetaDescription:                 "Read-only import run snapshot metadata.",
+		Now:                             s.now(),
+		ImportRunDetail:                 detail,
+		HasImportHistory:                s.importRunStore != nil,
+		HasImportRunDetail:              s.replayStore != nil,
+		HasImportRunEventReviewClusters: s.importRunEventReviewClusterStore != nil,
+		HasEventReviewStorage:           s.eventReviewStore != nil,
+		HasVenueAdmin:                   s.hasVenueAdmin(),
+		HasVenueAdminWrites:             s.canWriteVenueAdmin(),
+		HasGenreConfiguration:           s.hasGenreConfiguration(),
 	}
 	s.populateAdminAuthData(r, &data)
 	s.renderPage(w, "templates/admin_import_run_detail.html", data)
@@ -1894,31 +1885,31 @@ func provisionalVenueUpdateFromForm(slug string, form url.Values) (store.VenueUp
 	return input, nil
 }
 
-func (s *Server) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request, rawGroupID string) {
-	if s.reviewStore == nil {
+func (s *Server) handleAdminEventReviewDetail(w http.ResponseWriter, r *http.Request, rawClusterID string) {
+	if s.eventReviewStore == nil {
 		http.NotFound(w, r)
 		return
 	}
-	groupID, err := strconv.ParseInt(strings.TrimSpace(rawGroupID), 10, 64)
-	if err != nil || groupID <= 0 {
+	clusterID, err := strconv.ParseInt(strings.TrimSpace(rawClusterID), 10, 64)
+	if err != nil || clusterID <= 0 {
 		http.NotFound(w, r)
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
-		flash := ""
-		if r.URL.Query().Get("saved") == "1" {
-			flash = "Draft saved."
-		}
-		s.renderAdminReviewDetail(w, r, groupID, flash)
+		s.renderAdminEventReviewDetail(w, r, clusterID)
 	case http.MethodPost:
-		s.postAdminReviewDecision(w, r, groupID)
+		s.postAdminEventReviewDecision(w, r, clusterID)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request, groupID int64) {
+func (s *Server) postAdminEventReviewDecision(w http.ResponseWriter, r *http.Request, clusterID int64) {
+	if s.eventReviewStore == nil {
+		http.NotFound(w, r)
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "parse form", http.StatusBadRequest)
 		return
@@ -1926,177 +1917,239 @@ func (s *Server) postAdminReviewDecision(w http.ResponseWriter, r *http.Request,
 	if !s.requireAdminCSRF(w, r) {
 		return
 	}
-
-	group, ok, err := s.reviewStore.LoadReviewGroup(r.Context(), groupID)
-	if err != nil {
-		s.logRequestError(r, "load review group", err, "review_group_id", groupID)
-		http.Error(w, "load review group", http.StatusInternalServerError)
-		return
+	action := strings.TrimSpace(r.FormValue("action"))
+	switch action {
+	case "discard":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		reason := strings.TrimSpace(r.FormValue("discard_reason"))
+		if reason == "" {
+			http.Error(w, "discard reason is required", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.DiscardEventReviewCluster(r.Context(), store.EventReviewDiscardInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			Reason: reason,
+		}); err != nil {
+			s.logRequestError(r, "discard event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_discarded=1", http.StatusSeeOther)
+	case "save_source_identity_choices":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canSaveEventReviewSourceIdentityChoices(cluster) {
+			http.Error(w, "event review cluster is not eligible for source identity choices", http.StatusBadRequest)
+			return
+		}
+		selectedSourceIdentityChoices, err := parseEventReviewSourceIdentityChoiceSelections(r.PostForm["source_identity_choice"])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		choiceRows := flattenEventReviewSourceIdentityChoiceStatuses(cluster)
+		if len(choiceRows) == 0 {
+			http.Error(w, "no source identity choices are available", http.StatusBadRequest)
+			return
+		}
+		choices := make([]store.EventReviewSourceIdentityChoiceInput, 0, len(choiceRows))
+		for _, row := range choiceRows {
+			key := eventReviewSourceIdentityChoiceKey{sourceID: row.SourceID, sourceIdentityKey: strings.TrimSpace(row.SourceIdentityKey)}
+			_, selected := selectedSourceIdentityChoices[key]
+			reason := "admin source identity choice cleared"
+			if selected {
+				reason = "admin source identity choice"
+			}
+			choices = append(choices, store.EventReviewSourceIdentityChoiceInput{
+				SourceID:          row.SourceID,
+				SourceIdentityKey: row.SourceIdentityKey,
+				Selected:          selected,
+				SelectionReason:   reason,
+			})
+		}
+		if err := s.eventReviewStore.SetEventReviewSourceIdentityChoices(r.Context(), store.SetEventReviewSourceIdentityChoicesInput{
+			ClusterID:       clusterID,
+			ExpectedVersion: expectedVersion,
+			Choices:         choices,
+		}); err != nil {
+			s.logRequestError(r, "save event review source identity choices", err, "event_review_cluster_id", clusterID, "expected_version", expectedVersion)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/admin/event-review/%d?source_identity_choices_saved=1", clusterID), http.StatusSeeOther)
+	case "supersede":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		supersededByClusterID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("superseded_by_cluster_id")), 10, 64)
+		if err != nil || supersededByClusterID <= 0 {
+			http.Error(w, "superseded by cluster ID is required", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.SupersedeEventReviewCluster(r.Context(), store.EventReviewSupersedeInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			SupersededByClusterID: supersededByClusterID,
+		}); err != nil {
+			s.logRequestError(r, "supersede event review cluster", err, "event_review_cluster_id", clusterID, "superseded_by_cluster_id", supersededByClusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_superseded=1", http.StatusSeeOther)
+	case "resolve_live_actions":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canResolveHistoricalDuplicateEventReviewCluster(cluster) {
+			http.Error(w, "event review cluster is not eligible for historical duplicate resolution", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.ResolveEventReviewCluster(r.Context(), store.EventReviewResolutionInput{
+			ClusterID:       clusterID,
+			ExpectedVersion: expectedVersion,
+		}); err != nil {
+			s.logRequestError(r, "resolve event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_import_new_listing":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canAcceptImportReviewEventReviewCluster(cluster) {
+			http.Error(w, "event review cluster is not eligible for import listing resolution", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.ResolveEventReviewCluster(r.Context(), store.EventReviewResolutionInput{
+			ClusterID:       clusterID,
+			ExpectedVersion: expectedVersion,
+		}); err != nil {
+			s.logRequestError(r, "resolve import review event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_import_selected_candidate":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canAcceptSelectedImportCandidateEventReviewCluster(cluster) {
+			http.Error(w, "event review cluster is not eligible for selected import candidate resolution", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.ResolveEventReviewCluster(r.Context(), store.EventReviewResolutionInput{
+			ClusterID:       clusterID,
+			ExpectedVersion: expectedVersion,
+		}); err != nil {
+			s.logRequestError(r, "resolve import selected candidate event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_title_repair":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canResolveTitleRepairEventReviewCluster(cluster) {
+			http.Error(w, "event review cluster is not eligible for title repair resolution", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.ResolveEventReviewCluster(r.Context(), store.EventReviewResolutionInput{
+			ClusterID:       clusterID,
+			ExpectedVersion: expectedVersion,
+		}); err != nil {
+			s.logRequestError(r, "resolve title repair event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	default:
+		http.Error(w, "invalid event review action", http.StatusBadRequest)
 	}
-	if !ok {
+}
+
+func (s *Server) renderAdminEventReviewDetail(w http.ResponseWriter, r *http.Request, clusterID int64) {
+	if s.eventReviewStore == nil {
 		http.NotFound(w, r)
 		return
 	}
-	if group.Status != review.StatusOpen {
-		http.Error(w, "review group is closed", http.StatusConflict)
-		return
-	}
-
-	action := strings.TrimSpace(r.FormValue("action"))
-	switch action {
-	case "", "save":
-		if !reviewGroupIsDuplicate(group) {
-			http.Error(w, "new listing reviews do not accept draft choices", http.StatusBadRequest)
-			return
-		}
-		if err := s.saveAdminReviewDraft(r.Context(), groupID, group, r.Form); err != nil {
-			s.logRequestError(r, "save review draft", err, "review_group_id", groupID)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		http.Redirect(w, r, fmt.Sprintf("/admin/review/%d?saved=1", groupID), http.StatusSeeOther)
-	case review.StatusResolved:
-		if !reviewGroupIsDuplicate(group) {
-			http.Error(w, "new listing reviews must be accepted without field choices", http.StatusBadRequest)
-			return
-		}
-		choices, err := reviewChoicesFromForm(group, r.Form, true)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := s.reviewStore.ResolveReviewGroup(r.Context(), groupID, choices); err != nil {
-			s.logRequestError(r, "resolve review group", err, "review_group_id", groupID)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		http.Redirect(w, r, "/admin/review?resolved=1", http.StatusSeeOther)
-	case "accept":
-		if err := acceptChoicesFromForm(r.Form); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		choices, err := singletonReviewChoices(group)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := s.reviewStore.ResolveReviewGroup(r.Context(), groupID, choices); err != nil {
-			s.logRequestError(r, "accept review group", err, "review_group_id", groupID)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		http.Redirect(w, r, "/admin/review?accepted=1", http.StatusSeeOther)
-	case review.StatusRejected:
-		if err := rejectChoicesFromForm(r.Form); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := s.reviewStore.UpdateReviewGroupStatus(r.Context(), groupID, review.StatusRejected); err != nil {
-			s.logRequestError(r, "reject review group", err, "review_group_id", groupID)
-			http.Error(w, "update review status", http.StatusBadRequest)
-			return
-		}
-		http.Redirect(w, r, "/admin/review?rejected=1", http.StatusSeeOther)
-	default:
-		http.Error(w, "invalid review action", http.StatusBadRequest)
-		return
-	}
-}
-
-func (s *Server) saveAdminReviewDraft(ctx context.Context, groupID int64, group review.Group, form url.Values) error {
-	choices, err := reviewChoicesFromForm(group, form, false)
+	cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
 	if err != nil {
-		return err
-	}
-	if len(choices) == 0 {
-		return fmt.Errorf("at least one review choice is required")
-	}
-	if err := s.reviewStore.SaveReviewDraftChoices(ctx, groupID, choices); err != nil {
-		return fmt.Errorf("save review draft: %w", err)
-	}
-	return nil
-}
-
-func reviewChoicesFromForm(group review.Group, form url.Values, requireAll bool) ([]review.DraftChoiceInput, error) {
-	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
-	for _, field := range review.CanonicalFields {
-		rawCandidateID := strings.TrimSpace(form.Get("choice_" + string(field)))
-		if rawCandidateID == "" {
-			if requireAll {
-				return nil, fmt.Errorf("all review fields must be selected before resolving")
-			}
-			continue
-		}
-		candidateID, err := strconv.ParseInt(rawCandidateID, 10, 64)
-		if err != nil || candidateID <= 0 {
-			return nil, fmt.Errorf("invalid candidate choice")
-		}
-		if !groupCandidateExists(group.Candidates, candidateID) {
-			return nil, fmt.Errorf("review candidate %d not found in group %d", candidateID, group.ID)
-		}
-		choices = append(choices, review.DraftChoiceInput{
-			Field:       field,
-			CandidateID: candidateID,
-		})
-	}
-	return choices, nil
-}
-
-func rejectChoicesFromForm(form url.Values) error {
-	return rejectReviewChoiceFields(form, "rejecting a review group")
-}
-
-func acceptChoicesFromForm(form url.Values) error {
-	return rejectReviewChoiceFields(form, "accepting a new listing")
-}
-
-func rejectReviewChoiceFields(form url.Values, action string) error {
-	for key := range form {
-		if strings.HasPrefix(key, "choice_") {
-			return fmt.Errorf("%s does not accept field choices", action)
-		}
-	}
-	return nil
-}
-
-func singletonReviewChoices(group review.Group) ([]review.DraftChoiceInput, error) {
-	if !reviewGroupIsSingleton(group) {
-		return nil, fmt.Errorf("accepting a new listing requires exactly one candidate")
-	}
-	candidateID := group.Candidates[0].ID
-	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
-	for _, field := range review.CanonicalFields {
-		choices = append(choices, review.DraftChoiceInput{
-			Field:       field,
-			CandidateID: candidateID,
-		})
-	}
-	return choices, nil
-}
-
-func reviewGroupIsDuplicate(group review.Group) bool {
-	return group.StagedCandidateCount >= 2 || reviewGroupHasCanonicalSnapshot(group)
-}
-
-func reviewGroupIsSingleton(group review.Group) bool {
-	return group.StagedCandidateCount == 1 && !reviewGroupHasCanonicalSnapshot(group)
-}
-
-func groupCandidateExists(candidates []review.Candidate, candidateID int64) bool {
-	for _, candidate := range candidates {
-		if candidate.ID == candidateID {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request, groupID int64, flash string) {
-	group, ok, err := s.reviewStore.LoadReviewGroup(r.Context(), groupID)
-	if err != nil {
-		s.logRequestError(r, "load review group", err, "review_group_id", groupID)
-		http.Error(w, "load review group", http.StatusInternalServerError)
+		s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+		http.Error(w, "load event review cluster", http.StatusInternalServerError)
 		return
 	}
 	if !ok {
@@ -2105,21 +2158,127 @@ func (s *Server) renderAdminReviewDetail(w http.ResponseWriter, r *http.Request,
 	}
 	data := PageData{
 		SiteName:              "Sheffield Live",
-		PageTitle:             group.Title,
-		MetaDescription:       "Review staged event candidates.",
+		PageTitle:             fmt.Sprintf("Event review cluster %d", cluster.Summary.ID),
+		MetaDescription:       "Read-only event review cluster detail.",
 		Active:                "admin-review",
 		Now:                   s.now(),
 		HasImportHistory:      s.importRunStore != nil,
 		HasImportRunDetail:    s.replayStore != nil,
-		HasReviewStorage:      s.reviewStore != nil,
+		HasEventReviewStorage: s.eventReviewStore != nil,
 		HasVenueAdmin:         s.hasVenueAdmin(),
 		HasVenueAdminWrites:   s.canWriteVenueAdmin(),
 		HasGenreConfiguration: s.hasGenreConfiguration(),
-		Flash:                 flash,
 	}
-	data.ReviewDetail = buildReviewDetail(group)
+	data.EventReviewDetail = cluster
+	data.EventReviewCanAcceptImportListing = canAcceptImportReviewEventReviewCluster(cluster)
+	data.EventReviewCanAcceptSelectedImportCandidate = canAcceptSelectedImportCandidateEventReviewCluster(cluster)
+	data.EventReviewCanSaveSourceIdentityChoices = canSaveEventReviewSourceIdentityChoices(cluster)
+	data.EventReviewSourceIdentityChoices = flattenEventReviewSourceIdentityChoiceStatuses(cluster)
+	data.EventReviewCanResolveLiveActions = canResolveHistoricalDuplicateEventReviewCluster(cluster)
+	if r.URL.Query().Get("source_identity_choices_saved") == "1" {
+		data.Flash = "Source identity choices saved."
+	}
 	s.populateAdminAuthData(r, &data)
-	s.renderPage(w, "templates/admin_review_detail.html", data)
+	s.renderPage(w, "templates/admin_event_review_detail.html", data)
+}
+
+func canAcceptImportReviewEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen {
+		return false
+	}
+	if cluster.Summary.ConflictType != store.EventReviewConflictTypeImportReview || cluster.Summary.ConflictReason != store.EventReviewConflictReasonIngestCandidate {
+		return false
+	}
+	readiness := cluster.ImportReadiness
+	if readiness == nil || !readiness.NewListingScope || len(readiness.Candidates) != 1 {
+		return false
+	}
+	return readiness.Candidates[0].SourceAuthority == store.SourceAuthoritySupporting
+}
+
+func canAcceptSelectedImportCandidateEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen {
+		return false
+	}
+	if cluster.Summary.ConflictType != store.EventReviewConflictTypeImportReview || cluster.Summary.ConflictReason != store.EventReviewConflictReasonIngestCandidate {
+		return false
+	}
+	readiness := cluster.ImportReadiness
+	if readiness == nil || readiness.CandidateCount <= 1 {
+		return false
+	}
+	if readiness.SelectedCandidateReadiness == nil || !readiness.SelectedCandidateReadiness.Eligible {
+		return false
+	}
+	return true
+}
+
+type eventReviewSourceIdentityChoiceKey struct {
+	sourceID          int64
+	sourceIdentityKey string
+}
+
+func canSaveEventReviewSourceIdentityChoices(cluster store.EventReviewClusterDetail) bool {
+	return cluster.Summary.Status == store.EventReviewClusterStatusOpen &&
+		cluster.Summary.ConflictType == store.EventReviewConflictTypeImportReview &&
+		cluster.Summary.ConflictReason == store.EventReviewConflictReasonIngestCandidate &&
+		len(flattenEventReviewSourceIdentityChoiceStatuses(cluster)) > 0
+}
+
+func flattenEventReviewSourceIdentityChoiceStatuses(cluster store.EventReviewClusterDetail) []store.EventReviewImportCandidateSourceIdentityStatus {
+	if cluster.ImportReadiness == nil {
+		return nil
+	}
+	seen := make(map[eventReviewSourceIdentityChoiceKey]struct{})
+	choices := make([]store.EventReviewImportCandidateSourceIdentityStatus, 0)
+	for _, candidate := range cluster.ImportReadiness.CandidateIdentityStatuses {
+		for _, choice := range candidate.SourceKeys {
+			sourceIdentityKey := strings.TrimSpace(choice.SourceIdentityKey)
+			if choice.SourceID <= 0 || sourceIdentityKey == "" {
+				continue
+			}
+			key := eventReviewSourceIdentityChoiceKey{sourceID: choice.SourceID, sourceIdentityKey: sourceIdentityKey}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			choice.SourceIdentityKey = sourceIdentityKey
+			choices = append(choices, choice)
+		}
+	}
+	return choices
+}
+
+func parseEventReviewSourceIdentityChoiceSelections(values []string) (map[eventReviewSourceIdentityChoiceKey]struct{}, error) {
+	selected := make(map[eventReviewSourceIdentityChoiceKey]struct{}, len(values))
+	for _, value := range values {
+		sourceIDText, encodedSourceIdentityKey, ok := strings.Cut(strings.TrimSpace(value), "|")
+		if !ok {
+			return nil, errors.New("invalid source identity choice")
+		}
+		sourceID, err := strconv.ParseInt(strings.TrimSpace(sourceIDText), 10, 64)
+		if err != nil || sourceID <= 0 {
+			return nil, errors.New("invalid source identity choice")
+		}
+		sourceIdentityKey, err := url.QueryUnescape(encodedSourceIdentityKey)
+		if err != nil {
+			return nil, errors.New("invalid source identity choice")
+		}
+		sourceIdentityKey = strings.TrimSpace(sourceIdentityKey)
+		if sourceIdentityKey == "" {
+			return nil, errors.New("invalid source identity choice")
+		}
+		selected[eventReviewSourceIdentityChoiceKey{sourceID: sourceID, sourceIdentityKey: sourceIdentityKey}] = struct{}{}
+	}
+	return selected, nil
+}
+
+func canResolveHistoricalDuplicateEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
+	return cluster.Summary.Status == store.EventReviewClusterStatusOpen && cluster.Summary.ConflictType == "historical_duplicate" && cluster.Summary.CanonicalEventID != nil && len(cluster.LiveActions) > 0
+}
+
+func canResolveTitleRepairEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
+	return cluster.Summary.Status == store.EventReviewClusterStatusOpen && cluster.Summary.ConflictType == "title_repair" && cluster.TitleRepairReadiness != nil && cluster.TitleRepairReadiness.Eligible
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -2136,6 +2295,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load events", http.StatusInternalServerError)
 		return
 	}
+	events = publicEvents(events)
 	filters := parseEventFilters(r, venues)
 	venueNames := venueNameMap(venues)
 	venueAreas := venueAreaMap(venues)
@@ -2176,18 +2336,67 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 		http.Error(w, "load event", http.StatusInternalServerError)
 		return
 	}
+	if ok {
+		if event.PublicationState == domain.PublicationStateWithheld {
+			if redirected, err := s.redirectPublicEventSlugAlias(w, r, slug); err != nil {
+				s.logRequestError(r, "resolve event alias", err, "event_slug", slug)
+				http.Error(w, "resolve event alias", http.StatusInternalServerError)
+				return
+			} else if redirected {
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
+		s.renderEventDetailPage(w, r, event)
+		return
+	}
+	if redirected, err := s.redirectPublicEventSlugAlias(w, r, slug); err != nil {
+		s.logRequestError(r, "resolve event alias", err, "event_slug", slug)
+		http.Error(w, "resolve event alias", http.StatusInternalServerError)
+		return
+	} else if redirected {
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (s *Server) handleAdminEventDetail(w http.ResponseWriter, r *http.Request, slug string) {
+	if s.catalog == nil {
+		http.NotFound(w, r)
+		return
+	}
+	slug = strings.TrimSpace(slug)
+	if slug == "" || strings.Contains(slug, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	event, ok, err := s.catalog.LoadEventBySlug(r.Context(), slug)
+	if err != nil {
+		s.logRequestError(r, "load event", err, "event_slug", slug)
+		http.Error(w, "load event", http.StatusInternalServerError)
+		return
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	s.renderEventDetailPage(w, r, event)
+}
+
+func (s *Server) renderEventDetailPage(w http.ResponseWriter, r *http.Request, event domain.Event) {
 	venue, ok, err := s.catalog.LoadVenueBySlug(r.Context(), event.VenueSlug)
 	if err != nil {
-		s.logRequestError(r, "load event venue", err, "event_slug", slug, "venue_slug", event.VenueSlug)
+		s.logRequestError(r, "load event venue", err, "event_slug", event.Slug, "venue_slug", event.VenueSlug)
 		http.Error(w, "load event venue", http.StatusInternalServerError)
 		return
 	}
 	if !ok {
-		s.log().Error("event venue not found", "event_slug", slug, "venue_slug", event.VenueSlug)
+		s.log().Error("event venue not found", "event_slug", event.Slug, "venue_slug", event.VenueSlug)
 		http.Error(w, "event venue not found", http.StatusInternalServerError)
 		return
 	}
@@ -2195,9 +2404,9 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 	venueNames := map[string]string{venue.Slug: venue.Name}
 	var secondarySources []store.EventSecondarySourceInfo
 	if s.secondarySourceStore != nil {
-		loaded, err := s.secondarySourceStore.EventSecondarySourceInfoByEventSlug(r.Context(), slug)
+		loaded, err := s.secondarySourceStore.EventSecondarySourceInfoByEventSlug(r.Context(), event.Slug)
 		if err != nil {
-			s.logRequestError(r, "load event secondary source info", err, "event_slug", slug)
+			s.logRequestError(r, "load event secondary source info", err, "event_slug", event.Slug)
 			http.Error(w, "event secondary source info not available", http.StatusInternalServerError)
 			return
 		}
@@ -2205,9 +2414,9 @@ func (s *Server) handleEventDetail(w http.ResponseWriter, r *http.Request, slug 
 	}
 	var eventGenres []genre.Match
 	if s.eventGenreStore != nil {
-		loaded, err := s.eventGenreStore.EventGenresByEventSlug(r.Context(), slug)
+		loaded, err := s.eventGenreStore.EventGenresByEventSlug(r.Context(), event.Slug)
 		if err != nil {
-			s.logRequestError(r, "load event genres", err, "event_slug", slug)
+			s.logRequestError(r, "load event genres", err, "event_slug", event.Slug)
 			http.Error(w, "event genres not available", http.StatusInternalServerError)
 			return
 		}
@@ -2293,7 +2502,7 @@ func (s *Server) handleVenueDetail(w http.ResponseWriter, r *http.Request, slug 
 		http.Error(w, "load venue events", http.StatusInternalServerError)
 		return
 	}
-	venueEvents := sortEventsForDisplay(upcomingEvents(events, now, s.localLocation))
+	venueEvents := sortEventsForDisplay(upcomingEvents(publicEvents(events), now, s.localLocation))
 	venueNames := map[string]string{venue.Slug: venue.Name}
 	venueAreas := map[string]string{venue.Slug: venue.Neighbourhood}
 	presenter := newEventPresenter(venueNames, venueAreas, s.localLocation)
@@ -2842,6 +3051,17 @@ func eventStatusLabel(event domain.Event) string {
 	return status
 }
 
+func publicEvents(events []domain.Event) []domain.Event {
+	out := make([]domain.Event, 0, len(events))
+	for _, event := range events {
+		if event.PublicationState == domain.PublicationStateWithheld {
+			continue
+		}
+		out = append(out, event)
+	}
+	return out
+}
+
 func showCount(count int) string {
 	if count == 1 {
 		return "1 show"
@@ -2885,30 +3105,64 @@ func parseStrictPositiveIDPath(rawPath, prefix string) (int64, bool) {
 	return id, true
 }
 
-func buildImportRunRows(ctx context.Context, runs []ingest.ImportRunSummary, groupStore ImportRunReviewGroupStore) ([]ImportRunRow, error) {
+func (s *Server) eventSlugAliasResolver() EventSlugAliasResolver {
+	if resolver, ok := s.catalog.(EventSlugAliasResolver); ok {
+		return resolver
+	}
+	return nil
+}
+
+func (s *Server) redirectPublicEventSlugAlias(w http.ResponseWriter, r *http.Request, slug string) (bool, error) {
+	resolver := s.eventSlugAliasResolver()
+	if resolver == nil {
+		return false, nil
+	}
+
+	targetSlug, ok, err := resolver.ResolveEventSlugAlias(r.Context(), slug)
+	if err != nil {
+		return false, err
+	}
+	targetSlug = strings.TrimSpace(targetSlug)
+	if !ok || targetSlug == "" || targetSlug == slug || strings.Contains(targetSlug, "/") {
+		return false, nil
+	}
+
+	targetEvent, ok, err := s.catalog.LoadEventBySlug(r.Context(), targetSlug)
+	if err != nil {
+		return false, err
+	}
+	if !ok || targetEvent.PublicationState == domain.PublicationStateWithheld {
+		return false, nil
+	}
+
+	http.Redirect(w, r, "/events/"+targetSlug, http.StatusSeeOther)
+	return true, nil
+}
+
+func buildImportRunRows(ctx context.Context, runs []ingest.ImportRunSummary, eventReviewStore ImportRunEventReviewClusterStore) ([]ImportRunRow, error) {
 	rows := make([]ImportRunRow, 0, len(runs))
 	for _, run := range runs {
 		row := ImportRunRow{ImportRunSummary: run}
-		if groupStore != nil {
-			groups, err := groupStore.ListReviewGroupsForImportRun(ctx, run.ID)
+		if eventReviewStore != nil {
+			clusters, err := eventReviewStore.ListEventReviewClustersForImportRun(ctx, run.ID)
 			if err != nil {
-				return nil, fmt.Errorf("list review groups for import run %d: %w", run.ID, err)
+				return nil, fmt.Errorf("list event review clusters for import run %d: %w", run.ID, err)
 			}
-			row.ReviewGroupStatusSummary = reviewGroupStatusSummary(groups)
+			row.EventReviewStatusSummary = eventReviewClusterStatusSummary(clusters)
 		}
 		rows = append(rows, row)
 	}
 	return rows, nil
 }
 
-func reviewGroupStatusSummary(groups []review.GroupSummary) string {
-	if len(groups) == 0 {
+func eventReviewClusterStatusSummary(clusters []store.EventReviewClusterSummary) string {
+	if len(clusters) == 0 {
 		return "none"
 	}
 
 	counts := make(map[string]int)
-	for _, group := range groups {
-		status := strings.TrimSpace(group.Status)
+	for _, cluster := range clusters {
+		status := strings.TrimSpace(string(cluster.Status))
 		if status == "" {
 			status = "unknown"
 		}
@@ -2920,8 +3174,8 @@ func reviewGroupStatusSummary(groups []review.GroupSummary) string {
 		statuses = append(statuses, status)
 	}
 	sort.Slice(statuses, func(i, j int) bool {
-		left := reviewStatusSortRank(statuses[i])
-		right := reviewStatusSortRank(statuses[j])
+		left := eventReviewClusterStatusSortRank(statuses[i])
+		right := eventReviewClusterStatusSortRank(statuses[j])
 		if left == right {
 			return statuses[i] < statuses[j]
 		}
@@ -2933,6 +3187,21 @@ func reviewGroupStatusSummary(groups []review.GroupSummary) string {
 		parts = append(parts, fmt.Sprintf("%d %s", counts[status], status))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func eventReviewClusterStatusSortRank(status string) int {
+	switch store.EventReviewClusterStatus(status) {
+	case store.EventReviewClusterStatusOpen:
+		return 0
+	case store.EventReviewClusterStatusResolved:
+		return 1
+	case store.EventReviewClusterStatusDiscarded:
+		return 2
+	case store.EventReviewClusterStatusSuperseded:
+		return 3
+	default:
+		return 4
+	}
 }
 
 func buildProvisionalVenueRows(venues []domain.Venue, events []domain.Event, now time.Time, loc *time.Location) []ProvisionalVenueRow {
@@ -3052,27 +3321,6 @@ func buildProvisionalRoomRows(venues []domain.Venue, rooms []domain.VenueRoom, e
 	return rows
 }
 
-func reviewStatusSortRank(status string) int {
-	switch status {
-	case review.StatusOpen:
-		return 0
-	case review.StatusResolved:
-		return 1
-	case review.StatusRejected:
-		return 2
-	default:
-		return 3
-	}
-}
-
-func buildReviewHistoryRows(groups []review.GroupSummary) []ReviewHistoryRow {
-	rows := make([]ReviewHistoryRow, 0, len(groups))
-	for _, group := range groups {
-		rows = append(rows, ReviewHistoryRow{GroupSummary: group})
-	}
-	return rows
-}
-
 func buildImportRunDetail(run ingest.ReplayRun) ImportRunDetail {
 	var finishedAt *time.Time
 	if run.FinishedAt != nil {
@@ -3125,99 +3373,4 @@ func httpStatusDisplay(status string, statusCode int) string {
 		return strconv.Itoa(statusCode)
 	}
 	return ""
-}
-
-func buildReviewDetail(group review.Group) ReviewDetail {
-	detail := ReviewDetail{
-		Group:       group,
-		IsDuplicate: reviewGroupIsDuplicate(group),
-		IsSingleton: reviewGroupIsSingleton(group),
-	}
-	for _, field := range review.CanonicalFields {
-		row := ReviewFieldRow{
-			Field: field,
-			Label: field.Label(),
-		}
-		selectedChoice, hasSelectedChoice := reviewChoiceForField(group, field)
-		defaultChoice, hasDefaultChoice := group.DefaultChoices[field]
-		draftChoice, hasDraftChoice := group.DraftChoices[field]
-		defaulted := hasSelectedChoice && !hasDraftChoice && hasDefaultChoice && selectedChoice.CandidateID == defaultChoice.CandidateID
-		if detail.IsDuplicate {
-			candidate := ""
-			if hasSelectedChoice {
-				candidate = reviewCandidateLabel(group.Candidates, selectedChoice.CandidateID)
-			}
-			detail.CanonicalSummaryRows = append(detail.CanonicalSummaryRows, ReviewCanonicalSummaryRow{
-				Label:     field.Label(),
-				Value:     selectedChoice.Value,
-				Candidate: candidate,
-				Selected:  hasSelectedChoice,
-				Defaulted: defaulted,
-			})
-		}
-		for _, candidate := range group.Candidates {
-			value := review.CandidateValue(candidate, field)
-			checked := hasSelectedChoice && selectedChoice.CandidateID == candidate.ID
-			consensus := hasDefaultChoice && value == defaultChoice.Value
-			row.Cells = append(row.Cells, ReviewChoiceCell{
-				CandidateID:       candidate.ID,
-				Value:             value,
-				Checked:           checked,
-				Consensus:         consensus,
-				SelectedConsensus: checked && consensus,
-				Provenance:        candidate.Provenance,
-			})
-		}
-		if detail.IsDuplicate {
-			detail.Rows = append(detail.Rows, row)
-		}
-		if detail.IsSingleton && len(group.Candidates) > 0 {
-			detail.SingleCandidateRows = append(detail.SingleCandidateRows, ReviewSingleCandidateRow{
-				Label: field.Label(),
-				Value: review.CandidateValue(group.Candidates[0], field),
-			})
-		}
-		if hasDraftChoice {
-			detail.Preview = append(detail.Preview, ReviewPreviewRow{
-				Label:     field.Label(),
-				Value:     draftChoice.Value,
-				Candidate: reviewCandidateLabel(group.Candidates, draftChoice.CandidateID),
-			})
-		}
-	}
-	return detail
-}
-
-func reviewChoiceForField(group review.Group, field review.Field) (review.DraftChoice, bool) {
-	if choice, ok := group.DraftChoices[field]; ok {
-		return choice, true
-	}
-	if choice, ok := group.DefaultChoices[field]; ok {
-		return choice, true
-	}
-	return review.DraftChoice{}, false
-}
-
-func reviewCandidateLabel(candidates []review.Candidate, id int64) string {
-	for _, candidate := range candidates {
-		if candidate.ID == id {
-			if candidate.IsCanonicalSnapshot() {
-				return "Live canonical snapshot"
-			}
-			if candidate.ExternalID != "" {
-				return fmt.Sprintf("Candidate %d (%s)", candidate.Position, candidate.ExternalID)
-			}
-			return fmt.Sprintf("Candidate %d", candidate.Position)
-		}
-	}
-	return "Unknown candidate"
-}
-
-func reviewGroupHasCanonicalSnapshot(group review.Group) bool {
-	for _, candidate := range group.Candidates {
-		if candidate.IsCanonicalSnapshot() {
-			return true
-		}
-	}
-	return false
 }

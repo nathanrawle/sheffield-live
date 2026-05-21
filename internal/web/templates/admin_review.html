@@ -1,12 +1,12 @@
 <section class="page-head">
   <p class="eyebrow">Admin</p>
   <h1>Review queue</h1>
-  <p class="lede">Open staging groups waiting for duplicate checks or new-listing review.</p>
+  <p class="lede">Open event-review clusters only.</p>
   <p class="review-group-meta">
-    {{if .HasReviewStorage}}<a href="/admin/review/history">Review history</a>{{end}}
-    {{if and .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasEventReviewStorage}}<a href="/admin/event-review/history">Event review history</a>{{end}}
+    {{if and .HasEventReviewStorage .HasImportHistory}} · {{end}}
     {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
-    {{if or .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if or .HasEventReviewStorage .HasImportHistory}} · {{end}}
     <a href="/admin/venues">Provisional venues</a>
     {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
   </p>
@@ -21,25 +21,33 @@
 </section>
 {{end}}
 
+{{if .HasEventReviewStorage}}
 <section class="section-block">
+  <h2>Event review clusters</h2>
   <div class="review-list">
-    {{range .ReviewGroups}}
-    <a class="review-group-link" href="/admin/review/{{.ID}}">
-      <span class="review-group-title">{{.Title}}</span>
-      <span class="review-group-meta">{{candidateCountLabel .CandidateCount}} · {{.DraftCount}} draft choices · {{.SourceName}}</span>
+    {{range .EventReviewClusters}}
+    <a class="review-group-link" href="/admin/event-review/{{.ID}}">
+      <span class="review-group-title">{{if .DisplayTitle}}{{.DisplayTitle}}{{else}}Cluster #{{.ID}}{{end}} <small class="review-kind-label">{{.ReviewKindLabel}}</small></span>
       <span class="review-group-meta">
-        {{if .SharedVenueSlug}}<strong>{{if .SharedVenueName}}{{.SharedVenueName}}{{else}}{{.SharedVenueSlug}}{{end}}</strong>{{else}}Mixed venues{{end}}
-        ·
-        {{with .SharedStartAt}}{{dateShort .}} {{timeShort .}}{{else}}Mixed times{{end}}
-        ·
-        {{if .Authoritative}}authoritative{{else}}non-authoritative{{end}}
-        ·
-        {{if .LatestImportRunID}}run #{{.LatestImportRunID}}{{else}}no linked run{{end}}
+        {{if .DisplayVenueName}}{{.DisplayVenueName}}{{else}}{{if .DisplayVenueSlug}}{{.DisplayVenueSlug}}{{else}}No venue{{end}}{{end}}
+        {{with .DisplayStartAt}} · {{dateShortPtr .}} {{timeShortPtr .}}{{else}} · no start time{{end}}
       </span>
-      <span class="review-group-meta">Updated {{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</span>
+      <span class="review-group-meta">{{.ReviewKindHint}}</span>
+      <span class="review-group-meta">
+        {{.Status}} · version {{.Version}} · {{.EvidenceCount}} active evidence link{{if ne .EvidenceCount 1}}s{{end}}
+        · {{with .CanonicalEventSlug}}canonical {{.}}{{else}}no canonical event{{end}}
+        · conflict {{blankValue .ConflictType}}: {{blankValue .ConflictReason}}
+        · updated {{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}
+        {{with .LatestImportRunID}} · import run #{{.}}{{end}}
+        {{with .LatestRepairRunID}} · repair run #{{.}}{{end}}
+      </span>
+      <span class="review-group-meta">
+        {{with .StagingKey}}staging key {{.}}{{else}}no staging key{{end}} · v{{.StagingKeyVersion}}
+      </span>
     </a>
     {{else}}
-    <p class="empty-state">No open review groups.</p>
+    <p class="empty-state">No open event-review clusters.</p>
     {{end}}
   </div>
 </section>
+{{end}}

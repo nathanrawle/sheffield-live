@@ -2,9 +2,7 @@ package sqlite
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,167 +11,8 @@ import (
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/review"
+	seedstore "sheffield-live/internal/store"
 )
-
-func (s *Store) CreateReviewGroup(ctx context.Context, input review.GroupInput) (int64, error) {
-	return s.createReviewGroup(ctx, input, "")
-}
-
-func (s *Store) StageReviewGroup(ctx context.Context, input review.GroupInput) (review.StageGroupResult, error) {
-	if s == nil || s.db == nil {
-		return review.StageGroupResult{}, errors.New("sqlite store is not open")
-	}
-	stagingKey := strings.TrimSpace(input.StagingKey)
-	if stagingKey == "" {
-		groupID, err := s.createReviewGroup(ctx, input, "")
-		if err != nil {
-			return review.StageGroupResult{}, err
-		}
-		return review.StageGroupResult{ID: groupID, Created: true}, nil
-	}
-	input.Title = strings.TrimSpace(input.Title)
-	input.SourceName = strings.TrimSpace(input.SourceName)
-	input.SourceURL = strings.TrimSpace(input.SourceURL)
-	if input.Title == "" {
-		input.Title = "Review group"
-	}
-	if input.SourceName == "" {
-		return review.StageGroupResult{}, errors.New("review source name is required")
-	}
-	if input.SourceURL == "" {
-		return review.StageGroupResult{}, errors.New("review source URL is required")
-	}
-	if len(input.Candidates) == 0 {
-		return review.StageGroupResult{}, errors.New("at least one review candidate is required")
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return review.StageGroupResult{}, err
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	now := time.Now().UTC()
-	res, err := tx.ExecContext(ctx, `
-		INSERT OR IGNORE INTO review_groups (
-			title,
-			source_name,
-			source_url,
-			authoritative_source_name,
-			authoritative_source_url,
-			authoritative_source_event_key,
-			staging_key,
-			status,
-			notes,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, input.Title, input.SourceName, input.SourceURL,
-		nullableReviewText(input.AuthoritativeSourceName),
-		nullableReviewText(input.AuthoritativeSourceURL),
-		nullableReviewText(input.AuthoritativeSourceEventKey),
-		stagingKeyValue(stagingKey), review.StatusOpen, input.Notes, formatRFC3339UTC(now), formatRFC3339UTC(now))
-	if err != nil {
-		return review.StageGroupResult{}, err
-	}
-
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return review.StageGroupResult{}, err
-	}
-
-	if rowsAffected == 1 {
-		groupID, err := res.LastInsertId()
-		if err != nil {
-			return review.StageGroupResult{}, err
-		}
-		if err := replaceReviewCandidatesTx(ctx, tx, groupID, input.Candidates, input.SourceName, input.SourceURL); err != nil {
-			return review.StageGroupResult{}, err
-		}
-		if err := ensureProvisionalVenuesForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
-			return review.StageGroupResult{}, err
-		}
-		if err := ensureProvisionalRoomsForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
-			return review.StageGroupResult{}, err
-		}
-		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, groupID, input, now); err != nil {
-			return review.StageGroupResult{}, err
-		}
-		autoResolved, outcome, canonicalSlug, err := maybeAutoResolveDuplicateReviewGroupTx(ctx, tx, groupID, now, s.sourceMetadata)
-		if err != nil {
-			return review.StageGroupResult{}, err
-		}
-		if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, groupID, now); err != nil {
-			return review.StageGroupResult{}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return review.StageGroupResult{}, err
-		}
-		return review.StageGroupResult{
-			ID:                 groupID,
-			Created:            true,
-			AutoResolved:       autoResolved,
-			AutoResolvedResult: outcome,
-			CanonicalEventSlug: canonicalSlug,
-		}, nil
-	}
-
-	group, ok, err := loadReviewGroupByStagingKey(ctx, tx, stagingKey)
-	if err != nil {
-		return review.StageGroupResult{}, err
-	}
-	if !ok {
-		return review.StageGroupResult{}, errors.New("staged review group not found after ignore")
-	}
-	if group.Status == review.StatusOpen {
-		if err := refreshReviewGroupAuthoritativeLinkTx(ctx, tx, group.ID, reviewGroupAuthoritativeLinkInput{
-			SourceName:     input.AuthoritativeSourceName,
-			SourceURL:      input.AuthoritativeSourceURL,
-			SourceEventKey: input.AuthoritativeSourceEventKey,
-		}, now); err != nil {
-			return review.StageGroupResult{}, err
-		}
-		if _, err := refreshCanonicalSnapshotAndDefaultsTx(ctx, tx, group.ID, input, now); err != nil {
-			return review.StageGroupResult{}, err
-		}
-		backfillCandidates, err := refreshStagedReviewCandidateVenueEvidenceTx(ctx, tx, group.ID, input.Candidates)
-		if err != nil {
-			return review.StageGroupResult{}, err
-		}
-		if err := ensureProvisionalVenuesForReviewCandidatesTx(ctx, tx, backfillCandidates); err != nil {
-			return review.StageGroupResult{}, err
-		}
-		if err := ensureProvisionalRoomsForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
-			return review.StageGroupResult{}, err
-		}
-		if err := recomputeReviewFieldDefaultsTx(ctx, tx, group.ID, now); err != nil {
-			return review.StageGroupResult{}, err
-		}
-	}
-	if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, group.ID, now); err != nil {
-		return review.StageGroupResult{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return review.StageGroupResult{}, err
-	}
-	return review.StageGroupResult{ID: group.ID, Created: false}, nil
-}
-
-func (s *Store) PromoteSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput) (string, bool, error) {
-	if s == nil || s.db == nil {
-		return "", false, errors.New("sqlite store is not open")
-	}
-	now := time.Now().UTC()
-
-	eventSlug, applied, err := s.promoteAuthoritativeSingletonReviewGroupIfMissing(ctx, input, now)
-	if err != nil || applied {
-		return eventSlug, applied, err
-	}
-	return s.promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx, input, now)
-}
 
 func (s *Store) decorateEventForPublish(event domain.Event) domain.Event {
 	return decorateEventForPublish(event, s.sourceMetadata)
@@ -186,573 +25,24 @@ func decorateEventForPublish(event domain.Event, sourceMetadata ingest.SourceMet
 	return event
 }
 
-func (s *Store) promoteAuthoritativeSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput, now time.Time) (string, bool, error) {
-	sourceEventKey := authoritativeSingletonSourceEventKey(s.sourceMetadata, input)
-	if sourceEventKey == "" {
-		return "", false, nil
-	}
-
-	event, err := singletonResolvedEventFromGroupInput(input, now)
-	if err != nil {
-		return "", false, nil
-	}
-	if authoritative, ok := reviewGroupInputAuthoritativeSource(input); ok {
-		event.SourceName = authoritative.SourceName
-		event.SourceURL = authoritative.SourceURL
-	}
-	event = s.decorateEventForPublish(event)
-	event.PublicationState = domain.PublicationStateReviewed
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", false, err
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	appliedEvent, applied, err := applyAuthoritativeEventTx(ctx, tx, event, sourceEventKey, now)
-	if err != nil {
-		return "", false, err
-	}
-	if applied {
-		if err := resolveMatchingOpenReviewGroupsTx(ctx, tx, input, now); err != nil {
-			return "", false, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return "", false, err
-	}
-	if !applied {
-		return "", false, nil
-	}
-	return appliedEvent.Event.Slug, true, nil
-}
-
-func (s *Store) promoteNonAuthoritativeSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput, now time.Time) (string, bool, error) {
-	event, err := singletonResolvedEventFromGroupInput(input, now)
-	if err != nil {
-		return "", false, nil
-	}
-	event = s.decorateEventForPublish(event)
-	event.PublicationState = domain.PublicationStateProvisional
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", false, err
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	matcher, err := loadVenueMatcher(ctx, tx)
-	if err != nil {
-		return "", false, err
-	}
-	venueMatch, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, reviewCandidateFromInput(input.Candidates[0]))
-	if err != nil {
-		return "", false, err
-	}
-	switch venueMatch.status {
-	case venueMatchResolved:
-		event.VenueSlug = venueMatch.slug
-		event.Slug, err = buildLiveEventSlug(event.Name, event.VenueSlug, event.Start)
-		if err != nil {
-			return "", false, err
-		}
-	case venueMatchAmbiguous, venueMatchNoMatch:
-		return "", false, nil
-	}
-
-	record, found, ambiguous, err := uniqueLiveEventMatchForEventTx(ctx, tx, event)
-	if err != nil {
-		return "", false, err
-	}
-	if ambiguous {
-		return "", false, nil
-	}
-	if found {
-		if supportingEventConflict(record.Event, event) {
-			return "", false, nil
-		}
-		if err := updateSupportingMatchedEventTx(ctx, tx, record, event); err != nil {
-			return "", false, err
-		}
-		if err := resolveMatchingOpenNonAuthoritativeSingletonReviewGroupsTx(ctx, tx, input, now); err != nil {
-			return "", false, err
-		}
-		if err := tx.Commit(); err != nil {
-			return "", false, err
-		}
-		return record.Event.Slug, true, nil
-	}
-
-	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
-	if err != nil {
-		return "", false, err
-	}
-	if !ok {
-		return "", false, nil
-	}
-
-	sourceID, err := ensureSourceTx(ctx, tx, event.SourceName, event.SourceURL)
-	if err != nil {
-		return "", false, err
-	}
-	eventID, err := insertEventTx(ctx, tx, event, venueID, sourceID)
-	if err != nil {
-		return "", false, err
-	}
-	if err := refreshEventGenresTx(ctx, tx, eventID, event.Description, nil, now); err != nil {
-		return "", false, err
-	}
-	if err := resolveMatchingOpenNonAuthoritativeSingletonReviewGroupsTx(ctx, tx, input, now); err != nil {
-		return "", false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return "", false, err
-	}
-	return event.Slug, true, nil
-}
-
-func ensureProvisionalVenuesForCandidateInputsTx(ctx context.Context, tx interface {
+func recordEventObservationsForSourceIdentityContextTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, inputs []review.CandidateInput) error {
-	candidates := make([]review.Candidate, 0, len(inputs))
-	for _, input := range inputs {
-		if input.CanonicalEventID != 0 {
-			continue
-		}
-		candidates = append(candidates, reviewCandidateFromInput(input))
+}, scope seedstore.ObservationRunScope, sourceID int64, sourceCtx reviewSourceIdentityContext, authority seedstore.SourceAuthority, target eventRecord, incoming domain.Event) error {
+	if scope == "" || sourceCtx.PrimaryObservationKey == "" {
+		return nil
 	}
-	return ensureProvisionalVenuesForReviewCandidatesTx(ctx, tx, candidates)
+	return recordEventObservationsTx(ctx, tx, scope, sourceID, sourceCtx.PrimaryObservationKey, authority, target, incoming)
 }
 
-func ensureProvisionalVenuesForReviewCandidatesTx(ctx context.Context, tx interface {
+func ensureEventSourceLinkForSourceIdentityContextTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, candidates []review.Candidate) error {
-	matcher, err := loadVenueMatcher(ctx, tx)
-	if err != nil {
-		return err
+}, eventID, sourceID int64, sourceCtx reviewSourceIdentityContext, authority sourceLinkAuthority, policy sourceLinkConflictPolicy, now time.Time) (sourceLinkWriteResult, error) {
+	if len(sourceCtx.Identities.Keys()) == 0 {
+		return sourceLinkWriteResult{TargetEventID: eventID, Reason: "no stable source identities"}, nil
 	}
-	for _, candidate := range candidates {
-		if candidate.CanonicalEventID != 0 {
-			continue
-		}
-		if _, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, candidate); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Store) createReviewGroup(ctx context.Context, input review.GroupInput, stagingKey string) (int64, error) {
-	if s == nil || s.db == nil {
-		return 0, errors.New("sqlite store is not open")
-	}
-	input.Title = strings.TrimSpace(input.Title)
-	input.SourceName = strings.TrimSpace(input.SourceName)
-	input.SourceURL = strings.TrimSpace(input.SourceURL)
-	if input.Title == "" {
-		input.Title = "Review group"
-	}
-	if input.SourceName == "" {
-		return 0, errors.New("review source name is required")
-	}
-	if input.SourceURL == "" {
-		return 0, errors.New("review source URL is required")
-	}
-	if len(input.Candidates) == 0 {
-		return 0, errors.New("at least one review candidate is required")
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	now := time.Now().UTC()
-	res, err := tx.ExecContext(ctx, `
-		INSERT INTO review_groups (
-			title,
-			source_name,
-			source_url,
-			authoritative_source_name,
-			authoritative_source_url,
-			authoritative_source_event_key,
-			staging_key,
-			status,
-			notes,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, input.Title, input.SourceName, input.SourceURL,
-		nullableReviewText(input.AuthoritativeSourceName),
-		nullableReviewText(input.AuthoritativeSourceURL),
-		nullableReviewText(input.AuthoritativeSourceEventKey),
-		stagingKeyValue(stagingKey), review.StatusOpen, input.Notes, formatRFC3339UTC(now), formatRFC3339UTC(now))
-	if err != nil {
-		return 0, err
-	}
-	groupID, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-
-	if err := insertReviewCandidatesTx(ctx, tx, groupID, input.Candidates, input.SourceName, input.SourceURL); err != nil {
-		return 0, err
-	}
-	if err := ensureProvisionalVenuesForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
-		return 0, err
-	}
-	if err := ensureProvisionalRoomsForCandidateInputsTx(ctx, tx, input.Candidates); err != nil {
-		return 0, err
-	}
-	if err := recomputeReviewFieldDefaultsTx(ctx, tx, groupID, now); err != nil {
-		return 0, err
-	}
-	if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, groupID, now); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return groupID, nil
-}
-
-func replaceReviewCandidatesTx(ctx context.Context, tx execer, groupID int64, candidates []review.CandidateInput, defaultSourceName, defaultSourceURL string) error {
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM review_candidates
-		WHERE group_id = ? AND canonical_event_id IS NULL
-	`, groupID); err != nil {
-		return err
-	}
-	for i, candidate := range candidates {
-		candidate.CanonicalEventID = 0
-		if err := insertReviewCandidate(ctx, tx, groupID, i+1, candidate, defaultSourceName, defaultSourceURL); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func refreshStagedReviewCandidateVenueEvidenceTx(ctx context.Context, tx interface {
-	execer
-	queryer
-}, groupID int64, incoming []review.CandidateInput) ([]review.Candidate, error) {
-	existing, err := loadReviewCandidates(ctx, tx, groupID)
-	if err != nil {
-		return nil, err
-	}
-	var backfillCandidates []review.Candidate
-
-	incomingByFingerprint := make(map[string][]review.CandidateInput)
-	for _, candidate := range incoming {
-		if candidate.CanonicalEventID != 0 {
-			continue
-		}
-		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
-		incomingByFingerprint[fingerprint] = append(incomingByFingerprint[fingerprint], candidate)
-	}
-
-	existingByFingerprint := make(map[string][]review.Candidate)
-	for _, candidate := range existing {
-		if candidate.CanonicalEventID != 0 {
-			continue
-		}
-		fingerprint := stagedReviewCandidateFingerprint(candidate.ExternalID, candidate.Name, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description)
-		existingByFingerprint[fingerprint] = append(existingByFingerprint[fingerprint], candidate)
-	}
-
-	for fingerprint, incomingBucket := range incomingByFingerprint {
-		existingBucket := existingByFingerprint[fingerprint]
-		if len(existingBucket) != len(incomingBucket) || len(existingBucket) != 1 {
-			continue
-		}
-		incomingCandidate := incomingBucket[0]
-		existingCandidate := existingBucket[0]
-		incomingVenueText := strings.TrimSpace(incomingCandidate.VenueText)
-		incomingVenueLocationRaw := strings.TrimSpace(incomingCandidate.VenueLocationRaw)
-		incomingRoomText := strings.TrimSpace(incomingCandidate.RoomText)
-		if strings.TrimSpace(incomingCandidate.ImageURL) != "" {
-			if _, err := tx.ExecContext(ctx, `
-					UPDATE review_candidates
-					SET venue_text = ?,
-						venue_location_raw = ?,
-						room_text = ?,
-						image_url = ?,
-						image_source_url = ?,
-						image_alt = ?,
-						image_width = ?,
-						image_height = ?,
-						image_focus_x = ?,
-						image_focus_y = ?
-					WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
-				`, incomingVenueText, incomingVenueLocationRaw, incomingRoomText,
-				strings.TrimSpace(incomingCandidate.ImageURL),
-				strings.TrimSpace(incomingCandidate.ImageSourceURL),
-				strings.TrimSpace(incomingCandidate.ImageAlt),
-				incomingCandidate.ImageWidth,
-				incomingCandidate.ImageHeight,
-				normalizedImageFocusValue(incomingCandidate.ImageFocusX),
-				normalizedImageFocusValue(incomingCandidate.ImageFocusY),
-				existingCandidate.ID, groupID); err != nil {
-				return nil, err
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, `
-					UPDATE review_candidates
-					SET venue_text = ?,
-						venue_location_raw = ?,
-						room_text = ?
-					WHERE id = ? AND group_id = ? AND canonical_event_id IS NULL
-				`, incomingVenueText, incomingVenueLocationRaw, incomingRoomText, existingCandidate.ID, groupID); err != nil {
-				return nil, err
-			}
-		}
-		if err := replaceReviewCandidateRoomsTx(ctx, tx, existingCandidate.ID, incomingCandidate.Rooms); err != nil {
-			return nil, err
-		}
-		if reviewCandidateNeedsProvisionalVenueBackfill(existingCandidate, incomingVenueText, incomingVenueLocationRaw) {
-			existingCandidate.VenueSlug = strings.TrimSpace(incomingCandidate.VenueSlug)
-			existingCandidate.VenueText = incomingVenueText
-			existingCandidate.VenueLocationRaw = incomingVenueLocationRaw
-			backfillCandidates = append(backfillCandidates, existingCandidate)
-		}
-	}
-
-	return backfillCandidates, nil
-}
-
-func reviewCandidateNeedsProvisionalVenueBackfill(existing review.Candidate, incomingVenueText, incomingVenueLocationRaw string) bool {
-	if existing.CanonicalEventID != 0 {
-		return false
-	}
-	if strings.TrimSpace(existing.VenueText) != "" || strings.TrimSpace(existing.VenueLocationRaw) != "" {
-		return false
-	}
-	return incomingVenueLocationRaw != ""
-}
-
-func insertReviewCandidatesTx(ctx context.Context, tx execer, groupID int64, candidates []review.CandidateInput, defaultSourceName, defaultSourceURL string) error {
-	for i, candidate := range candidates {
-		if err := insertReviewCandidate(ctx, tx, groupID, i+1, candidate, defaultSourceName, defaultSourceURL); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func refreshCanonicalSnapshotAndDefaultsTx(ctx context.Context, tx interface {
-	execer
-	queryer
-}, groupID int64, input review.GroupInput, now time.Time) (*eventRecord, error) {
-	canonical, err := attachCanonicalSnapshotTx(ctx, tx, groupID, input)
-	if err != nil {
-		return nil, err
-	}
-	if err := recomputeReviewFieldDefaultsTx(ctx, tx, groupID, now); err != nil {
-		return nil, err
-	}
-	return canonical, nil
-}
-
-func attachCanonicalSnapshotTx(ctx context.Context, tx interface {
-	execer
-	queryer
-}, groupID int64, input review.GroupInput) (*eventRecord, error) {
-	record, err := canonicalMatchForGroupInputTx(ctx, tx, input)
-	if err != nil {
-		return nil, err
-	}
-	if record == nil {
-		if _, err := tx.ExecContext(ctx, `
-			DELETE FROM review_candidates
-			WHERE group_id = ? AND canonical_event_id IS NOT NULL
-		`, groupID); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}
-
-	position := len(input.Candidates) + 1
-	candidate := review.CandidateInput{
-		CanonicalEventID: record.ID,
-		ExternalID:       "",
-		Name:             record.Event.Name,
-		VenueSlug:        record.Event.VenueSlug,
-		VenueText:        "",
-		VenueLocationRaw: "",
-		RoomText:         record.Event.RoomText,
-		Rooms:            append([]domain.VenueRoom(nil), record.Event.Rooms...),
-		StartAt:          formatRFC3339UTC(record.Event.Start),
-		EndAt:            formatOptionalTime(record.Event.End),
-		Genre:            record.Event.Genre,
-		Status:           record.Event.Status,
-		Description:      record.Event.Description,
-		ImageURL:         record.Event.ImageURL,
-		ImageSourceURL:   record.Event.ImageSourceURL,
-		ImageAlt:         record.Event.ImageAlt,
-		ImageWidth:       record.Event.ImageWidth,
-		ImageHeight:      record.Event.ImageHeight,
-		ImageFocusX:      record.Event.ImageFocusX,
-		ImageFocusY:      record.Event.ImageFocusY,
-		SourceName:       record.Event.SourceName,
-		SourceURL:        firstNonEmptyReviewText(record.Event.OfficialListingURL, record.Event.SourceURL),
-		CalendarURL:      record.Event.CalendarURL,
-		Provenance:       "Canonical live event snapshot",
-	}
-
-	existing, ok, err := loadCanonicalSnapshotCandidate(ctx, tx, groupID)
-	if err != nil {
-		return nil, err
-	}
-	if ok {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE review_candidates
-			SET position = ?,
-				canonical_event_id = ?,
-				external_id = ?,
-				name = ?,
-				venue_slug = ?,
-				venue_text = ?,
-				venue_location_raw = ?,
-				room_text = ?,
-				start_at = ?,
-				end_at = ?,
-				genre = ?,
-				status = ?,
-				description = ?,
-				image_url = ?,
-				image_source_url = ?,
-				image_alt = ?,
-				image_width = ?,
-				image_height = ?,
-				image_focus_x = ?,
-				image_focus_y = ?,
-				source_name = ?,
-				source_url = ?,
-				calendar_url = ?,
-				provenance = ?
-			WHERE id = ? AND group_id = ?
-		`, position, record.ID, "", candidate.Name, candidate.VenueSlug, candidate.VenueText, candidate.VenueLocationRaw, candidate.RoomText, candidate.StartAt, candidate.EndAt, candidate.Genre, candidate.Status, candidate.Description, candidate.ImageURL, candidate.ImageSourceURL, candidate.ImageAlt, candidate.ImageWidth, candidate.ImageHeight, normalizedImageFocusValue(candidate.ImageFocusX), normalizedImageFocusValue(candidate.ImageFocusY), candidate.SourceName, candidate.SourceURL, candidate.CalendarURL, candidate.Provenance, existing.ID, groupID); err != nil {
-			return nil, err
-		}
-		if err := replaceReviewCandidateRoomsTx(ctx, tx, existing.ID, candidate.Rooms); err != nil {
-			return nil, err
-		}
-		return record, nil
-	}
-	if err := insertReviewCandidate(ctx, tx, groupID, position, candidate, input.SourceName, input.SourceURL); err != nil {
-		return nil, err
-	}
-	return record, nil
-}
-
-func stagedReviewCandidateFingerprint(values ...string) string {
-	sum := sha256.New()
-	writeStagedReviewCandidateFingerprintPart(sum, "review-stage-candidate:v1")
-	for _, value := range values {
-		writeStagedReviewCandidateFingerprintPart(sum, value)
-	}
-	return hex.EncodeToString(sum.Sum(nil))
-}
-
-func writeStagedReviewCandidateFingerprintPart(sum interface{ Write([]byte) (int, error) }, value string) {
-	_, _ = fmt.Fprintf(sum, "%d:%s\x00", len(value), value)
-}
-
-func canonicalMatchForGroupInputTx(ctx context.Context, q queryer, input review.GroupInput) (*eventRecord, error) {
-	matched := make(map[int64]eventRecord)
-	if authoritative, ok := reviewGroupInputAuthoritativeSource(input); ok {
-		sourceID, found, err := loadSourceIDByNameURLTx(ctx, q, authoritative.SourceName, authoritative.SourceURL)
-		if err != nil {
-			return nil, err
-		}
-		if found {
-			record, ok, err := loadEventRecordBySourceLinkTx(ctx, q, sourceID, authoritative.SourceEventKey)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				matched[record.ID] = record
-			}
-		}
-	}
-
-	derivedAny := false
-	for _, candidate := range input.Candidates {
-		records, ok, err := candidateLiveEventIdentityMatchesTx(ctx, q, candidate)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-		derivedAny = true
-		for _, record := range records {
-			matched[record.ID] = record
-		}
-	}
-	if !derivedAny || len(matched) != 1 {
-		return nil, nil
-	}
-	for _, record := range matched {
-		copy := record
-		return &copy, nil
-	}
-	return nil, nil
-}
-
-func derivedCandidateLiveSlug(candidate review.CandidateInput) (string, bool) {
-	name := strings.TrimSpace(candidate.Name)
-	venueSlug := strings.TrimSpace(candidate.VenueSlug)
-	startText := strings.TrimSpace(candidate.StartAt)
-	if name == "" || venueSlug == "" || startText == "" {
-		return "", false
-	}
-	start, err := parseRFC3339UTC(startText)
-	if err != nil {
-		return "", false
-	}
-	slug, err := buildLiveEventSlug(name, venueSlug, start)
-	if err != nil {
-		return "", false
-	}
-	return slug, true
-}
-
-func candidateLiveEventIdentityMatchesTx(ctx context.Context, q queryer, candidate review.CandidateInput) ([]eventRecord, bool, error) {
-	slug, ok := derivedCandidateLiveSlug(candidate)
-	if !ok {
-		return nil, false, nil
-	}
-
-	start, err := parseRFC3339UTC(strings.TrimSpace(candidate.StartAt))
-	if err != nil {
-		return nil, false, nil
-	}
-	records, err := matchLiveEventsByIdentityTx(ctx, q, slug, candidate.Name, candidate.VenueSlug, start)
-	if err != nil {
-		return nil, false, err
-	}
-	return records, true, nil
-}
-
-func reviewGroupInputAuthoritativeSource(input review.GroupInput) (reviewGroupAuthoritativeLink, bool) {
-	if strings.TrimSpace(input.AuthoritativeSourceName) == "" || strings.TrimSpace(input.AuthoritativeSourceURL) == "" || strings.TrimSpace(input.AuthoritativeSourceEventKey) == "" {
-		return reviewGroupAuthoritativeLink{}, false
-	}
-	return reviewGroupAuthoritativeLink{
-		SourceName:     strings.TrimSpace(input.AuthoritativeSourceName),
-		SourceURL:      strings.TrimSpace(input.AuthoritativeSourceURL),
-		SourceEventKey: strings.TrimSpace(input.AuthoritativeSourceEventKey),
-	}, true
+	return ensureEventSourceLinkTx(ctx, tx, eventID, sourceID, sourceCtx.Identities, authority, policy, now)
 }
 
 func formatOptionalTime(value time.Time) string {
@@ -762,68 +52,8 @@ func formatOptionalTime(value time.Time) string {
 	return formatRFC3339UTC(value)
 }
 
-func recomputeReviewFieldDefaultsTx(ctx context.Context, tx interface {
-	execer
-	queryer
-}, groupID int64, now time.Time) error {
-	candidates, err := loadReviewCandidates(ctx, tx, groupID)
-	if err != nil {
-		return err
-	}
-	defaults := computeReviewFieldDefaults(candidates, now)
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM review_field_defaults
-		WHERE group_id = ?
-	`, groupID); err != nil {
-		return err
-	}
-	for _, choice := range defaults {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO review_field_defaults (
-				group_id,
-				field,
-				candidate_id,
-				value,
-				updated_at
-			) VALUES (?, ?, ?, ?, ?)
-		`, groupID, string(choice.Field), choice.CandidateID, choice.Value, formatRFC3339UTC(choice.UpdatedAt)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func computeReviewFieldDefaults(candidates []review.Candidate, now time.Time) map[review.Field]review.DraftChoice {
-	defaults := make(map[review.Field]review.DraftChoice)
-	for _, field := range reviewConsensusFields() {
-		type tally struct {
-			count       int
-			candidateID int64
-		}
-		counts := make(map[string]tally)
-		for _, candidate := range candidates {
-			value := review.CandidateValue(candidate, field)
-			entry := counts[value]
-			entry.count++
-			if entry.candidateID == 0 {
-				entry.candidateID = candidate.ID
-			}
-			counts[value] = entry
-		}
-		threshold := len(candidates) / 2
-		for value, entry := range counts {
-			if entry.count > threshold {
-				defaults[field] = review.DraftChoice{
-					Field:       field,
-					CandidateID: entry.candidateID,
-					Value:       value,
-					UpdatedAt:   now,
-				}
-				break
-			}
-		}
-	}
-	return defaults
+func writeStagedReviewCandidateFingerprintPart(sum interface{ Write([]byte) (int, error) }, value string) {
+	_, _ = fmt.Fprintf(sum, "%d:%s\x00", len(value), value)
 }
 
 func reviewConsensusFields() []review.Field {
@@ -840,182 +70,6 @@ func reviewConsensusFields() []review.Field {
 	}
 }
 
-func maybeAutoResolveDuplicateReviewGroupTx(ctx context.Context, tx interface {
-	execer
-	queryer
-}, groupID int64, now time.Time, sourceMetadata ingest.SourceMetadataLookup) (bool, string, string, error) {
-	group, ok, err := loadReviewGroup(ctx, tx, groupID)
-	if err != nil {
-		return false, "", "", err
-	}
-	if !ok {
-		return false, "", "", fmt.Errorf("review group %d not found", groupID)
-	}
-	candidates, err := loadReviewCandidates(ctx, tx, groupID)
-	if err != nil {
-		return false, "", "", err
-	}
-	group.Candidates = candidates
-	defaults, err := loadReviewDefaultChoices(ctx, tx, groupID)
-	if err != nil {
-		return false, "", "", err
-	}
-	group.DefaultChoices = defaults
-
-	canonical, hasCanonical := canonicalSnapshotCandidate(candidates)
-	if hasCanonical && exactCanonicalDuplicate(candidates) {
-		if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
-			targetID, ok, err := authoritativeLinkedEventIDTx(ctx, tx, authoritative)
-			if err != nil {
-				return false, "", "", err
-			}
-			if ok && targetID != canonical.CanonicalEventID {
-				return false, "", "", nil
-			}
-		}
-		if err := persistResolvedChoiceSetTx(ctx, tx, groupID, chooseAllFieldsFromCandidate(canonical, now), now); err != nil {
-			return false, "", "", err
-		}
-		if err := markEventReviewedTx(ctx, tx, canonical.CanonicalEventID); err != nil {
-			return false, "", "", err
-		}
-		if err := markReviewGroupResolvedTx(ctx, tx, groupID, now); err != nil {
-			return false, "", "", err
-		}
-		return true, "canonical_exact_match", candidateDerivedSlug(canonical), nil
-	}
-
-	staged := stagedReviewCandidates(candidates)
-	if !hasCanonical && len(staged) >= 2 && unanimousStagedDuplicate(staged) {
-		winner := staged[0]
-		for _, candidate := range staged[1:] {
-			if candidate.Position < winner.Position || (candidate.Position == winner.Position && candidate.ID < winner.ID) {
-				winner = candidate
-			}
-		}
-		matcher, err := loadVenueMatcher(ctx, tx)
-		if err != nil {
-			return false, "", "", err
-		}
-		venueMatch, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, winner)
-		if err != nil {
-			return false, "", "", err
-		}
-		if venueMatch.status != venueMatchResolved {
-			return false, "", "", nil
-		}
-		winner.VenueSlug = venueMatch.slug
-		if err := persistResolvedChoiceSetTx(ctx, tx, groupID, chooseAllFieldsFromCandidate(winner, now), now); err != nil {
-			return false, "", "", err
-		}
-		event, err := buildResolvedEvent(group, choiceMapFromChoices(winner), now)
-		if err != nil {
-			return false, "", "", err
-		}
-		event = decorateEventForPublish(event, sourceMetadata)
-		if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
-			event.SourceName = authoritative.SourceName
-			event.SourceURL = authoritative.SourceURL
-			event = decorateEventForPublish(event, sourceMetadata)
-			record, applied, err := applyAuthoritativeEventTx(ctx, tx, event, authoritative.SourceEventKey, now)
-			if err != nil {
-				return false, "", "", err
-			}
-			if !applied {
-				return false, "", "", fmt.Errorf("venue %q not found", event.VenueSlug)
-			}
-			matchingStaged := reviewCandidatesMatchingEvent(staged, record.Event)
-			if err := replaceEventSecondarySourceInfoTx(ctx, tx, record.ID, authoritative, matchingStaged, now); err != nil {
-				return false, "", "", err
-			}
-			if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, record.ID, record.Event.Description, now); err != nil {
-				return false, "", "", err
-			}
-		} else {
-			record, err := upsertEventTx(ctx, tx, event)
-			if err != nil {
-				return false, "", "", err
-			}
-			matchingStaged := reviewCandidatesMatchingEvent(staged, record.Event)
-			if err := upsertEventSecondarySourceInfoTx(ctx, tx, record.ID, primarySourceIdentity(record.Event), matchingStaged, now); err != nil {
-				return false, "", "", err
-			}
-			if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, record.ID, record.Event.Description, now); err != nil {
-				return false, "", "", err
-			}
-		}
-		if err := markReviewGroupResolvedTx(ctx, tx, groupID, now); err != nil {
-			return false, "", "", err
-		}
-		return true, "unanimous_duplicate", "", nil
-	}
-
-	return false, "", "", nil
-}
-
-func candidateDerivedSlug(candidate review.Candidate) string {
-	start, err := parseRFC3339UTC(strings.TrimSpace(candidate.StartAt))
-	if err != nil {
-		return ""
-	}
-	slug, err := buildLiveEventSlug(candidate.Name, candidate.VenueSlug, start)
-	if err != nil {
-		return ""
-	}
-	return slug
-}
-
-func choiceMapFromChoices(candidate review.Candidate) map[review.Field]review.Candidate {
-	selected := make(map[review.Field]review.Candidate, len(review.CanonicalFields))
-	for _, field := range review.CanonicalFields {
-		selected[field] = candidate
-	}
-	return selected
-}
-
-func chooseAllFieldsFromCandidate(candidate review.Candidate, now time.Time) []review.DraftChoice {
-	choices := make([]review.DraftChoice, 0, len(review.CanonicalFields))
-	for _, field := range review.CanonicalFields {
-		choices = append(choices, review.DraftChoice{
-			Field:       field,
-			CandidateID: candidate.ID,
-			Value:       review.CandidateValue(candidate, field),
-			UpdatedAt:   now,
-		})
-	}
-	return choices
-}
-
-func persistResolvedChoiceSetTx(ctx context.Context, tx execer, groupID int64, choices []review.DraftChoice, now time.Time) error {
-	for _, choice := range choices {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO review_draft_choices (
-				group_id,
-				field,
-				candidate_id,
-				value,
-				updated_at
-			) VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(group_id, field) DO UPDATE SET
-				candidate_id = excluded.candidate_id,
-				value = excluded.value,
-				updated_at = excluded.updated_at
-		`, groupID, string(choice.Field), choice.CandidateID, choice.Value, formatRFC3339UTC(now)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func markReviewGroupResolvedTx(ctx context.Context, tx execer, groupID int64, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `
-		UPDATE review_groups
-		SET status = ?, updated_at = ?
-		WHERE id = ?
-	`, review.StatusResolved, formatRFC3339UTC(now), groupID)
-	return err
-}
-
 func markEventReviewedTx(ctx context.Context, tx execer, eventID int64) error {
 	if eventID <= 0 {
 		return nil
@@ -1026,25 +80,6 @@ func markEventReviewedTx(ctx context.Context, tx execer, eventID int64) error {
 		WHERE id = ?
 	`, string(domain.PublicationStateReviewed), eventID)
 	return err
-}
-
-func canonicalSnapshotCandidate(candidates []review.Candidate) (review.Candidate, bool) {
-	for _, candidate := range candidates {
-		if candidate.IsCanonicalSnapshot() {
-			return candidate, true
-		}
-	}
-	return review.Candidate{}, false
-}
-
-func stagedReviewCandidates(candidates []review.Candidate) []review.Candidate {
-	staged := make([]review.Candidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if !candidate.IsCanonicalSnapshot() {
-			staged = append(staged, candidate)
-		}
-	}
-	return staged
 }
 
 func reviewCandidatesMatchingEvent(candidates []review.Candidate, event domain.Event) []review.Candidate {
@@ -1078,28 +113,6 @@ func normalizedReviewEventName(value string) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
-func exactCanonicalDuplicate(candidates []review.Candidate) bool {
-	if len(candidates) == 0 {
-		return false
-	}
-	for _, field := range reviewConsensusFields() {
-		var value string
-		first := true
-		for _, candidate := range candidates {
-			candidateValue := review.CandidateValue(candidate, field)
-			if first {
-				value = candidateValue
-				first = false
-				continue
-			}
-			if candidateValue != value {
-				return false
-			}
-		}
-	}
-	return true
-}
-
 func unanimousStagedDuplicate(candidates []review.Candidate) bool {
 	if len(candidates) < 2 {
 		return false
@@ -1115,104 +128,271 @@ func unanimousStagedDuplicate(candidates []review.Candidate) bool {
 	return true
 }
 
-func linkReviewGroupInputToImportRunTx(ctx context.Context, tx interface {
-	execer
-	queryer
-}, input review.GroupInput, groupID int64, linkedAt time.Time) error {
-	importRunID := input.ImportRunID
-	if importRunID <= 0 {
-		importRunID, _ = review.ParseOriginImportRunID(input.Notes)
+func observationRoomText(roomText string, rooms []domain.VenueRoom) string {
+	roomText = strings.TrimSpace(roomText)
+	if roomText != "" {
+		return roomText
 	}
-	return linkReviewGroupToImportRunTx(ctx, tx, importRunID, groupID, linkedAt)
-}
-
-func singletonResolvedEventFromGroupInput(input review.GroupInput, publishedAt time.Time) (domain.Event, error) {
-	if len(input.Candidates) != 1 {
-		return domain.Event{}, errors.New("singleton review group promotion requires exactly one candidate")
-	}
-
-	candidate := input.Candidates[0]
-	group := review.Group{
-		Title:      strings.TrimSpace(input.Title),
-		SourceName: strings.TrimSpace(input.SourceName),
-		SourceURL:  strings.TrimSpace(input.SourceURL),
-	}
-	selectedCandidate := review.Candidate{
-		ID:             1,
-		ExternalID:     strings.TrimSpace(candidate.ExternalID),
-		Name:           strings.TrimSpace(candidate.Name),
-		VenueSlug:      strings.TrimSpace(candidate.VenueSlug),
-		RoomText:       strings.TrimSpace(candidate.RoomText),
-		Rooms:          append([]domain.VenueRoom(nil), candidate.Rooms...),
-		StartAt:        strings.TrimSpace(candidate.StartAt),
-		EndAt:          strings.TrimSpace(candidate.EndAt),
-		Genre:          strings.TrimSpace(candidate.Genre),
-		Status:         strings.TrimSpace(candidate.Status),
-		Description:    strings.TrimSpace(candidate.Description),
-		ImageURL:       strings.TrimSpace(candidate.ImageURL),
-		ImageSourceURL: strings.TrimSpace(candidate.ImageSourceURL),
-		ImageAlt:       strings.TrimSpace(candidate.ImageAlt),
-		ImageWidth:     candidate.ImageWidth,
-		ImageHeight:    candidate.ImageHeight,
-		ImageFocusX:    candidate.ImageFocusX,
-		ImageFocusY:    candidate.ImageFocusY,
-		SourceName:     strings.TrimSpace(candidate.SourceName),
-		SourceURL:      strings.TrimSpace(candidate.SourceURL),
-		CalendarURL:    strings.TrimSpace(candidate.CalendarURL),
-		Provenance:     strings.TrimSpace(candidate.Provenance),
-	}
-	selected := make(map[review.Field]review.Candidate, len(review.CanonicalFields))
-	for _, field := range review.CanonicalFields {
-		selected[field] = selectedCandidate
-	}
-	return buildResolvedEvent(group, selected, publishedAt)
-}
-
-func authoritativeSourceEventKey(input review.GroupInput) string {
-	if len(input.Candidates) != 1 {
+	if len(rooms) == 0 {
 		return ""
 	}
-	candidate := input.Candidates[0]
-	for _, value := range []string{candidate.ExternalID, candidate.SourceURL} {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
+	parts := make([]string, 0, len(rooms))
+	for _, room := range rooms {
+		slug := strings.TrimSpace(room.Slug)
+		name := strings.TrimSpace(room.Name)
+		switch {
+		case slug != "" && name != "":
+			parts = append(parts, slug+":"+name)
+		case slug != "":
+			parts = append(parts, slug)
+		case name != "":
+			parts = append(parts, name)
 		}
 	}
-	return ""
+	return strings.Join(parts, ", ")
 }
 
-func authoritativeSingletonSourceEventKey(sourceMetadata ingest.SourceMetadataLookup, input review.GroupInput) string {
-	sourceEventKey := authoritativeSourceEventKey(input)
-	if sourceEventKey == "" {
-		return ""
-	}
-
-	sourceName := strings.TrimSpace(input.SourceName)
-	ownedVenueSlug := strings.TrimSpace(sourceMetadata.OwnedVenueSlugForReviewStageSourceName(sourceName))
-	if ownedVenueSlug == "" {
-		return ""
-	}
-	if strings.TrimSpace(input.Candidates[0].VenueSlug) != ownedVenueSlug {
-		return ""
-	}
-	return sourceEventKey
+func observationNameNormalized(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
-func nonAuthoritativeSingletonVenueSlug(sourceMetadata ingest.SourceMetadataLookup, input review.GroupInput) string {
-	if len(input.Candidates) != 1 {
-		return ""
+type eventObservationField struct {
+	name                string
+	incomingRaw         string
+	incomingNormalized  string
+	canonicalBeforeRaw  string
+	canonicalBeforeNorm string
+}
+
+func eventObservationFields(target eventRecord, incoming domain.Event) []eventObservationField {
+	return []eventObservationField{
+		{name: "name", incomingRaw: incoming.Name, incomingNormalized: observationNameNormalized(incoming.Name), canonicalBeforeRaw: target.Event.Name, canonicalBeforeNorm: observationNameNormalized(target.Event.Name)},
+		{name: "venue_slug", incomingRaw: strings.TrimSpace(incoming.VenueSlug), incomingNormalized: strings.TrimSpace(incoming.VenueSlug), canonicalBeforeRaw: strings.TrimSpace(target.Event.VenueSlug), canonicalBeforeNorm: strings.TrimSpace(target.Event.VenueSlug)},
+		{name: "room_text", incomingRaw: observationRoomText(incoming.RoomText, incoming.Rooms), incomingNormalized: observationRoomText(incoming.RoomText, incoming.Rooms), canonicalBeforeRaw: observationRoomText(target.Event.RoomText, target.Event.Rooms), canonicalBeforeNorm: observationRoomText(target.Event.RoomText, target.Event.Rooms)},
+		{name: "start_at", incomingRaw: observationTimeText(incoming.Start), incomingNormalized: observationTimeText(incoming.Start), canonicalBeforeRaw: observationTimeText(target.Event.Start), canonicalBeforeNorm: observationTimeText(target.Event.Start)},
+		{name: "end_at", incomingRaw: observationTimeText(incoming.End), incomingNormalized: observationTimeText(incoming.End), canonicalBeforeRaw: observationTimeText(target.Event.End), canonicalBeforeNorm: observationTimeText(target.Event.End)},
+		{name: "status", incomingRaw: strings.TrimSpace(incoming.Status), incomingNormalized: strings.TrimSpace(incoming.Status), canonicalBeforeRaw: strings.TrimSpace(target.Event.Status), canonicalBeforeNorm: strings.TrimSpace(target.Event.Status)},
+		{name: "genre", incomingRaw: strings.TrimSpace(incoming.Genre), incomingNormalized: strings.TrimSpace(incoming.Genre), canonicalBeforeRaw: strings.TrimSpace(target.Event.Genre), canonicalBeforeNorm: strings.TrimSpace(target.Event.Genre)},
+		{name: "description", incomingRaw: strings.TrimSpace(incoming.Description), incomingNormalized: strings.TrimSpace(incoming.Description), canonicalBeforeRaw: strings.TrimSpace(target.Event.Description), canonicalBeforeNorm: strings.TrimSpace(target.Event.Description)},
+		{name: "official_listing_url", incomingRaw: strings.TrimSpace(incoming.OfficialListingURL), incomingNormalized: strings.TrimSpace(incoming.OfficialListingURL), canonicalBeforeRaw: strings.TrimSpace(target.Event.OfficialListingURL), canonicalBeforeNorm: strings.TrimSpace(target.Event.OfficialListingURL)},
+		{name: "calendar_url", incomingRaw: strings.TrimSpace(incoming.CalendarURL), incomingNormalized: strings.TrimSpace(incoming.CalendarURL), canonicalBeforeRaw: strings.TrimSpace(target.Event.CalendarURL), canonicalBeforeNorm: strings.TrimSpace(target.Event.CalendarURL)},
 	}
-	expectedVenueSlug := strings.TrimSpace(sourceMetadata.NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(input.SourceName))
-	if expectedVenueSlug == "" {
-		return ""
+}
+
+func writeSourceAttributeObservationTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, scope seedstore.ObservationRunScope, sourceID int64, sourceIdentityKey string, authority seedstore.SourceAuthority, targetKind seedstore.ObservationTargetKind, eventID, reviewGroupID int64, fieldName, incomingRaw, incomingNormalized, canonicalBeforeRaw, canonicalBeforeNormalized string, outcome seedstore.ObservationOutcome, isConflict bool) error {
+	input := seedstore.SourceAttributeObservationInput{
+		RunScope:                  scope,
+		SourceID:                  sourceID,
+		SourceIdentityKey:         sourceIdentityKey,
+		SourceAuthority:           authority,
+		TargetKind:                targetKind,
+		FieldName:                 fieldName,
+		IncomingRaw:               incomingRaw,
+		IncomingNormalized:        incomingNormalized,
+		CanonicalBeforeRaw:        canonicalBeforeRaw,
+		CanonicalBeforeNormalized: canonicalBeforeNormalized,
+		Outcome:                   string(outcome),
+		IsConflict:                isConflict,
 	}
-	if strings.TrimSpace(input.Candidates[0].VenueSlug) != expectedVenueSlug {
-		return ""
+	switch targetKind {
+	case seedstore.ObservationTargetKindEvent:
+		input.EventID = int64Ptr(eventID)
+	case seedstore.ObservationTargetKindReviewGroup:
+		input.ReviewGroupID = int64Ptr(reviewGroupID)
+	default:
+		return fmt.Errorf("unsupported observation target kind %q", targetKind)
 	}
-	return expectedVenueSlug
+	return upsertSourceAttributeObservationTx(ctx, tx, input)
+}
+
+func (s *Store) recordStagedConflictEventObservationsAfterRollbackTx(ctx context.Context, scope seedstore.ObservationRunScope, sourceCtx reviewSourceIdentityContext, target eventRecord, incoming domain.Event) error {
+	if scope == "" {
+		return nil
+	}
+	if sourceCtx.PrimaryObservationKey == "" {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	sourceID, err := ensureSourceTx(ctx, tx, sourceCtx.SourceName, sourceCtx.SourceURL)
+	if err != nil {
+		return err
+	}
+	if err := recordStagedConflictEventObservationsTx(ctx, tx, scope, sourceID, sourceCtx.PrimaryObservationKey, seedstore.SourceAuthoritySupporting, target, incoming); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func recordEventObservationsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, scope seedstore.ObservationRunScope, sourceID int64, sourceIdentityKey string, authority seedstore.SourceAuthority, target eventRecord, incoming domain.Event) error {
+	if scope == "" {
+		return nil
+	}
+	for _, field := range eventObservationFields(target, incoming) {
+		if strings.TrimSpace(field.incomingRaw) == "" {
+			continue
+		}
+		outcome := seedstore.ObservationOutcomeApplied
+		isConflict := false
+		switch {
+		case strings.TrimSpace(field.canonicalBeforeRaw) == "":
+			outcome = seedstore.ObservationOutcomeFilledBlank
+		case strings.TrimSpace(field.incomingNormalized) != strings.TrimSpace(field.canonicalBeforeNorm):
+			outcome = seedstore.ObservationOutcomeConflictObserved
+			isConflict = true
+		}
+		if err := writeSourceAttributeObservationTx(ctx, tx, scope, sourceID, sourceIdentityKey, authority, seedstore.ObservationTargetKindEvent, target.ID, 0, field.name, field.incomingRaw, field.incomingNormalized, field.canonicalBeforeRaw, field.canonicalBeforeNorm, outcome, isConflict); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func recordStagedConflictEventObservationsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, scope seedstore.ObservationRunScope, sourceID int64, sourceIdentityKey string, authority seedstore.SourceAuthority, target eventRecord, incoming domain.Event) error {
+	if scope == "" {
+		return nil
+	}
+	for _, field := range eventObservationFields(target, incoming) {
+		if strings.TrimSpace(field.incomingRaw) == "" {
+			continue
+		}
+		isConflict := strings.TrimSpace(field.canonicalBeforeRaw) != "" && strings.TrimSpace(field.incomingNormalized) != strings.TrimSpace(field.canonicalBeforeNorm)
+		if err := writeSourceAttributeObservationTx(ctx, tx, scope, sourceID, sourceIdentityKey, authority, seedstore.ObservationTargetKindEvent, target.ID, 0, field.name, field.incomingRaw, field.incomingNormalized, field.canonicalBeforeRaw, field.canonicalBeforeNorm, seedstore.ObservationOutcomeStagedConflict, isConflict); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func recordEventReviewClusterObservationsForStageInputTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, scope seedstore.ObservationRunScope, stageInput seedstore.StageEventReviewEvidenceInput, clusterID int64, now time.Time) error {
+	if scope == "" || clusterID <= 0 {
+		return nil
+	}
+	if stageInput.RunRef.Kind != seedstore.EventReviewRunKindImport || stageInput.RunRef.ID <= 0 {
+		return nil
+	}
+	if stageInput.ConflictType != seedstore.EventReviewConflictTypeImportReview || stageInput.ConflictReason != seedstore.EventReviewConflictReasonIngestCandidate {
+		return nil
+	}
+
+	authority := seedstore.SourceAuthority(strings.TrimSpace(string(stageInput.SourceAuthority)))
+	switch authority {
+	case seedstore.SourceAuthorityAuthoritative, seedstore.SourceAuthoritySupporting:
+	default:
+		return nil
+	}
+
+	parsed, err := parseImportReviewCandidatePayload(stageInput.Payload)
+	if err != nil {
+		return nil
+	}
+
+	candidate := review.CandidateInput{
+		ExternalID:  strings.TrimSpace(parsed.ExternalID),
+		Name:        strings.TrimSpace(parsed.Title),
+		VenueSlug:   strings.TrimSpace(parsed.VenueSlug),
+		VenueText:   strings.TrimSpace(parsed.VenueText),
+		RoomText:    strings.TrimSpace(parsed.RoomText),
+		Rooms:       parsedRoomsFromImportReviewPayload(parsed.Rooms),
+		StartAt:     strings.TrimSpace(parsed.StartAt),
+		EndAt:       strings.TrimSpace(parsed.EndAt),
+		Genre:       strings.TrimSpace(parsed.Genre),
+		Status:      strings.TrimSpace(parsed.Status),
+		Description: strings.TrimSpace(parsed.Description),
+		SourceName:  firstNonEmptyImportReviewText(parsed.SourceName, stageInput.SourceName),
+		SourceURL:   firstNonEmptyImportReviewText(parsed.SourceURL, stageInput.SourceURL),
+		CalendarURL: strings.TrimSpace(parsed.CalendarURL),
+		Provenance:  strings.TrimSpace(parsed.Provenance),
+	}
+	sourceCtx := reviewSourceIdentityContextForCandidateInput(reviewSourceIdentitySupporting, stageInput.SourceName, stageInput.SourceURL, "", "", "", candidate, "event_review_import_staging")
+	if sourceCtx.PrimaryObservationKey == "" {
+		return nil
+	}
+
+	for _, field := range reviewCandidateObservationFields(candidate) {
+		if field.value == "" {
+			continue
+		}
+		if err := upsertSourceAttributeObservationRowTx(ctx, tx, seedstore.SourceAttributeObservationInput{
+			RunScope:                  scope,
+			SourceID:                  stageInput.SourceID,
+			SourceIdentityKey:         sourceCtx.PrimaryObservationKey,
+			SourceAuthority:           authority,
+			TargetKind:                seedstore.ObservationTargetKindEventReviewCluster,
+			EventReviewClusterID:      int64Ptr(clusterID),
+			FieldName:                 field.name,
+			IncomingRaw:               field.value,
+			IncomingNormalized:        field.normalized,
+			CanonicalBeforeRaw:        "",
+			CanonicalBeforeNormalized: "",
+			Outcome:                   string(seedstore.ObservationOutcomeStagedForReview),
+			IsConflict:                false,
+		}, now, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type reviewObservationField struct {
+	name       string
+	value      string
+	normalized string
+}
+
+func reviewCandidateObservationFields(candidate review.CandidateInput) []reviewObservationField {
+	return []reviewObservationField{
+		{name: "name", value: strings.TrimSpace(candidate.Name), normalized: observationNameNormalized(candidate.Name)},
+		{name: "venue_slug", value: strings.TrimSpace(candidate.VenueSlug), normalized: strings.TrimSpace(candidate.VenueSlug)},
+		{name: "room_text", value: observationRoomText(candidate.RoomText, candidate.Rooms), normalized: observationRoomText(candidate.RoomText, candidate.Rooms)},
+		{name: "start_at", value: strings.TrimSpace(candidate.StartAt), normalized: strings.TrimSpace(candidate.StartAt)},
+		{name: "end_at", value: strings.TrimSpace(candidate.EndAt), normalized: strings.TrimSpace(candidate.EndAt)},
+		{name: "status", value: strings.TrimSpace(candidate.Status), normalized: strings.TrimSpace(candidate.Status)},
+		{name: "genre", value: strings.TrimSpace(candidate.Genre), normalized: strings.TrimSpace(candidate.Genre)},
+		{name: "description", value: strings.TrimSpace(candidate.Description), normalized: strings.TrimSpace(candidate.Description)},
+		{name: "official_listing_url", value: strings.TrimSpace(candidate.SourceURL), normalized: strings.TrimSpace(candidate.SourceURL)},
+		{name: "calendar_url", value: strings.TrimSpace(candidate.CalendarURL), normalized: strings.TrimSpace(candidate.CalendarURL)},
+	}
 }
 
 func uniqueLiveEventMatchForEventTx(ctx context.Context, q queryer, event domain.Event) (eventRecord, bool, bool, error) {
+	if exactRecords, ok, err := matchLiveEventsByExactIdentityTx(ctx, q, event); err != nil {
+		return eventRecord{}, false, false, err
+	} else if ok {
+		switch len(exactRecords) {
+		case 0:
+		case 1:
+			return exactRecords[0], true, false, nil
+		default:
+			return eventRecord{}, false, true, nil
+		}
+	}
 	result, err := matchLiveEventsByIdentityTx(ctx, q, event.Slug, event.Name, event.VenueSlug, event.Start)
 	if err != nil {
 		return eventRecord{}, false, false, err
@@ -1227,29 +407,74 @@ func uniqueLiveEventMatchForEventTx(ctx context.Context, q queryer, event domain
 	}
 }
 
-func supportingEventConflict(existing, incoming domain.Event) bool {
-	if strings.TrimSpace(existing.Name) != strings.TrimSpace(incoming.Name) {
+func guardedNearLiveEventMatchForEventTx(ctx context.Context, q queryer, event domain.Event, sourceMetadata ingest.SourceMetadataLookup) ([]eventRecord, bool, error) {
+	records, ok, err := matchLiveEventsByGuardedNearIdentityTx(ctx, q, event, guardedNearMatchWindowForEventSource(sourceMetadata, event.SourceName))
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return records, guardedNearMatchEnabledForEventSource(sourceMetadata, event.SourceName), nil
+}
+
+func guardedNearMatchEnabledForEventSource(sourceMetadata ingest.SourceMetadataLookup, sourceName string) bool {
+	if sourceMetadata == nil {
 		return true
 	}
-	if strings.TrimSpace(existing.VenueSlug) != strings.TrimSpace(incoming.VenueSlug) {
+	return !sourceMetadata.GuardedNearMatchDisabledForReviewStageSourceName(sourceName)
+}
+
+func guardedNearMatchWindowForEventSource(sourceMetadata ingest.SourceMetadataLookup, sourceName string) time.Duration {
+	if sourceMetadata == nil {
+		return 75 * time.Minute
+	}
+	window := sourceMetadata.GuardedNearMatchWindowForReviewStageSourceName(sourceName)
+	if window <= 0 {
+		return 75 * time.Minute
+	}
+	return window
+}
+
+func supportingEventConflict(existing, incoming domain.Event) bool {
+	if normalizedReviewEventName(existing.Name) != normalizedReviewEventName(incoming.Name) {
+		return true
+	}
+	if nonEmptyStringConflict(existing.VenueSlug, incoming.VenueSlug) {
 		return true
 	}
 	if roomEvidenceConflicts(existing.RoomText, existing.Rooms, incoming.RoomText, incoming.Rooms) {
 		return true
 	}
-	if !existing.Start.UTC().Equal(incoming.Start.UTC()) {
+	if !existing.Start.IsZero() && !incoming.Start.IsZero() && !existing.Start.UTC().Equal(incoming.Start.UTC()) {
 		return true
 	}
 	if existing.HasEnd() && incoming.HasEnd() && !existing.End.UTC().Equal(incoming.End.UTC()) {
 		return true
 	}
-	if strings.TrimSpace(existing.Status) != "" && strings.TrimSpace(incoming.Status) != "" && strings.TrimSpace(existing.Status) != strings.TrimSpace(incoming.Status) {
+	if nonEmptyStringConflict(existing.Status, incoming.Status) {
 		return true
 	}
-	if strings.TrimSpace(existing.Description) != "" && strings.TrimSpace(incoming.Description) != "" && strings.TrimSpace(existing.Description) != strings.TrimSpace(incoming.Description) {
+	if nonEmptyStringConflict(existing.Description, incoming.Description) {
+		return true
+	}
+	if nonEmptyStringConflict(existing.OfficialListingURL, incoming.OfficialListingURL) {
+		return true
+	}
+	if nonEmptyStringConflict(existing.CalendarURL, incoming.CalendarURL) {
 		return true
 	}
 	return false
+}
+
+func observationTimeText(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return formatRFC3339UTC(value)
+}
+
+func nonEmptyStringConflict(existing, incoming string) bool {
+	existing = strings.TrimSpace(existing)
+	incoming = strings.TrimSpace(incoming)
+	return existing != "" && incoming != "" && existing != incoming
 }
 
 func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
@@ -1315,7 +540,19 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 	if err := replaceEventRoomsTx(ctx, tx, existing.ID, updated); err != nil {
 		return err
 	}
-	return refreshEventGenresTx(ctx, tx, existing.ID, updated.Description, nil, incoming.LastChecked)
+	if err := refreshEventGenresTx(ctx, tx, existing.ID, updated.Description, nil, incoming.LastChecked); err != nil {
+		return err
+	}
+	if strings.TrimSpace(updated.Genre) != "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE events
+			SET genre = ?
+			WHERE id = ?
+		`, updated.Genre, existing.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type DescriptionRepairReport struct {
@@ -1343,24 +580,24 @@ func (s *Store) RepairEventDescriptionsFromReport(ctx context.Context, catalog *
 		return repair, nil
 	}
 
-	groups := ingest.ReviewGroupsFromReportWithCatalog(catalog, report)
-	for _, group := range groups {
-		if strings.TrimSpace(group.AuthoritativeSourceName) == "" ||
-			strings.TrimSpace(group.AuthoritativeSourceURL) == "" ||
-			strings.TrimSpace(group.AuthoritativeSourceEventKey) == "" ||
-			len(group.Candidates) != 1 {
+	clusters := ingest.ReviewClustersFromReportWithCatalog(catalog, report)
+	for _, cluster := range clusters {
+		if strings.TrimSpace(cluster.AuthoritativeSourceName) == "" ||
+			strings.TrimSpace(cluster.AuthoritativeSourceURL) == "" ||
+			strings.TrimSpace(cluster.AuthoritativeSourceEventKey) == "" ||
+			len(cluster.Candidates) != 1 {
 			repair.Skipped++
-			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(group.Title))
+			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(cluster.Title))
 			continue
 		}
 
-		event, err := singletonResolvedEventFromGroupInput(group, time.Now().UTC())
+		event, err := singletonResolvedEventFromReviewStageClusterInput(cluster, time.Now().UTC())
 		if err != nil {
 			repair.Skipped++
-			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(group.Title))
+			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(cluster.Title))
 			continue
 		}
-		result, err := s.repairAuthoritativeEventDescription(ctx, event, group.AuthoritativeSourceEventKey)
+		result, err := s.repairAuthoritativeEventDescription(ctx, event, cluster.AuthoritativeSourceEventKey)
 		if err != nil {
 			return repair, err
 		}
@@ -1373,7 +610,7 @@ func (s *Store) RepairEventDescriptionsFromReport(ctx context.Context, catalog *
 			repair.UnchangedSlugs = append(repair.UnchangedSlugs, result.EventSlug)
 		default:
 			repair.Skipped++
-			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(group.Title))
+			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(cluster.Title))
 		}
 	}
 	return repair, nil
@@ -1441,10 +678,15 @@ func findExistingAuthoritativeEventForDescriptionRepairTx(ctx context.Context, t
 		return eventRecord{}, false, nil
 	}
 
-	if linked, ok, err := loadEventRecordBySourceLinkTx(ctx, tx, sourceID, sourceEventKey); err != nil {
+	if record, ok, ambiguous, err := resolveLiveEventRecordBySourceIdentitiesTx(ctx, tx, sourceID, reviewGroupAuthoritativeSourceIdentities(reviewGroupAuthoritativeLink{
+		SourceURL:      incoming.SourceURL,
+		SourceEventKey: sourceEventKey,
+	})); err != nil {
 		return eventRecord{}, false, err
+	} else if ambiguous {
+		return eventRecord{}, false, nil
 	} else if ok {
-		return linked, true, nil
+		return record, true, nil
 	}
 
 	if legacy, ok, err := loadEventRecordBySlugAndSourceTx(ctx, tx, incoming.Slug, sourceID); err != nil {
@@ -1531,77 +773,6 @@ func matchLiveEventsBySourceIdentityTx(ctx context.Context, q queryer, sourceID 
 	return out, nil
 }
 
-func resolveMatchingOpenReviewGroupsTx(ctx context.Context, tx execer, input review.GroupInput, now time.Time) error {
-	stagingKey := strings.TrimSpace(input.StagingKey)
-	if stagingKey == "" {
-		return nil
-	}
-
-	args := []any{review.StatusResolved, formatRFC3339UTC(now), review.StatusOpen, stagingKey}
-	query := `
-		UPDATE review_groups
-		SET status = ?, updated_at = ?
-		WHERE status = ?
-		  AND staging_key = ?
-	`
-	if sourceEventKey := strings.TrimSpace(input.AuthoritativeSourceEventKey); sourceEventKey != "" {
-		query += ` AND authoritative_source_event_key = ?`
-		args = append(args, sourceEventKey)
-	}
-	_, err := tx.ExecContext(ctx, query, args...)
-	return err
-}
-
-func resolveMatchingOpenNonAuthoritativeSingletonReviewGroupsTx(ctx context.Context, tx interface {
-	execer
-	queryer
-}, input review.GroupInput, now time.Time) error {
-	stagingKey := strings.TrimSpace(input.StagingKey)
-	if stagingKey == "" {
-		return nil
-	}
-
-	rows, err := tx.QueryContext(ctx, `
-		SELECT g.id
-		FROM review_groups g
-		JOIN review_candidates c ON c.group_id = g.id
-		WHERE g.status = ?
-		  AND g.staging_key = ?
-		GROUP BY g.id
-		HAVING COUNT(c.id) = 1
-	`, review.StatusOpen, stagingKey)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	var groupIDs []int64
-	for rows.Next() {
-		var groupID int64
-		if err := rows.Scan(&groupID); err != nil {
-			return err
-		}
-		groupIDs = append(groupIDs, groupID)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	for _, groupID := range groupIDs {
-		if err := linkReviewGroupInputToImportRunTx(ctx, tx, input, groupID, now); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE review_groups
-			SET status = ?, updated_at = ?
-			WHERE id = ?
-		`, review.StatusResolved, formatRFC3339UTC(now), groupID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 type eventRecord struct {
 	ID    int64
 	Event domain.Event
@@ -1610,7 +781,7 @@ type eventRecord struct {
 func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, event domain.Event, sourceEventKey string, now time.Time) (eventRecord, bool, error) {
+}, event domain.Event, sourceCtx reviewSourceIdentityContext, now time.Time, scope seedstore.ObservationRunScope, sourceMetadata ingest.SourceMetadataLookup) (eventRecord, bool, error) {
 	event.PublicationState = domain.PublicationStateReviewed
 	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
 	if err != nil {
@@ -1619,19 +790,31 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 	if !ok {
 		return eventRecord{}, false, nil
 	}
-	sourceID, err := ensureSourceTx(ctx, tx, event.SourceName, event.SourceURL)
+	sourceID, err := ensureSourceTx(ctx, tx, sourceCtx.SourceName, sourceCtx.SourceURL)
 	if err != nil {
 		return eventRecord{}, false, err
 	}
-
-	if linked, ok, err := loadEventRecordBySourceLinkTx(ctx, tx, sourceID, sourceEventKey); err != nil {
+	sourceLinkIdentities := sourceCtx.Identities
+	if linked, ok, ambiguous, err := resolveLiveEventRecordBySourceIdentitiesTx(ctx, tx, sourceID, sourceLinkIdentities); err != nil {
 		return eventRecord{}, false, err
+	} else if ambiguous {
+		return eventRecord{}, false, nil
 	} else if ok {
-		updated, err := updateEventAuthoritativelyTx(ctx, tx, linked, event, venueID, sourceID)
+		updated, err := updateEventAuthoritativelyTx(ctx, tx, linked, event, venueID, sourceID, now, false)
 		if err != nil {
 			return eventRecord{}, false, err
 		}
-		if err := ensureEventSourceLinkTx(ctx, tx, linked.ID, sourceID, sourceEventKey, now); err != nil {
+		if err := ensureActiveExactIdentityWithConflictTransferTx(ctx, tx, linked.ID, updated, 0, now); err != nil {
+			return eventRecord{}, false, err
+		}
+		writeResult, err := ensureEventSourceLinkForSourceIdentityContextTx(ctx, tx, linked.ID, sourceID, sourceCtx, sourceLinkAuthorityAuthoritative, sourceLinkConflictPolicyNoMove, now)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if writeResult.Ambiguous {
+			return eventRecord{}, false, nil
+		}
+		if err := recordEventObservationsForSourceIdentityContextTx(ctx, tx, scope, sourceID, sourceCtx, seedstore.SourceAuthorityAuthoritative, linked, event); err != nil {
 			return eventRecord{}, false, err
 		}
 		if err := refreshEventGenresTx(ctx, tx, linked.ID, updated.Description, nil, now); err != nil {
@@ -1640,32 +823,23 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 		return eventRecord{ID: linked.ID, Event: updated}, true, nil
 	}
 
-	if legacy, ok, err := loadEventRecordBySlugTx(ctx, tx, event.Slug); err != nil {
-		return eventRecord{}, false, err
-	} else if ok {
-		updated, err := updateEventAuthoritativelyTx(ctx, tx, legacy, event, venueID, sourceID)
-		if err != nil {
-			return eventRecord{}, false, err
-		}
-		if err := ensureEventSourceLinkTx(ctx, tx, legacy.ID, sourceID, sourceEventKey, now); err != nil {
-			return eventRecord{}, false, err
-		}
-		if err := refreshEventGenresTx(ctx, tx, legacy.ID, updated.Description, nil, now); err != nil {
-			return eventRecord{}, false, err
-		}
-		return eventRecord{ID: legacy.ID, Event: updated}, true, nil
-	}
-
 	if matched, found, ambiguous, err := uniqueLiveEventMatchForEventTx(ctx, tx, event); err != nil {
 		return eventRecord{}, false, err
 	} else if ambiguous {
 		return eventRecord{}, false, nil
 	} else if found {
-		updated, err := updateEventAuthoritativelyTx(ctx, tx, matched, event, venueID, sourceID)
+		updated, err := updateEventAuthoritativelyTx(ctx, tx, matched, event, venueID, sourceID, now, true)
 		if err != nil {
 			return eventRecord{}, false, err
 		}
-		if err := ensureEventSourceLinkTx(ctx, tx, matched.ID, sourceID, sourceEventKey, now); err != nil {
+		writeResult, err := ensureEventSourceLinkForSourceIdentityContextTx(ctx, tx, matched.ID, sourceID, sourceCtx, sourceLinkAuthorityAuthoritative, sourceLinkConflictPolicyNoMove, now)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if writeResult.Ambiguous {
+			return eventRecord{}, false, nil
+		}
+		if err := recordEventObservationsForSourceIdentityContextTx(ctx, tx, scope, sourceID, sourceCtx, seedstore.SourceAuthorityAuthoritative, matched, event); err != nil {
 			return eventRecord{}, false, err
 		}
 		if err := refreshEventGenresTx(ctx, tx, matched.ID, updated.Description, nil, now); err != nil {
@@ -1674,11 +848,50 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 		return eventRecord{ID: matched.ID, Event: updated}, true, nil
 	}
 
-	eventID, err := insertEventTx(ctx, tx, event, venueID, sourceID)
+	if near, _, err := guardedNearLiveEventMatchForEventTx(ctx, tx, event, sourceMetadata); err != nil {
+		return eventRecord{}, false, err
+	} else if len(near) > 0 {
+		if len(near) > 1 {
+			return eventRecord{}, false, nil
+		}
+		updated, err := updateEventAuthoritativelyTx(ctx, tx, near[0], event, venueID, sourceID, now, true)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		writeResult, err := ensureEventSourceLinkForSourceIdentityContextTx(ctx, tx, near[0].ID, sourceID, sourceCtx, sourceLinkAuthorityAuthoritative, sourceLinkConflictPolicyNoMove, now)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if writeResult.Ambiguous {
+			return eventRecord{}, false, nil
+		}
+		if err := recordEventObservationsForSourceIdentityContextTx(ctx, tx, scope, sourceID, sourceCtx, seedstore.SourceAuthorityAuthoritative, near[0], event); err != nil {
+			return eventRecord{}, false, err
+		}
+		if err := refreshEventGenresTx(ctx, tx, near[0].ID, updated.Description, nil, now); err != nil {
+			return eventRecord{}, false, err
+		}
+		return eventRecord{ID: near[0].ID, Event: updated}, true, nil
+	}
+
+	if _, ok, err := loadEventRecordBySlugTx(ctx, tx, event.Slug); err != nil {
+		return eventRecord{}, false, err
+	} else if ok {
+		return eventRecord{}, false, nil
+	}
+
+	eventID, err := insertEventTx(ctx, tx, event, venueID, sourceID, now)
 	if err != nil {
 		return eventRecord{}, false, err
 	}
-	if err := ensureEventSourceLinkTx(ctx, tx, eventID, sourceID, sourceEventKey, now); err != nil {
+	writeResult, err := ensureEventSourceLinkForSourceIdentityContextTx(ctx, tx, eventID, sourceID, sourceCtx, sourceLinkAuthorityAuthoritative, sourceLinkConflictPolicyNoMove, now)
+	if err != nil {
+		return eventRecord{}, false, err
+	}
+	if writeResult.Ambiguous {
+		return eventRecord{}, false, nil
+	}
+	if err := recordEventObservationsForSourceIdentityContextTx(ctx, tx, scope, sourceID, sourceCtx, seedstore.SourceAuthorityAuthoritative, eventRecord{ID: eventID, Event: domain.Event{}}, event); err != nil {
 		return eventRecord{}, false, err
 	}
 	if err := refreshEventGenresTx(ctx, tx, eventID, event.Description, nil, now); err != nil {
@@ -1690,7 +903,7 @@ func applyAuthoritativeEventTx(ctx context.Context, tx interface {
 func insertEventTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, event domain.Event, venueID, sourceID int64) (int64, error) {
+}, event domain.Event, venueID, sourceID int64, now time.Time) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO events (
 			slug,
@@ -1737,13 +950,16 @@ func insertEventTx(ctx context.Context, tx interface {
 	if err := replaceEventRoomsTx(ctx, tx, eventID, event); err != nil {
 		return 0, err
 	}
+	if err := ensureActiveExactIdentityTx(ctx, tx, eventID, event, 0, now); err != nil {
+		return 0, err
+	}
 	return eventID, nil
 }
 
 func updateEventAuthoritativelyTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, existing eventRecord, authoritative domain.Event, venueID, sourceID int64) (domain.Event, error) {
+}, existing eventRecord, authoritative domain.Event, venueID, sourceID int64, now time.Time, syncExactIdentity bool) (domain.Event, error) {
 	updated := existing.Event
 	updated.Name = authoritative.Name
 	updated.VenueSlug = authoritative.VenueSlug
@@ -1809,6 +1025,11 @@ func updateEventAuthoritativelyTx(ctx context.Context, tx interface {
 	}
 	if err := replaceEventRoomsTx(ctx, tx, existing.ID, updated); err != nil {
 		return domain.Event{}, err
+	}
+	if syncExactIdentity {
+		if err := ensureActiveExactIdentityTx(ctx, tx, existing.ID, updated, 0, now); err != nil {
+			return domain.Event{}, err
+		}
 	}
 	return updated, nil
 }
@@ -1890,55 +1111,337 @@ func descriptionIsGeneratedMarkup(value string) bool {
 		strings.Contains(lower, "<style")
 }
 
-func ensureEventSourceLinkTx(ctx context.Context, tx execer, eventID, sourceID int64, sourceEventKey string, now time.Time) error {
-	if eventID <= 0 {
-		return errors.New("event source link event ID is required")
-	}
-	if sourceID <= 0 {
-		return errors.New("event source link source ID is required")
-	}
-	sourceEventKey = strings.TrimSpace(sourceEventKey)
-	if sourceEventKey == "" {
-		return errors.New("event source link key is required")
-	}
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO event_source_links (
-			event_id,
-			source_id,
-			source_event_key,
-			is_authoritative,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, 1, ?, ?)
-		ON CONFLICT(source_id, source_event_key) DO UPDATE SET
-			event_id = excluded.event_id,
-			is_authoritative = excluded.is_authoritative,
-			updated_at = excluded.updated_at
-	`, eventID, sourceID, sourceEventKey, formatRFC3339UTC(now), formatRFC3339UTC(now))
-	return err
+type sourceLinkAuthority int
+
+const (
+	sourceLinkAuthoritySupporting sourceLinkAuthority = iota
+	sourceLinkAuthorityAuthoritative
+)
+
+type sourceLinkConflictPolicy int
+
+const (
+	sourceLinkConflictPolicyNoMove sourceLinkConflictPolicy = iota
+)
+
+type sourceLinkWriteResult struct {
+	Applied         bool
+	Ambiguous       bool
+	Reason          string
+	ExistingEventID int64
+	TargetEventID   int64
 }
 
-func authoritativeLinkedEventIDTx(ctx context.Context, q queryer, authoritative reviewGroupAuthoritativeLink) (int64, bool, error) {
-	sourceID, ok, err := loadSourceIDByNameURLTx(ctx, q, authoritative.SourceName, authoritative.SourceURL)
-	if err != nil || !ok {
-		return 0, ok, err
+type sourceLinkRow struct {
+	eventID          int64
+	isAuthoritative  bool
+	origin           string
+	publicationState string
+	canonicalEventID sql.NullInt64
+	canonicalOrigin  sql.NullString
+	canonicalState   sql.NullString
+	resolvedEventID  int64
+}
+
+func sourceIdentityInputForKey(raw string) ingest.SourceIdentityInput {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ingest.SourceIdentityInput{}
+	}
+	if prefix, value, ok := strings.Cut(raw, ":"); ok {
+		switch prefix {
+		case "uid":
+			return ingest.SourceIdentityInput{ExternalID: strings.TrimSpace(value)}
+		case "url":
+			value = strings.TrimSpace(value)
+			if len(ingest.SourceIdentities(ingest.SourceIdentityInput{CalendarURL: value}).Keys()) > 0 {
+				return ingest.SourceIdentityInput{CalendarURL: value}
+			}
+			return ingest.SourceIdentityInput{SourceURL: value}
+		}
+	}
+	return ingest.SourceIdentityInput{ExternalID: raw}
+}
+
+func authoritativeSourceCandidateForApply(selected map[review.Field]review.Candidate, canonical review.Candidate, staged []review.Candidate) review.Candidate {
+	if candidate, ok := selected[review.FieldSourceURL]; ok {
+		return candidate
+	}
+	if candidate, ok := selected[review.FieldSourceName]; ok {
+		return candidate
+	}
+	if len(staged) > 0 {
+		return staged[0]
+	}
+	return canonical
+}
+
+func reviewCandidateSourceIdentities(candidate review.CandidateInput) ingest.SourceIdentitySet {
+	return ingest.SourceIdentities(sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL))
+}
+
+func reviewStoredCandidateSourceIdentities(candidate review.Candidate) ingest.SourceIdentitySet {
+	return ingest.SourceIdentities(sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL))
+}
+
+func sourceIdentityInputFromCandidateValues(externalID, sourceURL, calendarURL string) ingest.SourceIdentityInput {
+	input := ingest.SourceIdentityInput{
+		ExternalID:  strings.TrimSpace(externalID),
+		SourceURL:   strings.TrimSpace(sourceURL),
+		CalendarURL: strings.TrimSpace(calendarURL),
+	}
+	if input.ExternalID == "" {
+		return input
+	}
+	if prefix, value, ok := strings.Cut(input.ExternalID, ":"); ok {
+		switch prefix {
+		case "uid", "url":
+			input.ExternalID = strings.TrimSpace(value)
+		}
+	}
+	return input
+}
+
+func reviewGroupAuthoritativeSourceIdentities(link reviewGroupAuthoritativeLink) ingest.SourceIdentitySet {
+	input := sourceIdentityInputForKey(link.SourceEventKey)
+	input.SourceURL = link.SourceURL
+	return ingest.SourceIdentities(input)
+}
+
+func ensureEventSourceLinkTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, eventID, sourceID int64, identities ingest.SourceIdentitySet, authority sourceLinkAuthority, policy sourceLinkConflictPolicy, now time.Time) (sourceLinkWriteResult, error) {
+	if eventID <= 0 {
+		return sourceLinkWriteResult{}, errors.New("event source link event ID is required")
+	}
+	if sourceID <= 0 {
+		return sourceLinkWriteResult{}, errors.New("event source link source ID is required")
+	}
+	keys := identities.Keys()
+	if len(keys) == 0 {
+		return sourceLinkWriteResult{TargetEventID: eventID, Reason: "no stable source identities"}, nil
 	}
 
-	var eventID int64
-	err = q.QueryRowContext(ctx, `
-		SELECT event_id
-		FROM event_source_links
-		WHERE source_id = ? AND source_event_key = ?
+	resolvedTargetID, found, ambiguous, err := resolveLiveEventIDBySourceIdentitiesTx(ctx, tx, sourceID, identities)
+	if err != nil {
+		return sourceLinkWriteResult{}, err
+	}
+	if ambiguous {
+		return sourceLinkWriteResult{
+			Ambiguous:       true,
+			Reason:          "source identities resolve ambiguously",
+			ExistingEventID: resolvedTargetID,
+			TargetEventID:   eventID,
+		}, nil
+	}
+	if found && resolvedTargetID != eventID {
+		return sourceLinkWriteResult{
+			Ambiguous:       true,
+			Reason:          "source identity already linked to a different live event",
+			ExistingEventID: resolvedTargetID,
+			TargetEventID:   eventID,
+		}, nil
+	}
+
+	desiredAuthoritative := authority == sourceLinkAuthorityAuthoritative
+	wrote := false
+	nowText := formatRFC3339UTC(now)
+	for _, sourceEventKey := range keys {
+		row, found, ambiguous, err := loadSourceLinkRowByKeyTx(ctx, tx, sourceID, sourceEventKey)
+		if err != nil {
+			return sourceLinkWriteResult{}, err
+		}
+		if ambiguous {
+			return sourceLinkWriteResult{
+				Ambiguous:       true,
+				Reason:          "source identity has no usable live target",
+				TargetEventID:   eventID,
+				ExistingEventID: resolvedTargetID,
+			}, nil
+		}
+		switch {
+		case !found:
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO event_source_links (
+					event_id,
+					source_id,
+					source_event_key,
+					is_authoritative,
+					created_at,
+					updated_at
+				) VALUES (?, ?, ?, ?, ?, ?)
+			`, eventID, sourceID, sourceEventKey, boolInt(desiredAuthoritative), nowText, nowText); err != nil {
+				return sourceLinkWriteResult{}, err
+			}
+			wrote = true
+		case row.resolvedEventID != eventID:
+			if policy == sourceLinkConflictPolicyNoMove {
+				return sourceLinkWriteResult{
+					Ambiguous:       true,
+					Reason:          "source identity already linked to a different live event",
+					ExistingEventID: row.resolvedEventID,
+					TargetEventID:   eventID,
+				}, nil
+			}
+			return sourceLinkWriteResult{}, errors.New("source link conflict policy is not implemented")
+		default:
+			if row.eventID != eventID || (desiredAuthoritative && !row.isAuthoritative) {
+				_, err := tx.ExecContext(ctx, `
+					UPDATE event_source_links
+					SET event_id = ?,
+						is_authoritative = CASE
+							WHEN ? = 1 THEN 1
+							WHEN is_authoritative = 1 THEN 1
+							ELSE 0
+						END,
+						updated_at = ?
+					WHERE source_id = ?
+					  AND source_event_key = ?
+				`, eventID, boolInt(desiredAuthoritative), nowText, sourceID, sourceEventKey)
+				if err != nil {
+					return sourceLinkWriteResult{}, err
+				}
+				wrote = true
+			}
+		}
+	}
+	return sourceLinkWriteResult{
+		Applied:         wrote,
+		ExistingEventID: resolvedTargetID,
+		TargetEventID:   eventID,
+	}, nil
+}
+
+func loadSourceLinkRowByKeyTx(ctx context.Context, q queryer, sourceID int64, sourceEventKey string) (sourceLinkRow, bool, bool, error) {
+	sourceEventKey = strings.TrimSpace(sourceEventKey)
+	if sourceEventKey == "" {
+		return sourceLinkRow{}, false, false, nil
+	}
+
+	row := sourceLinkRow{}
+	err := q.QueryRowContext(ctx, `
+		SELECT
+			l.event_id,
+			l.is_authoritative,
+			e.origin,
+			e.publication_state,
+			COALESCE(e.canonical_event_id, 0),
+			COALESCE(c.origin, ''),
+			COALESCE(c.publication_state, '')
+		FROM event_source_links l
+		JOIN events e ON e.id = l.event_id
+		LEFT JOIN events c ON c.id = e.canonical_event_id
+		WHERE l.source_id = ? AND l.source_event_key = ?
 		LIMIT 1
-	`, sourceID, authoritative.SourceEventKey).Scan(&eventID)
+	`, sourceID, sourceEventKey).Scan(
+		&row.eventID,
+		&row.isAuthoritative,
+		&row.origin,
+		&row.publicationState,
+		&row.canonicalEventID,
+		&row.canonicalOrigin,
+		&row.canonicalState,
+	)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return 0, false, nil
+		return sourceLinkRow{}, false, false, nil
 	case err != nil:
-		return 0, false, err
+		return sourceLinkRow{}, false, false, err
 	default:
-		return eventID, true, nil
+		resolvedID, ok, ambiguous := resolvedLiveEventIDForSourceLinkRow(row)
+		if ambiguous {
+			return sourceLinkRow{}, false, true, nil
+		}
+		if !ok {
+			return sourceLinkRow{}, false, true, nil
+		}
+		row.resolvedEventID = resolvedID
+		return row, true, false, nil
 	}
+}
+
+func resolvedLiveEventIDForSourceLinkRow(row sourceLinkRow) (int64, bool, bool) {
+	if isLiveNonWithheldEventRow(row.origin, row.publicationState) {
+		return row.eventID, true, false
+	}
+	if strings.EqualFold(strings.TrimSpace(row.publicationState), string(domain.PublicationStateWithheld)) {
+		if row.canonicalEventID.Valid && row.canonicalEventID.Int64 > 0 &&
+			row.canonicalEventID.Int64 != row.eventID &&
+			isLiveNonWithheldEventRow(row.canonicalOrigin.String, row.canonicalState.String) {
+			return row.canonicalEventID.Int64, true, false
+		}
+	}
+	return 0, false, true
+}
+
+func isLiveNonWithheldEventRow(origin, publicationState string) bool {
+	return strings.EqualFold(strings.TrimSpace(origin), string(domain.OriginLive)) &&
+		!strings.EqualFold(strings.TrimSpace(publicationState), string(domain.PublicationStateWithheld))
+}
+
+func resolveLiveEventIDBySourceIdentitiesTx(ctx context.Context, q queryer, sourceID int64, identities ingest.SourceIdentitySet) (int64, bool, bool, error) {
+	keys := identities.LookupKeys()
+	if len(keys) == 0 {
+		return 0, false, false, nil
+	}
+
+	var (
+		targetID int64
+		found    bool
+	)
+	for _, sourceEventKey := range keys {
+		row, ok, ambiguous, err := loadSourceLinkRowByKeyTx(ctx, q, sourceID, sourceEventKey)
+		if err != nil {
+			return 0, false, false, err
+		}
+		if ambiguous {
+			return 0, false, true, nil
+		}
+		if !ok {
+			continue
+		}
+		if !found {
+			targetID = row.resolvedEventID
+			found = true
+			continue
+		}
+		if targetID != row.resolvedEventID {
+			return 0, false, true, nil
+		}
+	}
+
+	return targetID, found, false, nil
+}
+
+func resolveLiveEventRecordBySourceIdentitiesTx(ctx context.Context, q queryer, sourceID int64, identities ingest.SourceIdentitySet) (eventRecord, bool, bool, error) {
+	eventID, found, ambiguous, err := resolveLiveEventIDBySourceIdentitiesTx(ctx, q, sourceID, identities)
+	if err != nil || !found || ambiguous {
+		return eventRecord{}, found, ambiguous, err
+	}
+	record, ok, err := loadEventRecordByIDTx(ctx, q, eventID)
+	if err != nil || !ok {
+		return eventRecord{}, false, false, err
+	}
+	return record, true, false, nil
+}
+
+func authoritativeLinkedEventIDTx(ctx context.Context, q queryer, authoritative reviewGroupAuthoritativeLink) (int64, bool, bool, error) {
+	sourceID, ok, err := loadSourceIDByNameURLTx(ctx, q, authoritative.SourceName, authoritative.SourceURL)
+	if err != nil || !ok {
+		return 0, ok, false, err
+	}
+	record, ok, ambiguous, err := resolveLiveEventRecordBySourceIdentitiesTx(ctx, q, sourceID, reviewGroupAuthoritativeSourceIdentities(authoritative))
+	if err != nil {
+		return 0, false, false, err
+	}
+	if ambiguous {
+		return 0, false, true, nil
+	}
+	if !ok {
+		return 0, false, false, nil
+	}
+	return record.ID, true, false, nil
 }
 
 func loadSourceIDByNameURLTx(ctx context.Context, q queryer, sourceName, sourceURL string) (int64, bool, error) {
@@ -1959,38 +1462,11 @@ func loadSourceIDByNameURLTx(ctx context.Context, q queryer, sourceName, sourceU
 }
 
 func loadEventRecordBySourceLinkTx(ctx context.Context, q queryer, sourceID int64, sourceEventKey string) (eventRecord, bool, error) {
-	return loadEventRecord(ctx, q, `
-		SELECT
-			e.id,
-			e.slug,
-			e.name,
-			v.slug,
-			e.start_at,
-			e.end_at,
-			e.genre,
-			e.status,
-			e.description,
-			e.image_url,
-			e.image_source_url,
-			e.image_alt,
-			e.image_width,
-			e.image_height,
-			e.image_focus_x,
-			e.image_focus_y,
-			s.name,
-			s.url,
-			COALESCE(e.official_listing_url, ''),
-			COALESCE(e.calendar_url, ''),
-			e.last_checked_at,
-			e.origin,
-			e.publication_state
-		FROM event_source_links l
-		JOIN events e ON e.id = l.event_id
-		JOIN venues v ON v.id = e.venue_id
-		JOIN sources s ON s.id = e.source_id
-		WHERE l.source_id = ? AND l.source_event_key = ?
-		LIMIT 1
-	`, sourceID, sourceEventKey)
+	record, ok, ambiguous, err := resolveLiveEventRecordBySourceIdentitiesTx(ctx, q, sourceID, ingest.SourceIdentities(sourceIdentityInputForKey(sourceEventKey)))
+	if err != nil || ambiguous || !ok {
+		return eventRecord{}, false, err
+	}
+	return record, true, nil
 }
 
 func loadEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (eventRecord, bool, error) {
@@ -2091,8 +1567,9 @@ func loadLiveEventRecordBySlugTx(ctx context.Context, q queryer, slug string) (e
 		JOIN venues v ON v.id = e.venue_id
 		JOIN sources s ON s.id = e.source_id
 		WHERE e.slug = ? AND e.origin = ?
+		  AND TRIM(COALESCE(e.publication_state, '')) <> ?
 		LIMIT 1
-	`, slug, string(domain.OriginLive))
+	`, slug, string(domain.OriginLive), string(domain.PublicationStateWithheld))
 }
 
 func loadLiveEventRecordBySlugAndSourceTx(ctx context.Context, q queryer, slug string, sourceID int64) (eventRecord, bool, error) {
@@ -2125,8 +1602,9 @@ func loadLiveEventRecordBySlugAndSourceTx(ctx context.Context, q queryer, slug s
 		JOIN venues v ON v.id = e.venue_id
 		JOIN sources s ON s.id = e.source_id
 		WHERE e.slug = ? AND e.source_id = ? AND e.origin = ?
+		  AND TRIM(COALESCE(e.publication_state, '')) <> ?
 		LIMIT 1
-	`, slug, sourceID, string(domain.OriginLive))
+	`, slug, sourceID, string(domain.OriginLive), string(domain.PublicationStateWithheld))
 }
 
 func loadLiveEventRecordsByFingerprintTx(ctx context.Context, q queryer, name, venueSlug string, start time.Time) ([]eventRecord, error) {
@@ -2162,7 +1640,8 @@ func loadLiveEventRecordsByFingerprintTx(ctx context.Context, q queryer, name, v
 		  AND v.slug = ?
 		  AND e.start_at = ?
 		  AND e.origin = ?
-	`, strings.TrimSpace(name), strings.TrimSpace(venueSlug), formatRFC3339UTC(start), string(domain.OriginLive))
+		  AND TRIM(COALESCE(e.publication_state, '')) <> ?
+	`, strings.TrimSpace(name), strings.TrimSpace(venueSlug), formatRFC3339UTC(start), string(domain.OriginLive), string(domain.PublicationStateWithheld))
 }
 
 func loadLiveEventRecordsByFingerprintAndSourceTx(ctx context.Context, q queryer, sourceID int64, name, venueSlug string, start time.Time) ([]eventRecord, error) {
@@ -2199,7 +1678,8 @@ func loadLiveEventRecordsByFingerprintAndSourceTx(ctx context.Context, q queryer
 		  AND v.slug = ?
 		  AND e.start_at = ?
 		  AND e.origin = ?
-	`, sourceID, strings.TrimSpace(name), strings.TrimSpace(venueSlug), formatRFC3339UTC(start), string(domain.OriginLive))
+		  AND TRIM(COALESCE(e.publication_state, '')) <> ?
+	`, sourceID, strings.TrimSpace(name), strings.TrimSpace(venueSlug), formatRFC3339UTC(start), string(domain.OriginLive), string(domain.PublicationStateWithheld))
 }
 
 func loadEventRecords(ctx context.Context, q queryer, query string, args ...any) ([]eventRecord, error) {
@@ -2359,17 +1839,6 @@ func loadEventRecord(ctx context.Context, q queryer, query string, args ...any) 
 	return record, true, nil
 }
 
-func stagingKeyValue(value string) any {
-	return nullableReviewText(value)
-}
-
-func nullableReviewText(value string) any {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	return strings.TrimSpace(value)
-}
-
 func firstNonEmptyReviewText(values ...string) string {
 	for _, value := range values {
 		value = strings.TrimSpace(value)
@@ -2380,1152 +1849,19 @@ func firstNonEmptyReviewText(values ...string) string {
 	return ""
 }
 
-func nullableCanonicalEventID(id int64) any {
-	if id <= 0 {
-		return nil
-	}
-	return id
-}
-
-func (s *Store) ListOpenReviewGroups(ctx context.Context) ([]review.GroupSummary, error) {
-	if s == nil || s.db == nil {
-		return nil, errors.New("sqlite store is not open")
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			g.id,
-			g.title,
-			g.source_name,
-			g.source_url,
-			g.status,
-			g.notes,
-			g.created_at,
-			g.updated_at,
-			COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN c.id END),
-			COUNT(DISTINCT d.field),
-			COALESCE((
-				SELECT l.import_run_id
-				FROM import_run_review_groups l
-				WHERE l.review_group_id = g.id
-				ORDER BY l.linked_at DESC, l.import_run_id DESC
-				LIMIT 1
-			), 0),
-			CASE
-				WHEN COALESCE(g.authoritative_source_name, '') <> ''
-					AND COALESCE(g.authoritative_source_url, '') <> ''
-					AND COALESCE(g.authoritative_source_event_key, '') <> ''
-				THEN 1
-				ELSE 0
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END)
-				ELSE NULL
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END)
-				ELSE ''
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN COALESCE(v.name, '') END)
-				ELSE ''
-			END
-		FROM review_groups g
-		LEFT JOIN review_candidates c ON c.group_id = g.id
-		LEFT JOIN review_draft_choices d ON d.group_id = g.id
-		LEFT JOIN venues v ON v.slug = c.venue_slug
-		WHERE g.status = ?
-		GROUP BY g.id
-		ORDER BY g.updated_at DESC, g.id DESC
-	`, review.StatusOpen)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var groups []review.GroupSummary
-	for rows.Next() {
-		group, err := scanReviewGroupSummaryRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		groups = append(groups, group)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	matcher, err := loadVenueMatcher(ctx, s.db)
-	if err != nil {
-		return nil, err
-	}
-	for i := range groups {
-		sharedVenue, err := loadReviewGroupSharedVenue(ctx, s.db, matcher, groups[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		if sharedVenue.status == venueMatchResolved {
-			groups[i].SharedVenueSlug = sharedVenue.slug
-			groups[i].SharedVenueName = sharedVenue.name
-		} else {
-			groups[i].SharedVenueSlug = ""
-			groups[i].SharedVenueName = ""
-		}
-	}
-	return groups, nil
-}
-
-func (s *Store) ListClosedReviewGroups(ctx context.Context, limit int) ([]review.GroupSummary, error) {
-	if s == nil || s.db == nil {
-		return nil, errors.New("sqlite store is not open")
-	}
-	if limit <= 0 {
-		return nil, errors.New("review group limit must be positive")
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			g.id,
-			g.title,
-			g.source_name,
-			g.source_url,
-			g.status,
-			g.notes,
-			g.created_at,
-			g.updated_at,
-			COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN c.id END),
-			COUNT(DISTINCT d.field),
-			COALESCE((
-				SELECT l.import_run_id
-				FROM import_run_review_groups l
-				WHERE l.review_group_id = g.id
-				ORDER BY l.linked_at DESC, l.import_run_id DESC
-				LIMIT 1
-			), 0),
-			CASE
-				WHEN COALESCE(g.authoritative_source_name, '') <> ''
-					AND COALESCE(g.authoritative_source_url, '') <> ''
-					AND COALESCE(g.authoritative_source_event_key, '') <> ''
-				THEN 1
-				ELSE 0
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END)
-				ELSE NULL
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END)
-				ELSE ''
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN COALESCE(v.name, '') END)
-				ELSE ''
-			END
-		FROM review_groups g
-		LEFT JOIN review_candidates c ON c.group_id = g.id
-		LEFT JOIN review_draft_choices d ON d.group_id = g.id
-		LEFT JOIN venues v ON v.slug = c.venue_slug
-		WHERE g.status IN (?, ?)
-		GROUP BY g.id
-		ORDER BY g.updated_at DESC, g.id DESC
-		LIMIT ?
-	`, review.StatusResolved, review.StatusRejected, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var groups []review.GroupSummary
-	for rows.Next() {
-		group, err := scanReviewGroupSummaryRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		groups = append(groups, group)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	matcher, err := loadVenueMatcher(ctx, s.db)
-	if err != nil {
-		return nil, err
-	}
-	for i := range groups {
-		sharedVenue, err := loadReviewGroupSharedVenue(ctx, s.db, matcher, groups[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		if sharedVenue.status == venueMatchResolved {
-			groups[i].SharedVenueSlug = sharedVenue.slug
-			groups[i].SharedVenueName = sharedVenue.name
-		} else {
-			groups[i].SharedVenueSlug = ""
-			groups[i].SharedVenueName = ""
-		}
-	}
-	return groups, nil
-}
-
-func (s *Store) ListReviewGroupsForImportRun(ctx context.Context, importRunID int64) ([]review.GroupSummary, error) {
-	if s == nil || s.db == nil {
-		return nil, errors.New("sqlite store is not open")
-	}
-	if importRunID <= 0 {
-		return nil, errors.New("import run ID is required")
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			g.id,
-			g.title,
-			g.source_name,
-			g.source_url,
-			g.status,
-			g.notes,
-			g.created_at,
-			g.updated_at,
-			COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN c.id END),
-			COUNT(DISTINCT d.field),
-			COALESCE((
-				SELECT l.import_run_id
-				FROM import_run_review_groups l
-				WHERE l.review_group_id = g.id
-				ORDER BY l.linked_at DESC, l.import_run_id DESC
-				LIMIT 1
-			), 0),
-			CASE
-				WHEN COALESCE(g.authoritative_source_name, '') <> ''
-					AND COALESCE(g.authoritative_source_url, '') <> ''
-					AND COALESCE(g.authoritative_source_event_key, '') <> ''
-				THEN 1
-				ELSE 0
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END)
-				ELSE NULL
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END)
-				ELSE ''
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN COALESCE(v.name, '') END)
-				ELSE ''
-			END
-		FROM review_groups g
-		JOIN import_run_review_groups l
-			ON l.review_group_id = g.id
-			AND l.import_run_id = ?
-		LEFT JOIN review_candidates c ON c.group_id = g.id
-		LEFT JOIN review_draft_choices d ON d.group_id = g.id
-		LEFT JOIN venues v ON v.slug = c.venue_slug
-		WHERE g.status IN (?, ?, ?)
-		GROUP BY g.id
-		ORDER BY g.updated_at DESC, g.id DESC
-	`, importRunID, review.StatusOpen, review.StatusResolved, review.StatusRejected)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var groups []review.GroupSummary
-	for rows.Next() {
-		group, err := scanReviewGroupSummaryRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		groups = append(groups, group)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	matcher, err := loadVenueMatcher(ctx, s.db)
-	if err != nil {
-		return nil, err
-	}
-	for i := range groups {
-		sharedVenue, err := loadReviewGroupSharedVenue(ctx, s.db, matcher, groups[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		if sharedVenue.status == venueMatchResolved {
-			groups[i].SharedVenueSlug = sharedVenue.slug
-			groups[i].SharedVenueName = sharedVenue.name
-		} else {
-			groups[i].SharedVenueSlug = ""
-			groups[i].SharedVenueName = ""
-		}
-	}
-	return groups, nil
-}
-
-func (s *Store) LoadReviewGroup(ctx context.Context, id int64) (review.Group, bool, error) {
-	if s == nil || s.db == nil {
-		return review.Group{}, false, errors.New("sqlite store is not open")
-	}
-	if id <= 0 {
-		return review.Group{}, false, nil
-	}
-
-	group, ok, err := loadReviewGroup(ctx, s.db, id)
-	if err != nil || !ok {
-		return review.Group{}, ok, err
-	}
-	candidates, err := loadReviewCandidates(ctx, s.db, id)
-	if err != nil {
-		return review.Group{}, false, err
-	}
-	choices, err := loadReviewDraftChoices(ctx, s.db, id)
-	if err != nil {
-		return review.Group{}, false, err
-	}
-	defaults, err := loadReviewDefaultChoices(ctx, s.db, id)
-	if err != nil {
-		return review.Group{}, false, err
-	}
-	group.Candidates = candidates
-	group.DraftChoices = choices
-	group.DefaultChoices = defaults
-	matcher, err := loadVenueMatcher(ctx, s.db)
-	if err != nil {
-		return review.Group{}, false, err
-	}
-	sharedVenue := matcher.matchSharedVenue(candidates)
-	if sharedVenue.status == venueMatchResolved {
-		group.SharedVenueSlug = sharedVenue.slug
-		group.SharedVenueName = sharedVenue.name
-	} else {
-		group.SharedVenueSlug = ""
-		group.SharedVenueName = ""
-	}
-	return group, true, nil
-}
-
-func (s *Store) SaveReviewDraftChoices(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error {
-	if s == nil || s.db == nil {
-		return errors.New("sqlite store is not open")
-	}
-	if groupID <= 0 {
-		return errors.New("review group ID is required")
-	}
-	if len(choices) == 0 {
-		return errors.New("at least one review choice is required")
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	group, ok, err := loadReviewGroup(ctx, tx, groupID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("review group %d not found", groupID)
-	}
-	if group.Status != review.StatusOpen {
-		return fmt.Errorf("review group %d is not open", groupID)
-	}
-
-	now := time.Now().UTC()
-	for _, choice := range choices {
-		if !choice.Field.Valid() {
-			return fmt.Errorf("invalid review field %q", choice.Field)
-		}
-		if choice.CandidateID <= 0 {
-			return fmt.Errorf("candidate ID is required for %s", choice.Field.Label())
-		}
-		candidate, ok, err := loadReviewCandidate(ctx, tx, groupID, choice.CandidateID)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("review candidate %d not found in group %d", choice.CandidateID, groupID)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO review_draft_choices (
-				group_id,
-				field,
-				candidate_id,
-				value,
-				updated_at
-			) VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(group_id, field) DO UPDATE SET
-				candidate_id = excluded.candidate_id,
-				value = excluded.value,
-				updated_at = excluded.updated_at
-		`, groupID, string(choice.Field), choice.CandidateID, review.CandidateValue(candidate, choice.Field), formatRFC3339UTC(now)); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE review_groups
-		SET updated_at = ?
-		WHERE id = ?
-	`, formatRFC3339UTC(now), groupID); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Store) ResolveReviewGroup(ctx context.Context, groupID int64, choices []review.DraftChoiceInput) error {
-	if s == nil || s.db == nil {
-		return errors.New("sqlite store is not open")
-	}
-	if groupID <= 0 {
-		return errors.New("review group ID is required")
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	group, ok, err := loadReviewGroup(ctx, tx, groupID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("review group %d not found", groupID)
-	}
-	if group.Status != review.StatusOpen {
-		return fmt.Errorf("review group %d is not open", groupID)
-	}
-	candidates, err := loadReviewCandidates(ctx, tx, groupID)
-	if err != nil {
-		return err
-	}
-	group.Candidates = candidates
-	if len(choices) != len(review.CanonicalFields) {
-		return fmt.Errorf("all review fields must be selected before resolving")
-	}
-	matcher, err := loadVenueMatcher(ctx, tx)
-	if err != nil {
-		return err
-	}
-
-	seen := make(map[review.Field]struct{}, len(choices))
-	selectedCandidates := make(map[review.Field]review.Candidate, len(choices))
-	now := time.Now().UTC()
-	for _, choice := range choices {
-		if !choice.Field.Valid() {
-			return fmt.Errorf("invalid review field %q", choice.Field)
-		}
-		if _, exists := seen[choice.Field]; exists {
-			return fmt.Errorf("duplicate review field %q", choice.Field)
-		}
-		seen[choice.Field] = struct{}{}
-		if choice.CandidateID <= 0 {
-			return fmt.Errorf("candidate ID is required for %s", choice.Field.Label())
-		}
-		candidate, ok, err := loadReviewCandidate(ctx, tx, groupID, choice.CandidateID)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("review candidate %d not found in group %d", choice.CandidateID, groupID)
-		}
-		selectedCandidates[choice.Field] = candidate
-	}
-
-	if venueCandidate, ok := selectedCandidates[review.FieldVenueSlug]; ok {
-		resolvedSlug, err := resolveReviewVenueTx(ctx, tx, &matcher, venueCandidate)
-		if err != nil {
-			return err
-		}
-		venueCandidate.VenueSlug = resolvedSlug
-		selectedCandidates[review.FieldVenueSlug] = venueCandidate
-	}
-
-	for _, choice := range choices {
-		candidate := selectedCandidates[choice.Field]
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO review_draft_choices (
-				group_id,
-				field,
-				candidate_id,
-				value,
-				updated_at
-			) VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(group_id, field) DO UPDATE SET
-				candidate_id = excluded.candidate_id,
-				value = excluded.value,
-				updated_at = excluded.updated_at
-		`, groupID, string(choice.Field), choice.CandidateID, review.CandidateValue(candidate, choice.Field), formatRFC3339UTC(now)); err != nil {
-			return err
-		}
-	}
-	event, err := buildResolvedEvent(group, selectedCandidates, now)
-	if err != nil {
-		return err
-	}
-	event = s.decorateEventForPublish(event)
-	canonicalCandidate, hasCanonicalCandidate := canonicalSnapshotCandidate(candidates)
-	staged := stagedReviewCandidates(candidates)
-	if authoritative, ok := reviewGroupAuthoritativeSource(group); ok {
-		event.SourceName = authoritative.SourceName
-		event.SourceURL = authoritative.SourceURL
-		event = s.decorateEventForPublish(event)
-		canonicalRecord, applied, err := applyAuthoritativeEventTx(ctx, tx, event, authoritative.SourceEventKey, now)
-		if err != nil {
-			return err
-		}
-		if !applied {
-			return fmt.Errorf("venue %q not found", event.VenueSlug)
-		}
-		matchingStaged := reviewCandidatesMatchingEvent(staged, canonicalRecord.Event)
-		if err := replaceEventSecondarySourceInfoTx(ctx, tx, canonicalRecord.ID, authoritative, matchingStaged, now); err != nil {
-			return err
-		}
-		if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, canonicalRecord.ID, canonicalRecord.Event.Description, now); err != nil {
-			return err
-		}
-		if hasCanonicalCandidate && canonicalCandidate.CanonicalEventID > 0 && canonicalCandidate.CanonicalEventID != canonicalRecord.ID {
-			// The authoritative target wins when it disagrees with the canonical slug match.
-		}
-	} else if hasCanonicalCandidate {
-		canonicalEventID, err := updateCanonicalMatchedEventTx(ctx, tx, canonicalCandidate.CanonicalEventID, event, now)
-		if err != nil {
-			return err
-		}
-		matchingStaged := reviewCandidatesMatchingEvent(staged, event)
-		if err := upsertEventSecondarySourceInfoTx(ctx, tx, canonicalEventID, primarySourceIdentity(event), matchingStaged, now); err != nil {
-			return err
-		}
-		if authoritative, ok := authoritativeTitleRepairLinkFromCandidates(group, staged); ok {
-			sourceID, err := ensureSourceTx(ctx, tx, authoritative.SourceName, authoritative.SourceURL)
-			if err != nil {
-				return err
-			}
-			if err := ensureEventSourceLinkTx(ctx, tx, canonicalEventID, sourceID, authoritative.SourceEventKey, now); err != nil {
-				return err
-			}
-		}
-		if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, canonicalEventID, event.Description, now); err != nil {
-			return err
-		}
-	} else {
-		record, err := upsertEventTx(ctx, tx, event)
-		if err != nil {
-			return err
-		}
-		matchingStaged := reviewCandidatesMatchingEvent(staged, record.Event)
-		if err := upsertEventSecondarySourceInfoTx(ctx, tx, record.ID, primarySourceIdentity(record.Event), matchingStaged, now); err != nil {
-			return err
-		}
-		if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, record.ID, record.Event.Description, now); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE review_groups
-		SET status = ?, updated_at = ?
-		WHERE id = ?
-	`, review.StatusResolved, formatRFC3339UTC(now), groupID); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Store) UpdateReviewGroupStatus(ctx context.Context, groupID int64, status string) error {
-	if s == nil || s.db == nil {
-		return errors.New("sqlite store is not open")
-	}
-	if groupID <= 0 {
-		return errors.New("review group ID is required")
-	}
-	if status != review.StatusRejected {
-		return fmt.Errorf("invalid review status %q", status)
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	group, ok, err := loadReviewGroup(ctx, tx, groupID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("review group %d not found", groupID)
-	}
-	if group.Status != review.StatusOpen {
-		return fmt.Errorf("review group %d is not open", groupID)
-	}
-
-	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE review_groups
-		SET status = ?, updated_at = ?
-		WHERE id = ?
-	`, status, formatRFC3339UTC(now), groupID); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func insertReviewCandidate(ctx context.Context, tx execer, groupID int64, position int, input review.CandidateInput, defaultSourceName, defaultSourceURL string) error {
-	input.SourceName = strings.TrimSpace(input.SourceName)
-	input.SourceURL = strings.TrimSpace(input.SourceURL)
-	input.CalendarURL = strings.TrimSpace(input.CalendarURL)
-	if input.SourceName == "" {
-		input.SourceName = defaultSourceName
-	}
-	if input.SourceURL == "" {
-		input.SourceURL = defaultSourceURL
-	}
-	input.Name = strings.TrimSpace(input.Name)
-	if input.Name == "" {
-		return fmt.Errorf("review candidate %d name is required", position)
-	}
-
-	res, err := tx.ExecContext(ctx, `
-		INSERT INTO review_candidates (
-			group_id,
-			position,
-			canonical_event_id,
-			external_id,
-			name,
-			venue_slug,
-			venue_text,
-			venue_location_raw,
-			room_text,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			image_url,
-			image_source_url,
-			image_alt,
-			image_width,
-			image_height,
-			image_focus_x,
-			image_focus_y,
-			source_name,
-			source_url,
-			calendar_url,
-			provenance
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, groupID, position, nullableCanonicalEventID(input.CanonicalEventID), strings.TrimSpace(input.ExternalID), input.Name,
-		strings.TrimSpace(input.VenueSlug),
-		strings.TrimSpace(input.VenueText),
-		input.VenueLocationRaw,
-		strings.TrimSpace(input.RoomText),
-		strings.TrimSpace(input.StartAt),
-		strings.TrimSpace(input.EndAt),
-		strings.TrimSpace(input.Genre),
-		strings.TrimSpace(input.Status),
-		strings.TrimSpace(input.Description),
-		strings.TrimSpace(input.ImageURL),
-		strings.TrimSpace(input.ImageSourceURL),
-		strings.TrimSpace(input.ImageAlt),
-		input.ImageWidth,
-		input.ImageHeight,
-		normalizedImageFocusValue(input.ImageFocusX),
-		normalizedImageFocusValue(input.ImageFocusY),
-		input.SourceName,
-		input.SourceURL,
-		input.CalendarURL,
-		strings.TrimSpace(input.Provenance))
-	if err != nil {
-		return err
-	}
-	candidateID, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-	return replaceReviewCandidateRoomsTx(ctx, tx, candidateID, input.Rooms)
-}
-
-func loadReviewGroup(ctx context.Context, q queryer, id int64) (review.Group, bool, error) {
-	row := q.QueryRowContext(ctx, `
-		SELECT
-			g.id,
-			g.title,
-			g.source_name,
-			g.source_url,
-			g.authoritative_source_name,
-			g.authoritative_source_url,
-			g.authoritative_source_event_key,
-			g.status,
-			g.notes,
-			g.created_at,
-			g.updated_at,
-			COALESCE((
-				SELECT l.import_run_id
-				FROM import_run_review_groups l
-				WHERE l.review_group_id = g.id
-				ORDER BY l.linked_at DESC, l.import_run_id DESC
-				LIMIT 1
-			), 0),
-			COUNT(CASE WHEN c.canonical_event_id IS NULL THEN 1 END),
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END)
-				ELSE ''
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN COALESCE(v.name, '') END)
-				ELSE ''
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END)
-				ELSE NULL
-			END
-		FROM review_groups g
-		LEFT JOIN review_candidates c ON c.group_id = g.id
-		LEFT JOIN venues v ON v.slug = c.venue_slug
-		WHERE g.id = ?
-		GROUP BY g.id
-		LIMIT 1
-	`, id)
-	return scanReviewGroupRow(row, id)
-}
-
-func loadReviewGroupByStagingKey(ctx context.Context, q queryer, stagingKey string) (review.Group, bool, error) {
-	row := q.QueryRowContext(ctx, `
-		SELECT
-			g.id,
-			g.title,
-			g.source_name,
-			g.source_url,
-			g.authoritative_source_name,
-			g.authoritative_source_url,
-			g.authoritative_source_event_key,
-			g.status,
-			g.notes,
-			g.created_at,
-			g.updated_at,
-			COALESCE((
-				SELECT l.import_run_id
-				FROM import_run_review_groups l
-				WHERE l.review_group_id = g.id
-				ORDER BY l.linked_at DESC, l.import_run_id DESC
-				LIMIT 1
-			), 0),
-			COUNT(CASE WHEN c.canonical_event_id IS NULL THEN 1 END),
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END)
-				ELSE ''
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.venue_slug), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN COALESCE(v.name, '') END)
-				ELSE ''
-			END,
-			CASE
-				WHEN COUNT(DISTINCT CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END) = 1
-				THEN MIN(CASE WHEN c.canonical_event_id IS NULL THEN NULLIF(TRIM(c.start_at), '') END)
-				ELSE NULL
-			END
-		FROM review_groups g
-		LEFT JOIN review_candidates c ON c.group_id = g.id
-		LEFT JOIN venues v ON v.slug = c.venue_slug
-		WHERE g.staging_key = ?
-		GROUP BY g.id
-		LIMIT 1
-	`, stagingKey)
-	return scanReviewGroupRow(row, 0)
-}
-
-func scanReviewGroupRow(scanner interface {
-	Scan(...any) error
-}, fallbackID int64) (review.Group, bool, error) {
-	var group review.Group
-	var authoritativeSourceName sql.NullString
-	var authoritativeSourceURL sql.NullString
-	var authoritativeSourceEventKey sql.NullString
-	var createdAt string
-	var updatedAt string
-	var sharedVenueSlug string
-	var sharedVenueName string
-	var sharedStartAt sql.NullString
-	switch err := scanner.Scan(
-		&group.ID,
-		&group.Title,
-		&group.SourceName,
-		&group.SourceURL,
-		&authoritativeSourceName,
-		&authoritativeSourceURL,
-		&authoritativeSourceEventKey,
-		&group.Status,
-		&group.Notes,
-		&createdAt,
-		&updatedAt,
-		&group.LatestImportRunID,
-		&group.StagedCandidateCount,
-		&sharedVenueSlug,
-		&sharedVenueName,
-		&sharedStartAt,
-	); {
-	case errors.Is(err, sql.ErrNoRows):
-		return review.Group{}, false, nil
-	case err != nil:
-		return review.Group{}, false, err
-	}
-	group.AuthoritativeSourceName = strings.TrimSpace(authoritativeSourceName.String)
-	group.AuthoritativeSourceURL = strings.TrimSpace(authoritativeSourceURL.String)
-	group.AuthoritativeSourceEventKey = strings.TrimSpace(authoritativeSourceEventKey.String)
-	group.SharedVenueSlug = strings.TrimSpace(sharedVenueSlug)
-	group.SharedVenueName = strings.TrimSpace(sharedVenueName)
-	if sharedStartAt.Valid && strings.TrimSpace(sharedStartAt.String) != "" {
-		parsedSharedStartAt, err := parseRFC3339UTC(sharedStartAt.String)
-		if err != nil {
-			if fallbackID == 0 {
-				fallbackID = group.ID
-			}
-			return review.Group{}, false, fmt.Errorf("parse review group %d shared_start_at: %w", fallbackID, err)
-		}
-		group.SharedStartAt = &parsedSharedStartAt
-	}
-	parsedCreatedAt, err := parseRFC3339UTC(createdAt)
-	if err != nil {
-		if fallbackID == 0 {
-			fallbackID = group.ID
-		}
-		return review.Group{}, false, fmt.Errorf("parse review group %d created_at: %w", fallbackID, err)
-	}
-	parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
-	if err != nil {
-		if fallbackID == 0 {
-			fallbackID = group.ID
-		}
-		return review.Group{}, false, fmt.Errorf("parse review group %d updated_at: %w", fallbackID, err)
-	}
-	group.CreatedAt = parsedCreatedAt
-	group.UpdatedAt = parsedUpdatedAt
-	return group, true, nil
-}
-
-func scanReviewGroupSummaryRow(scanner interface {
-	Scan(...any) error
-}) (review.GroupSummary, error) {
-	var group review.GroupSummary
-	var createdAt string
-	var updatedAt string
-	var authoritative int
-	var sharedStartAt sql.NullString
-	if err := scanner.Scan(
-		&group.ID,
-		&group.Title,
-		&group.SourceName,
-		&group.SourceURL,
-		&group.Status,
-		&group.Notes,
-		&createdAt,
-		&updatedAt,
-		&group.CandidateCount,
-		&group.DraftCount,
-		&group.LatestImportRunID,
-		&authoritative,
-		&sharedStartAt,
-		&group.SharedVenueSlug,
-		&group.SharedVenueName,
-	); err != nil {
-		return review.GroupSummary{}, err
-	}
-	parsedCreatedAt, err := parseRFC3339UTC(createdAt)
-	if err != nil {
-		return review.GroupSummary{}, fmt.Errorf("parse review group %d created_at: %w", group.ID, err)
-	}
-	parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
-	if err != nil {
-		return review.GroupSummary{}, fmt.Errorf("parse review group %d updated_at: %w", group.ID, err)
-	}
-	group.CreatedAt = parsedCreatedAt
-	group.UpdatedAt = parsedUpdatedAt
-	group.Authoritative = authoritative == 1
-	group.SharedVenueSlug = strings.TrimSpace(group.SharedVenueSlug)
-	group.SharedVenueName = strings.TrimSpace(group.SharedVenueName)
-	if sharedStartAt.Valid && strings.TrimSpace(sharedStartAt.String) != "" {
-		parsedSharedStartAt, err := parseRFC3339UTC(sharedStartAt.String)
-		if err != nil {
-			return review.GroupSummary{}, fmt.Errorf("parse review group %d shared_start_at: %w", group.ID, err)
-		}
-		group.SharedStartAt = &parsedSharedStartAt
-	}
-	return group, nil
-}
-
 type reviewGroupAuthoritativeLink struct {
 	SourceName     string
 	SourceURL      string
 	SourceEventKey string
 }
 
-type reviewGroupAuthoritativeLinkInput struct {
-	SourceName     string
-	SourceURL      string
-	SourceEventKey string
-}
-
-func reviewGroupAuthoritativeSource(group review.Group) (reviewGroupAuthoritativeLink, bool) {
-	sourceName := strings.TrimSpace(group.AuthoritativeSourceName)
-	sourceURL := strings.TrimSpace(group.AuthoritativeSourceURL)
-	sourceEventKey := strings.TrimSpace(group.AuthoritativeSourceEventKey)
-	if sourceName == "" || sourceURL == "" || sourceEventKey == "" {
-		return reviewGroupAuthoritativeLink{}, false
-	}
-	return reviewGroupAuthoritativeLink{
-		SourceName:     sourceName,
-		SourceURL:      sourceURL,
-		SourceEventKey: sourceEventKey,
-	}, true
-}
-
-func backfillOpenReviewGroupsAuthoritativeLinks(ctx context.Context, tx interface {
-	execer
-	queryer
-}, sourceMetadata ingest.SourceMetadataLookup) error {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id
-		FROM review_groups
-		WHERE status = ?
-			AND (
-				authoritative_source_name IS NULL
-				OR authoritative_source_name = ''
-				OR authoritative_source_url IS NULL
-				OR authoritative_source_url = ''
-				OR authoritative_source_event_key IS NULL
-				OR authoritative_source_event_key = ''
-			)
-	`, review.StatusOpen)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	var groupIDs []int64
-	for rows.Next() {
-		var groupID int64
-		if err := rows.Scan(&groupID); err != nil {
-			return err
-		}
-		groupIDs = append(groupIDs, groupID)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	now := time.Now().UTC()
-	for _, groupID := range groupIDs {
-		group, ok, err := loadReviewGroup(ctx, tx, groupID)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			continue
-		}
-		candidates, err := loadReviewCandidates(ctx, tx, groupID)
-		if err != nil {
-			return err
-		}
-		link, ok := deriveReviewGroupAuthoritativeLink(sourceMetadata, group, candidates)
-		if !ok {
-			continue
-		}
-		if err := refreshReviewGroupAuthoritativeLinkTx(ctx, tx, groupID, reviewGroupAuthoritativeLinkInput(link), now); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func backfillReviewFieldDefaults(ctx context.Context, tx interface {
-	execer
-	queryer
-}) error {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id
-		FROM review_groups
-	`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	var groupIDs []int64
-	for rows.Next() {
-		var groupID int64
-		if err := rows.Scan(&groupID); err != nil {
-			return err
-		}
-		groupIDs = append(groupIDs, groupID)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	now := time.Now().UTC()
-	for _, groupID := range groupIDs {
-		if err := recomputeReviewFieldDefaultsTx(ctx, tx, groupID, now); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func refreshReviewGroupAuthoritativeLinkTx(ctx context.Context, tx execer, groupID int64, input reviewGroupAuthoritativeLinkInput, now time.Time) error {
-	link, ok := normalizeReviewGroupAuthoritativeLinkInput(input)
-	if !ok {
-		_, err := tx.ExecContext(ctx, `
-			UPDATE review_groups
-			SET authoritative_source_name = NULL,
-				authoritative_source_url = NULL,
-				authoritative_source_event_key = NULL,
-				updated_at = CASE
-					WHEN COALESCE(authoritative_source_name, '') <> ''
-						OR COALESCE(authoritative_source_url, '') <> ''
-						OR COALESCE(authoritative_source_event_key, '') <> ''
-					THEN ?
-					ELSE updated_at
-				END
-			WHERE id = ?
-		`, formatRFC3339UTC(now), groupID)
-		return err
-	}
-	_, err := tx.ExecContext(ctx, `
-		UPDATE review_groups
-		SET authoritative_source_name = ?,
-			authoritative_source_url = ?,
-			authoritative_source_event_key = ?,
-			updated_at = CASE
-				WHEN COALESCE(authoritative_source_name, '') <> ?
-					OR COALESCE(authoritative_source_url, '') <> ?
-					OR COALESCE(authoritative_source_event_key, '') <> ?
-				THEN ?
-				ELSE updated_at
-			END
-		WHERE id = ?
-	`, link.SourceName, link.SourceURL, link.SourceEventKey,
-		link.SourceName, link.SourceURL, link.SourceEventKey,
-		formatRFC3339UTC(now), groupID)
-	return err
-}
-
-func normalizeReviewGroupAuthoritativeLinkInput(input reviewGroupAuthoritativeLinkInput) (reviewGroupAuthoritativeLink, bool) {
-	link := reviewGroupAuthoritativeLink{
-		SourceName:     strings.TrimSpace(input.SourceName),
-		SourceURL:      strings.TrimSpace(input.SourceURL),
-		SourceEventKey: strings.TrimSpace(input.SourceEventKey),
-	}
-	if link.SourceName == "" || link.SourceURL == "" || link.SourceEventKey == "" {
-		return reviewGroupAuthoritativeLink{}, false
-	}
-	return link, true
-}
-
-func deriveReviewGroupAuthoritativeLink(sourceMetadata ingest.SourceMetadataLookup, group review.Group, candidates []review.Candidate) (reviewGroupAuthoritativeLink, bool) {
-	candidates = stagedReviewCandidates(candidates)
-	if len(candidates) == 0 {
-		return reviewGroupAuthoritativeLink{}, false
-	}
-
-	var venueSlug string
-	var link reviewGroupAuthoritativeLink
-	for _, candidate := range candidates {
-		candidateVenueSlug := strings.TrimSpace(candidate.VenueSlug)
-		if candidateVenueSlug == "" {
-			return reviewGroupAuthoritativeLink{}, false
-		}
-		if venueSlug == "" {
-			venueSlug = candidateVenueSlug
-		} else if candidateVenueSlug != venueSlug {
-			return reviewGroupAuthoritativeLink{}, false
-		}
-
-		candidateLink, ok := authoritativeLinkFromStoredReviewCandidate(group, candidate)
-		if !ok {
-			return reviewGroupAuthoritativeLink{}, false
-		}
-		if link.SourceEventKey == "" {
-			link = candidateLink
-			continue
-		}
-		if candidateLink != link {
-			return reviewGroupAuthoritativeLink{}, false
-		}
-	}
-	if sourceMetadata.OwnedVenueSlugForReviewStageSourceName(link.SourceName) != venueSlug {
-		return reviewGroupAuthoritativeLink{}, false
-	}
-	return link, true
-}
-
-func authoritativeLinkFromStoredReviewCandidate(group review.Group, candidate review.Candidate) (reviewGroupAuthoritativeLink, bool) {
-	sourceName := strings.TrimSpace(candidate.SourceName)
-	if sourceName == "" {
-		sourceName = strings.TrimSpace(group.SourceName)
-	}
-	sourceURL := strings.TrimSpace(candidate.CalendarURL)
-	if sourceURL == "" {
-		sourceURL = strings.TrimSpace(candidate.SourceURL)
-	}
-	if sourceURL == "" {
-		sourceURL = strings.TrimSpace(group.SourceURL)
-	}
-	sourceEventKey := strings.TrimSpace(candidate.ExternalID)
-	if sourceEventKey == "" {
-		sourceEventKey = strings.TrimSpace(candidate.SourceURL)
-	}
-	if sourceEventKey == "" {
-		sourceEventKey = sourceURL
-	}
-	if sourceName == "" || sourceURL == "" || sourceEventKey == "" {
-		return reviewGroupAuthoritativeLink{}, false
-	}
-	return reviewGroupAuthoritativeLink{
-		SourceName:     sourceName,
-		SourceURL:      sourceURL,
-		SourceEventKey: sourceEventKey,
-	}, true
-}
-
-func authoritativeTitleRepairLinkFromCandidates(group review.Group, candidates []review.Candidate) (reviewGroupAuthoritativeLink, bool) {
-	for _, candidate := range candidates {
-		if strings.TrimSpace(candidate.Provenance) != eventTitleRepairAuthoritativeCleanedProvenance {
-			continue
-		}
-		return authoritativeLinkFromStoredReviewCandidate(group, candidate)
-	}
-	return reviewGroupAuthoritativeLink{}, false
-}
-
 func replaceEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 	execer
 	queryer
 }, eventID int64, primary reviewGroupAuthoritativeLink, candidates []review.Candidate, now time.Time) error {
+	if err := deleteCompatibilityEventSourceObservationsForEventTx(ctx, tx, eventID); err != nil {
+		return err
+	}
 	if err := deleteEventSecondarySourceInfoForEventTx(ctx, tx, eventID); err != nil {
 		return err
 	}
@@ -3562,6 +1898,7 @@ func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 		if err != nil {
 			return err
 		}
+		compatibilityKey := reviewStoredCandidateSourceIdentities(candidate).PrimaryKey()
 		for _, item := range []struct {
 			infoType string
 			value    string
@@ -3582,6 +1919,9 @@ func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 				Value:      item.value,
 				RecordedAt: now,
 			})
+			if err := upsertCompatibilitySecondarySourceObservationTx(ctx, tx, eventID, sourceID, compatibilityKey, item.infoType, item.value, now); err != nil {
+				return err
+			}
 		}
 	}
 	for _, row := range rows {
@@ -3818,7 +2158,7 @@ func slugFromText(value string) string {
 func upsertEventTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, event domain.Event) (eventRecord, error) {
+}, event domain.Event, now time.Time) (eventRecord, error) {
 	venueID, ok, err := loadVenueIDBySlugTx(ctx, tx, event.VenueSlug)
 	if err != nil {
 		return eventRecord{}, err
@@ -3899,6 +2239,9 @@ func upsertEventTx(ctx context.Context, tx interface {
 	if err := replaceEventRoomsTx(ctx, tx, record.ID, event); err != nil {
 		return eventRecord{}, err
 	}
+	if err := ensureActiveExactIdentityTx(ctx, tx, record.ID, record.Event, 0, now); err != nil {
+		return eventRecord{}, err
+	}
 	record.Event.Rooms = append([]domain.VenueRoom(nil), event.Rooms...)
 	record.Event.RoomText = strings.TrimSpace(event.RoomText)
 	return record, nil
@@ -3928,7 +2271,7 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 		if !eventRecordHasResolvedIdentity(conflict, event) {
 			return 0, fmt.Errorf("review event slug %q already belongs to a different event", event.Slug)
 		}
-		if err := updateEventRecordFieldsTx(ctx, tx, conflict.ID, venueID, sourceID, event); err != nil {
+		if err := updateEventRecordFieldsTx(ctx, tx, conflict.ID, venueID, sourceID, event, now); err != nil {
 			return 0, err
 		}
 		if err := mergeDuplicateEventRecordTx(ctx, tx, eventID, conflict.ID, now); err != nil {
@@ -3936,7 +2279,7 @@ func updateCanonicalMatchedEventTx(ctx context.Context, tx interface {
 		}
 		return conflict.ID, nil
 	}
-	if err := updateEventRecordFieldsTx(ctx, tx, eventID, venueID, sourceID, event); err != nil {
+	if err := updateEventRecordFieldsTx(ctx, tx, eventID, venueID, sourceID, event, now); err != nil {
 		return 0, err
 	}
 	return eventID, nil
@@ -3952,9 +2295,9 @@ func eventRecordHasResolvedIdentity(record eventRecord, event domain.Event) bool
 func updateEventRecordFieldsTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, eventID, venueID, sourceID int64, event domain.Event) error {
+}, eventID, venueID, sourceID int64, event domain.Event, now time.Time) error {
 	incomingImageURL := strings.TrimSpace(event.ImageURL)
-	_, err := tx.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
 		UPDATE events
 		SET slug = ?,
 			venue_id = ?,
@@ -3998,10 +2341,23 @@ func updateEventRecordFieldsTx(ctx context.Context, tx interface {
 	if err != nil {
 		return err
 	}
-	return replaceEventRoomsTx(ctx, tx, eventID, event)
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return nil
+	}
+	if err := replaceEventRoomsTx(ctx, tx, eventID, event); err != nil {
+		return err
+	}
+	return ensureActiveExactIdentityTx(ctx, tx, eventID, event, 0, now)
 }
 
-func mergeDuplicateEventRecordTx(ctx context.Context, tx execer, duplicateEventID, targetEventID int64, now time.Time) error {
+func mergeDuplicateEventRecordTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, duplicateEventID, targetEventID int64, now time.Time) error {
 	if duplicateEventID <= 0 {
 		return errors.New("duplicate event ID is required")
 	}
@@ -4028,6 +2384,9 @@ func mergeDuplicateEventRecordTx(ctx context.Context, tx execer, duplicateEventI
 	`, targetEventID, nowText, duplicateEventID); err != nil {
 		return err
 	}
+	if err := rehomeEventSourceAttributeObservationsForDuplicateEventTx(ctx, tx, duplicateEventID, targetEventID, now); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE review_candidates
 		SET canonical_event_id = ?
@@ -4035,7 +2394,27 @@ func mergeDuplicateEventRecordTx(ctx context.Context, tx execer, duplicateEventI
 	`, targetEventID, duplicateEventID); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `
+	if err := deactivateActiveExactIdentitiesForEventTx(ctx, tx, duplicateEventID, fmt.Sprintf("merged into event %d", targetEventID), 0, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE event_exact_identities
+		SET event_id = ?,
+			updated_at = ?
+		WHERE event_id = ?
+	`, targetEventID, formatRFC3339UTC(now), duplicateEventID); err != nil {
+		return err
+	}
+	targetRecord, ok, err := loadEventRecordByIDTx(ctx, tx, targetEventID)
+	if err != nil {
+		return err
+	}
+	if ok {
+		if err := ensureActiveExactIdentityTx(ctx, tx, targetRecord.ID, targetRecord.Event, 0, now); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `
 		DELETE FROM events
 		WHERE id = ?
 	`, duplicateEventID)
@@ -4057,296 +2436,4 @@ func loadVenueIDBySlugTx(ctx context.Context, q queryer, slug string) (int64, bo
 		return 0, false, err
 	}
 	return id, true, nil
-}
-
-func reviewGroupExists(ctx context.Context, q queryer, id int64) (bool, error) {
-	_, ok, err := loadReviewGroup(ctx, q, id)
-	return ok, err
-}
-
-func loadReviewCandidates(ctx context.Context, q queryer, groupID int64) ([]review.Candidate, error) {
-	rows, err := q.QueryContext(ctx, `
-		SELECT
-			id,
-			group_id,
-			position,
-			COALESCE(canonical_event_id, 0),
-			external_id,
-			name,
-			venue_slug,
-			venue_text,
-			venue_location_raw,
-			room_text,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			image_url,
-			image_source_url,
-			image_alt,
-			image_width,
-			image_height,
-			image_focus_x,
-			image_focus_y,
-			source_name,
-			source_url,
-			calendar_url,
-			provenance
-		FROM review_candidates
-		WHERE group_id = ?
-		ORDER BY CASE WHEN canonical_event_id IS NULL THEN 0 ELSE 1 END, position, id
-	`, groupID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var candidates []review.Candidate
-	for rows.Next() {
-		candidate, err := scanReviewCandidate(rows)
-		if err != nil {
-			return nil, err
-		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := hydrateReviewCandidateRooms(ctx, q, candidates); err != nil {
-		return nil, err
-	}
-	return candidates, nil
-}
-
-func loadReviewCandidate(ctx context.Context, q queryer, groupID, candidateID int64) (review.Candidate, bool, error) {
-	rows, err := q.QueryContext(ctx, `
-		SELECT
-			id,
-			group_id,
-			position,
-			COALESCE(canonical_event_id, 0),
-			external_id,
-			name,
-			venue_slug,
-			venue_text,
-			venue_location_raw,
-			room_text,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			image_url,
-			image_source_url,
-			image_alt,
-			image_width,
-			image_height,
-			image_focus_x,
-			image_focus_y,
-			source_name,
-			source_url,
-			calendar_url,
-			provenance
-		FROM review_candidates
-		WHERE group_id = ? AND id = ?
-		LIMIT 1
-	`, groupID, candidateID)
-	if err != nil {
-		return review.Candidate{}, false, err
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return review.Candidate{}, false, err
-		}
-		return review.Candidate{}, false, nil
-	}
-	candidate, err := scanReviewCandidate(rows)
-	if err != nil {
-		return review.Candidate{}, false, err
-	}
-	if err := rows.Err(); err != nil {
-		return review.Candidate{}, false, err
-	}
-	candidates := []review.Candidate{candidate}
-	if err := hydrateReviewCandidateRooms(ctx, q, candidates); err != nil {
-		return review.Candidate{}, false, err
-	}
-	candidate = candidates[0]
-	return candidate, true, nil
-}
-
-func loadCanonicalSnapshotCandidate(ctx context.Context, q queryer, groupID int64) (review.Candidate, bool, error) {
-	rows, err := q.QueryContext(ctx, `
-		SELECT
-			id,
-			group_id,
-			position,
-			COALESCE(canonical_event_id, 0),
-			external_id,
-			name,
-			venue_slug,
-			venue_text,
-			venue_location_raw,
-			room_text,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			image_url,
-			image_source_url,
-			image_alt,
-			image_width,
-			image_height,
-			image_focus_x,
-			image_focus_y,
-			source_name,
-			source_url,
-			calendar_url,
-			provenance
-		FROM review_candidates
-		WHERE group_id = ? AND canonical_event_id IS NOT NULL
-		ORDER BY id
-		LIMIT 1
-	`, groupID)
-	if err != nil {
-		return review.Candidate{}, false, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return review.Candidate{}, false, err
-		}
-		return review.Candidate{}, false, nil
-	}
-	candidate, err := scanReviewCandidate(rows)
-	if err != nil {
-		return review.Candidate{}, false, err
-	}
-	if err := rows.Err(); err != nil {
-		return review.Candidate{}, false, err
-	}
-	candidates := []review.Candidate{candidate}
-	if err := hydrateReviewCandidateRooms(ctx, q, candidates); err != nil {
-		return review.Candidate{}, false, err
-	}
-	candidate = candidates[0]
-	return candidate, true, nil
-}
-
-func scanReviewCandidate(rows *sql.Rows) (review.Candidate, error) {
-	var candidate review.Candidate
-	if err := rows.Scan(
-		&candidate.ID,
-		&candidate.GroupID,
-		&candidate.Position,
-		&candidate.CanonicalEventID,
-		&candidate.ExternalID,
-		&candidate.Name,
-		&candidate.VenueSlug,
-		&candidate.VenueText,
-		&candidate.VenueLocationRaw,
-		&candidate.RoomText,
-		&candidate.StartAt,
-		&candidate.EndAt,
-		&candidate.Genre,
-		&candidate.Status,
-		&candidate.Description,
-		&candidate.ImageURL,
-		&candidate.ImageSourceURL,
-		&candidate.ImageAlt,
-		&candidate.ImageWidth,
-		&candidate.ImageHeight,
-		&candidate.ImageFocusX,
-		&candidate.ImageFocusY,
-		&candidate.SourceName,
-		&candidate.SourceURL,
-		&candidate.CalendarURL,
-		&candidate.Provenance,
-	); err != nil {
-		return review.Candidate{}, err
-	}
-	focus := normalizedImageFocus(candidate.ImageFocusX, candidate.ImageFocusY)
-	candidate.ImageFocusX = focus.X
-	candidate.ImageFocusY = focus.Y
-	return candidate, nil
-}
-
-func loadReviewDraftChoices(ctx context.Context, q queryer, groupID int64) (map[review.Field]review.DraftChoice, error) {
-	rows, err := q.QueryContext(ctx, `
-		SELECT field, candidate_id, value, updated_at
-		FROM review_draft_choices
-		WHERE group_id = ?
-		ORDER BY field
-	`, groupID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	choices := make(map[review.Field]review.DraftChoice)
-	for rows.Next() {
-		var choice review.DraftChoice
-		var field string
-		var updatedAt string
-		if err := rows.Scan(&field, &choice.CandidateID, &choice.Value, &updatedAt); err != nil {
-			return nil, err
-		}
-		parsedField, ok := review.ParseField(field)
-		if !ok {
-			return nil, fmt.Errorf("invalid stored review field %q", field)
-		}
-		parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse review choice %q updated_at: %w", field, err)
-		}
-		choice.Field = parsedField
-		choice.UpdatedAt = parsedUpdatedAt
-		choices[parsedField] = choice
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return choices, nil
-}
-
-func loadReviewDefaultChoices(ctx context.Context, q queryer, groupID int64) (map[review.Field]review.DraftChoice, error) {
-	rows, err := q.QueryContext(ctx, `
-		SELECT field, candidate_id, value, updated_at
-		FROM review_field_defaults
-		WHERE group_id = ?
-		ORDER BY field
-	`, groupID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	choices := make(map[review.Field]review.DraftChoice)
-	for rows.Next() {
-		var choice review.DraftChoice
-		var field string
-		var updatedAt string
-		if err := rows.Scan(&field, &choice.CandidateID, &choice.Value, &updatedAt); err != nil {
-			return nil, err
-		}
-		parsedField, ok := review.ParseField(field)
-		if !ok {
-			return nil, fmt.Errorf("invalid stored review default field %q", field)
-		}
-		parsedUpdatedAt, err := parseRFC3339UTC(updatedAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse review default %q updated_at: %w", field, err)
-		}
-		choice.Field = parsedField
-		choice.UpdatedAt = parsedUpdatedAt
-		choices[parsedField] = choice
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return choices, nil
 }

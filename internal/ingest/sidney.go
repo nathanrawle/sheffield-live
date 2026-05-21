@@ -213,14 +213,19 @@ func titleRoomName(value string) string {
 }
 
 func isSidneyAndMatildaICSLink(label, href string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(href))
+	if err != nil {
+		return false
+	}
+	path := strings.Trim(strings.ToLower(strings.TrimSpace(parsed.EscapedPath())), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 2 && isSidneyAndMatildaFeedShapedEventPathSegment(parts[1]) {
+		return false
+	}
 	if strings.EqualFold(label, "Google Calendar ICS") {
 		return true
 	}
 	if !strings.EqualFold(label, "ICS") {
-		return false
-	}
-	parsed, err := url.Parse(strings.TrimSpace(href))
-	if err != nil {
 		return false
 	}
 	return strings.EqualFold(parsed.Query().Get("format"), "ical")

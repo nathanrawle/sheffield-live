@@ -1,12 +1,12 @@
 <section class="page-head">
   <p class="eyebrow">Admin</p>
   <h1>Import run #{{.ImportRunDetail.ID}}</h1>
-  {{if or .HasImportHistory .HasReviewStorage .HasVenueAdmin}}
+  {{if or .HasImportHistory .HasEventReviewStorage .HasVenueAdmin}}
   <p class="lede">
     {{if .HasImportHistory}}<a href="/admin/import-runs">Back to import history</a>{{end}}
-    {{if and .HasImportHistory .HasReviewStorage}} · {{end}}
-    {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
-    {{if and (or .HasImportHistory .HasReviewStorage) .HasVenueAdmin}} · {{end}}
+    {{if and .HasImportHistory .HasEventReviewStorage}} · {{end}}
+    {{if .HasEventReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if and (or .HasImportHistory .HasEventReviewStorage) .HasVenueAdmin}} · {{end}}
     {{if .HasVenueAdmin}}<a href="/admin/venues">Provisional venues</a>{{end}}
     {{if .HasGenreConfiguration}} · <a href="/admin/configuration">Configuration</a>{{end}}
   </p>
@@ -39,35 +39,39 @@
   </dl>
 </section>
 
+{{if .HasImportRunEventReviewClusters}}
 <section class="section-block">
-  <h2>Review groups from this import run</h2>
-  {{if .ImportRunDetail.ReviewGroups}}
+  <h2>Event review clusters from this import run</h2>
+  {{if .ImportRunDetail.EventReviewClusters}}
   <div class="import-run-table-wrap">
-    <table class="import-run-table import-run-review-groups-table">
+    <table class="import-run-table import-run-event-review-clusters-table">
       <thead>
         <tr>
-          <th scope="col">Review group</th>
+          <th scope="col">Event review cluster</th>
           <th scope="col">Status</th>
           <th scope="col">Venue</th>
           <th scope="col">Time</th>
-          <th scope="col">Authority</th>
-          <th scope="col">Candidates</th>
-          <th scope="col">Draft choices</th>
-          <th scope="col">Latest run</th>
+          <th scope="col">Conflict</th>
+          <th scope="col">Canonical event</th>
+          <th scope="col">Evidence</th>
+          <th scope="col">Latest runs</th>
           <th scope="col">Updated</th>
         </tr>
       </thead>
       <tbody>
-        {{range .ImportRunDetail.ReviewGroups}}
+        {{range .ImportRunDetail.EventReviewClusters}}
         <tr>
-          <td>{{if $.HasReviewStorage}}<a href="/admin/review/{{.ID}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
+          <td>
+            {{if $.HasEventReviewStorage}}<a href="/admin/event-review/{{.ID}}">{{if .DisplayTitle}}{{.DisplayTitle}}{{else}}Cluster #{{.ID}}{{end}}</a>{{else}}{{if .DisplayTitle}}{{.DisplayTitle}}{{else}}Cluster #{{.ID}}{{end}}{{end}}
+            <div class="inline-meta">Cluster #{{.ID}} · v{{.Version}}</div>
+          </td>
           <td>{{.Status}}</td>
-          <td>{{if .SharedVenueSlug}}{{if .SharedVenueName}}{{.SharedVenueName}}{{else}}{{.SharedVenueSlug}}{{end}}{{else}}Mixed venues{{end}}</td>
-          <td>{{with .SharedStartAt}}{{dateShort .}} {{timeShort .}}{{else}}Mixed times{{end}}</td>
-          <td>{{if .Authoritative}}authoritative{{else}}non-authoritative{{end}}</td>
-          <td>{{.CandidateCount}}</td>
-          <td>{{.DraftCount}}</td>
-          <td>{{if .LatestImportRunID}}<a href="/admin/import-runs/{{.LatestImportRunID}}">Run #{{.LatestImportRunID}}</a>{{else}}&mdash;{{end}}</td>
+          <td>{{if .DisplayVenueName}}{{.DisplayVenueName}}{{if .DisplayVenueSlug}} ({{.DisplayVenueSlug}}){{end}}{{else if .DisplayVenueSlug}}{{.DisplayVenueSlug}}{{else}}&mdash;{{end}}</td>
+          <td>{{with .DisplayStartAt}}{{dateShort .}} {{timeShort .}}{{else}}&mdash;{{end}}</td>
+          <td>{{blankValue .ConflictType}}{{if .ConflictReason}}: {{.ConflictReason}}{{end}}</td>
+          <td>{{if .CanonicalEventID}}#{{.CanonicalEventID}}{{if .CanonicalEventSlug}} {{.CanonicalEventSlug}}{{end}}{{else}}&mdash;{{end}}</td>
+          <td>{{.EvidenceCount}}</td>
+          <td>{{if or .LatestImportRunID .LatestRepairRunID}}{{if .LatestImportRunID}}<a href="/admin/import-runs/{{.LatestImportRunID}}">Import #{{.LatestImportRunID}}</a>{{end}}{{if and .LatestImportRunID .LatestRepairRunID}} · {{end}}{{if .LatestRepairRunID}}Repair #{{.LatestRepairRunID}}{{end}}{{else}}&mdash;{{end}}</td>
           <td>{{dateShort .UpdatedAt}} {{timeShort .UpdatedAt}}</td>
         </tr>
         {{end}}
@@ -75,9 +79,10 @@
     </table>
   </div>
   {{else}}
-  <p class="empty-state">No review groups staged from this import run.</p>
+  <p class="empty-state">No event review clusters are linked to this import run.</p>
   {{end}}
 </section>
+{{end}}
 
 <section class="section-block">
   <h2>Snapshot metadata</h2>

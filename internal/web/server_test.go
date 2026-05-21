@@ -5,11 +5,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -21,7 +24,6 @@ import (
 	"sheffield-live/internal/genre"
 	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/logging"
-	"sheffield-live/internal/review"
 	"sheffield-live/internal/store"
 	sqlitestore "sheffield-live/internal/store/sqlite"
 )
@@ -234,15 +236,3178 @@ func TestNewServerRequiresExplicitAdminAuthConfig(t *testing.T) {
 }
 
 func TestAdminReviewOmitsLatestImportWithoutImportHistoryStore(t *testing.T) {
-	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{}))
+	server, err := NewServer(testServerDeps(&adminReviewEventReviewStoreStub{
+		clusters: []store.EventReviewClusterSummary{
+			{
+				ID:               41,
+				Status:           store.EventReviewClusterStatusOpen,
+				Version:          1,
+				DisplayTitle:     "Queue event",
+				DisplayVenueSlug: "queue-venue",
+			},
+		},
+	}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
 
 	body := renderPath(t, server, "/admin/review")
 	assertContains(t, body, "Review queue")
+	assertContains(t, body, "Event review clusters")
 	assertNotContains(t, body, "Latest successful import")
 	assertNotContains(t, body, `href="/admin/import-runs"`)
+}
+
+func TestAdminLandingPageShowsEventReviewPrimaryCopy(t *testing.T) {
+	server, err := NewServer(testServerDeps(&adminReviewEventReviewStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin")
+	assertContains(t, body, "Review queue")
+	assertContains(t, body, "Review event-review clusters, inspect ingest runs, and validate provisional venues and rooms.")
+	assertContains(t, body, "Event review history")
+	assertNotContains(t, body, "Resolve duplicate groups and accept or reject new listings.")
+}
+
+func TestAdminReviewRendersEventReviewSectionAndReadOnlyDetail(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	importRunID := int64(12)
+	repairRunID := int64(34)
+	stagingKey := "repair-queue-a"
+	clusterID := int64(41)
+	store := &adminReviewEventReviewStoreStub{
+		clusters: []store.EventReviewClusterSummary{
+			{
+				ID:                 clusterID,
+				Status:             store.EventReviewClusterStatusOpen,
+				Version:            3,
+				StagingKey:         &stagingKey,
+				StagingKeyVersion:  3,
+				ConflictType:       "historical_duplicate",
+				ConflictReason:     "reason-a",
+				CanonicalEventID:   int64Ptr(88),
+				CanonicalEventSlug: "canonical-event",
+				DisplayTitle:       "canonical-event",
+				DisplayVenueSlug:   "event-review-hall",
+				DisplayVenueName:   "Event Review Hall",
+				DisplayStartAt:     &openTime,
+				EvidenceCount:      1,
+				UpdatedAt:          openTime,
+				LatestImportRunID:  &importRunID,
+				LatestRepairRunID:  &repairRunID,
+			},
+		},
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                 clusterID,
+				Status:             store.EventReviewClusterStatusOpen,
+				Version:            3,
+				StagingKey:         &stagingKey,
+				StagingKeyVersion:  3,
+				ConflictType:       "historical_duplicate",
+				ConflictReason:     "reason-a",
+				CanonicalEventID:   int64Ptr(88),
+				CanonicalEventSlug: "canonical-event",
+				DisplayTitle:       "canonical-event",
+				DisplayVenueSlug:   "event-review-hall",
+				DisplayVenueName:   "Event Review Hall",
+				DisplayStartAt:     &openTime,
+				EvidenceCount:      1,
+				UpdatedAt:          openTime,
+				LatestImportRunID:  &importRunID,
+				LatestRepairRunID:  &repairRunID,
+			},
+			Evidence: []store.EventReviewClusterEvidenceSummary{
+				{
+					ID:                  91,
+					EvidenceID:          91,
+					SourceID:            5,
+					SourceName:          "Fixture ICS",
+					SourceURL:           "https://example.test/fixture",
+					EventSlug:           "evidence-event",
+					EvidenceFingerprint: "fingerprint-1",
+					Payload:             `{"payload":"evidence"}`,
+					LinkedAt:            openTime,
+					LinkReason:          "active evidence",
+				},
+			},
+			ClusterIdentityKeys: []store.EventReviewClusterIdentityKeySummary{
+				{
+					ID:              111,
+					IdentityKeyID:   222,
+					IdentityKeyHash: "exact-hash",
+					KeyKind:         store.EventReviewIdentityKeyKindExact,
+					KeyVersion:      1,
+					NormalizedKey:   "exact-normalized",
+					LinkedAt:        openTime,
+				},
+				{
+					ID:              112,
+					IdentityKeyID:   223,
+					IdentityKeyHash: "source-hash",
+					KeyKind:         store.EventReviewIdentityKeyKindSource,
+					KeyVersion:      1,
+					NormalizedKey:   "source-normalized",
+					LinkedAt:        openTime,
+				},
+			},
+			EvidenceIdentityKeys: []store.EventReviewEvidenceIdentityKeySummary{
+				{
+					ID:                  121,
+					EvidenceID:          91,
+					EvidenceFingerprint: "fingerprint-1",
+					IdentityKeyID:       222,
+					IdentityKeyHash:     "exact-hash",
+					KeyKind:             store.EventReviewIdentityKeyKindExact,
+					KeyVersion:          1,
+					NormalizedKey:       "exact-normalized",
+					SourceID:            int64Ptr(5),
+					Role:                store.EventReviewEvidenceIdentityKeyRoleExact,
+				},
+				{
+					ID:                  122,
+					EvidenceID:          91,
+					EvidenceFingerprint: "fingerprint-1",
+					IdentityKeyID:       223,
+					IdentityKeyHash:     "source-hash",
+					KeyKind:             store.EventReviewIdentityKeyKindSource,
+					KeyVersion:          1,
+					NormalizedKey:       "source-normalized",
+					Role:                store.EventReviewEvidenceIdentityKeyRoleObserved,
+				},
+			},
+			CanonicalChoices: []store.EventReviewClusterChoiceSummary{
+				{
+					ID:         101,
+					FieldName:  "canonical_event_id",
+					ChoiceKind: store.EventReviewChoiceKindEvent,
+					EventID:    int64Ptr(88),
+					EventSlug:  "action-event",
+					Value:      "canonical",
+					UpdatedAt:  openTime,
+				},
+			},
+			DraftChoices: []store.EventReviewClusterChoiceSummary{
+				{
+					ID:                  102,
+					FieldName:           "title",
+					ChoiceKind:          store.EventReviewChoiceKindEvidence,
+					EvidenceID:          int64Ptr(91),
+					EvidenceFingerprint: "fingerprint-1",
+					Value:               "draft title",
+					UpdatedAt:           openTime,
+				},
+			},
+			LiveActions: []store.EventReviewClusterLiveActionSummary{
+				{
+					ID:        103,
+					EventID:   88,
+					EventSlug: "action-event",
+					Action:    store.EventReviewLiveActionKindWithholdDuplicate,
+					Reason:    "withhold action",
+					CreatedAt: openTime,
+					UpdatedAt: openTime,
+				},
+			},
+		},
+	}
+
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review")
+	assertContains(t, body, "Event review clusters")
+	assertContains(t, body, `href="/admin/event-review/history"`)
+	assertContains(t, body, `href="/admin/event-review/41"`)
+	assertContains(t, body, "canonical-event")
+	assertContains(t, body, "Event Review Hall")
+	assertContains(t, body, "15 May 2026")
+	assertContains(t, body, "12:00")
+	assertNotContains(t, body, "Cluster #41: repair-queue-a")
+
+	detailBody := renderPath(t, server, "/admin/event-review/41")
+	assertContains(t, detailBody, "Event review detail.")
+	assertContains(t, detailBody, "This cluster is open.")
+	assertContains(t, detailBody, `href="/admin/event-review/history"`)
+	assertContains(t, detailBody, "Event summary")
+	assertContains(t, detailBody, "canonical-event")
+	assertContains(t, detailBody, "Event Review Hall")
+	assertContains(t, detailBody, "15 May 2026")
+	assertContains(t, detailBody, "12:00")
+	assertContains(t, detailBody, "historical_duplicate")
+	assertContains(t, detailBody, "Cluster identity keys")
+	assertContains(t, detailBody, "exact-normalized")
+	assertContains(t, detailBody, "source-normalized")
+	assertContains(t, detailBody, "Evidence identity keys")
+	assertContains(t, detailBody, "fingerprint-1")
+	assertContains(t, detailBody, "source #5")
+	assertContains(t, detailBody, "Stored/planned live actions")
+	assertContains(t, detailBody, `name="csrf_token"`)
+	assertContains(t, detailBody, `name="expected_version" value="3"`)
+	assertContains(t, detailBody, `name="action" value="discard"`)
+	assertContains(t, detailBody, `name="discard_reason"`)
+	assertContains(t, detailBody, "Discard cluster")
+	assertContains(t, detailBody, "Supersede cluster")
+	assertContains(t, detailBody, `name="action" value="supersede"`)
+	assertContains(t, detailBody, `name="superseded_by_cluster_id"`)
+	assertContains(t, detailBody, "Apply stored live actions")
+	assertContains(t, detailBody, `name="action" value="resolve_live_actions"`)
+	assertContains(t, detailBody, "Fixture ICS")
+	assertContains(t, detailBody, "evidence-event")
+	assertContains(t, detailBody, "draft title")
+	assertContains(t, detailBody, "withhold action")
+	assertNotContains(t, detailBody, `name="action" value="resolve"`)
+}
+
+func TestAdminReviewRendersEventReviewTriageLabels(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	store := &adminReviewEventReviewStoreStub{
+		clusters: []store.EventReviewClusterSummary{
+			{
+				ID:               41,
+				Status:           store.EventReviewClusterStatusOpen,
+				Version:          1,
+				ConflictType:     store.EventReviewConflictTypeImportReview,
+				ConflictReason:   store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:    1,
+				DisplayTitle:     "Import singleton",
+				DisplayVenueSlug: "leadmill",
+				DisplayVenueName: "Leadmill",
+				DisplayStartAt:   &openTime,
+			},
+			{
+				ID:               42,
+				Status:           store.EventReviewClusterStatusOpen,
+				Version:          1,
+				ConflictType:     store.EventReviewConflictTypeImportReview,
+				ConflictReason:   store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:    2,
+				DisplayTitle:     "Import comparison",
+				DisplayVenueSlug: "leadmill",
+				DisplayVenueName: "Leadmill",
+				DisplayStartAt:   &openTime,
+			},
+			{
+				ID:               43,
+				Status:           store.EventReviewClusterStatusOpen,
+				Version:          1,
+				ConflictType:     "title_repair",
+				ConflictReason:   "supporting_clean_title",
+				EvidenceCount:    1,
+				DisplayTitle:     "Title repair",
+				DisplayVenueSlug: "leadmill",
+				DisplayVenueName: "Leadmill",
+				DisplayStartAt:   &openTime,
+			},
+			{
+				ID:               44,
+				Status:           store.EventReviewClusterStatusOpen,
+				Version:          1,
+				ConflictType:     "historical_duplicate",
+				ConflictReason:   "reviewed_duplicate",
+				EvidenceCount:    1,
+				DisplayTitle:     "Historical duplicate",
+				DisplayVenueSlug: "leadmill",
+				DisplayVenueName: "Leadmill",
+				DisplayStartAt:   &openTime,
+			},
+			{
+				ID:               45,
+				Status:           store.EventReviewClusterStatusOpen,
+				Version:          1,
+				ConflictType:     "mystery_type",
+				ConflictReason:   "mystery_reason",
+				EvidenceCount:    1,
+				DisplayTitle:     "Unknown cluster",
+				DisplayVenueSlug: "leadmill",
+				DisplayVenueName: "Leadmill",
+				DisplayStartAt:   &openTime,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/review")
+	assertContains(t, body, "Import listing candidate")
+	assertContains(t, body, "Review as a possible new event")
+	assertContains(t, body, "Import candidate comparison")
+	assertContains(t, body, "Compare normalized candidates")
+	assertContains(t, body, "Title repair")
+	assertContains(t, body, "Review clean title evidence")
+	assertContains(t, body, "Historical duplicate")
+	assertContains(t, body, "Review stored duplicate actions")
+	assertContains(t, body, "Mystery Type")
+	assertContains(t, body, "Mystery Reason")
+}
+
+func TestAdminReviewSuppressesEventReviewResolveFormWhenNotApplicable(t *testing.T) {
+	stagingKey := "repair-queue-terminal"
+	tests := []struct {
+		name   string
+		detail store.EventReviewClusterDetail
+	}{
+		{
+			name: "title repair",
+			detail: store.EventReviewClusterDetail{
+				Summary: store.EventReviewClusterSummary{
+					ID:                41,
+					Status:            store.EventReviewClusterStatusOpen,
+					Version:           3,
+					StagingKey:        &stagingKey,
+					StagingKeyVersion: 3,
+					ConflictType:      "title_repair",
+					ConflictReason:    "reason-a",
+					CanonicalEventID:  int64Ptr(88),
+					EvidenceCount:     1,
+				},
+				LiveActions: []store.EventReviewClusterLiveActionSummary{
+					{ID: 1, EventID: 88, EventSlug: "canonical-event", Action: store.EventReviewLiveActionKindKeepSeparate, Reason: "keep"},
+				},
+			},
+		},
+		{
+			name: "no live actions",
+			detail: store.EventReviewClusterDetail{
+				Summary: store.EventReviewClusterSummary{
+					ID:                42,
+					Status:            store.EventReviewClusterStatusOpen,
+					Version:           3,
+					StagingKey:        &stagingKey,
+					StagingKeyVersion: 3,
+					ConflictType:      "historical_duplicate",
+					ConflictReason:    "reason-b",
+					CanonicalEventID:  int64Ptr(88),
+					EvidenceCount:     1,
+				},
+			},
+		},
+		{
+			name: "no canonical",
+			detail: store.EventReviewClusterDetail{
+				Summary: store.EventReviewClusterSummary{
+					ID:                43,
+					Status:            store.EventReviewClusterStatusOpen,
+					Version:           3,
+					StagingKey:        &stagingKey,
+					StagingKeyVersion: 3,
+					ConflictType:      "historical_duplicate",
+					ConflictReason:    "reason-c",
+					EvidenceCount:     1,
+				},
+				LiveActions: []store.EventReviewClusterLiveActionSummary{
+					{ID: 1, EventID: 90, EventSlug: "loser-event", Action: store.EventReviewLiveActionKindWithholdDuplicate, Reason: "withhold"},
+				},
+			},
+		},
+		{
+			name: "terminal",
+			detail: store.EventReviewClusterDetail{
+				Summary: store.EventReviewClusterSummary{
+					ID:                44,
+					Status:            store.EventReviewClusterStatusResolved,
+					Version:           3,
+					StagingKey:        &stagingKey,
+					StagingKeyVersion: 3,
+					ConflictType:      "historical_duplicate",
+					ConflictReason:    "reason-d",
+					CanonicalEventID:  int64Ptr(88),
+					EvidenceCount:     1,
+				},
+				LiveActions: []store.EventReviewClusterLiveActionSummary{
+					{ID: 1, EventID: 88, EventSlug: "canonical-event", Action: store.EventReviewLiveActionKindKeepSeparate, Reason: "keep"},
+					{ID: 2, EventID: 90, EventSlug: "loser-event", Action: store.EventReviewLiveActionKindWithholdDuplicate, Reason: "withhold"},
+				},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &eventReviewOnlyStoreStub{detail: tc.detail}
+			server, err := NewServer(testServerDeps(store))
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+			body := renderPath(t, server, "/admin/event-review/"+strconv.FormatInt(tc.detail.Summary.ID, 10))
+			assertNotContains(t, body, "Apply stored live actions")
+			assertNotContains(t, body, `name="action" value="resolve_live_actions"`)
+			assertContains(t, body, "No active cluster identity keys.")
+			assertContains(t, body, "No active evidence identity keys.")
+		})
+	}
+}
+
+func TestAdminReviewRendersTitleRepairReadiness(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	clusterID := int64(52)
+	stagingKey := "repair-queue-title"
+	baseSummary := store.EventReviewClusterSummary{
+		ID:                 clusterID,
+		Status:             store.EventReviewClusterStatusOpen,
+		Version:            3,
+		StagingKey:         &stagingKey,
+		StagingKeyVersion:  1,
+		ConflictType:       "title_repair",
+		ConflictReason:     "supporting_clean_title",
+		CanonicalEventID:   int64Ptr(88),
+		CanonicalEventSlug: "title-repair-current",
+		DisplayTitle:       "Title Repair Current",
+		DisplayVenueSlug:   "title-repair-hall",
+		DisplayVenueName:   "Title Repair Hall",
+		DisplayStartAt:     &openTime,
+		EvidenceCount:      1,
+		UpdatedAt:          openTime,
+	}
+
+	tests := []struct {
+		name           string
+		readiness      *store.EventReviewTitleRepairReadiness
+		wantContains   []string
+		wantNotContain []string
+	}{
+		{
+			name: "eligible",
+			readiness: &store.EventReviewTitleRepairReadiness{
+				CanonicalEventID: 88,
+				CurrentTitle:     "Legacy Event",
+				CurrentSlug:      "title-repair-current",
+				CurrentEventLive: true,
+				DraftTitle:       "Proposed Title",
+				DraftSlug:        "proposed-title",
+				Eligible:         true,
+			},
+			wantContains: []string{
+				"Title repair readiness",
+				"This section shows whether the stored title repair is eligible to be applied.",
+				"Current event",
+				"Legacy Event",
+				"event #88",
+				"Current slug",
+				"title-repair-current",
+				"live/non-withheld: yes",
+				"Proposed title",
+				"Proposed Title",
+				"Proposed slug",
+				"proposed-title",
+				"Ready to apply",
+				"No blocking reasons.",
+				"Apply title repair",
+				`name="action" value="resolve_title_repair"`,
+			},
+			wantNotContain: []string{
+				"Apply stored live actions",
+				`name="action" value="resolve_live_actions"`,
+			},
+		},
+		{
+			name: "blocked",
+			readiness: &store.EventReviewTitleRepairReadiness{
+				CanonicalEventID: 88,
+				CurrentTitle:     "Legacy Event",
+				CurrentSlug:      "title-repair-current",
+				CurrentEventLive: false,
+				DraftTitle:       "",
+				DraftSlug:        "",
+				Eligible:         false,
+				BlockingReasons: []string{
+					"draft title is required",
+					"draft slug is required",
+				},
+			},
+			wantContains: []string{
+				"Ready to apply",
+				"draft title is required",
+				"draft slug is required",
+			},
+			wantNotContain: []string{
+				"Apply stored live actions",
+				`name="action" value="resolve_live_actions"`,
+				`name="action" value="resolve_title_repair"`,
+			},
+		},
+		{
+			name: "slug conflict",
+			readiness: &store.EventReviewTitleRepairReadiness{
+				CanonicalEventID:      88,
+				CurrentTitle:          "Legacy Event",
+				CurrentSlug:           "title-repair-current",
+				CurrentEventLive:      true,
+				DraftTitle:            "Conflict Title",
+				DraftSlug:             "title-repair-slug-conflict",
+				Eligible:              false,
+				BlockingReasons:       []string{"target slug already belongs to another live event"},
+				SlugConflictEventID:   int64Ptr(91),
+				SlugConflictEventSlug: "title-repair-slug-conflict",
+			},
+			wantContains: []string{
+				"target slug already belongs to another live event",
+				`href="/admin/events/title-repair-slug-conflict"`,
+				"event #91",
+				"title-repair-slug-conflict",
+			},
+			wantNotContain: []string{
+				"Apply stored live actions",
+				`name="action" value="resolve_live_actions"`,
+				`href="/events/title-repair-slug-conflict"`,
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &eventReviewOnlyStoreStub{
+				detail: store.EventReviewClusterDetail{
+					Summary:              baseSummary,
+					TitleRepairReadiness: tc.readiness,
+				},
+			}
+			server, err := NewServer(testServerDeps(store))
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+			body := renderPath(t, server, "/admin/event-review/52")
+			for _, want := range tc.wantContains {
+				assertContains(t, body, want)
+			}
+			for _, want := range tc.wantNotContain {
+				assertNotContains(t, body, want)
+			}
+		})
+	}
+}
+
+func TestAdminReviewOnlyEventReviewStoreRendersHistoryLinkAndQueue(t *testing.T) {
+	historyTime := time.Date(2026, time.May, 15, 13, 0, 0, 0, time.UTC)
+	stagingKey := "repair-queue-history"
+	clusterID := int64(71)
+	store := &eventReviewOnlyStoreStub{
+		clusters: []store.EventReviewClusterSummary{
+			{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "type-a",
+				ConflictReason:    "reason-a",
+				DisplayTitle:      "queue-event",
+				DisplayVenueSlug:  "queue-venue",
+				DisplayVenueName:  "Queue Venue",
+				DisplayStartAt:    &historyTime,
+				EvidenceCount:     1,
+				UpdatedAt:         historyTime,
+			},
+		},
+		closedClusters: []store.EventReviewClusterHistorySummary{
+			{
+				ID:                    clusterID,
+				Status:                store.EventReviewClusterStatusDiscarded,
+				Version:               2,
+				StagingKey:            &stagingKey,
+				StagingKeyVersion:     1,
+				ConflictType:          "type-h",
+				ConflictReason:        "history-reason",
+				CanonicalEventID:      int64Ptr(88),
+				CanonicalEventSlug:    "history-event",
+				DisplayTitle:          "history-event",
+				DisplayVenueSlug:      "event-review-hall",
+				DisplayVenueName:      "Event Review Hall",
+				DisplayStartAt:        &historyTime,
+				EvidenceCount:         2,
+				UpdatedAt:             historyTime,
+				SupersededByClusterID: int64Ptr(99),
+				ResolutionID:          201,
+				ResolutionCreatedAt:   historyTime,
+				ResolvedAt:            historyTime,
+				ResolutionStatus:      store.EventReviewResolutionStatusDiscarded,
+				DiscardReason:         "discarded in admin",
+			},
+		},
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "type-a",
+				ConflictReason:    "reason-a",
+				DisplayTitle:      "queue-event",
+				DisplayVenueSlug:  "queue-venue",
+				DisplayVenueName:  "Queue Venue",
+				DisplayStartAt:    &historyTime,
+				EvidenceCount:     1,
+				UpdatedAt:         historyTime,
+			},
+		},
+	}
+
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	queueBody := renderPath(t, server, "/admin/review")
+	assertContains(t, queueBody, "Event review clusters")
+	assertContains(t, queueBody, `href="/admin/event-review/history"`)
+	assertContains(t, queueBody, `href="/admin/event-review/41"`)
+	assertContains(t, queueBody, "queue-event")
+	assertContains(t, queueBody, "Queue Venue")
+	assertContains(t, queueBody, "14:00")
+
+	historyBody := renderPath(t, server, "/admin/event-review/history")
+	assertContains(t, historyBody, "Event review history")
+	assertContains(t, historyBody, `href="/admin/event-review/71"`)
+	assertContains(t, historyBody, "history-event")
+	assertContains(t, historyBody, "Event Review Hall")
+	assertContains(t, historyBody, "14:00")
+	assertContains(t, historyBody, "resolution #201")
+	assertContains(t, historyBody, "event #88")
+	assertContains(t, historyBody, "superseded by cluster #99")
+	assertContains(t, historyBody, "discarded in admin")
+	assertContains(t, historyBody, "discarded")
+	assertNotContains(t, historyBody, "Discard cluster")
+
+	detailBody := renderPath(t, server, "/admin/event-review/41")
+	assertContains(t, detailBody, `href="/admin/event-review/history"`)
+}
+
+func TestAdminReviewRendersTerminalEventReviewDetailWithoutDiscardForm(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	clusterID := int64(51)
+	stagingKey := "repair-queue-terminal"
+	store := &eventReviewOnlyStoreStub{
+		readOnlyStoreStub: readOnlyStoreStub{},
+		clusters: []store.EventReviewClusterSummary{
+			{
+				ID:                clusterID,
+				Status:            store.EventReviewClusterStatusResolved,
+				Version:           2,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 1,
+				ConflictType:      "type-b",
+				ConflictReason:    "reason-b",
+				EvidenceCount:     0,
+				UpdatedAt:         openTime,
+			},
+		},
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                clusterID,
+				Status:            store.EventReviewClusterStatusResolved,
+				Version:           2,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 1,
+				ConflictType:      "type-b",
+				ConflictReason:    "reason-b",
+				EvidenceCount:     0,
+				UpdatedAt:         openTime,
+			},
+			Resolution: &store.EventReviewResolutionSummary{
+				ID:          101,
+				ClusterID:   clusterID,
+				Status:      store.EventReviewResolutionStatusResolved,
+				CreatedAt:   openTime,
+				UpdatedAt:   openTime,
+				RepairRunID: int64Ptr(34),
+				AppliedLiveActions: []store.EventReviewResolutionAppliedLiveActionSummary{
+					{EventID: 88, EventSlug: "canonical-event", Action: store.EventReviewLiveActionKindKeepSeparate, Reason: "keep"},
+				},
+			},
+		},
+	}
+
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/51")
+	assertContains(t, body, "This cluster is resolved and read-only.")
+	assertContains(t, body, `href="/admin/event-review/history"`)
+	assertContains(t, body, "Resolution")
+	assertContains(t, body, "Applied live actions")
+	assertContains(t, body, "Stored/planned live actions")
+	assertContains(t, body, "run #34")
+	assertContains(t, body, "canonical-event")
+	assertNotContains(t, body, "Discard cluster")
+	assertNotContains(t, body, "Apply stored live actions")
+	assertNotContains(t, body, `name="discard_reason"`)
+	assertNotContains(t, body, `name="action" value="resolve_live_actions"`)
+	assertContains(t, body, `href="/admin/review"`)
+}
+
+func TestAdminEventReviewDetailShowsAppliedTitleRepair(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                 61,
+				Status:             store.EventReviewClusterStatusResolved,
+				Version:            2,
+				ConflictType:       "title_repair",
+				ConflictReason:     "supporting_clean_title",
+				CanonicalEventID:   int64Ptr(88),
+				CanonicalEventSlug: "title-repair-event",
+				DisplayTitle:       "Legacy Event",
+				DisplayVenueSlug:   "title-repair-hall",
+				DisplayVenueName:   "Title Repair Hall",
+				DisplayStartAt:     &openTime,
+				EvidenceCount:      0,
+				UpdatedAt:          openTime,
+			},
+			Resolution: &store.EventReviewResolutionSummary{
+				ID:        201,
+				ClusterID: 61,
+				Status:    store.EventReviewResolutionStatusResolved,
+				AppliedTitleRepair: &store.EventReviewResolutionAppliedTitleRepairSummary{
+					EventID:  88,
+					OldTitle: "Legacy Event",
+					NewTitle: "Updated Title",
+					OldSlug:  "title-repair-event",
+					NewSlug:  "title-repair-event-renamed",
+				},
+				CreatedAt: openTime,
+				UpdatedAt: openTime,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/61")
+	assertContains(t, body, "Resolution")
+	assertContains(t, body, "Applied title repair")
+	assertContains(t, body, "event #88")
+	assertContains(t, body, "Legacy Event")
+	assertContains(t, body, "Updated Title")
+	assertContains(t, body, "title-repair-event-renamed")
+	assertNotContains(t, body, "Apply title repair")
+	assertNotContains(t, body, "Applied live actions")
+}
+
+func TestAdminEventReviewDetailShowsImportReviewReadiness(t *testing.T) {
+	startAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	endAt := time.Date(2026, time.May, 10, 21, 0, 0, 0, time.UTC)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             71,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        1,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount:  1,
+				NewListingScope: true,
+				Candidates: []store.EventReviewImportCandidateSummary{{
+					EvidenceID:          301,
+					EvidenceFingerprint: "import-ready-fingerprint",
+					SourceID:            41,
+					SourceName:          "Fixture source",
+					SourceURL:           "https://source.example.test/events",
+					SourceAuthority:     store.SourceAuthoritySupporting,
+					EventID:             int64Ptr(72),
+					EventSlug:           "import-ready-existing-event",
+					ExternalID:          "external-ready",
+					Title:               "Import Ready Title",
+					VenueSlug:           "leadmill",
+					VenueText:           "Leadmill",
+					StartAt:             &startAt,
+					EndAt:               &endAt,
+					CalendarURL:         "https://calendar.example.test/listing.ics",
+				}},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/71")
+	assertContains(t, body, "Import review readiness")
+	assertContains(t, body, "Ready for new-listing resolver")
+	assertContains(t, body, "yes")
+	assertContains(t, body, "Fixture source")
+	assertContains(t, body, "import-ready-fingerprint")
+	assertContains(t, body, `href="/admin/events/import-ready-existing-event"`)
+	assertNotContains(t, body, `href="/events/import-ready-existing-event"`)
+	assertContains(t, body, "external-ready")
+	assertContains(t, body, "Import Ready Title")
+	assertContains(t, body, "leadmill")
+	assertContains(t, body, "Leadmill")
+	assertContains(t, body, "calendar.example.test/listing.ics")
+	assertContains(t, body, "10 May 2026")
+	assertContains(t, body, "Accept new listing")
+	assertContains(t, body, `name="action" value="resolve_import_new_listing"`)
+}
+
+func TestAdminEventReviewDetailShowsImportReviewComparison(t *testing.T) {
+	startAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	startAtSecond := startAt.Add(30 * time.Minute)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             75,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        3,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  2,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount:           2,
+				NewListingScope:          false,
+				CandidateComparisonScope: true,
+				Candidates: []store.EventReviewImportCandidateSummary{
+					{
+						EvidenceID:          401,
+						EvidenceFingerprint: "import-comparison-fingerprint-a",
+						SourceID:            51,
+						SourceName:          "Fixture source",
+						SourceURL:           "https://source.example.test/events",
+						SourceAuthority:     store.SourceAuthoritySupporting,
+						ExternalID:          "external-a",
+						Title:               "Same Show - Leadmill",
+						VenueText:           "Leadmill",
+						StartAt:             &startAt,
+						CalendarURL:         "https://calendar.example.test/listing-a.ics",
+					},
+					{
+						EvidenceID:          402,
+						EvidenceFingerprint: "import-comparison-fingerprint-b",
+						SourceID:            51,
+						SourceName:          "Fixture source",
+						SourceURL:           "https://source.example.test/events",
+						SourceAuthority:     store.SourceAuthoritySupporting,
+						ExternalID:          "external-b",
+						Title:               "Same Show",
+						VenueSlug:           "leadmill",
+						VenueText:           "Leadmill",
+						StartAt:             &startAtSecond,
+						CalendarURL:         "https://calendar.example.test/listing-b.ics",
+					},
+				},
+				IdentityRows: []store.EventReviewImportIdentityRow{
+					{
+						FieldName: "clean_title",
+						Label:     "Clean title",
+						Consensus: true,
+						Values: []store.EventReviewImportIdentityValue{
+							{EvidenceID: 401, Normalized: "Same Show", Raw: "Same Show - Leadmill"},
+							{EvidenceID: 402, Normalized: "Same Show", Raw: "Same Show"},
+						},
+					},
+					{
+						FieldName: "venue_slug",
+						Label:     "Venue slug",
+						Consensus: true,
+						Values: []store.EventReviewImportIdentityValue{
+							{EvidenceID: 401, Normalized: "leadmill", Raw: "Leadmill", Warning: "venue normalized from raw text"},
+							{EvidenceID: 402, Normalized: "leadmill", Raw: "leadmill"},
+						},
+					},
+					{
+						FieldName: "date",
+						Label:     "Date",
+						Consensus: true,
+						Values: []store.EventReviewImportIdentityValue{
+							{EvidenceID: 401, Normalized: "2026-05-10", Raw: "2026-05-10T19:00:00Z"},
+							{EvidenceID: 402, Normalized: "2026-05-10", Raw: "2026-05-10T19:30:00Z"},
+						},
+					},
+					{
+						FieldName: "start_time",
+						Label:     "Start time",
+						Consensus: false,
+						Values: []store.EventReviewImportIdentityValue{
+							{EvidenceID: 401, Normalized: "2026-05-10T19:00:00Z", Raw: "2026-05-10T19:00:00Z"},
+							{EvidenceID: 402, Normalized: "2026-05-10T19:30:00Z", Raw: "2026-05-10T19:30:00Z"},
+						},
+					},
+					{
+						FieldName: "exact_identity",
+						Label:     "Exact identity",
+						Consensus: false,
+						Values: []store.EventReviewImportIdentityValue{
+							{EvidenceID: 401, Normalized: "exact-a", Raw: "venue=leadmill start=2026-05-10T19:00:00Z title=Same Show"},
+							{EvidenceID: 402, Normalized: "exact-b", Raw: "venue=leadmill start=2026-05-10T19:30:00Z title=Same Show"},
+						},
+					},
+				},
+				RawRows: []store.EventReviewImportComparisonRow{
+					{
+						FieldName: "source",
+						Label:     "Source",
+						Consensus: true,
+						Values: []store.EventReviewImportComparisonValue{
+							{EvidenceID: 401, Value: "Fixture source"},
+							{EvidenceID: 402, Value: "Fixture source"},
+						},
+					},
+					{
+						FieldName: "source_url",
+						Label:     "Source URL",
+						Consensus: true,
+						Values: []store.EventReviewImportComparisonValue{
+							{EvidenceID: 401, Value: "https://source.example.test/events"},
+							{EvidenceID: 402, Value: "https://source.example.test/events"},
+						},
+					},
+					{
+						FieldName: "external_id",
+						Label:     "External ID",
+						Consensus: false,
+						Values: []store.EventReviewImportComparisonValue{
+							{EvidenceID: 401, Value: "external-a"},
+							{EvidenceID: 402, Value: "external-b"},
+						},
+					},
+					{
+						FieldName: "calendar_url",
+						Label:     "Calendar URL",
+						Consensus: false,
+						Values: []store.EventReviewImportComparisonValue{
+							{EvidenceID: 401, Value: "https://calendar.example.test/listing-a.ics"},
+							{EvidenceID: 402, Value: "https://calendar.example.test/listing-b.ics"},
+						},
+					},
+					{
+						FieldName: "raw_title",
+						Label:     "Raw title",
+						Consensus: false,
+						Values: []store.EventReviewImportComparisonValue{
+							{EvidenceID: 401, Value: "Same Show - Leadmill"},
+							{EvidenceID: 402, Value: "Same Show"},
+						},
+					},
+					{
+						FieldName: "raw_venue_text",
+						Label:     "Raw venue text",
+						Consensus: true,
+						Values: []store.EventReviewImportComparisonValue{
+							{EvidenceID: 401, Value: "Leadmill"},
+							{EvidenceID: 402, Value: "Leadmill"},
+						},
+					},
+				},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/75")
+	assertContains(t, body, "Normalized identity comparison")
+	assertContains(t, body, "Comparison scope")
+	assertContains(t, body, "yes")
+	assertContains(t, body, "Same Show")
+	assertContains(t, body, "venue normalized from raw text")
+	assertContains(t, body, "Source values")
+	assertContains(t, body, "external-a")
+	assertContains(t, body, "external-b")
+	assertContains(t, body, "same")
+	assertContains(t, body, "differs")
+	assertNotContains(t, body, "resolve_import_new_listing")
+}
+
+func TestAdminEventReviewDetailShowsSeparations(t *testing.T) {
+	sepTime := time.Date(2026, time.May, 15, 11, 30, 0, 0, time.UTC)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             79,
+				Status:         store.EventReviewClusterStatusResolved,
+				Version:        4,
+				ConflictType:   "historical_duplicate",
+				ConflictReason: "reviewed_duplicate",
+				EvidenceCount:  1,
+			},
+			Separations: []store.EventReviewClusterSeparationSummary{
+				{
+					ID: 11,
+					EndpointA: store.EventReviewSeparationEndpointSummary{
+						Kind:               store.EventReviewSeparationEndpointKindEvent,
+						Key:                "event:201",
+						EventID:            int64Ptr(201),
+						EventSlug:          "separation-event",
+						CanonicalEventID:   int64Ptr(202),
+						CanonicalEventSlug: "canonical-event",
+					},
+					EndpointB: store.EventReviewSeparationEndpointSummary{
+						Kind:            store.EventReviewSeparationEndpointKindIdentityKey,
+						Key:             "identity:cluster-hash",
+						IdentityKeyID:   int64Ptr(901),
+						IdentityKeyHash: "cluster-hash",
+						IdentityKeyKind: store.EventReviewIdentityKeyKindExact,
+						NormalizedKey:   "cluster-normalized",
+					},
+					Reason:    "duplicate evidence",
+					CreatedAt: sepTime,
+					UpdatedAt: sepTime,
+				},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/79")
+	assertContains(t, body, "Separations")
+	assertContains(t, body, "duplicate evidence")
+	assertContains(t, body, "event #201")
+	assertContains(t, body, "separation-event")
+	assertContains(t, body, "canonical event #202")
+	assertContains(t, body, "canonical-event")
+	assertContains(t, body, "identity #901")
+	assertContains(t, body, "cluster-normalized")
+	assertNotContains(t, body, `name="action"`)
+}
+
+func TestAdminEventReviewDetailShowsSourceObservations(t *testing.T) {
+	obsTime := time.Date(2026, time.May, 15, 11, 45, 0, 0, time.UTC)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             81,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        1,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			Observations: []store.EventReviewClusterObservationSummary{
+				{
+					ID:                        901,
+					RunScope:                  "import:301",
+					SourceID:                  42,
+					SourceName:                "Store test source",
+					SourceURL:                 "https://example.test/store-test",
+					SourceIdentityKey:         "alpha-identity",
+					SourceAuthority:           store.SourceAuthoritySupporting,
+					FieldName:                 "title",
+					IncomingRaw:               "Raw title",
+					IncomingNormalized:        "Normalized title",
+					CanonicalBeforeRaw:        "Canonical title",
+					CanonicalBeforeNormalized: "Canonical normalized title",
+					Outcome:                   "applied",
+					UpdatedAt:                 obsTime,
+				},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/81")
+	assertContains(t, body, "Source observations")
+	assertContains(t, body, "Store test source")
+	assertContains(t, body, "Source #42")
+	assertContains(t, body, "alpha-identity")
+	assertContains(t, body, "import:301")
+	assertContains(t, body, "title")
+	assertContains(t, body, "Raw title")
+	assertContains(t, body, "Normalized title")
+	assertContains(t, body, "Canonical title")
+	assertContains(t, body, "Canonical normalized title")
+	assertContains(t, body, "applied")
+}
+
+func TestAdminEventReviewDetailShowsSourceIdentityLinks(t *testing.T) {
+	linkTime := time.Date(2026, time.May, 15, 11, 55, 0, 0, time.UTC)
+	linkedEventID := int64(88)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             81,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        1,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  2,
+			},
+			SourceIdentityLinks: []store.EventReviewClusterSourceIdentityLinkSummary{
+				{
+					SourceID:          42,
+					SourceName:        "Store test source",
+					SourceURL:         "https://example.test/store-test",
+					SourceIdentityKey: "source-linked",
+					EvidenceCount:     2,
+					LinkedEventID:     &linkedEventID,
+					LinkedEventSlug:   "source-link-linked-event",
+					LinkedEventTitle:  "Legacy Event",
+					Authoritative:     true,
+					LinkUpdatedAt:     &linkTime,
+				},
+				{
+					SourceID:          42,
+					SourceName:        "Store test source",
+					SourceURL:         "https://example.test/store-test",
+					SourceIdentityKey: "source-unlinked",
+					EvidenceCount:     1,
+				},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/81")
+	assertContains(t, body, "Source identity links")
+	assertContains(t, body, "source-linked")
+	assertContains(t, body, "source-unlinked")
+	assertContains(t, body, "Store test source")
+	assertContains(t, body, "Source #42")
+	assertContains(t, body, "2 evidence rows")
+	assertContains(t, body, "event #88")
+	assertContains(t, body, `href="/admin/events/source-link-linked-event"`)
+	assertNotContains(t, body, `href="/events/source-link-linked-event"`)
+	assertContains(t, body, "Legacy Event")
+	assertContains(t, body, "authoritative")
+	assertContains(t, body, "unlinked")
+}
+
+func TestAdminEventReviewDetailShowsExactIdentityMatches(t *testing.T) {
+	matchTime := time.Date(2026, time.May, 15, 12, 5, 0, 0, time.UTC)
+	linkedEventID := int64(177)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             83,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        1,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  2,
+			},
+			ExactIdentityMatches: []store.EventReviewClusterExactIdentityMatchSummary{
+				{
+					IdentityKeyID:        901,
+					IdentityKeyHash:      "exact-hash-linked",
+					KeyVersion:           1,
+					NormalizedKey:        "exact-linked-key",
+					EvidenceCount:        2,
+					LinkedEventID:        &linkedEventID,
+					LinkedEventSlug:      "exact-linked-event",
+					LinkedEventTitle:     "Exact Linked Event",
+					LinkedEventVenueSlug: "exact-linked-venue",
+					LinkedEventStartAt:   &matchTime,
+				},
+				{
+					IdentityKeyID:   902,
+					IdentityKeyHash: "exact-hash-unlinked",
+					KeyVersion:      1,
+					NormalizedKey:   "exact-unlinked-key",
+					EvidenceCount:   0,
+				},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/83")
+	assertContains(t, body, "Exact identity matches")
+	assertContains(t, body, "exact-linked-key")
+	assertContains(t, body, "2 evidence rows")
+	assertContains(t, body, "event #177")
+	assertContains(t, body, `href="/admin/events/exact-linked-event"`)
+	assertNotContains(t, body, `href="/events/exact-linked-event"`)
+	assertContains(t, body, "Exact Linked Event")
+	assertContains(t, body, "exact-linked-venue")
+	assertContains(t, body, "13:05")
+	assertContains(t, body, "exact-unlinked-key")
+	assertContains(t, body, "No live match")
+}
+
+func TestAdminEventReviewDetailShowsEmptySourceIdentityLinksState(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             82,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        1,
+				ConflictType:   "historical_duplicate",
+				ConflictReason: "reviewed_duplicate",
+				EvidenceCount:  1,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/82")
+	assertContains(t, body, "No source identity links recorded for this cluster.")
+}
+
+func TestAdminEventReviewDetailShowsEmptyExactIdentityMatchesState(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             84,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        1,
+				ConflictType:   "historical_duplicate",
+				ConflictReason: "reviewed_duplicate",
+				EvidenceCount:  1,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/84")
+	assertContains(t, body, "No exact identity keys recorded for this cluster.")
+}
+
+func TestAdminEventReviewDetailShowsEmptySeparationsState(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             80,
+				Status:         store.EventReviewClusterStatusResolved,
+				Version:        2,
+				ConflictType:   "historical_duplicate",
+				ConflictReason: "reviewed_duplicate",
+				EvidenceCount:  0,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/80")
+	assertContains(t, body, "No active separations related to this cluster.")
+}
+
+func TestAdminEventReviewDetailShowsEmptySourceObservationsState(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             82,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        1,
+				ConflictType:   "historical_duplicate",
+				ConflictReason: "reviewed_duplicate",
+				EvidenceCount:  1,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/82")
+	assertContains(t, body, "No source observations recorded for this cluster.")
+}
+
+func TestAdminEventReviewDetailShowsBlockedImportReviewReadiness(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             72,
+				Status:         store.EventReviewClusterStatusResolved,
+				Version:        2,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  2,
+				UpdatedAt:      openTime,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount:  2,
+				NewListingScope: false,
+				BlockingReasons: []string{
+					"cluster is not open",
+					"multiple active evidence rows are present",
+					"payload could not be parsed",
+				},
+				PayloadWarnings: []string{"evidence #401: invalid character 'b' looking for beginning of object key string"},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/72")
+	assertContains(t, body, "Import review readiness")
+	assertContains(t, body, "cluster is not open")
+	assertContains(t, body, "multiple active evidence rows are present")
+	assertContains(t, body, "payload could not be parsed")
+	assertContains(t, body, "looking for beginning of object key string")
+	assertNotContains(t, body, "Accept new listing")
+	assertNotContains(t, body, `name="action" value="resolve_import_new_listing"`)
+}
+
+func TestAdminEventReviewDetailShowsCandidateIdentityStatuses(t *testing.T) {
+	startAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             75,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        1,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  2,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 2,
+				CandidateIdentityStatuses: []store.EventReviewImportCandidateIdentityStatus{
+					{
+						EvidenceID:          401,
+						EvidenceFingerprint: "import-candidate-fingerprint-a",
+						SourceID:            11,
+						SourceName:          "Source A",
+						Title:               "Alpha Candidate",
+						VenueSlug:           "leadmill",
+						StartAt:             &startAt,
+						ExactKeys: []store.EventReviewImportCandidateExactIdentityStatus{
+							{
+								NormalizedKey:    "exact-alpha",
+								IdentityKeyHash:  "exact-alpha-hash",
+								LinkedEventID:    int64Ptr(501),
+								LinkedEventSlug:  "alpha-linked-event",
+								LinkedEventTitle: "Alpha Linked Event",
+							},
+						},
+						SourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+							{
+								SourceID:          11,
+								SourceName:        "Source A",
+								SourceIdentityKey: "source-alpha",
+								LinkedEventID:     int64Ptr(601),
+								LinkedEventSlug:   "source-linked-event",
+								LinkedEventTitle:  "Source Linked Event",
+								Authoritative:     true,
+							},
+							{
+								SourceID:          13,
+								SourceName:        "Source C",
+								SourceIdentityKey: "source-charlie",
+								LinkedEventID:     int64Ptr(602),
+								LinkedEventSlug:   "source-supporting-event",
+								LinkedEventTitle:  "Source Supporting Event",
+							},
+						},
+					},
+					{
+						EvidenceID:          402,
+						EvidenceFingerprint: "import-candidate-fingerprint-b",
+						SourceID:            12,
+						SourceName:          "Source B",
+						ParseWarning:        "payload could not be parsed",
+						ExactKeys: []store.EventReviewImportCandidateExactIdentityStatus{
+							{
+								NormalizedKey:   "exact-bravo",
+								IdentityKeyHash: "exact-bravo-hash",
+							},
+						},
+						SourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+							{
+								SourceID:          12,
+								SourceName:        "Source B",
+								SourceIdentityKey: "source-bravo",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/75")
+	assertContains(t, body, "Candidate identity status")
+	assertContains(t, body, "Alpha Candidate")
+	assertContains(t, body, "Alpha Linked Event")
+	assertContains(t, body, "event #501")
+	assertContains(t, body, `href="/admin/events/alpha-linked-event"`)
+	assertNotContains(t, body, `href="/events/alpha-linked-event"`)
+	assertContains(t, body, "Source Linked Event")
+	assertContains(t, body, "event #601")
+	assertContains(t, body, `href="/admin/events/source-linked-event"`)
+	assertContains(t, body, "Source Supporting Event")
+	assertContains(t, body, "event #602")
+	assertContains(t, body, `href="/admin/events/source-supporting-event"`)
+	assertContains(t, body, "Linked to event #501")
+	assertContains(t, body, "Linked to event #601")
+	assertContains(t, body, "Linked to event #602")
+	assertContains(t, body, "No live match")
+	assertContains(t, body, "No source link")
+	assertContains(t, body, "authoritative")
+	assertContains(t, body, "supporting")
+	assertContains(t, body, "payload could not be parsed")
+}
+
+func TestAdminEventReviewDetailShowsSelectedCandidateReadiness(t *testing.T) {
+	readyStartAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	readyUpdatedAt := fixtureLocalTime(2026, time.May, 15, 11, 5)
+	blockedStartAt := time.Date(2026, time.May, 10, 20, 0, 0, 0, time.UTC)
+	blockedUpdatedAt := fixtureLocalTime(2026, time.May, 15, 11, 10)
+
+	tests := []struct {
+		name           string
+		selectedReady  *store.EventReviewImportSelectedCandidateReadiness
+		wantContains   []string
+		wantNotContain []string
+	}{
+		{
+			name: "ready",
+			selectedReady: &store.EventReviewImportSelectedCandidateReadiness{
+				Eligible:            true,
+				EvidenceID:          701,
+				EvidenceFingerprint: "selected-ready-fingerprint",
+				Title:               "Eligible Selected Candidate",
+				VenueSlug:           "event-review-selected-ready",
+				VenueText:           "Event Review Selected Ready",
+				StartAt:             &readyStartAt,
+				SelectedSourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+					{
+						SourceID:          11,
+						SourceName:        "Source A",
+						SourceIdentityKey: "selected-ready",
+						ChoiceSelected:    true,
+						ChoiceReason:      "selected ready",
+						ChoiceUpdatedAt:   &readyUpdatedAt,
+					},
+				},
+				ExactKeys: []store.EventReviewImportCandidateExactIdentityStatus{
+					{
+						NormalizedKey:   "selected-ready-exact",
+						IdentityKeyHash: "selected-ready-exact-hash",
+					},
+				},
+				SourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+					{
+						SourceID:          11,
+						SourceName:        "Source A",
+						SourceIdentityKey: "selected-ready",
+						ChoiceSelected:    true,
+						ChoiceReason:      "selected ready",
+						ChoiceUpdatedAt:   &readyUpdatedAt,
+					},
+				},
+			},
+			wantContains: []string{
+				"Selected candidate readiness",
+				"Ready to accept selected candidate",
+				"yes",
+				"Eligible Selected Candidate",
+				"event-review-selected-ready",
+				"selected-ready",
+				"No live match",
+				"No source link",
+			},
+		},
+		{
+			name: "blocked",
+			selectedReady: &store.EventReviewImportSelectedCandidateReadiness{
+				Eligible:            false,
+				BlockingReasons:     []string{"selected source identity choices span multiple candidates", "selected candidate source identity already links to live event"},
+				EvidenceID:          702,
+				EvidenceFingerprint: "selected-blocked-fingerprint",
+				Title:               "Blocked Selected Candidate",
+				VenueSlug:           "event-review-selected-blocked",
+				VenueText:           "Event Review Selected Blocked",
+				StartAt:             &blockedStartAt,
+				SelectedSourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+					{
+						SourceID:          12,
+						SourceName:        "Source B",
+						SourceIdentityKey: "selected-blocked",
+						LinkedEventID:     int64Ptr(601),
+						LinkedEventSlug:   "selected-blocked-link",
+						LinkedEventTitle:  "Selected Blocked Link",
+						ChoiceSelected:    true,
+						ChoiceReason:      "selected blocked",
+						ChoiceUpdatedAt:   &blockedUpdatedAt,
+					},
+				},
+				ExactKeys: []store.EventReviewImportCandidateExactIdentityStatus{
+					{
+						NormalizedKey:    "selected-blocked-exact",
+						IdentityKeyHash:  "selected-blocked-exact-hash",
+						LinkedEventID:    int64Ptr(501),
+						LinkedEventSlug:  "selected-blocked-exact-event",
+						LinkedEventTitle: "Selected Blocked Exact",
+					},
+				},
+				SourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+					{
+						SourceID:          12,
+						SourceName:        "Source B",
+						SourceIdentityKey: "selected-blocked",
+						LinkedEventID:     int64Ptr(601),
+						LinkedEventSlug:   "selected-blocked-link",
+						LinkedEventTitle:  "Selected Blocked Link",
+						Authoritative:     true,
+						ChoiceSelected:    true,
+						ChoiceReason:      "selected blocked",
+						ChoiceUpdatedAt:   &blockedUpdatedAt,
+					},
+				},
+			},
+			wantContains: []string{
+				"Selected candidate readiness",
+				"Ready to accept selected candidate",
+				"no",
+				"selected source identity choices span multiple candidates",
+				"selected candidate source identity already links to live event",
+				"Linked to event #501",
+				"Linked to event #601",
+				"authoritative",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &eventReviewOnlyStoreStub{
+				detail: store.EventReviewClusterDetail{
+					Summary: store.EventReviewClusterSummary{
+						ID:             76,
+						Status:         store.EventReviewClusterStatusOpen,
+						Version:        1,
+						ConflictType:   store.EventReviewConflictTypeImportReview,
+						ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+						EvidenceCount:  1,
+					},
+					ImportReadiness: &store.EventReviewImportReadiness{
+						CandidateCount:             1,
+						SelectedCandidateReadiness: tc.selectedReady,
+					},
+				},
+			}
+			server, err := NewServer(testServerDeps(store))
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+
+			body := renderPath(t, server, "/admin/event-review/76")
+			for _, want := range tc.wantContains {
+				assertContains(t, body, want)
+			}
+			for _, want := range tc.wantNotContain {
+				assertNotContains(t, body, want)
+			}
+		})
+	}
+}
+
+func TestAdminEventReviewDetailShowsSelectedCandidateAcceptForm(t *testing.T) {
+	selectedStartAt := time.Date(2026, time.May, 12, 19, 30, 0, 0, time.UTC)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             91,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        6,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  2,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 2,
+				SelectedCandidateReadiness: &store.EventReviewImportSelectedCandidateReadiness{
+					Eligible:            true,
+					EvidenceID:          801,
+					EvidenceFingerprint: "selected-eligible-fingerprint",
+					Title:               "Selected Candidate Title",
+					VenueSlug:           "selected-candidate-venue",
+					VenueText:           "Selected Candidate Venue",
+					StartAt:             &selectedStartAt,
+				},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/91")
+	assertContains(t, body, "Accept selected candidate")
+	assertContains(t, body, `name="action" value="resolve_import_selected_candidate"`)
+	assertNotContains(t, body, `name="action" value="resolve_import_new_listing"`)
+}
+
+func TestAdminEventReviewDetailAcceptsSelectedImportCandidate(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             92,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        6,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  2,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 2,
+				SelectedCandidateReadiness: &store.EventReviewImportSelectedCandidateReadiness{
+					Eligible:   true,
+					EvidenceID: 802,
+				},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/92", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "6")
+	form.Set("action", "resolve_import_selected_candidate")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/92", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !store.resolveCalled {
+		t.Fatal("expected resolve store method to be called")
+	}
+	if store.resolveInput.ClusterID != 92 || store.resolveInput.ExpectedVersion != 6 {
+		t.Fatalf("resolve input = %#v", store.resolveInput)
+	}
+}
+
+func TestAdminEventReviewDetailRejectsIneligibleSelectedImportCandidateResolution(t *testing.T) {
+	tests := []struct {
+		name          string
+		selectedReady *store.EventReviewImportSelectedCandidateReadiness
+	}{
+		{
+			name: "blocked readiness",
+			selectedReady: &store.EventReviewImportSelectedCandidateReadiness{
+				Eligible:        false,
+				BlockingReasons: []string{"selected candidate does not satisfy the resolver criteria"},
+				EvidenceID:      803,
+			},
+		},
+		{
+			name:          "missing readiness",
+			selectedReady: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &eventReviewOnlyStoreStub{
+				detail: store.EventReviewClusterDetail{
+					Summary: store.EventReviewClusterSummary{
+						ID:             93,
+						Status:         store.EventReviewClusterStatusOpen,
+						Version:        6,
+						ConflictType:   store.EventReviewConflictTypeImportReview,
+						ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+						EvidenceCount:  2,
+					},
+					ImportReadiness: &store.EventReviewImportReadiness{
+						CandidateCount:             2,
+						SelectedCandidateReadiness: tc.selectedReady,
+					},
+				},
+			}
+			server, err := NewServer(testAdminAuthDeps(store))
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+			cookie, _ := loginAdmin(t, server, "/admin/review")
+
+			getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/93", nil)
+			getReq.AddCookie(cookie)
+			getRR := httptest.NewRecorder()
+			server.ServeHTTP(getRR, getReq)
+			if getRR.Code != http.StatusOK {
+				t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+			}
+			body := getRR.Body.String()
+			assertNotContains(t, body, "Accept selected candidate")
+			assertNotContains(t, body, `name="action" value="resolve_import_selected_candidate"`)
+			csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+			form := url.Values{}
+			form.Set("csrf_token", csrfToken)
+			form.Set("expected_version", "6")
+			form.Set("action", "resolve_import_selected_candidate")
+			req := httptest.NewRequest(http.MethodPost, "/admin/event-review/93", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.AddCookie(cookie)
+			rr := httptest.NewRecorder()
+			server.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+			}
+			assertContains(t, rr.Body.String(), "event review cluster is not eligible for selected import candidate resolution")
+			if store.resolveCalled {
+				t.Fatal("expected resolve store method not to be called")
+			}
+		})
+	}
+}
+
+func TestAdminEventReviewDetailShowsSourceIdentityChoiceSaveForm(t *testing.T) {
+	choiceUpdatedAt := fixtureLocalTime(2026, time.May, 15, 10, 55)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             86,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        7,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				CandidateIdentityStatuses: []store.EventReviewImportCandidateIdentityStatus{
+					{
+						EvidenceID:          501,
+						EvidenceFingerprint: "source-choice-fingerprint",
+						SourceID:            11,
+						SourceName:          "Source A",
+						SourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+							{
+								SourceID:          11,
+								SourceName:        "Source A",
+								SourceIdentityKey: "source-alpha",
+								LinkedEventID:     int64Ptr(601),
+								LinkedEventSlug:   "source-alpha-event",
+								LinkedEventTitle:  "Alpha Source Event",
+								Authoritative:     true,
+								ChoiceSelected:    true,
+								ChoiceReason:      "admin source identity choice",
+								ChoiceUpdatedAt:   &choiceUpdatedAt,
+							},
+							{
+								SourceID:          12,
+								SourceName:        "Source B",
+								SourceIdentityKey: "source-bravo",
+								ChoiceSelected:    false,
+								ChoiceReason:      "admin source identity choice cleared",
+								ChoiceUpdatedAt:   &choiceUpdatedAt,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/86")
+	assertContains(t, body, "Save source identity choices")
+	assertContains(t, body, `name="action" value="save_source_identity_choices"`)
+	assertContains(t, body, `name="source_identity_choice" value="11|source-alpha" checked`)
+	assertContains(t, body, `name="source_identity_choice" value="12|source-bravo"`)
+	assertContains(t, body, "admin source identity choice")
+	assertContains(t, body, "admin source identity choice cleared")
+	assertContains(t, body, "15 May 2026 10:55")
+	assertContains(t, body, "Alpha Source Event")
+	assertContains(t, body, `href="/admin/events/source-alpha-event"`)
+	assertNotContains(t, body, `href="/events/source-alpha-event"`)
+}
+
+func TestAdminEventReviewDetailHidesSourceIdentityChoiceSaveFormForTerminalOrNonImportClusters(t *testing.T) {
+	tests := []struct {
+		name   string
+		detail store.EventReviewClusterDetail
+	}{
+		{
+			name: "terminal cluster",
+			detail: store.EventReviewClusterDetail{
+				Summary: store.EventReviewClusterSummary{
+					ID:             87,
+					Status:         store.EventReviewClusterStatusResolved,
+					Version:        4,
+					ConflictType:   store.EventReviewConflictTypeImportReview,
+					ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				},
+			},
+		},
+		{
+			name: "non-import cluster",
+			detail: store.EventReviewClusterDetail{
+				Summary: store.EventReviewClusterSummary{
+					ID:             88,
+					Status:         store.EventReviewClusterStatusOpen,
+					Version:        4,
+					ConflictType:   "historical_duplicate",
+					ConflictReason: "reason-a",
+				},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &eventReviewOnlyStoreStub{detail: tc.detail}
+			server, err := NewServer(testServerDeps(store))
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+
+			body := renderPath(t, server, "/admin/event-review/"+strconvFormatInt(tc.detail.Summary.ID))
+			assertNotContains(t, body, "Save source identity choices")
+			assertNotContains(t, body, `name="action" value="save_source_identity_choices"`)
+		})
+	}
+}
+
+func TestAdminEventReviewDetailAcceptsImportReviewNewListing(t *testing.T) {
+	startAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	endAt := time.Date(2026, time.May, 10, 21, 0, 0, 0, time.UTC)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             73,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        4,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount:  1,
+				NewListingScope: true,
+				Candidates: []store.EventReviewImportCandidateSummary{{
+					EvidenceID:          302,
+					EvidenceFingerprint: "import-accept-fingerprint",
+					SourceID:            42,
+					SourceName:          "Fixture source",
+					SourceURL:           "https://source.example.test/events",
+					SourceAuthority:     store.SourceAuthoritySupporting,
+					ExternalID:          "external-accept",
+					Title:               "Accept Me Title",
+					VenueSlug:           "leadmill",
+					VenueText:           "Leadmill",
+					StartAt:             &startAt,
+					EndAt:               &endAt,
+					CalendarURL:         "https://calendar.example.test/listing.ics",
+				}},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/73", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "4")
+	form.Set("action", "resolve_import_new_listing")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/73", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !store.resolveCalled {
+		t.Fatal("expected resolve store method to be called")
+	}
+	if store.resolveInput.ClusterID != 73 || store.resolveInput.ExpectedVersion != 4 {
+		t.Fatalf("resolve input = %#v", store.resolveInput)
+	}
+}
+
+func TestAdminEventReviewDetailSavesSourceIdentityChoicesAndRedirects(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             89,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        5,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				CandidateIdentityStatuses: []store.EventReviewImportCandidateIdentityStatus{
+					{
+						EvidenceID:          701,
+						EvidenceFingerprint: "source-choice-post-fingerprint",
+						SourceID:            21,
+						SourceName:          "Source Alpha",
+						SourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+							{
+								SourceID:          21,
+								SourceName:        "Source Alpha",
+								SourceIdentityKey: "source-alpha",
+								ChoiceSelected:    false,
+							},
+							{
+								SourceID:          22,
+								SourceName:        "Source Bravo",
+								SourceIdentityKey: "source-bravo",
+								ChoiceSelected:    false,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/89", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "5")
+	form.Set("action", "save_source_identity_choices")
+	form.Add("source_identity_choice", "21|source-alpha")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/89", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/event-review/89?source_identity_choices_saved=1" {
+		t.Fatalf("Location = %q, want detail redirect", location)
+	}
+	if !store.sourceIdentityChoicesCalled {
+		t.Fatal("expected source identity choice store method to be called")
+	}
+	if store.sourceIdentityChoicesInput.ClusterID != 89 || store.sourceIdentityChoicesInput.ExpectedVersion != 5 {
+		t.Fatalf("source identity choices input = %#v", store.sourceIdentityChoicesInput)
+	}
+	if got, want := len(store.sourceIdentityChoicesInput.Choices), 2; got != want {
+		t.Fatalf("source identity choices count = %d, want %d", got, want)
+	}
+	if got := store.sourceIdentityChoicesInput.Choices[0]; got.SourceID != 21 || got.SourceIdentityKey != "source-alpha" || !got.Selected || got.SelectionReason != "admin source identity choice" {
+		t.Fatalf("first source identity choice = %#v", got)
+	}
+	if got := store.sourceIdentityChoicesInput.Choices[1]; got.SourceID != 22 || got.SourceIdentityKey != "source-bravo" || got.Selected || got.SelectionReason != "admin source identity choice cleared" {
+		t.Fatalf("second source identity choice = %#v", got)
+	}
+
+	redirectReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/89?source_identity_choices_saved=1", nil)
+	redirectReq.AddCookie(cookie)
+	redirectRR := httptest.NewRecorder()
+	server.ServeHTTP(redirectRR, redirectReq)
+	if redirectRR.Code != http.StatusOK {
+		t.Fatalf("redirect detail status = %d, want %d", redirectRR.Code, http.StatusOK)
+	}
+	redirectBody := redirectRR.Body.String()
+	assertContains(t, redirectBody, "Source identity choices saved.")
+	assertContains(t, redirectBody, `name="source_identity_choice" value="21|source-alpha" checked`)
+	assertContains(t, redirectBody, `name="source_identity_choice" value="22|source-bravo"`)
+	assertContains(t, redirectBody, "15 May 2026 10:55")
+	if store.detail.Summary.Version != 6 {
+		t.Fatalf("detail version = %d, want 6", store.detail.Summary.Version)
+	}
+	if !store.detail.ImportReadiness.CandidateIdentityStatuses[0].SourceKeys[0].ChoiceSelected {
+		t.Fatal("expected first source identity choice to be updated")
+	}
+	if store.detail.ImportReadiness.CandidateIdentityStatuses[0].SourceKeys[1].ChoiceSelected {
+		t.Fatal("expected second source identity choice to remain cleared")
+	}
+}
+
+func TestAdminEventReviewSaveSourceIdentityChoicesIgnoresQueryStringSelections(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             90,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        6,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				CandidateIdentityStatuses: []store.EventReviewImportCandidateIdentityStatus{
+					{
+						EvidenceID:          702,
+						EvidenceFingerprint: "source-choice-query-fingerprint",
+						SourceID:            31,
+						SourceName:          "Source Alpha",
+						SourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+							{
+								SourceID:          31,
+								SourceName:        "Source Alpha",
+								SourceIdentityKey: "source-alpha",
+							},
+							{
+								SourceID:          32,
+								SourceName:        "Source Bravo",
+								SourceIdentityKey: "source-bravo",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/90", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "6")
+	form.Set("action", "save_source_identity_choices")
+	form.Add("source_identity_choice", "31|source-alpha")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/90?source_identity_choice=32%7Csource-bravo", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/event-review/90?source_identity_choices_saved=1" {
+		t.Fatalf("Location = %q, want detail redirect", location)
+	}
+	if !store.sourceIdentityChoicesCalled {
+		t.Fatal("expected source identity choice store method to be called")
+	}
+	if got, want := len(store.sourceIdentityChoicesInput.Choices), 2; got != want {
+		t.Fatalf("source identity choices count = %d, want %d", got, want)
+	}
+	if got := store.sourceIdentityChoicesInput.Choices[0]; got.SourceID != 31 || got.SourceIdentityKey != "source-alpha" || !got.Selected {
+		t.Fatalf("first source identity choice = %#v", got)
+	}
+	if got := store.sourceIdentityChoicesInput.Choices[1]; got.SourceID != 32 || got.SourceIdentityKey != "source-bravo" || got.Selected {
+		t.Fatalf("second source identity choice = %#v, want query-string value ignored", got)
+	}
+}
+
+func TestAdminEventReviewSaveSourceIdentityChoicesRejectsInvalidFormsAndStoreErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		form     url.Values
+		err      error
+		want     string
+		wantCode int
+	}{
+		{
+			name:     "invalid version",
+			form:     url.Values{"expected_version": {"not-a-number"}, "action": {"save_source_identity_choices"}, "source_identity_choice": {"21|source-alpha"}},
+			want:     "expected version is required",
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "stale version",
+			form:     url.Values{"expected_version": {"5"}, "action": {"save_source_identity_choices"}, "source_identity_choice": {"21|source-alpha"}},
+			err:      errors.New("event review cluster 89 update was rejected"),
+			want:     "event review cluster 89 update was rejected",
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "store error",
+			form:     url.Values{"expected_version": {"5"}, "action": {"save_source_identity_choices"}, "source_identity_choice": {"21|source-alpha"}},
+			err:      errors.New("database unavailable"),
+			want:     "database unavailable",
+			wantCode: http.StatusBadRequest,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &eventReviewOnlyStoreStub{
+				detail: store.EventReviewClusterDetail{
+					Summary: store.EventReviewClusterSummary{
+						ID:             89,
+						Status:         store.EventReviewClusterStatusOpen,
+						Version:        5,
+						ConflictType:   store.EventReviewConflictTypeImportReview,
+						ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+					},
+					ImportReadiness: &store.EventReviewImportReadiness{
+						CandidateCount: 1,
+						CandidateIdentityStatuses: []store.EventReviewImportCandidateIdentityStatus{
+							{
+								EvidenceID:          701,
+								EvidenceFingerprint: "source-choice-post-fingerprint",
+								SourceID:            21,
+								SourceName:          "Source Alpha",
+								SourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+									{
+										SourceID:          21,
+										SourceName:        "Source Alpha",
+										SourceIdentityKey: "source-alpha",
+									},
+								},
+							},
+						},
+					},
+				},
+				sourceIdentityChoicesErr: tc.err,
+			}
+			server, err := NewServer(testAdminAuthDeps(store))
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+			cookie, _ := loginAdmin(t, server, "/admin/review")
+
+			getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/89", nil)
+			getReq.AddCookie(cookie)
+			getRR := httptest.NewRecorder()
+			server.ServeHTTP(getRR, getReq)
+			if getRR.Code != http.StatusOK {
+				t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+			}
+			csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+			if tc.form == nil {
+				tc.form = url.Values{}
+			}
+			if tc.form.Get("expected_version") == "" {
+				tc.form.Set("expected_version", "5")
+			}
+			tc.form.Set("csrf_token", csrfToken)
+
+			req := httptest.NewRequest(http.MethodPost, "/admin/event-review/89", strings.NewReader(tc.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.AddCookie(cookie)
+			rr := httptest.NewRecorder()
+			server.ServeHTTP(rr, req)
+
+			if rr.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body %q", rr.Code, tc.wantCode, rr.Body.String())
+			}
+			assertContains(t, rr.Body.String(), tc.want)
+			if tc.err == nil && store.sourceIdentityChoicesCalled {
+				t.Fatal("expected source identity choice store method to not be called")
+			}
+			if tc.err != nil && !store.sourceIdentityChoicesCalled {
+				t.Fatal("expected source identity choice store method to be called")
+			}
+		})
+	}
+}
+
+func TestAdminEventReviewSaveSourceIdentityChoicesRejectsInvalidCSRF(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             89,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        5,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				CandidateIdentityStatuses: []store.EventReviewImportCandidateIdentityStatus{
+					{
+						EvidenceID:          701,
+						EvidenceFingerprint: "source-choice-post-fingerprint",
+						SourceID:            21,
+						SourceName:          "Source Alpha",
+						SourceKeys: []store.EventReviewImportCandidateSourceIdentityStatus{
+							{
+								SourceID:          21,
+								SourceName:        "Source Alpha",
+								SourceIdentityKey: "source-alpha",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	form := url.Values{
+		"csrf_token":             {"wrong"},
+		"expected_version":       {"5"},
+		"action":                 {"save_source_identity_choices"},
+		"source_identity_choice": {"21|source-alpha"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/89", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "invalid CSRF token")
+	if store.sourceIdentityChoicesCalled {
+		t.Fatal("source identity choice store method should not be called")
+	}
+}
+
+func TestAdminEventReviewDetailShowsAppliedImportListingResolution(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                 74,
+				Status:             store.EventReviewClusterStatusResolved,
+				Version:            2,
+				ConflictType:       store.EventReviewConflictTypeImportReview,
+				ConflictReason:     store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:      1,
+				UpdatedAt:          openTime,
+				CanonicalEventID:   int64Ptr(901),
+				CanonicalEventSlug: "accept-new-listing-leadmill-20260522190000",
+			},
+			Resolution: &store.EventReviewResolutionSummary{
+				ID:        301,
+				ClusterID: 74,
+				Status:    store.EventReviewResolutionStatusResolved,
+				CreatedAt: openTime,
+				UpdatedAt: openTime,
+				AppliedImportListing: &store.EventReviewResolutionAppliedImportListingSummary{
+					EventID:    901,
+					EventSlug:  "accept-new-listing-leadmill-20260522190000",
+					Title:      "Accept New Listing",
+					VenueSlug:  "leadmill",
+					VenueName:  "Leadmill",
+					StartAt:    openTime,
+					SourceID:   42,
+					SourceName: "Fixture source",
+					SourceURL:  "https://source.example.test/listing",
+					EvidenceID: 302,
+				},
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/74")
+	assertContains(t, body, "Applied import listing")
+	assertContains(t, body, "event #901")
+	assertContains(t, body, "Accept New Listing")
+	assertContains(t, body, "Leadmill")
+	assertContains(t, body, "Fixture source")
+	assertContains(t, body, "source.example.test/listing")
+	assertNotContains(t, body, "Accept new listing")
+	assertNotContains(t, body, `name="action" value="resolve_import_new_listing"`)
+}
+
+func TestAdminEventReviewDetailShowsMalformedResolutionSnapshotWarning(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             61,
+				Status:         store.EventReviewClusterStatusResolved,
+				Version:        2,
+				ConflictType:   "historical_duplicate",
+				ConflictReason: "reason-c",
+				EvidenceCount:  0,
+				UpdatedAt:      openTime,
+			},
+			Resolution: &store.EventReviewResolutionSummary{
+				ID:                   201,
+				ClusterID:            61,
+				Status:               store.EventReviewResolutionStatusResolved,
+				SnapshotRaw:          "{bad snapshot",
+				SnapshotParseWarning: "invalid character 'b' looking for beginning of object key string",
+				CreatedAt:            openTime,
+				UpdatedAt:            openTime,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/61")
+	assertContains(t, body, "Resolution snapshot warning")
+	assertContains(t, body, "Raw snapshot")
+	assertContains(t, body, "{bad snapshot")
+	assertContains(t, body, "Resolution")
+}
+
+func TestAdminEventReviewDetailShowsSupersededByClusterLink(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	supersedingID := int64(99)
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:               62,
+				Status:           store.EventReviewClusterStatusSuperseded,
+				Version:          2,
+				ConflictType:     "historical_duplicate",
+				ConflictReason:   "reason-d",
+				CanonicalEventID: int64Ptr(88),
+				EvidenceCount:    0,
+				UpdatedAt:        openTime,
+			},
+			Resolution: &store.EventReviewResolutionSummary{
+				ID:                    202,
+				ClusterID:             62,
+				Status:                store.EventReviewResolutionStatusSuperseded,
+				SupersededByClusterID: &supersedingID,
+				CreatedAt:             openTime,
+				UpdatedAt:             openTime,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/62")
+	assertContains(t, body, "cluster #99")
+	assertContains(t, body, "Resolution")
+	assertContains(t, body, "superseded")
+}
+
+func TestAdminEventReviewDetailShowsSupersedeForm(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             83,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        5,
+				ConflictType:   "historical_duplicate",
+				ConflictReason: "reason-e",
+				EvidenceCount:  1,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/83")
+	assertContains(t, body, "Supersede cluster")
+	assertContains(t, body, "Mark this cluster as superseded by another event-review cluster.")
+	assertContains(t, body, `name="action" value="supersede"`)
+	assertContains(t, body, `name="superseded_by_cluster_id"`)
+}
+
+func TestAdminEventReviewDetailHidesSupersedeFormForTerminalCluster(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             84,
+				Status:         store.EventReviewClusterStatusResolved,
+				Version:        5,
+				ConflictType:   "historical_duplicate",
+				ConflictReason: "reason-f",
+				EvidenceCount:  1,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/84")
+	assertNotContains(t, body, "Supersede cluster")
+	assertNotContains(t, body, `name="action" value="supersede"`)
+}
+
+func TestAdminEventReviewDiscardPostsAndRedirects(t *testing.T) {
+	stagingKey := "repair-queue-a"
+	store := &eventReviewOnlyStoreStub{
+		clusters: []store.EventReviewClusterSummary{
+			{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "type-a",
+				ConflictReason:    "reason-a",
+				EvidenceCount:     1,
+			},
+		},
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "type-a",
+				ConflictReason:    "reason-a",
+				EvidenceCount:     1,
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "3")
+	form.Set("action", "discard")
+	form.Set("discard_reason", "duplicate staging cluster")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_discarded=1" {
+		t.Fatalf("Location = %q, want discard redirect", location)
+	}
+	if !store.discardCalled {
+		t.Fatal("expected discard store method to be called")
+	}
+	if store.discardInput.ClusterID != 41 || store.discardInput.ExpectedVersion != 3 || store.discardInput.Reason != "duplicate staging cluster" {
+		t.Fatalf("discard input = %#v", store.discardInput)
+	}
+
+	queueReq := httptest.NewRequest(http.MethodGet, "/admin/review?event_review_discarded=1", nil)
+	queueReq.AddCookie(cookie)
+	queueRR := httptest.NewRecorder()
+	server.ServeHTTP(queueRR, queueReq)
+	if queueRR.Code != http.StatusOK {
+		t.Fatalf("queue status = %d, want %d", queueRR.Code, http.StatusOK)
+	}
+	assertContains(t, queueRR.Body.String(), "Discarded event review cluster.")
+	assertContains(t, queueRR.Body.String(), "Event review clusters")
+}
+
+func TestAdminEventReviewDiscardRejectsInvalidForms(t *testing.T) {
+	tests := []struct {
+		name   string
+		form   url.Values
+		status int
+		want   string
+	}{
+		{name: "missing reason", form: url.Values{"expected_version": {"3"}, "action": {"discard"}}, status: http.StatusBadRequest, want: "discard reason is required"},
+		{name: "missing version", form: url.Values{"action": {"discard"}, "discard_reason": {"reason"}}, status: http.StatusBadRequest, want: "expected version is required"},
+		{name: "invalid version", form: url.Values{"expected_version": {"not-a-number"}, "action": {"discard"}, "discard_reason": {"reason"}}, status: http.StatusBadRequest, want: "expected version is required"},
+		{name: "unknown action", form: url.Values{"expected_version": {"3"}, "action": {"resolve"}, "discard_reason": {"reason"}}, status: http.StatusBadRequest, want: "invalid event review action"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &eventReviewOnlyStoreStub{
+				detail: store.EventReviewClusterDetail{
+					Summary: store.EventReviewClusterSummary{ID: 41, Status: store.EventReviewClusterStatusOpen, Version: 3},
+				},
+			}
+			server, err := NewServer(testAdminAuthDeps(store))
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+			cookie, _ := loginAdmin(t, server, "/admin/review")
+			getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+			getReq.AddCookie(cookie)
+			getRR := httptest.NewRecorder()
+			server.ServeHTTP(getRR, getReq)
+			if getRR.Code != http.StatusOK {
+				t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+			}
+			csrfToken := extractCSRFToken(t, getRR.Body.String())
+			tc.form.Set("csrf_token", csrfToken)
+
+			req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(tc.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.AddCookie(cookie)
+			rr := httptest.NewRecorder()
+			server.ServeHTTP(rr, req)
+
+			if rr.Code != tc.status {
+				t.Fatalf("status = %d, want %d; body %q", rr.Code, tc.status, rr.Body.String())
+			}
+			assertContains(t, rr.Body.String(), tc.want)
+			if store.discardCalled {
+				t.Fatal("discard store method should not be called")
+			}
+		})
+	}
+}
+
+func TestAdminEventReviewDiscardRejectsInvalidCSRF(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{ID: 41, Status: store.EventReviewClusterStatusOpen, Version: 3},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	form := url.Values{
+		"csrf_token":       {"wrong"},
+		"expected_version": {"3"},
+		"action":           {"discard"},
+		"discard_reason":   {"reason"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "invalid CSRF token")
+	if store.discardCalled {
+		t.Fatal("discard store method should not be called")
+	}
+}
+
+func TestAdminEventReviewSupersedePostsAndRedirects(t *testing.T) {
+	stagingKey := "repair-queue-a"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "historical_duplicate",
+				ConflictReason:    "reason-a",
+				EvidenceCount:     1,
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "3")
+	form.Set("action", "supersede")
+	form.Set("superseded_by_cluster_id", "99")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_superseded=1" {
+		t.Fatalf("Location = %q, want supersede redirect", location)
+	}
+	if !store.supersedeCalled {
+		t.Fatal("expected supersede store method to be called")
+	}
+	if store.supersedeInput.ClusterID != 41 || store.supersedeInput.ExpectedVersion != 3 || store.supersedeInput.SupersededByClusterID != 99 {
+		t.Fatalf("supersede input = %#v", store.supersedeInput)
+	}
+
+	queueReq := httptest.NewRequest(http.MethodGet, "/admin/review?event_review_superseded=1", nil)
+	queueReq.AddCookie(cookie)
+	queueRR := httptest.NewRecorder()
+	server.ServeHTTP(queueRR, queueReq)
+	if queueRR.Code != http.StatusOK {
+		t.Fatalf("queue status = %d, want %d", queueRR.Code, http.StatusOK)
+	}
+	assertContains(t, queueRR.Body.String(), "Superseded event review cluster.")
+}
+
+func TestAdminEventReviewSupersedeRejectsInvalidFormsAndCSRF(t *testing.T) {
+	stagingKey := "repair-queue-a"
+	tests := []struct {
+		name string
+		form url.Values
+		want string
+	}{
+		{name: "missing version", form: url.Values{"action": {"supersede"}, "superseded_by_cluster_id": {"99"}}, want: "expected version is required"},
+		{name: "invalid version", form: url.Values{"expected_version": {"not-a-number"}, "action": {"supersede"}, "superseded_by_cluster_id": {"99"}}, want: "expected version is required"},
+		{name: "missing target", form: url.Values{"expected_version": {"3"}, "action": {"supersede"}}, want: "superseded by cluster ID is required"},
+		{name: "invalid target", form: url.Values{"expected_version": {"3"}, "action": {"supersede"}, "superseded_by_cluster_id": {"not-a-number"}}, want: "superseded by cluster ID is required"},
+		{name: "unknown action", form: url.Values{"expected_version": {"3"}, "action": {"resolve"}, "superseded_by_cluster_id": {"99"}}, want: "invalid event review action"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &eventReviewOnlyStoreStub{
+				detail: store.EventReviewClusterDetail{
+					Summary: store.EventReviewClusterSummary{
+						ID:                41,
+						Status:            store.EventReviewClusterStatusOpen,
+						Version:           3,
+						StagingKey:        &stagingKey,
+						StagingKeyVersion: 3,
+						ConflictType:      "historical_duplicate",
+						ConflictReason:    "reason-a",
+						EvidenceCount:     1,
+					},
+				},
+			}
+			server, err := NewServer(testAdminAuthDeps(store))
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+			cookie, _ := loginAdmin(t, server, "/admin/review")
+			getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+			getReq.AddCookie(cookie)
+			getRR := httptest.NewRecorder()
+			server.ServeHTTP(getRR, getReq)
+			if getRR.Code != http.StatusOK {
+				t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+			}
+			csrfToken := extractCSRFToken(t, getRR.Body.String())
+			tc.form.Set("csrf_token", csrfToken)
+
+			req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(tc.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.AddCookie(cookie)
+			rr := httptest.NewRecorder()
+			server.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+			}
+			assertContains(t, rr.Body.String(), tc.want)
+			if store.supersedeCalled {
+				t.Fatal("supersede store method should not be called")
+			}
+		})
+	}
+}
+
+func TestAdminEventReviewSupersedeRejectsInvalidCSRF(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{ID: 41, Status: store.EventReviewClusterStatusOpen, Version: 3},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	form := url.Values{
+		"csrf_token":               {"wrong"},
+		"expected_version":         {"3"},
+		"action":                   {"supersede"},
+		"superseded_by_cluster_id": {"99"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "invalid CSRF token")
+	if store.supersedeCalled {
+		t.Fatal("supersede store method should not be called")
+	}
+}
+
+func TestAdminEventReviewSupersedeReturnsStoreError(t *testing.T) {
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{ID: 41, Status: store.EventReviewClusterStatusOpen, Version: 3},
+		},
+		supersedeErr: fmt.Errorf("cluster cannot supersede itself"),
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{
+		"csrf_token":               {csrfToken},
+		"expected_version":         {"3"},
+		"action":                   {"supersede"},
+		"superseded_by_cluster_id": {"41"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "cluster cannot supersede itself")
+	if !store.supersedeCalled {
+		t.Fatal("expected supersede store method to be called")
+	}
+}
+
+func TestAdminEventReviewResolvePostsAndRedirects(t *testing.T) {
+	stagingKey := "repair-queue-a"
+	store := &eventReviewOnlyStoreStub{
+		clusters: []store.EventReviewClusterSummary{
+			{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "historical_duplicate",
+				ConflictReason:    "reason-a",
+				CanonicalEventID:  int64Ptr(88),
+				EvidenceCount:     2,
+			},
+		},
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "historical_duplicate",
+				ConflictReason:    "reason-a",
+				CanonicalEventID:  int64Ptr(88),
+				EvidenceCount:     2,
+			},
+			LiveActions: []store.EventReviewClusterLiveActionSummary{
+				{ID: 1, EventID: 88, EventSlug: "canonical-event", Action: store.EventReviewLiveActionKindKeepSeparate, Reason: "keep"},
+				{ID: 2, EventID: 90, EventSlug: "loser-event", Action: store.EventReviewLiveActionKindWithholdDuplicate, Reason: "withhold"},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "3")
+	form.Set("action", "resolve_live_actions")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !store.resolveCalled {
+		t.Fatal("expected resolve store method to be called")
+	}
+	if store.resolveInput.ClusterID != 41 || store.resolveInput.ExpectedVersion != 3 {
+		t.Fatalf("resolve input = %#v", store.resolveInput)
+	}
+
+	queueReq := httptest.NewRequest(http.MethodGet, "/admin/review?event_review_resolved=1", nil)
+	queueReq.AddCookie(cookie)
+	queueRR := httptest.NewRecorder()
+	server.ServeHTTP(queueRR, queueReq)
+	if queueRR.Code != http.StatusOK {
+		t.Fatalf("queue status = %d, want %d", queueRR.Code, http.StatusOK)
+	}
+	assertContains(t, queueRR.Body.String(), "Resolved event review cluster.")
+}
+
+func TestAdminEventReviewResolveTitleRepairPostsAndRedirects(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	stagingKey := "repair-queue-title"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                 41,
+				Status:             store.EventReviewClusterStatusOpen,
+				Version:            4,
+				StagingKey:         &stagingKey,
+				StagingKeyVersion:  1,
+				ConflictType:       "title_repair",
+				ConflictReason:     "supporting_clean_title",
+				CanonicalEventID:   int64Ptr(88),
+				CanonicalEventSlug: "title-repair-current",
+				DisplayTitle:       "Title Repair Current",
+				DisplayVenueSlug:   "title-repair-hall",
+				DisplayVenueName:   "Title Repair Hall",
+				DisplayStartAt:     &openTime,
+				EvidenceCount:      1,
+			},
+			TitleRepairReadiness: &store.EventReviewTitleRepairReadiness{
+				CanonicalEventID: 88,
+				CurrentTitle:     "Legacy Event",
+				CurrentSlug:      "title-repair-current",
+				CurrentEventLive: true,
+				DraftTitle:       "Updated Title",
+				DraftSlug:        "title-repair-current-renamed",
+				Eligible:         true,
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "4")
+	form.Set("action", "resolve_title_repair")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !store.resolveCalled {
+		t.Fatal("expected resolve store method to be called")
+	}
+	if store.resolveInput.ClusterID != 41 || store.resolveInput.ExpectedVersion != 4 {
+		t.Fatalf("resolve input = %#v", store.resolveInput)
+	}
+
+	queueReq := httptest.NewRequest(http.MethodGet, "/admin/review?event_review_resolved=1", nil)
+	queueReq.AddCookie(cookie)
+	queueRR := httptest.NewRecorder()
+	server.ServeHTTP(queueRR, queueReq)
+	if queueRR.Code != http.StatusOK {
+		t.Fatalf("queue status = %d, want %d", queueRR.Code, http.StatusOK)
+	}
+	assertContains(t, queueRR.Body.String(), "Resolved event review cluster.")
+}
+
+func TestAdminEventReviewResolveLiveActionsRejectsTitleRepairCluster(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	stagingKey := "repair-queue-title"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                 41,
+				Status:             store.EventReviewClusterStatusOpen,
+				Version:            4,
+				StagingKey:         &stagingKey,
+				StagingKeyVersion:  1,
+				ConflictType:       "title_repair",
+				ConflictReason:     "supporting_clean_title",
+				CanonicalEventID:   int64Ptr(88),
+				CanonicalEventSlug: "title-repair-current",
+				DisplayTitle:       "Title Repair Current",
+				DisplayVenueSlug:   "title-repair-hall",
+				DisplayVenueName:   "Title Repair Hall",
+				DisplayStartAt:     &openTime,
+				EvidenceCount:      1,
+			},
+			TitleRepairReadiness: &store.EventReviewTitleRepairReadiness{
+				CanonicalEventID: 88,
+				CurrentTitle:     "Legacy Event",
+				CurrentSlug:      "title-repair-current",
+				CurrentEventLive: true,
+				DraftTitle:       "Updated Title",
+				DraftSlug:        "title-repair-current-renamed",
+				Eligible:         true,
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "4")
+	form.Set("action", "resolve_live_actions")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "not eligible for historical duplicate resolution")
+	if store.resolveCalled {
+		t.Fatal("resolve store method should not be called")
+	}
+}
+
+func TestAdminEventReviewResolveRejectsInvalidFormsAndCSRF(t *testing.T) {
+	stagingKey := "repair-queue-a"
+	tests := []struct {
+		name string
+		form url.Values
+		want string
+	}{
+		{name: "missing version", form: url.Values{"action": {"resolve_live_actions"}}, want: "expected version is required"},
+		{name: "invalid version", form: url.Values{"expected_version": {"not-a-number"}, "action": {"resolve_live_actions"}}, want: "expected version is required"},
+		{name: "unknown action", form: url.Values{"expected_version": {"3"}, "action": {"resolve"}}, want: "invalid event review action"},
+		{name: "title repair missing version", form: url.Values{"action": {"resolve_title_repair"}}, want: "expected version is required"},
+		{name: "title repair invalid version", form: url.Values{"expected_version": {"not-a-number"}, "action": {"resolve_title_repair"}}, want: "expected version is required"},
+		{name: "title repair wrong cluster", form: url.Values{"expected_version": {"3"}, "action": {"resolve_title_repair"}}, want: "not eligible for title repair resolution"},
+		{name: "title repair unknown action", form: url.Values{"expected_version": {"3"}, "action": {"resolve_title_repair_now"}}, want: "invalid event review action"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &eventReviewOnlyStoreStub{
+				detail: store.EventReviewClusterDetail{
+					Summary: store.EventReviewClusterSummary{
+						ID:                41,
+						Status:            store.EventReviewClusterStatusOpen,
+						Version:           3,
+						StagingKey:        &stagingKey,
+						StagingKeyVersion: 3,
+						ConflictType:      "historical_duplicate",
+						ConflictReason:    "reason-a",
+						CanonicalEventID:  int64Ptr(88),
+						EvidenceCount:     2,
+					},
+					LiveActions: []store.EventReviewClusterLiveActionSummary{
+						{ID: 1, EventID: 88, EventSlug: "canonical-event", Action: store.EventReviewLiveActionKindKeepSeparate, Reason: "keep"},
+						{ID: 2, EventID: 90, EventSlug: "loser-event", Action: store.EventReviewLiveActionKindWithholdDuplicate, Reason: "withhold"},
+					},
+				},
+			}
+			server, err := NewServer(testAdminAuthDeps(store))
+			if err != nil {
+				t.Fatalf("new server: %v", err)
+			}
+			cookie, _ := loginAdmin(t, server, "/admin/review")
+			getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+			getReq.AddCookie(cookie)
+			getRR := httptest.NewRecorder()
+			server.ServeHTTP(getRR, getReq)
+			if getRR.Code != http.StatusOK {
+				t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+			}
+			csrfToken := extractCSRFToken(t, getRR.Body.String())
+			tc.form.Set("csrf_token", csrfToken)
+
+			req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(tc.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.AddCookie(cookie)
+			rr := httptest.NewRecorder()
+			server.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+			}
+			assertContains(t, rr.Body.String(), tc.want)
+			if store.resolveCalled {
+				t.Fatal("resolve store method should not be called")
+			}
+		})
+	}
+}
+
+func TestAdminEventReviewResolveRejectsInvalidCSRF(t *testing.T) {
+	stagingKey := "repair-queue-a"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "historical_duplicate",
+				ConflictReason:    "reason-a",
+				CanonicalEventID:  int64Ptr(88),
+				EvidenceCount:     2,
+			},
+			LiveActions: []store.EventReviewClusterLiveActionSummary{
+				{ID: 1, EventID: 88, EventSlug: "canonical-event", Action: store.EventReviewLiveActionKindKeepSeparate, Reason: "keep"},
+				{ID: 2, EventID: 90, EventSlug: "loser-event", Action: store.EventReviewLiveActionKindWithholdDuplicate, Reason: "withhold"},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	form := url.Values{
+		"csrf_token":       {"wrong"},
+		"expected_version": {"3"},
+		"action":           {"resolve_live_actions"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "invalid CSRF token")
+	if store.resolveCalled {
+		t.Fatal("resolve store method should not be called")
+	}
 }
 
 func TestAdminLandingPageLinksAvailableAdminTools(t *testing.T) {
@@ -266,9 +3431,12 @@ func TestAdminLandingPageLinksAvailableAdminTools(t *testing.T) {
 	body := renderPath(t, server, "/admin")
 	assertContains(t, body, "Admin")
 	assertContains(t, body, `href="/admin/review"`)
-	assertContains(t, body, `href="/admin/review/history"`)
+	assertContains(t, body, `href="/admin/event-review/history"`)
+	assertContains(t, body, "Event review history")
 	assertContains(t, body, `href="/admin/import-runs"`)
 	assertContains(t, body, `href="/admin/venues"`)
+	assertContains(t, body, "Review event-review clusters, inspect ingest runs, and validate provisional venues and rooms.")
+	assertNotContains(t, body, "Resolve duplicate groups and accept or reject new listings.")
 }
 
 func TestAdminLandingPageOmitsUnsupportedAdminTools(t *testing.T) {
@@ -281,11 +3449,11 @@ func TestAdminLandingPageOmitsUnsupportedAdminTools(t *testing.T) {
 	assertContains(t, body, `href="/admin/import-runs"`)
 	assertContains(t, body, `href="/admin/venues"`)
 	assertNotContains(t, body, `href="/admin/review"`)
-	assertNotContains(t, body, `href="/admin/review/history"`)
+	assertNotContains(t, body, `href="/admin/event-review/history"`)
 }
 
 func TestAdminLandingPageRejectsPost(t *testing.T) {
-	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{}))
+	server, err := NewServer(testServerDeps(importHistoryOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -300,7 +3468,7 @@ func TestAdminLandingPageRejectsPost(t *testing.T) {
 }
 
 func TestAdminAuthRedirectsUnauthenticatedAdminRequests(t *testing.T) {
-	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	server, err := NewServer(testAdminAuthDeps(readOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -324,15 +3492,100 @@ func TestAdminAuthRedirectsUnauthenticatedAdminRequests(t *testing.T) {
 	}
 }
 
-func TestAdminLoginSetsSecureSessionCookieAndAllowsAdminAccess(t *testing.T) {
-	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+func TestAdminRemovedRoutesRedirectUnauthenticatedUsers(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(readOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
 
-	cookie, location := loginAdmin(t, server, "/admin/review")
-	if location != "/admin/review" {
-		t.Fatalf("login Location = %q, want /admin/review", location)
+	tests := []string{
+		"/admin/legacy-review",
+		"/admin/legacy-review/",
+		"/admin/legacy-review/history",
+		"/admin/legacy-review/17",
+		"/admin/legacy-review/17/",
+		"/admin/legacy-review/17?view=full",
+		"/admin/review/history",
+		"/admin/review/history/",
+		"/admin/review/history?tab=closed",
+		"/admin/review/17",
+		"/admin/review/17/",
+		"/admin/review/17?view=full",
+		"/admin/review/not-a-number",
+		"/admin/review/0",
+		"/admin/review/-1",
+	}
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rr := httptest.NewRecorder()
+			server.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusSeeOther {
+				t.Fatalf("status = %d, want %d", rr.Code, http.StatusSeeOther)
+			}
+			cleanedPath, rawQuery, _ := strings.Cut(path, "?")
+			wantNext := pathpkg.Clean(cleanedPath)
+			if rawQuery != "" {
+				wantNext += "?" + rawQuery
+			}
+			wantLocation := "/admin/login?next=" + url.QueryEscape(wantNext)
+			if location := rr.Header().Get("Location"); location != wantLocation {
+				t.Fatalf("Location = %q, want %q", location, wantLocation)
+			}
+		})
+	}
+}
+
+func TestAdminRemovedRoutesReturn404WhenAuthenticated(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(readOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, _ := loginAdmin(t, server, "/admin")
+
+	tests := []string{
+		"/admin/legacy-review",
+		"/admin/legacy-review/",
+		"/admin/legacy-review/history",
+		"/admin/legacy-review/17",
+		"/admin/legacy-review/17/",
+		"/admin/legacy-review/17?view=full",
+		"/admin/review/history",
+		"/admin/review/history/",
+		"/admin/review/history?tab=closed",
+		"/admin/review/17",
+		"/admin/review/17/",
+		"/admin/review/17?view=full",
+		"/admin/review/not-a-number",
+		"/admin/review/0",
+		"/admin/review/-1",
+		"/admin/review/17/extra",
+	}
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.AddCookie(cookie)
+			rr := httptest.NewRecorder()
+			server.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusNotFound, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestAdminLoginSetsSecureSessionCookieAndAllowsAdminAccess(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(importHistoryOnlyStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	cookie, location := loginAdmin(t, server, "/admin")
+	if location != "/admin" {
+		t.Fatalf("login Location = %q, want /admin", location)
 	}
 	if cookie.Name != adminSessionCookieName {
 		t.Fatalf("cookie name = %q, want %q", cookie.Name, adminSessionCookieName)
@@ -350,7 +3603,7 @@ func TestAdminLoginSetsSecureSessionCookieAndAllowsAdminAccess(t *testing.T) {
 		t.Fatalf("Path = %q, want /admin", cookie.Path)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
 	req.AddCookie(cookie)
 	rr := httptest.NewRecorder()
 	server.ServeHTTP(rr, req)
@@ -358,12 +3611,12 @@ func TestAdminLoginSetsSecureSessionCookieAndAllowsAdminAccess(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusOK, rr.Body.String())
 	}
-	assertContains(t, rr.Body.String(), "Review queue")
+	assertContains(t, rr.Body.String(), "Admin")
 	assertContains(t, rr.Body.String(), `name="csrf_token"`)
 }
 
 func TestAdminLoginRejectsBadPassword(t *testing.T) {
-	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	server, err := NewServer(testAdminAuthDeps(readOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -387,7 +3640,7 @@ func TestAdminLoginRejectsBadPassword(t *testing.T) {
 }
 
 func TestAdminLoginRejectsPasswordInQueryString(t *testing.T) {
-	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	server, err := NewServer(testAdminAuthDeps(readOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -405,7 +3658,7 @@ func TestAdminLoginRejectsPasswordInQueryString(t *testing.T) {
 }
 
 func TestAdminLoginRejectsUnsafeNextRedirect(t *testing.T) {
-	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	server, err := NewServer(testAdminAuthDeps(readOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -417,7 +3670,7 @@ func TestAdminLoginRejectsUnsafeNextRedirect(t *testing.T) {
 }
 
 func TestAdminLoginThrottlesRepeatedFailures(t *testing.T) {
-	deps := testAdminAuthDeps(reviewOnlyStoreStub{})
+	deps := testAdminAuthDeps(readOnlyStoreStub{})
 	deps.AdminAuth.MaxFailures = 2
 	server, err := NewServer(deps)
 	if err != nil {
@@ -452,46 +3705,46 @@ func TestAdminLoginThrottlesRepeatedFailures(t *testing.T) {
 }
 
 func TestAdminPostRequiresCSRF(t *testing.T) {
-	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	server, err := NewServer(testAdminAuthDeps(readOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
 
 	cookie, _ := loginAdmin(t, server, "/admin")
 	form := url.Values{"action": {"rejected"}}
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/1", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/admin/review", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
 	rr := httptest.NewRecorder()
 	server.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
+	}
+	if allow := rr.Header().Get("Allow"); allow != http.MethodGet {
+		t.Fatalf("Allow = %q, want GET", allow)
 	}
 }
 
 func TestAdminPostRejectsCSRFTokenInQueryString(t *testing.T) {
-	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	server, err := NewServer(testAdminAuthDeps(readOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
 
 	cookie, _ := loginAdmin(t, server, "/admin/review")
-	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	form := url.Values{"action": {"rejected"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/review?csrf_token=bogus", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
 	rr := httptest.NewRecorder()
 	server.ServeHTTP(rr, req)
-	csrfToken := extractCSRFToken(t, rr.Body.String())
 
-	form := url.Values{"action": {"rejected"}}
-	req = httptest.NewRequest(http.MethodPost, "/admin/review/1?csrf_token="+url.QueryEscape(csrfToken), strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(cookie)
-	rr = httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
+	}
+	if allow := rr.Header().Get("Allow"); allow != http.MethodGet {
+		t.Fatalf("Allow = %q, want GET", allow)
 	}
 }
 
@@ -531,36 +3784,9 @@ func TestAdminRoomPostRequiresCSRF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite store: %v", err)
 	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close sqlite store: %v", err)
-		}
-	}()
-
-	_, err = st.StageReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "Staged room",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:staged-room.ics",
-		StagingKey: "v1:admin-room-csrf",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "candidate-a",
-			Name:        "Staged room show",
-			VenueSlug:   "sidney-and-matilda",
-			RoomText:    "COURTYARD STAGE",
-			Rooms:       []domain.VenueRoom{{Slug: "courtyard-stage", Name: "Courtyard Stage"}},
-			StartAt:     "2026-05-10T18:30:00Z",
-			EndAt:       "2026-05-10T22:00:00Z",
-			Genre:       "Indie",
-			Status:      "Listed",
-			Description: "Staged room fixture.",
-			SourceName:  "Fixture ICS",
-			SourceURL:   "https://example.test/staged-room-show",
-			Provenance:  "fixture UID candidate-a",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+	seedAdminRoomFixture(t, path, "quiet-room", "courtyard-stage", "Courtyard Stage", 1)
 
 	server, err := NewServer(testAdminAuthDeps(st))
 	if err != nil {
@@ -569,7 +3795,7 @@ func TestAdminRoomPostRequiresCSRF(t *testing.T) {
 	cookie, _ := loginAdmin(t, server, "/admin")
 
 	form := url.Values{"action": {"validate"}}
-	req := httptest.NewRequest(http.MethodPost, "/admin/rooms/sidney-and-matilda/courtyard-stage", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/admin/rooms/quiet-room/courtyard-stage", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
 	rr := httptest.NewRecorder()
@@ -579,7 +3805,7 @@ func TestAdminRoomPostRequiresCSRF(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusForbidden, rr.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/admin/rooms/sidney-and-matilda/courtyard-stage", nil)
+	req = httptest.NewRequest(http.MethodGet, "/admin/rooms/quiet-room/courtyard-stage", nil)
 	req.AddCookie(cookie)
 	rr = httptest.NewRecorder()
 	server.ServeHTTP(rr, req)
@@ -597,7 +3823,7 @@ func TestAdminRoomPostRequiresCSRF(t *testing.T) {
 		"action":     {"validate"},
 		"csrf_token": {csrfToken},
 	}
-	req = httptest.NewRequest(http.MethodPost, "/admin/rooms/sidney-and-matilda/courtyard-stage", strings.NewReader(form.Encode()))
+	req = httptest.NewRequest(http.MethodPost, "/admin/rooms/quiet-room/courtyard-stage", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
 	rr = httptest.NewRecorder()
@@ -639,13 +3865,13 @@ func TestAdminConfigurationPostRequiresCSRF(t *testing.T) {
 }
 
 func TestAdminLogoutInvalidatesSession(t *testing.T) {
-	server, err := NewServer(testAdminAuthDeps(reviewOnlyStoreStub{}))
+	server, err := NewServer(testAdminAuthDeps(importHistoryOnlyStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
 
-	cookie, _ := loginAdmin(t, server, "/admin/review")
-	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	cookie, _ := loginAdmin(t, server, "/admin")
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
 	req.AddCookie(cookie)
 	rr := httptest.NewRecorder()
 	server.ServeHTTP(rr, req)
@@ -665,7 +3891,7 @@ func TestAdminLogoutInvalidatesSession(t *testing.T) {
 		t.Fatalf("logout Location = %q, want /admin/login", location)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
 	req.AddCookie(cookie)
 	rr = httptest.NewRecorder()
 	server.ServeHTTP(rr, req)
@@ -675,7 +3901,7 @@ func TestAdminLogoutInvalidatesSession(t *testing.T) {
 }
 
 func TestAdminSessionExpires(t *testing.T) {
-	deps := testAdminAuthDeps(reviewOnlyStoreStub{})
+	deps := testAdminAuthDeps(importHistoryOnlyStoreStub{})
 	deps.AdminAuth.SessionIdleTimeout = time.Minute
 	deps.AdminAuth.SessionAbsoluteTimeout = time.Hour
 	server, err := NewServer(deps)
@@ -685,10 +3911,10 @@ func TestAdminSessionExpires(t *testing.T) {
 
 	now := fixtureLocalTime(2026, time.May, 13, 10, 0)
 	server.SetClockForTesting(func() time.Time { return now })
-	cookie, _ := loginAdmin(t, server, "/admin/review")
+	cookie, _ := loginAdmin(t, server, "/admin")
 
 	now = now.Add(2 * time.Minute)
-	req := httptest.NewRequest(http.MethodGet, "/admin/review", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
 	req.AddCookie(cookie)
 	rr := httptest.NewRecorder()
 	server.ServeHTTP(rr, req)
@@ -775,6 +4001,7 @@ func TestSQLiteAdminImportRunsEmptyAndPopulated(t *testing.T) {
 	assertContains(t, populatedBody, "running")
 	assertContains(t, populatedBody, "failed")
 	assertContains(t, populatedBody, "succeeded")
+	assertContains(t, populatedBody, "<th scope=\"col\">Event reviews</th>")
 	assertContains(t, populatedBody, "2 snapshots")
 	assertContains(t, populatedBody, "3 snapshots")
 	assertContains(t, populatedBody, "1 snapshot")
@@ -788,42 +4015,43 @@ func TestSQLiteAdminImportRunsEmptyAndPopulated(t *testing.T) {
 	assertContains(t, populatedBody, `href="/admin/import-runs/1"`)
 }
 
-func TestSQLiteAdminImportRunsRenderReviewGroupStatusSummary(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := sqlitestore.Open(path)
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close sqlite store: %v", err)
-		}
-	}()
-
-	server, err := NewServer(testServerDeps(st))
+func TestSQLiteAdminImportRunsRenderEventReviewStatusSummary(t *testing.T) {
+	server, err := NewServer(testServerDeps(importHistoryWithEventReviewRowsStoreStub{
+		runs: []ingest.ImportRunSummary{
+			{ID: 1, StartedAt: time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC), Status: "succeeded", SnapshotCount: 1, Notes: "mixed statuses"},
+			{ID: 2, StartedAt: time.Date(2026, time.April, 19, 10, 0, 0, 0, time.UTC), Status: "succeeded", SnapshotCount: 0, Notes: "no event reviews"},
+		},
+		clusters: map[int64][]store.EventReviewClusterSummary{
+			1: {
+				{ID: 11, Status: store.EventReviewClusterStatusOpen},
+				{ID: 12, Status: store.EventReviewClusterStatusResolved},
+				{ID: 13, Status: store.EventReviewClusterStatusDiscarded},
+			},
+		},
+	}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
-	if err := seedImportRunHistory(t, path); err != nil {
-		t.Fatalf("seed import history: %v", err)
-	}
-
-	_ = mustCreateWebReviewGroupForImportRun(t, st, path, "Open import group", "Created from manual ingest run 1 review staging.", 1)
-	rejectedID := mustCreateWebReviewGroupForImportRun(t, st, path, "Rejected import group", "Created from manual ingest run 1 review staging.", 1)
-	secondRejectedID := mustCreateWebReviewGroupForImportRun(t, st, path, "Second rejected import group", "Created from import run 1 review staging.", 1)
-	if err := st.UpdateReviewGroupStatus(contextForTesting(), rejectedID, review.StatusRejected); err != nil {
-		t.Fatalf("reject review group: %v", err)
-	}
-	if err := st.UpdateReviewGroupStatus(contextForTesting(), secondRejectedID, review.StatusRejected); err != nil {
-		t.Fatalf("reject second review group: %v", err)
-	}
 
 	body := renderPath(t, server, "/admin/import-runs")
-	assertContains(t, body, "<th scope=\"col\">Review groups</th>")
-	assertContains(t, body, `href="/admin/import-runs/1">1 open, 2 rejected</a>`)
-	assertContains(t, body, `href="/admin/import-runs/4">none</a>`)
-	assertInOrder(t, body, []string{"Run #3", "none", "Run #2", "none", "Run #1", "1 open, 2 rejected", "Run #4", "none"})
+	assertContains(t, body, "<th scope=\"col\">Event reviews</th>")
+	assertContains(t, body, `href="/admin/import-runs/1">1 open, 1 resolved, 1 discarded</a>`)
+	assertContains(t, body, `href="/admin/import-runs/2">none</a>`)
+}
+
+func TestAdminImportRunsEventReviewSummaryErrorReturns500(t *testing.T) {
+	server, err := NewServer(testServerDeps(importHistoryWithEventReviewErrorStoreStub{}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/import-runs", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusInternalServerError, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "load import run summaries")
 }
 
 func TestSQLiteAdminImportRunDetailRendersMetadataOnly(t *testing.T) {
@@ -836,6 +4064,8 @@ func TestSQLiteAdminImportRunDetailRendersMetadataOnly(t *testing.T) {
 	assertContains(t, body, "succeeded")
 	assertContains(t, body, "links=1 candidates=2")
 	assertContains(t, body, "Snapshot metadata")
+	assertContains(t, body, "Event review clusters from this import run")
+	assertContains(t, body, "No event review clusters are linked to this import run.")
 	assertContains(t, body, "Metadata available")
 	assertContains(t, body, "Fixture Source")
 	assertContains(t, body, "https://snapshot.example.test/source")
@@ -850,58 +4080,31 @@ func TestSQLiteAdminImportRunDetailRendersMetadataOnly(t *testing.T) {
 	assertNotContains(t, body, `body_base64`)
 }
 
-func TestSQLiteAdminImportRunDetailRendersReviewGroupsForRun(t *testing.T) {
-	st, server, runID, bodyText, path := mustImportRunDetailServer(t, false)
+func TestSQLiteAdminImportRunDetailDerivesEventReviewStoreFromCatalog(t *testing.T) {
+	st, _, runID, _, path := mustImportRunDetailServer(t, false)
 	defer st.Close()
 
-	openID := mustCreateWebReviewGroupForImportRun(t, st, path, "Open import group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 2)
-	resolvedID := mustCreateWebPublishableReviewGroupForImportRun(t, st, path, "Resolved import group", "Created from import run "+strconvFormatInt(runID)+" review staging.")
-	rejectedID := mustCreateWebReviewGroupForImportRun(t, st, path, "Rejected import group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 1)
-	_ = mustCreateWebReviewGroupForImportRun(t, st, path, "Wrong import group", "Created from manual ingest run 123 review staging.", 1)
-	_ = mustCreateWebReviewGroupForImportRun(t, st, path, "Malformed import group", "Created from manual ingest run "+strconvFormatInt(runID)+"abc review staging.", 1)
-
-	open, ok, err := st.LoadReviewGroup(contextForTesting(), openID)
+	openClusterID, _ := seedImportRunEventReviewClusters(t, path, runID)
+	deps := testServerDeps(st)
+	deps.ImportRunEventReviewClusterStore = nil
+	server, err := NewServer(deps)
 	if err != nil {
-		t.Fatalf("load open review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("open review group not found")
-	}
-	if err := st.SaveReviewDraftChoices(contextForTesting(), openID, []review.DraftChoiceInput{
-		{Field: review.FieldName, CandidateID: open.Candidates[0].ID},
-	}); err != nil {
-		t.Fatalf("save open draft: %v", err)
-	}
-	resolved, ok, err := st.LoadReviewGroup(contextForTesting(), resolvedID)
-	if err != nil {
-		t.Fatalf("load resolved review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("resolved review group not found")
-	}
-	if err := st.ResolveReviewGroup(contextForTesting(), resolvedID, fullWebReviewChoices(t, resolved)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-	if err := st.UpdateReviewGroupStatus(contextForTesting(), rejectedID, review.StatusRejected); err != nil {
-		t.Fatalf("reject review group: %v", err)
+		t.Fatalf("new server: %v", err)
 	}
 
 	body := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
-	assertContains(t, body, "Review groups from this import run")
-	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(openID)+`"`)
-	assertContains(t, body, "Open import group")
-	assertContains(t, body, "open")
-	assertContains(t, body, ">2</td>")
-	assertContains(t, body, ">1</td>")
-	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(resolvedID)+`"`)
-	assertContains(t, body, "Resolved import group")
-	assertContains(t, body, "resolved")
-	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(rejectedID)+`"`)
-	assertContains(t, body, "Rejected import group")
-	assertContains(t, body, "rejected")
-	assertNotContains(t, body, "Wrong import group")
-	assertNotContains(t, body, "Malformed import group")
-	assertNotContains(t, body, bodyText)
+	assertContains(t, body, "Event review clusters from this import run")
+	assertContains(t, body, `href="/admin/event-review/`+strconvFormatInt(openClusterID)+`"`)
+	assertContains(t, body, "Import Run Event Review Open")
+}
+
+func TestSQLiteAdminImportRunDetailShowsEmptyEventReviewSectionWhenUnlinked(t *testing.T) {
+	st, server, runID, _, _ := mustImportRunDetailServer(t, false)
+	defer st.Close()
+
+	body := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
+	assertContains(t, body, "Event review clusters from this import run")
+	assertContains(t, body, "No event review clusters are linked to this import run.")
 }
 
 func TestSQLiteAdminVenuesEmptyState(t *testing.T) {
@@ -938,45 +4141,27 @@ func TestAdminVenuePagesMissingWithoutAdminStores(t *testing.T) {
 }
 
 func TestSQLiteAdminRoomsShowStagedProvisionalRoom(t *testing.T) {
-	st, server, _ := mustAdminVenuesServer(t)
-	defer st.Close()
-
-	result, err := st.StageReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "Staged new room",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:staged-new-room.ics",
-		StagingKey: "v1:staged-new-room",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "candidate-a",
-			Name:        "Staged room show",
-			VenueSlug:   "sidney-and-matilda",
-			RoomText:    "COURTYARD STAGE",
-			Rooms:       []domain.VenueRoom{{Slug: "courtyard-stage", Name: "Courtyard Stage"}},
-			StartAt:     "2026-05-10T18:30:00Z",
-			EndAt:       "2026-05-10T22:00:00Z",
-			Genre:       "Indie",
-			Status:      "Listed",
-			Description: "Staged room fixture.",
-			SourceName:  "Fixture ICS",
-			SourceURL:   "https://example.test/staged-room-show",
-			Provenance:  "fixture UID candidate-a",
-		}},
-	})
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
 	if err != nil {
-		t.Fatalf("stage review group: %v", err)
+		t.Fatalf("open sqlite store: %v", err)
 	}
-	if !result.Created {
-		t.Fatalf("created = false, want true")
-	}
+	defer st.Close()
+	seedAdminVenueFixtures(t, path)
+	seedAdminRoomFixture(t, path, "quiet-room", "courtyard-stage", "Courtyard Stage", 1)
 
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 	body := renderPath(t, server, "/admin/rooms")
 	assertContains(t, body, "Provisional rooms")
 	assertContains(t, body, "Courtyard Stage")
-	assertContains(t, body, "Sidney &amp; Matilda")
-	assertContains(t, body, `href="/admin/rooms/sidney-and-matilda/courtyard-stage"`)
+	assertContains(t, body, "Quiet Room")
+	assertContains(t, body, `href="/admin/rooms/quiet-room/courtyard-stage"`)
 	assertContains(t, body, ">0</td>")
 
-	detailBody := renderPath(t, server, "/admin/rooms/sidney-and-matilda/courtyard-stage")
+	detailBody := renderPath(t, server, "/admin/rooms/quiet-room/courtyard-stage")
 	assertContains(t, detailBody, "Validate room")
 	assertContains(t, detailBody, `name="name" value="Courtyard Stage"`)
 	assertContains(t, detailBody, ">provisional</dd>")
@@ -994,7 +4179,7 @@ func TestSQLiteAdminVenuesListOnlyProvisionalVenues(t *testing.T) {
 	assertContains(t, body, "Quiet Room")
 	assertContains(t, body, `href="/admin/venues/imaginary-hall"`)
 	assertContains(t, body, `href="/admin/venues/quiet-room"`)
-	assertContains(t, body, `href="/events/imaginary-hall-future-show"`)
+	assertContains(t, body, `href="/admin/events/imaginary-hall-future-show"`)
 	assertContains(t, body, "Future Show")
 	assertContains(t, body, ">1</td>")
 	assertNotContains(t, body, `href="/admin/venues/validated-room"`)
@@ -1002,45 +4187,22 @@ func TestSQLiteAdminVenuesListOnlyProvisionalVenues(t *testing.T) {
 }
 
 func TestSQLiteAdminVenuesShowStagedProvisionalVenueWithoutEvents(t *testing.T) {
-	st, server, _ := mustAdminVenuesServer(t)
+	st, server, path := mustAdminVenuesServer(t)
 	defer st.Close()
-
-	result, err := st.StageReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "Staged new venue",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:staged-new-venue.ics",
-		StagingKey: "v1:staged-new-venue",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "candidate-a",
-			Name:             "Staged venue show",
-			VenueSlug:        "imagniary-hal-temp",
-			VenueText:        "Imaginary Hall",
-			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Staged without publishing an event.",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if !result.Created {
-		t.Fatal("created = false, want true")
-	}
+	seedAdminVenueFixtures(t, path)
 
 	body := renderPath(t, server, "/admin/venues")
 	assertContains(t, body, "Queue of provisional venue rows created from newly detected venue evidence.")
-	assertContains(t, body, `href="/admin/venues/imaginary-hall"`)
-	assertContains(t, body, "Imaginary Hall")
+	assertContains(t, body, `href="/admin/venues/quiet-room"`)
+	assertContains(t, body, "Quiet Room")
 	assertContains(t, body, ">0</td>")
 
-	detailBody := renderPath(t, server, "/admin/venues/imaginary-hall")
+	detailBody := renderPath(t, server, "/admin/venues/quiet-room")
 	assertContains(t, detailBody, "No upcoming linked events for this provisional venue.")
 }
 
 func TestSQLitePublicVenuePagesRenderDerivedProvisionalVenueAddress(t *testing.T) {
-	st, server, _ := mustAdminVenuesServer(t)
+	st, server, path := mustAdminVenuesServer(t)
 	defer st.Close()
 
 	result := ingest.ParseLeadmillICS([]byte("BEGIN:VCALENDAR\n" +
@@ -1060,29 +4222,29 @@ func TestSQLitePublicVenuePagesRenderDerivedProvisionalVenueAddress(t *testing.T
 		t.Fatalf("candidates = %d, want %d", got, want)
 	}
 
-	candidate := result.Candidates[0]
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(contextForTesting(), review.GroupInput{
-		Title:      "Memorial Hall imported",
-		SourceName: "Leadmill ICS",
-		SourceURL:  "file:memorial-hall.ics",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       candidate.UID,
-			Name:             candidate.Summary,
-			VenueSlug:        ingest.VenueSlugFromText(candidate.Location),
-			VenueText:        candidate.Location,
-			VenueLocationRaw: candidate.LocationRaw,
-			StartAt:          candidate.StartAt,
-			EndAt:            candidate.EndAt,
-			Status:           "Listed",
-			Description:      "Imported from escaped ICS venue evidence.",
-		}},
+	db := mustRawDB(t, path)
+	defer db.Close()
+	sourceID := mustInsertAdminSource(t, db, "Leadmill ICS", "file:memorial-hall.ics")
+	mustInsertAdminVenue(t, db, domain.Venue{
+		Slug:            "memorial-hall",
+		Name:            "Memorial Hall",
+		Address:         "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA",
+		Neighbourhood:   "City Centre",
+		ValidationState: domain.ValidationStateProvisional,
+		CoverageKind:    domain.CoverageKindVenue,
+		Origin:          domain.OriginLive,
 	})
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
+	mustInsertAdminEvent(
+		t,
+		db,
+		sourceID,
+		"memorial-hall-show",
+		"memorial-hall",
+		result.Candidates[0].Summary,
+		time.Date(2026, time.May, 1, 19, 0, 0, 0, time.UTC),
+		time.Date(2026, time.May, 1, 22, 0, 0, 0, time.UTC),
+		"Imported from escaped ICS venue evidence.",
+	)
 
 	adminQueueBody := renderPath(t, server, "/admin/venues")
 	assertContains(t, adminQueueBody, "Memorial Hall")
@@ -1095,7 +4257,7 @@ func TestSQLitePublicVenuePagesRenderDerivedProvisionalVenueAddress(t *testing.T
 	assertContains(t, venueBody, "City Centre")
 	assertNotContains(t, venueBody, "Memorial Hall,\nBarkers Pool")
 
-	eventBody := renderPath(t, server, "/events/"+eventSlug)
+	eventBody := renderPath(t, server, "/events/memorial-hall-show")
 	assertContains(t, eventBody, "Memorial Hall Show")
 	assertContains(t, eventBody, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
 	assertContains(t, eventBody, "City Centre")
@@ -1177,7 +4339,7 @@ func TestSQLiteAdminVenueDetailRendersStoredFieldsAndUpcomingEvents(t *testing.T
 	assertContains(t, body, ">venue</dd>")
 	assertContains(t, body, ">live</dd>")
 	assertContains(t, body, "1 upcoming linked events")
-	assertContains(t, body, `href="/events/imaginary-hall-future-show"`)
+	assertContains(t, body, `href="/admin/events/imaginary-hall-future-show"`)
 	assertContains(t, body, "Future Show")
 	assertContains(t, body, "Fixture ICS")
 	assertContains(t, body, "Upcoming linked event description.")
@@ -1462,32 +4624,17 @@ func TestSQLiteAdminVenueDetailPostRejectsInvalidCoverageKind(t *testing.T) {
 }
 
 func TestAdminPagesLinkToProvisionalVenues(t *testing.T) {
-	st, server, runID, _, path := mustImportRunDetailServer(t, false)
+	st, server, runID, _, _ := mustImportRunDetailServer(t, false)
 	defer st.Close()
-
-	groupID := mustCreateWebReviewGroupForImportRun(t, st, path, "Fixture review group", "Created from manual ingest run "+strconvFormatInt(runID)+" review staging.", 2)
 
 	reviewBody := renderPath(t, server, "/admin/review")
 	assertContains(t, reviewBody, `href="/admin/venues"`)
-
-	reviewDetailBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
-	assertContains(t, reviewDetailBody, `href="/admin/venues"`)
 
 	importRunsBody := renderPath(t, server, "/admin/import-runs")
 	assertContains(t, importRunsBody, `href="/admin/venues"`)
 
 	importRunDetailBody := renderPath(t, server, "/admin/import-runs/"+strconvFormatInt(runID))
 	assertContains(t, importRunDetailBody, `href="/admin/venues"`)
-}
-
-func TestAdminReviewHistoryLinksToProvisionalVenues(t *testing.T) {
-	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{}))
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review/history")
-	assertContains(t, body, `href="/admin/venues"`)
 }
 
 func TestAdminImportRunDetailReplayOnlyShowsProvisionalVenuesLink(t *testing.T) {
@@ -1550,20 +4697,19 @@ func TestAdminImportRunDetailMissingStoreSupport404(t *testing.T) {
 	}
 }
 
-func TestAdminImportRunPagesOmitReviewQueueWithoutReviewStorage(t *testing.T) {
-	server, err := NewServer(testServerDeps(importHistoryWithDetailNoReviewStoreStub{}))
+func TestAdminImportRunDetailEventReviewStoreErrorReturns500(t *testing.T) {
+	server, err := NewServer(testServerDeps(importHistoryWithDetailEventReviewErrorStoreStub{}))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
 
-	listBody := renderPath(t, server, "/admin/import-runs")
-	assertContains(t, listBody, "Import history")
-	assertNotContains(t, listBody, `href="/admin/review"`)
-
-	detailBody := renderPath(t, server, "/admin/import-runs/1")
-	assertContains(t, detailBody, "Import run #1")
-	assertContains(t, detailBody, "Fixture review group")
-	assertNotContains(t, detailBody, `href="/admin/review"`)
+	req := httptest.NewRequest(http.MethodGet, "/admin/import-runs/1", nil)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusInternalServerError, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "load import run event review clusters")
 }
 
 func TestAdminImportRunsOmitsDetailLinksWithoutReplayStore(t *testing.T) {
@@ -1574,19 +4720,6 @@ func TestAdminImportRunsOmitsDetailLinksWithoutReplayStore(t *testing.T) {
 
 	body := renderPath(t, server, "/admin/import-runs")
 	assertContains(t, body, "Run #1")
-	assertNotContains(t, body, `href="/admin/import-runs/1"`)
-	assertNotContains(t, body, "<th scope=\"col\">Review groups</th>")
-}
-
-func TestAdminImportRunsReviewGroupSummaryIsPlainTextWithoutDetailStore(t *testing.T) {
-	server, err := NewServer(testServerDeps(importHistoryWithReviewGroupsNoDetailStoreStub{}))
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/import-runs")
-	assertContains(t, body, "<th scope=\"col\">Review groups</th>")
-	assertContains(t, body, ">1 open, 2 resolved</td>")
 	assertNotContains(t, body, `href="/admin/import-runs/1"`)
 }
 
@@ -1628,20 +4761,28 @@ func TestBuildImportRunDetailDoesNotExposeRawReplayPayload(t *testing.T) {
 }
 
 func TestSQLiteEventDetailRendersResolvedReviewSource(t *testing.T) {
-	st, server, groupID := mustReviewServerWithGroup(t)
-	defer st.Close()
-
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlitestore.Open(path)
 	if err != nil {
-		t.Fatalf("load review group: %v", err)
+		t.Fatalf("open sqlite store: %v", err)
 	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if err := st.ResolveReviewGroup(contextForTesting(), groupID, fullWebReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	sourceID := mustInsertAdminSource(t, db, "Fixture ICS", "https://example.test/utc-show")
+	mustInsertAdminEvent(t, db, sourceID, "live-utc-show-sidney-and-matilda-20260501190000", "sidney-and-matilda", "UTC Show", fixtureLocalTime(2026, time.May, 1, 19, 0), fixtureLocalTime(2026, time.May, 1, 22, 0), "Fixture listing.")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
 	}
 
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 	body := renderPath(t, server, "/events/live-utc-show-sidney-and-matilda-20260501190000")
 	assertContains(t, body, "Fixture ICS")
 	assertContains(t, body, `href="https://example.test/utc-show"`)
@@ -2634,6 +5775,342 @@ func TestEventsUnknownVenueBehavesLikeAllVenues(t *testing.T) {
 	assertNotContains(t, body, "No shows match these filters.")
 }
 
+func TestPublicListsHideWithheldEvents(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:             "visible-show",
+				Name:             "Visible Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 20, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 22, 0),
+				Genre:            "Indie",
+				Status:           "Listed",
+				Description:      "Visible description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/visible-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateReviewed,
+			},
+			{
+				Slug:             "withheld-show",
+				Name:             "Withheld Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 21, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 23, 0),
+				Genre:            "Rock",
+				Status:           "Listed",
+				Description:      "Withheld description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/withheld-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateWithheld,
+			},
+		},
+	))
+
+	for _, path := range []string{"/", "/events"} {
+		body := renderPath(t, server, path)
+		assertContains(t, body, "Visible Show")
+		assertNotContains(t, body, "Withheld Show")
+	}
+}
+
+func TestPublicVenueDetailHidesWithheldEvents(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{
+			{
+				Slug:             "visible-show",
+				Name:             "Visible Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 20, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 22, 0),
+				Genre:            "Indie",
+				Status:           "Listed",
+				Description:      "Visible description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/visible-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateReviewed,
+			},
+			{
+				Slug:             "withheld-show",
+				Name:             "Withheld Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 21, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 23, 0),
+				Genre:            "Rock",
+				Status:           "Listed",
+				Description:      "Withheld description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/withheld-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateWithheld,
+			},
+		},
+	))
+
+	body := renderPath(t, server, "/venues/leadmill")
+	assertContains(t, body, "Visible Show")
+	assertNotContains(t, body, "Withheld Show")
+}
+
+func TestPublicWithheldEventSlugWithoutAliasReturns404(t *testing.T) {
+	server := mustClockedServer(t, store.NewStore(
+		[]domain.Venue{{
+			Slug:          "leadmill",
+			Name:          "The Leadmill",
+			Address:       "6 Leadmill Road, Sheffield",
+			Neighbourhood: "City Centre",
+			Description:   "Venue",
+			Website:       "https://example.test/leadmill",
+		}},
+		[]domain.Event{{
+			Slug:             "withheld-show",
+			Name:             "Withheld Show",
+			VenueSlug:        "leadmill",
+			Start:            fixtureLocalTime(2026, time.April, 19, 21, 0),
+			End:              fixtureLocalTime(2026, time.April, 19, 23, 0),
+			Genre:            "Rock",
+			Status:           "Listed",
+			Description:      "Withheld description.",
+			SourceName:       "Fixture listings",
+			SourceURL:        "https://example.test/withheld-show",
+			LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+			Origin:           domain.OriginLive,
+			PublicationState: domain.PublicationStateWithheld,
+		}},
+	))
+
+	rr := requestPath(t, server, http.MethodGet, "/events/withheld-show", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+	assertContains(t, rr.Body.String(), "404 page not found")
+}
+
+func TestPublicMissingEventSlugAliasRedirectsToNonWithheldTarget(t *testing.T) {
+	server := mustClockedServer(t, aliasResolverStore{
+		Store: store.NewStore(
+			[]domain.Venue{{
+				Slug:          "leadmill",
+				Name:          "The Leadmill",
+				Address:       "6 Leadmill Road, Sheffield",
+				Neighbourhood: "City Centre",
+				Description:   "Venue",
+				Website:       "https://example.test/leadmill",
+			}},
+			[]domain.Event{{
+				Slug:             "visible-show",
+				Name:             "Visible Show",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 20, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 22, 0),
+				Genre:            "Indie",
+				Status:           "Listed",
+				Description:      "Visible description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/visible-show",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateReviewed,
+			}},
+		),
+		aliases: map[string]string{
+			"old-show": "visible-show",
+		},
+	})
+
+	rr := requestPath(t, server, http.MethodGet, "/events/old-show", nil)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusSeeOther)
+	}
+	if got, want := rr.Header().Get("Location"), "/events/visible-show"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
+func TestPublicWithheldEventSlugAliasRedirectsToNonWithheldTarget(t *testing.T) {
+	server := mustClockedServer(t, aliasResolverStore{
+		Store: store.NewStore(
+			[]domain.Venue{{
+				Slug:          "leadmill",
+				Name:          "The Leadmill",
+				Address:       "6 Leadmill Road, Sheffield",
+				Neighbourhood: "City Centre",
+				Description:   "Venue",
+				Website:       "https://example.test/leadmill",
+			}},
+			[]domain.Event{
+				{
+					Slug:             "visible-show",
+					Name:             "Visible Show",
+					VenueSlug:        "leadmill",
+					Start:            fixtureLocalTime(2026, time.April, 19, 20, 0),
+					End:              fixtureLocalTime(2026, time.April, 19, 22, 0),
+					Genre:            "Indie",
+					Status:           "Listed",
+					Description:      "Visible description.",
+					SourceName:       "Fixture listings",
+					SourceURL:        "https://example.test/visible-show",
+					LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+					Origin:           domain.OriginLive,
+					PublicationState: domain.PublicationStateReviewed,
+				},
+				{
+					Slug:             "withheld-show",
+					Name:             "Withheld Show",
+					VenueSlug:        "leadmill",
+					Start:            fixtureLocalTime(2026, time.April, 19, 21, 0),
+					End:              fixtureLocalTime(2026, time.April, 19, 23, 0),
+					Genre:            "Rock",
+					Status:           "Listed",
+					Description:      "Withheld description.",
+					SourceName:       "Fixture listings",
+					SourceURL:        "https://example.test/withheld-show",
+					LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+					Origin:           domain.OriginLive,
+					PublicationState: domain.PublicationStateWithheld,
+				},
+			},
+		),
+		aliases: map[string]string{
+			"withheld-show": "visible-show",
+		},
+	})
+
+	rr := requestPath(t, server, http.MethodGet, "/events/withheld-show", nil)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusSeeOther)
+	}
+	if got, want := rr.Header().Get("Location"), "/events/visible-show"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
+func TestPublicAliasToWithheldTargetReturns404(t *testing.T) {
+	server := mustClockedServer(t, aliasResolverStore{
+		Store: store.NewStore(
+			[]domain.Venue{{
+				Slug:          "leadmill",
+				Name:          "The Leadmill",
+				Address:       "6 Leadmill Road, Sheffield",
+				Neighbourhood: "City Centre",
+				Description:   "Venue",
+				Website:       "https://example.test/leadmill",
+			}},
+			[]domain.Event{{
+				Slug:             "withheld-target",
+				Name:             "Withheld Target",
+				VenueSlug:        "leadmill",
+				Start:            fixtureLocalTime(2026, time.April, 19, 21, 0),
+				End:              fixtureLocalTime(2026, time.April, 19, 23, 0),
+				Genre:            "Rock",
+				Status:           "Listed",
+				Description:      "Withheld description.",
+				SourceName:       "Fixture listings",
+				SourceURL:        "https://example.test/withheld-target",
+				LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+				Origin:           domain.OriginLive,
+				PublicationState: domain.PublicationStateWithheld,
+			}},
+		),
+		aliases: map[string]string{
+			"old-show": "withheld-target",
+		},
+	})
+
+	rr := requestPath(t, server, http.MethodGet, "/events/old-show", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+	assertContains(t, rr.Body.String(), "404 page not found")
+}
+
+func TestAdminEventDetailRendersWithheldEventForAuthenticatedAdmin(t *testing.T) {
+	server, err := NewServer(testAdminAuthDeps(aliasResolverStore{
+		Store: store.NewStore(
+			[]domain.Venue{{
+				Slug:          "leadmill",
+				Name:          "The Leadmill",
+				Address:       "6 Leadmill Road, Sheffield",
+				Neighbourhood: "City Centre",
+				Description:   "Venue",
+				Website:       "https://example.test/leadmill",
+			}},
+			[]domain.Event{
+				{
+					Slug:             "visible-show",
+					Name:             "Visible Show",
+					VenueSlug:        "leadmill",
+					Start:            fixtureLocalTime(2026, time.April, 19, 20, 0),
+					End:              fixtureLocalTime(2026, time.April, 19, 22, 0),
+					Genre:            "Indie",
+					Status:           "Listed",
+					Description:      "Visible description.",
+					SourceName:       "Fixture listings",
+					SourceURL:        "https://example.test/visible-show",
+					LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+					Origin:           domain.OriginLive,
+					PublicationState: domain.PublicationStateReviewed,
+				},
+				{
+					Slug:             "withheld-show",
+					Name:             "Withheld Show",
+					VenueSlug:        "leadmill",
+					Start:            fixtureLocalTime(2026, time.April, 19, 21, 0),
+					End:              fixtureLocalTime(2026, time.April, 19, 23, 0),
+					Genre:            "Rock",
+					Status:           "Listed",
+					Description:      "Withheld description.",
+					SourceName:       "Fixture listings",
+					SourceURL:        "https://example.test/withheld-show",
+					LastChecked:      fixtureLocalTime(2026, time.April, 19, 9, 0),
+					Origin:           domain.OriginLive,
+					PublicationState: domain.PublicationStateWithheld,
+				},
+			},
+		),
+		aliases: map[string]string{
+			"withheld-show": "visible-show",
+		},
+	}))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	server.SetClockForTesting(func() time.Time {
+		return fixtureLocalTime(2026, time.April, 19, 10, 0)
+	})
+
+	cookie, _ := loginAdmin(t, server, "/admin/events/withheld-show")
+	rr := requestPath(t, server, http.MethodGet, "/admin/events/withheld-show", nil, cookie)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	assertContains(t, rr.Body.String(), "Withheld Show")
+	assertContains(t, rr.Body.String(), "The Leadmill")
+}
+
 func TestEventCardsRenderImagesOnSummaryPages(t *testing.T) {
 	server := mustClockedServer(t, store.NewStore(
 		[]domain.Venue{{
@@ -3150,1365 +6627,6 @@ func TestLayoutMetadataAndActiveNav(t *testing.T) {
 	assertNotContains(t, body, `href="/">Home</a>`)
 }
 
-func TestAdminReviewListDetailAndSave(t *testing.T) {
-	ctx := httptest.NewRequest(http.MethodGet, "/", nil).Context()
-	st, server, groupID := mustReviewServerWithGroup(t)
-	defer st.Close()
-
-	listBody := renderPath(t, server, "/admin/review")
-	assertContains(t, listBody, "Review queue")
-	assertContains(t, listBody, "Fixture review")
-	assertContains(t, listBody, "2 candidates")
-	assertContains(t, listBody, `href="/admin/review/history"`)
-
-	detailBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
-	assertContains(t, detailBody, "Canonical draft summary")
-	assertContains(t, detailBody, "Not selected yet")
-	assertContains(t, detailBody, "&mdash;")
-	assertInOrder(t, detailBody, []string{"Canonical draft summary", "Saved draft preview"})
-	assertContains(t, detailBody, "Saved draft preview")
-	assertContains(t, detailBody, "Candidate 1")
-	assertContains(t, detailBody, "Candidate 2")
-	assertContains(t, detailBody, "fixture UID utc-1")
-	assertContains(t, detailBody, `name="choice_name"`)
-	assertContains(t, detailBody, `name="choice_start_at"`)
-	assertContains(t, detailBody, `href="/admin/review/history"`)
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	form := url.Values{}
-	form.Set("choice_name", strconvFormatInt(group.Candidates[1].ID))
-	form.Set("choice_venue_slug", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_start_at", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_end_at", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_genre", strconvFormatInt(group.Candidates[1].ID))
-	form.Set("choice_status", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_description", strconvFormatInt(group.Candidates[1].ID))
-	form.Set("choice_image_url", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_source_name", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_source_url", strconvFormatInt(group.Candidates[1].ID))
-	form.Set("action", "save")
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rr := httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-	if rr.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
-	}
-	location := rr.Header().Get("Location")
-	if location != "/admin/review/"+strconvFormatInt(groupID)+"?saved=1" {
-		t.Fatalf("Location = %q, want saved review detail redirect", location)
-	}
-
-	saveBody := renderPath(t, server, location)
-	assertContains(t, saveBody, "Draft saved.")
-	assertContains(t, saveBody, "Canonical draft summary")
-	assertContains(t, saveBody, "Candidate 1 (utc-1)")
-	assertContains(t, saveBody, "Candidate 2 (london-1)")
-	assertContains(t, saveBody, "London Show")
-	assertNotContains(t, saveBody, "Not selected yet")
-	assertInOrder(t, saveBody, []string{"Canonical draft summary", "Saved draft preview"})
-	assertContains(t, saveBody, "<strong>Name</strong>: London Show")
-	assertContains(t, saveBody, "<strong>Venue slug</strong>: sidney-and-matilda")
-	assertContains(t, saveBody, `name="choice_name" value="`+strconvFormatInt(group.Candidates[1].ID)+`" checked`)
-}
-
-func TestSQLiteAdminReviewHistoryListsClosedGroupsNewestFirst(t *testing.T) {
-	st, server, openID, path := mustReviewServerWithGroupPath(t)
-	defer st.Close()
-
-	resolvedID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "Resolved review",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:resolved.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "utc-1",
-				Name:        "UTC Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First line",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/utc-show",
-				Provenance:  "fixture UID utc-1",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create resolved review group: %v", err)
-	}
-	resolved, ok, err := st.LoadReviewGroup(contextForTesting(), resolvedID)
-	if err != nil {
-		t.Fatalf("load resolved review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("resolved review group not found")
-	}
-	if err := st.ResolveReviewGroup(contextForTesting(), resolvedID, fullWebReviewChoices(t, resolved)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	rejectedID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "Rejected review",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:rejected.ics",
-		Candidates: []review.CandidateInput{
-			{
-				Name:       "Rejected candidate",
-				StartAt:    "2026-05-01T19:00:00Z",
-				SourceName: "Fixture ICS",
-				SourceURL:  "file:rejected.ics",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create rejected review group: %v", err)
-	}
-	if err := st.UpdateReviewGroupStatus(contextForTesting(), rejectedID, review.StatusRejected); err != nil {
-		t.Fatalf("reject review group: %v", err)
-	}
-
-	db := mustRawDB(t, path)
-	if _, err := db.Exec(`
-		UPDATE review_groups
-		SET updated_at = ?
-		WHERE id = ?
-	`, "2026-04-20T12:00:00Z", rejectedID); err != nil {
-		t.Fatalf("set rejected updated_at: %v", err)
-	}
-	if _, err := db.Exec(`
-		UPDATE review_groups
-		SET updated_at = ?
-		WHERE id = ?
-	`, "2026-04-20T11:00:00Z", resolvedID); err != nil {
-		t.Fatalf("set resolved updated_at: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close raw db: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review/history")
-	assertContains(t, body, "Review history")
-	assertContains(t, body, `href="/admin/review"`)
-	assertContains(t, body, `href="/admin/venues"`)
-	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(rejectedID)+`"`)
-	assertContains(t, body, `href="/admin/review/`+strconvFormatInt(resolvedID)+`"`)
-	assertContains(t, body, "rejected")
-	assertContains(t, body, "resolved")
-	assertInOrder(t, body, []string{"Rejected review", "Resolved review"})
-	assertNotContains(t, body, `href="/admin/review/`+strconvFormatInt(openID)+`"`)
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/history", strings.NewReader(""))
-	rr := httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusMethodNotAllowed, rr.Body.String())
-	}
-}
-
-func TestSQLiteAdminReviewHistoryRendersOriginImportRunColumn(t *testing.T) {
-	st, server, _, path := mustReviewServerWithGroupPath(t)
-	defer st.Close()
-
-	linkedID := mustCreateWebReviewGroupForImportRun(t, st, path, "Linked history group", "Created from manual ingest run 12 review staging.", 1)
-	noLinkID := mustCreateWebReviewGroupForImportRun(t, st, path, "Offline history group", "Created from offline fixture.", 1)
-	if err := st.UpdateReviewGroupStatus(contextForTesting(), linkedID, review.StatusRejected); err != nil {
-		t.Fatalf("reject linked review group: %v", err)
-	}
-	if err := st.UpdateReviewGroupStatus(contextForTesting(), noLinkID, review.StatusRejected); err != nil {
-		t.Fatalf("reject offline review group: %v", err)
-	}
-
-	db := mustRawDB(t, path)
-	if err := setWebReviewGroupUpdatedAt(db, linkedID, "2026-04-20T11:00:00Z"); err != nil {
-		t.Fatalf("set linked updated_at: %v", err)
-	}
-	if err := setWebReviewGroupUpdatedAt(db, noLinkID, "2026-04-20T12:00:00Z"); err != nil {
-		t.Fatalf("set offline updated_at: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close raw db: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review/history")
-	assertContains(t, body, `<th scope="col">Import run</th>`)
-	assertContains(t, body, `href="/admin/import-runs/12">Import run #12</a>`)
-	assertInOrder(t, body, []string{"Offline history group", "<td>&mdash;</td>"})
-	assertInOrder(t, body, []string{"Offline history group", "Linked history group"})
-}
-
-func TestAdminReviewHistoryHidesOriginImportRunColumnWithoutDetailSupport(t *testing.T) {
-	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{
-		closedGroups: []review.GroupSummary{
-			{
-				ID:             1,
-				Title:          "Linked history group",
-				SourceName:     "Fixture ICS",
-				SourceURL:      "file:test.ics",
-				Status:         review.StatusRejected,
-				Notes:          "Created from manual ingest run 12 review staging.",
-				CreatedAt:      time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
-				UpdatedAt:      time.Date(2026, time.April, 20, 12, 0, 0, 0, time.UTC),
-				CandidateCount: 1,
-			},
-		},
-	}))
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review/history")
-	assertContains(t, body, "Linked history group")
-	assertNotContains(t, body, `<th scope="col">Import run</th>`)
-	assertNotContains(t, body, `href="/admin/import-runs/12"`)
-}
-
-func TestAdminReviewShowsLatestSuccessfulImportLink(t *testing.T) {
-	st, server, _, path := mustReviewServerWithGroupPath(t)
-	defer st.Close()
-
-	if err := seedImportRunHistory(t, path); err != nil {
-		t.Fatalf("seed import history: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review")
-	assertContains(t, body, "Latest successful import")
-	assertContains(t, body, "run #1")
-	assertContains(t, body, `href="/admin/import-runs"`)
-	assertContains(t, body, `href="/admin/import-runs/1"`)
-	assertContains(t, body, "1 snapshot")
-}
-
-func TestAdminReviewShowsLatestSuccessfulImportWithoutDetailLink(t *testing.T) {
-	server, err := NewServer(testServerDeps(reviewImportHistoryOnlyStoreStub{}))
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review")
-	assertContains(t, body, "Latest successful import")
-	assertContains(t, body, "run #1")
-	assertContains(t, body, `href="/admin/import-runs"`)
-	assertNotContains(t, body, `href="/admin/import-runs/1"`)
-}
-
-func TestAdminReviewDetailShowsOriginImportRunLinkFromNotes(t *testing.T) {
-	tests := []struct {
-		name  string
-		notes string
-		id    string
-	}{
-		{name: "manual ingest wording", notes: "Created from manual ingest run 123 review staging.", id: "123"},
-		{name: "import run wording", notes: "Created from import run 456 review staging.", id: "456"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			st, server, groupID, _ := mustReviewServerWithGroupPathAndNotes(t, tc.notes)
-			defer st.Close()
-
-			body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
-			assertContains(t, body, "Review notes")
-			assertContains(t, body, tc.notes)
-			assertContains(t, body, `href="/admin/import-runs"`)
-			assertContains(t, body, `href="/admin/import-runs/`+tc.id+`"`)
-			assertContains(t, body, "Import run #"+tc.id)
-		})
-	}
-}
-
-func TestAdminReviewDetailShowsOriginImportRunWithoutDetailLink(t *testing.T) {
-	server, err := NewServer(testServerDeps(reviewImportHistoryOnlyStoreStub{
-		reviewOnlyStoreStub: reviewOnlyStoreStub{
-			group: review.Group{
-				ID:                   12,
-				Title:                "Linked review",
-				SourceName:           "Fixture ICS",
-				SourceURL:            "file:test.ics",
-				Status:               review.StatusOpen,
-				Notes:                "Created from manual ingest run 123 review staging.",
-				StagedCandidateCount: 1,
-				LatestImportRunID:    123,
-			},
-		},
-	}))
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review/12")
-	assertContains(t, body, "Import run #123")
-	assertNotContains(t, body, `href="/admin/import-runs/123"`)
-	assertContains(t, body, "Run #123")
-}
-
-func TestAdminReviewDetailOmitsOriginImportRunLinkWhenUnavailable(t *testing.T) {
-	tests := []struct {
-		name  string
-		notes string
-	}{
-		{name: "unparseable", notes: "Created from offline fixture."},
-		{name: "zero", notes: "Created from manual ingest run 0 review staging."},
-		{name: "negative", notes: "Created from manual ingest run -12 review staging."},
-		{name: "not a strict id", notes: "Created from manual ingest run 12abc review staging."},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			st, server, groupID, _ := mustReviewServerWithGroupPathAndNotes(t, tc.notes)
-			defer st.Close()
-
-			body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
-			assertContains(t, body, "Review notes")
-			assertContains(t, body, tc.notes)
-			assertNotContains(t, body, `href="/admin/import-runs/`)
-		})
-	}
-
-	server, err := NewServer(testServerDeps(reviewOnlyStoreStub{
-		group: review.Group{
-			ID:                   1,
-			Title:                "Fixture review",
-			SourceName:           "Fixture ICS",
-			SourceURL:            "file:sidney.ics",
-			Status:               review.StatusOpen,
-			Notes:                "Created from manual ingest run 123 review staging.",
-			StagedCandidateCount: 1,
-			DraftChoices:         map[review.Field]review.DraftChoice{},
-			Candidates: []review.Candidate{
-				{ID: 1, Position: 1, Name: "Solo Show"},
-			},
-		},
-	}))
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	body := renderPath(t, server, "/admin/review/1")
-	assertContains(t, body, "Created from manual ingest run 123 review staging.")
-	assertNotContains(t, body, `href="/admin/import-runs/123"`)
-}
-
-func TestAdminReviewDetailFallsBackToCandidateNumberWhenExternalIDIsMissing(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := sqlitestore.Open(path)
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
-	defer st.Close()
-
-	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "Sparse metadata review",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:sidney.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "utc-1",
-				Name:        "UTC Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First line",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/utc-show",
-				Provenance:  "fixture UID utc-1",
-			},
-			{
-				ExternalID:  "london-1",
-				Name:        "London Show",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-02T18:30:00Z",
-				EndAt:       "2026-05-02T21:30:00Z",
-				Genre:       "Rock",
-				Status:      "Listed",
-				Description: "London description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:sidney.ics",
-				Provenance:  "fixture UID london-1",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	candidateID := group.Candidates[0].ID
-	rawDB := mustRawDB(t, path)
-	if _, err := rawDB.Exec(`
-		UPDATE review_candidates
-		SET external_id = ''
-		WHERE id = ?
-	`, candidateID); err != nil {
-		t.Fatalf("blank candidate external id: %v", err)
-	}
-	if err := rawDB.Close(); err != nil {
-		t.Fatalf("close raw db: %v", err)
-	}
-
-	server, err := NewServer(testServerDeps(st))
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
-	assertContains(t, body, "<span>Candidate 1</span>")
-	assertNotContains(t, body, "Candidate 1 (utc-1)")
-	assertContains(t, body, "fixture UID utc-1")
-	assertContains(t, body, "https://example.test/utc-show")
-}
-
-func TestBuildReviewDetailCanonicalSummaryKeepsBlankSelectionsDistinct(t *testing.T) {
-	detail := buildReviewDetail(review.Group{
-		StagedCandidateCount: 2,
-		Candidates: []review.Candidate{
-			{ID: 1, Position: 1, Name: "First"},
-			{ID: 2, Position: 2, Name: "Second"},
-		},
-		DraftChoices: map[review.Field]review.DraftChoice{
-			review.FieldName: {
-				Field:       review.FieldName,
-				CandidateID: 2,
-				Value:       "",
-			},
-		},
-	})
-
-	if got, want := len(detail.CanonicalSummaryRows), len(review.CanonicalFields); got != want {
-		t.Fatalf("summary rows = %d, want %d", got, want)
-	}
-	first := detail.CanonicalSummaryRows[0]
-	if !first.Selected {
-		t.Fatal("name row = unselected, want selected")
-	}
-	if first.Value != "" {
-		t.Fatalf("name value = %q, want blank", first.Value)
-	}
-	if first.Candidate != "Candidate 2" {
-		t.Fatalf("name candidate = %q, want Candidate 2", first.Candidate)
-	}
-	second := detail.CanonicalSummaryRows[1]
-	if second.Selected {
-		t.Fatal("venue slug row = selected, want unselected")
-	}
-	if second.Candidate != "" {
-		t.Fatalf("venue slug candidate = %q, want empty", second.Candidate)
-	}
-}
-
-func TestBuildReviewDetailPrefersDraftChoicesOverDefaultsAndMarksConsensus(t *testing.T) {
-	detail := buildReviewDetail(review.Group{
-		StagedCandidateCount: 2,
-		Candidates: []review.Candidate{
-			{ID: 1, Position: 1, Name: "Staged Alpha"},
-			{ID: 2, Position: 2, Name: "Staged Beta"},
-			{ID: 3, Position: 3, CanonicalEventID: 99, Name: "Live Canonical"},
-		},
-		DraftChoices: map[review.Field]review.DraftChoice{
-			review.FieldName: {
-				Field:       review.FieldName,
-				CandidateID: 2,
-				Value:       "Staged Beta",
-			},
-		},
-		DefaultChoices: map[review.Field]review.DraftChoice{
-			review.FieldName: {
-				Field:       review.FieldName,
-				CandidateID: 3,
-				Value:       "Live Canonical",
-			},
-		},
-	})
-
-	if !detail.IsDuplicate {
-		t.Fatal("duplicate review = false, want true")
-	}
-	row := detail.Rows[0]
-	if !row.Cells[1].Checked {
-		t.Fatal("draft-selected cell = unchecked, want checked")
-	}
-	if row.Cells[1].SelectedConsensus {
-		t.Fatal("draft-selected cell = selected consensus, want false")
-	}
-	if !row.Cells[2].Consensus {
-		t.Fatal("default cell = non-consensus, want consensus")
-	}
-	if got, want := detail.CanonicalSummaryRows[0].Candidate, "Candidate 2"; got != want {
-		t.Fatalf("summary candidate = %q, want %q", got, want)
-	}
-	if !detail.CanonicalSummaryRows[0].Selected {
-		t.Fatal("summary row = unselected, want selected")
-	}
-}
-
-func TestBuildReviewDetailFallsBackToDefaultChoicesAndLabelsCanonicalSnapshots(t *testing.T) {
-	detail := buildReviewDetail(review.Group{
-		StagedCandidateCount: 2,
-		Candidates: []review.Candidate{
-			{ID: 1, Position: 1, Name: "Staged Alpha"},
-			{ID: 2, Position: 2, Name: "Staged Beta"},
-			{ID: 3, Position: 3, CanonicalEventID: 99, Name: "Live Canonical"},
-		},
-		DefaultChoices: map[review.Field]review.DraftChoice{
-			review.FieldName: {
-				Field:       review.FieldName,
-				CandidateID: 3,
-				Value:       "Live Canonical",
-			},
-		},
-	})
-
-	row := detail.Rows[0]
-	if !row.Cells[2].Checked {
-		t.Fatal("default-selected cell = unchecked, want checked")
-	}
-	if !row.Cells[2].Consensus {
-		t.Fatal("default-selected cell = non-consensus, want consensus")
-	}
-	if !row.Cells[2].SelectedConsensus {
-		t.Fatal("default-selected cell = non-selected-consensus, want true")
-	}
-	if got, want := detail.CanonicalSummaryRows[0].Candidate, "Live canonical snapshot"; got != want {
-		t.Fatalf("summary candidate = %q, want %q", got, want)
-	}
-	if got, want := detail.CanonicalSummaryRows[0].Value, "Live Canonical"; got != want {
-		t.Fatalf("summary value = %q, want %q", got, want)
-	}
-}
-
-func TestSQLiteAdminReviewDetailRendersCanonicalSnapshotRowsAndConsensusStyles(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := sqlitestore.Open(path)
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close sqlite store: %v", err)
-		}
-	}()
-
-	server, err := NewServer(testServerDeps(st))
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-
-	groupID := mustCreateWebCanonicalReviewGroupForImportRun(t, st, path, "Canonical snapshot review", "Created from manual ingest run 1 review staging.")
-	body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
-	assertContains(t, body, "Live canonical snapshot")
-	assertContains(t, body, "selected-consensus")
-	assertContains(t, body, "consensus")
-	assertContains(t, body, "No draft choices saved yet.")
-}
-
-func TestSQLiteAdminReviewDetailClosedViewStillShowsCanonicalRowsAndFinalSelections(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := sqlitestore.Open(path)
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close sqlite store: %v", err)
-		}
-	}()
-
-	server, err := NewServer(testServerDeps(st))
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-
-	notes := "Created from manual ingest run 1 review staging."
-	ensureImportRunFixtureForNotes(t, path, notes)
-	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "Canonical snapshot review",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:canonical.ics",
-		Notes:      notes,
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "staged-1",
-				Name:        "Staged Alpha",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First staged description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/staged-alpha",
-				Provenance:  "fixture UID staged-1",
-			},
-			{
-				ExternalID:  "staged-2",
-				Name:        "Staged Beta",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-02T18:30:00Z",
-				EndAt:       "2026-05-02T21:30:00Z",
-				Genre:       "Rock",
-				Status:      "Listed",
-				Description: "Second staged description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/staged-beta",
-				Provenance:  "fixture UID staged-2",
-			},
-			{
-				ExternalID:       "canonical-1",
-				CanonicalEventID: 77,
-				Name:             "Live Canonical",
-				VenueSlug:        "leadmill",
-				StartAt:          "2026-05-02T18:30:00Z",
-				EndAt:            "2026-05-02T21:30:00Z",
-				Genre:            "Rock",
-				Status:           "Listed",
-				Description:      "Second staged description",
-				SourceName:       "Fixture ICS",
-				SourceURL:        "https://example.test/canonical",
-				Provenance:       "fixture canonical snapshot",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if len(group.Candidates) != 3 {
-		t.Fatalf("candidate count = %d, want 3", len(group.Candidates))
-	}
-	canonical := group.Candidates[2]
-	db := mustRawDB(t, path)
-	if _, err := db.Exec(`
-		DELETE FROM review_field_defaults
-		WHERE group_id = ?
-	`, groupID); err != nil {
-		t.Fatalf("clear review field defaults: %v", err)
-	}
-	for _, field := range review.CanonicalFields {
-		if _, err := db.Exec(`
-			INSERT INTO review_field_defaults (
-				group_id,
-				field,
-				candidate_id,
-				value,
-				updated_at
-			) VALUES (?, ?, ?, ?, ?)
-		`, groupID, string(field), canonical.ID, review.CandidateValue(canonical, field), "2026-04-21T10:00:00Z"); err != nil {
-			t.Fatalf("set review field default for %s: %v", field, err)
-		}
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close raw db: %v", err)
-	}
-
-	group, ok, err = st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after defaults update")
-	}
-	if err := st.ResolveReviewGroup(contextForTesting(), groupID, fullWebReviewChoicesForCandidate(t, canonical.ID)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
-	assertContains(t, body, "This review is closed and read-only.")
-	assertContains(t, body, "Live canonical snapshot")
-	assertContains(t, body, "selected-consensus")
-}
-
-func TestAdminReviewQueueAndImportRunCountsStayStagedOnly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := sqlitestore.Open(path)
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close sqlite store: %v", err)
-		}
-	}()
-
-	server, err := NewServer(testServerDeps(st))
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-
-	groupID := mustCreateWebCanonicalReviewGroupForImportRun(t, st, path, "Canonical snapshot review", "Created from manual ingest run 1 review staging.")
-	body := renderPath(t, server, "/admin/review")
-	assertContains(t, body, "Canonical snapshot review")
-	assertContains(t, body, "Duplicate review - 2 candidates")
-	assertNotContains(t, body, "Duplicate review - 3 candidates")
-
-	importRunBody := renderPath(t, server, "/admin/import-runs/1")
-	assertContains(t, importRunBody, "Review groups from this import run")
-	assertContains(t, importRunBody, "Canonical snapshot review")
-	assertContains(t, importRunBody, ">2</td>")
-	assertNotContains(t, importRunBody, ">3</td>")
-	if groupID <= 0 {
-		t.Fatal("group ID = 0, want positive")
-	}
-}
-
-func TestAdminReviewQueueShowsOnlyOpenGroups(t *testing.T) {
-	st, server, openGroupID := mustReviewServerWithGroup(t)
-	defer st.Close()
-
-	resolvedID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "Resolved review",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:resolved.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "utc-1",
-				Name:        "UTC Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First line",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/utc-show",
-				Provenance:  "fixture UID utc-1",
-			},
-			{
-				ExternalID:  "london-1",
-				Name:        "London Show",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-02T18:30:00Z",
-				EndAt:       "2026-05-02T21:30:00Z",
-				Genre:       "Rock",
-				Status:      "Listed",
-				Description: "London description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:resolved.ics",
-				Provenance:  "fixture UID london-1",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-	resolved, ok, err := st.LoadReviewGroup(contextForTesting(), resolvedID)
-	if err != nil {
-		t.Fatalf("load resolved review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("resolved review group not found")
-	}
-	if err := st.ResolveReviewGroup(contextForTesting(), resolvedID, fullWebReviewChoices(t, resolved)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review")
-	assertContains(t, body, "Fixture review")
-	assertNotContains(t, body, "No open review groups.")
-	assertNotContains(t, body, "Resolved review")
-	assertContains(t, body, "/admin/review/"+strconvFormatInt(openGroupID))
-}
-
-func TestAdminReviewRejectRejectsSubmittedChoices(t *testing.T) {
-	st, server, groupID := mustReviewServerWithGroup(t)
-	defer st.Close()
-	beforeEventCount := len(st.Events())
-
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	form := url.Values{}
-	form.Set("action", "rejected")
-	form.Set("choice_name", strconvFormatInt(group.Candidates[0].ID))
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rr := httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
-	}
-	assertContains(t, rr.Body.String(), "rejecting a review group does not accept field choices")
-	if got := len(st.Events()); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-}
-
-func TestAdminReviewResolveRequiresAllFields(t *testing.T) {
-	st, server, groupID := mustReviewServerWithGroup(t)
-	defer st.Close()
-
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	form := url.Values{}
-	form.Set("action", "resolved")
-	form.Set("choice_name", strconvFormatInt(group.Candidates[1].ID))
-	form.Set("choice_start_at", strconvFormatInt(group.Candidates[0].ID))
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rr := httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
-	}
-	assertContains(t, rr.Body.String(), "all review fields must be selected before resolving")
-}
-
-func TestAdminReviewResolveRequiresRoomChoice(t *testing.T) {
-	st, server, groupID := mustReviewServerWithGroup(t)
-	defer st.Close()
-
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	form := url.Values{}
-	form.Set("action", "resolved")
-	for _, field := range review.CanonicalFields {
-		if field == review.FieldRoomSlugs {
-			continue
-		}
-		form.Set("choice_"+string(field), strconvFormatInt(group.Candidates[0].ID))
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rr := httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
-	}
-	assertContains(t, rr.Body.String(), "all review fields must be selected before resolving")
-}
-
-func TestAdminReviewResolveRedirectsAndRemovesFromQueue(t *testing.T) {
-	st, server, groupID := mustReviewServerWithGroup(t)
-	defer st.Close()
-
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	form := url.Values{}
-	form.Set("action", "resolved")
-	form.Set("choice_name", strconvFormatInt(group.Candidates[1].ID))
-	form.Set("choice_venue_slug", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_room_slugs", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_start_at", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_end_at", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_genre", strconvFormatInt(group.Candidates[1].ID))
-	form.Set("choice_status", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_description", strconvFormatInt(group.Candidates[1].ID))
-	form.Set("choice_image_url", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_source_name", strconvFormatInt(group.Candidates[0].ID))
-	form.Set("choice_source_url", strconvFormatInt(group.Candidates[1].ID))
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rr := httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
-	}
-	if location := rr.Header().Get("Location"); location != "/admin/review?resolved=1" {
-		t.Fatalf("Location = %q, want resolved review queue redirect", location)
-	}
-
-	queueBody := renderPath(t, server, "/admin/review?resolved=1")
-	assertContains(t, queueBody, "Marked resolved.")
-	assertContains(t, queueBody, "No open review groups.")
-	assertNotContains(t, queueBody, "Fixture review")
-
-	updated, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	if updated.Status != review.StatusResolved {
-		t.Fatalf("status = %q, want %q", updated.Status, review.StatusResolved)
-	}
-	eventSlug := "live-london-show-sidney-and-matilda-20260501190000"
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	if event.Name != "London Show" {
-		t.Fatalf("name = %q, want %q", event.Name, "London Show")
-	}
-	if event.VenueSlug != "sidney-and-matilda" {
-		t.Fatalf("venue slug = %q, want %q", event.VenueSlug, "sidney-and-matilda")
-	}
-	if event.SourceName != "Fixture ICS" {
-		t.Fatalf("source name = %q, want %q", event.SourceName, "Fixture ICS")
-	}
-	if event.SourceURL != "file:sidney.ics" {
-		t.Fatalf("source url = %q, want %q", event.SourceURL, "file:sidney.ics")
-	}
-	if event.Origin != domain.OriginLive {
-		t.Fatalf("origin = %q, want %q", event.Origin, domain.OriginLive)
-	}
-}
-
-func TestAdminReviewSingletonRendersAcceptAndReject(t *testing.T) {
-	st, server, groupID, _ := mustReviewServerWithSingletonGroup(t)
-	defer st.Close()
-
-	listBody := renderPath(t, server, "/admin/review")
-	assertContains(t, listBody, "New listing review")
-	assertContains(t, listBody, "1 candidate")
-
-	detailBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
-	assertNotContains(t, detailBody, "Canonical draft summary")
-	assertContains(t, detailBody, "Listing candidate")
-	assertContains(t, detailBody, "<strong>Name</strong>: Solo Show")
-	assertContains(t, detailBody, "Accept new listing")
-	assertContains(t, detailBody, ">Reject</button>")
-	assertNotContains(t, detailBody, "Saved draft preview")
-	assertNotContains(t, detailBody, `name="choice_name"`)
-	assertNotContains(t, detailBody, "review-matrix")
-}
-
-func TestAdminReviewSingletonAcceptResolvesWithCanonicalChoices(t *testing.T) {
-	st, server, groupID, path := mustReviewServerWithSingletonGroup(t)
-	defer st.Close()
-
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	candidateID := group.Candidates[0].ID
-	db := mustRawDB(t, path)
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET source_name = '', source_url = ''
-		WHERE id = ?
-	`, candidateID); err != nil {
-		t.Fatalf("blank candidate source fields: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close raw db: %v", err)
-	}
-
-	form := url.Values{}
-	form.Set("action", "accept")
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rr := httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
-	}
-	if location := rr.Header().Get("Location"); location != "/admin/review?accepted=1" {
-		t.Fatalf("Location = %q, want accepted review queue redirect", location)
-	}
-
-	queueBody := renderPath(t, server, "/admin/review?accepted=1")
-	assertContains(t, queueBody, "Accepted new listing.")
-	assertContains(t, queueBody, "No open review groups.")
-
-	updated, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after accept")
-	}
-	if updated.Status != review.StatusResolved {
-		t.Fatalf("status = %q, want %q", updated.Status, review.StatusResolved)
-	}
-	if got, want := len(updated.DraftChoices), len(review.CanonicalFields); got != want {
-		t.Fatalf("draft choices = %d, want %d", got, want)
-	}
-	for _, field := range review.CanonicalFields {
-		choice, ok := updated.DraftChoices[field]
-		if !ok {
-			t.Fatalf("missing draft choice for %s", field)
-		}
-		if choice.CandidateID != candidateID {
-			t.Fatalf("choice candidate for %s = %d, want %d", field, choice.CandidateID, candidateID)
-		}
-	}
-	eventSlug := "live-solo-show-sidney-and-matilda-20260503190000"
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	if event.SourceName != group.SourceName {
-		t.Fatalf("source name = %q, want %q", event.SourceName, group.SourceName)
-	}
-	if event.SourceURL != group.SourceURL {
-		t.Fatalf("source url = %q, want %q", event.SourceURL, group.SourceURL)
-	}
-	if event.Origin != domain.OriginLive {
-		t.Fatalf("origin = %q, want %q", event.Origin, domain.OriginLive)
-	}
-
-	closedBody := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
-	assertContains(t, closedBody, "This review is closed and read-only.")
-	assertContains(t, closedBody, "<strong>Name</strong>: Solo Show")
-	assertNotContains(t, closedBody, "Accept new listing")
-	assertNotContains(t, closedBody, `name="choice_name"`)
-}
-
-func TestAdminReviewSingletonAcceptPublishesUnknownEndWhenCandidateEndIsBlank(t *testing.T) {
-	st, server, groupID, path := mustReviewServerWithSingletonGroup(t)
-	defer st.Close()
-
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	db := mustRawDB(t, path)
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET end_at = ''
-		WHERE id = ?
-	`, group.Candidates[0].ID); err != nil {
-		t.Fatalf("blank candidate end field: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close raw db: %v", err)
-	}
-
-	form := url.Values{}
-	form.Set("action", "accept")
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rr := httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
-	}
-
-	event, ok := st.EventBySlug("live-solo-show-sidney-and-matilda-20260503190000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	if !event.End.IsZero() {
-		t.Fatalf("end = %v, want zero time for unknown end", event.End)
-	}
-}
-
-func TestAdminReviewClosedGroupIsReadOnlyAndRejectsPost(t *testing.T) {
-	st, server, groupID := mustReviewServerWithGroup(t)
-	defer st.Close()
-
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if err := st.ResolveReviewGroup(contextForTesting(), groupID, []review.DraftChoiceInput{
-		{Field: review.FieldName, CandidateID: group.Candidates[1].ID},
-		{Field: review.FieldVenueSlug, CandidateID: group.Candidates[0].ID},
-		{Field: review.FieldRoomSlugs, CandidateID: group.Candidates[0].ID},
-		{Field: review.FieldStartAt, CandidateID: group.Candidates[0].ID},
-		{Field: review.FieldEndAt, CandidateID: group.Candidates[0].ID},
-		{Field: review.FieldGenre, CandidateID: group.Candidates[1].ID},
-		{Field: review.FieldStatus, CandidateID: group.Candidates[0].ID},
-		{Field: review.FieldDescription, CandidateID: group.Candidates[1].ID},
-		{Field: review.FieldImageURL, CandidateID: group.Candidates[0].ID},
-		{Field: review.FieldSourceName, CandidateID: group.Candidates[0].ID},
-		{Field: review.FieldSourceURL, CandidateID: group.Candidates[1].ID},
-	}); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	body := renderPath(t, server, "/admin/review/"+strconvFormatInt(groupID))
-	assertInOrder(t, body, []string{"Canonical draft summary", "This review is closed and read-only."})
-	assertContains(t, body, "This review is closed and read-only.")
-	assertContains(t, body, "Canonical draft summary")
-	assertContains(t, body, "Candidate 2 (london-1)")
-	assertNotContains(t, body, `name="choice_name"`)
-	assertNotContains(t, body, "Mark not duplicate")
-
-	before, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	form := url.Values{}
-	form.Set("action", "save")
-	form.Set("choice_name", strconvFormatInt(group.Candidates[0].ID))
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rr := httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusConflict, rr.Body.String())
-	}
-	after, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("reload review group after closed post: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after closed post")
-	}
-	if after.Status != before.Status {
-		t.Fatalf("status = %q, want unchanged %q", after.Status, before.Status)
-	}
-	if len(after.DraftChoices) != len(before.DraftChoices) {
-		t.Fatalf("draft choices = %d, want unchanged %d", len(after.DraftChoices), len(before.DraftChoices))
-	}
-}
-
-func TestAdminReviewEmptyPostDoesNotSaveOrUpdateGroup(t *testing.T) {
-	ctx := httptest.NewRequest(http.MethodGet, "/", nil).Context()
-	st, server, groupID := mustReviewServerWithGroup(t)
-	defer st.Close()
-
-	before, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/review/"+strconvFormatInt(groupID), strings.NewReader(""))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rr := httptest.NewRecorder()
-	server.ServeHTTP(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusBadRequest, rr.Body.String())
-	}
-	assertContains(t, rr.Body.String(), "at least one review choice is required")
-
-	after, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after empty post")
-	}
-	if !after.UpdatedAt.Equal(before.UpdatedAt) {
-		t.Fatalf("updated_at = %v, want unchanged %v", after.UpdatedAt, before.UpdatedAt)
-	}
-	if len(after.DraftChoices) != 0 {
-		t.Fatalf("draft choices = %d, want 0", len(after.DraftChoices))
-	}
-}
-
-func mustReviewServerWithGroup(t *testing.T) (*sqlitestore.Store, *Server, int64) {
-	t.Helper()
-
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := sqlitestore.Open(path)
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
-
-	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "Fixture review",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:sidney.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "utc-1",
-				Name:        "UTC Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First line",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/utc-show",
-				Provenance:  "fixture UID utc-1",
-			},
-			{
-				ExternalID:  "london-1",
-				Name:        "London Show",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-02T18:30:00Z",
-				EndAt:       "2026-05-02T21:30:00Z",
-				Genre:       "Rock",
-				Status:      "Listed",
-				Description: "London description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:sidney.ics",
-				Provenance:  "fixture UID london-1",
-			},
-		},
-	})
-	if err != nil {
-		_ = st.Close()
-		t.Fatalf("create review group: %v", err)
-	}
-
-	server, err := NewServer(testServerDeps(st))
-	if err != nil {
-		_ = st.Close()
-		t.Fatalf("new server: %v", err)
-	}
-	return st, server, groupID
-}
-
-func mustReviewServerWithGroupPath(t *testing.T) (*sqlitestore.Store, *Server, int64, string) {
-	t.Helper()
-
-	return mustReviewServerWithGroupPathAndNotes(t, "")
-}
-
-func mustReviewServerWithGroupPathAndNotes(t *testing.T, notes string) (*sqlitestore.Store, *Server, int64, string) {
-	t.Helper()
-
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := sqlitestore.Open(path)
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
-	ensureImportRunFixtureForNotes(t, path, notes)
-
-	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "Fixture review",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:sidney.ics",
-		Notes:      notes,
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "utc-1",
-				Name:        "UTC Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First line",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/utc-show",
-				Provenance:  "fixture UID utc-1",
-			},
-			{
-				ExternalID:  "london-1",
-				Name:        "London Show",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-02T18:30:00Z",
-				EndAt:       "2026-05-02T21:30:00Z",
-				Genre:       "Rock",
-				Status:      "Listed",
-				Description: "London description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:sidney.ics",
-				Provenance:  "fixture UID london-1",
-			},
-		},
-	})
-	if err != nil {
-		_ = st.Close()
-		t.Fatalf("create review group: %v", err)
-	}
-
-	server, err := NewServer(testServerDeps(st))
-	if err != nil {
-		_ = st.Close()
-		t.Fatalf("new server: %v", err)
-	}
-	return st, server, groupID, path
-}
-
-func mustReviewServerWithSingletonGroup(t *testing.T) (*sqlitestore.Store, *Server, int64, string) {
-	t.Helper()
-
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := sqlitestore.Open(path)
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
-
-	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      "New listing review",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:sidney.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "solo-1",
-				Name:        "Solo Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-03T19:00:00Z",
-				EndAt:       "2026-05-03T22:00:00Z",
-				Genre:       "Folk",
-				Status:      "Listed",
-				Description: "One listing",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/solo-show",
-				Provenance:  "fixture UID solo-1",
-			},
-		},
-	})
-	if err != nil {
-		_ = st.Close()
-		t.Fatalf("create review group: %v", err)
-	}
-
-	server, err := NewServer(testServerDeps(st))
-	if err != nil {
-		_ = st.Close()
-		t.Fatalf("new server: %v", err)
-	}
-	return st, server, groupID, path
-}
-
 func mustAdminVenuesServer(t *testing.T) (*sqlitestore.Store, *Server, string) {
 	t.Helper()
 
@@ -4540,15 +6658,6 @@ func mustRawDB(t *testing.T, path string) *sql.DB {
 		t.Fatalf("ping raw db: %v", err)
 	}
 	return db
-}
-
-func setWebReviewGroupUpdatedAt(db *sql.DB, groupID int64, updatedAt string) error {
-	_, err := db.Exec(`
-		UPDATE review_groups
-		SET updated_at = ?
-		WHERE id = ?
-	`, updatedAt, groupID)
-	return err
 }
 
 func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store, *Server, int64, string, string) {
@@ -4611,6 +6720,173 @@ func mustImportRunDetailServer(t *testing.T, malformed bool) (*sqlitestore.Store
 	return st, server, runID, bodyText, path
 }
 
+func seedImportRunEventReviewClusters(t *testing.T, path string, runID int64) (int64, int64) {
+	t.Helper()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	sourceID := mustInsertAdminSource(t, db, "Event review source", "https://example.test/event-review")
+	mustInsertAdminVenue(t, db, domain.Venue{
+		Slug:            "event-review-hall",
+		Name:            "Event Review Venue",
+		ValidationState: domain.ValidationStateValidated,
+		Origin:          domain.OriginLive,
+	})
+	mustInsertAdminEvent(t, db, sourceID, "import-run-event-review-open", "event-review-hall", "Import Run Event Review Open", fixtureLocalTime(2026, time.April, 20, 19, 30), fixtureLocalTime(2026, time.April, 20, 21, 30), "Open event review fixture.")
+	mustInsertAdminEvent(t, db, sourceID, "import-run-event-review-resolved", "event-review-hall", "Import Run Event Review Resolved", fixtureLocalTime(2026, time.April, 20, 20, 30), fixtureLocalTime(2026, time.April, 20, 22, 30), "Resolved event review fixture.")
+	mustInsertAdminEvent(t, db, sourceID, "import-run-event-review-other", "event-review-hall", "Import Run Event Review Other", fixtureLocalTime(2026, time.April, 20, 18, 30), fixtureLocalTime(2026, time.April, 20, 19, 15), "Other run fixture.")
+
+	openEventID := mustWebEventIDBySlug(t, db, "import-run-event-review-open")
+	resolvedEventID := mustWebEventIDBySlug(t, db, "import-run-event-review-resolved")
+	otherEventID := mustWebEventIDBySlug(t, db, "import-run-event-review-other")
+
+	openClusterID := mustInsertWebEventReviewCluster(t, db, "open", openEventID, "historical_duplicate", "supporting_clean_title", "2026-04-20T10:02:00Z")
+	resolvedClusterID := mustInsertWebEventReviewCluster(t, db, "resolved", resolvedEventID, "historical_duplicate", "supporting_clean_title", "2026-04-20T10:03:00Z")
+	otherRunID := runID + 1
+	if _, err := db.Exec(`INSERT INTO import_runs (id, started_at, finished_at, status, notes) VALUES (?, ?, ?, ?, ?)`, otherRunID, "2026-04-20T10:00:00Z", "2026-04-20T10:05:00Z", "succeeded", "other import run"); err != nil {
+		t.Fatalf("insert other import run: %v", err)
+	}
+	otherClusterID := mustInsertWebEventReviewCluster(t, db, "open", otherEventID, "historical_duplicate", "supporting_clean_title", "2026-04-20T10:04:00Z")
+
+	openEvidenceID := mustInsertWebEventReviewEvidence(t, db, sourceID, openEventID, "import-run-open-fingerprint", `{"payload":"open"}`)
+	mustInsertWebEventReviewClusterEvidence(t, db, openClusterID, openEvidenceID, true, "2026-04-20T10:02:30Z", "", "open evidence")
+	resolvedEvidenceID := mustInsertWebEventReviewEvidence(t, db, sourceID, resolvedEventID, "import-run-resolved-fingerprint", `{"payload":"resolved"}`)
+	mustInsertWebEventReviewClusterEvidence(t, db, resolvedClusterID, resolvedEvidenceID, true, "2026-04-20T10:03:30Z", "", "resolved evidence")
+	otherEvidenceID := mustInsertWebEventReviewEvidence(t, db, sourceID, otherEventID, "import-run-other-fingerprint", `{"payload":"other"}`)
+	mustInsertWebEventReviewClusterEvidence(t, db, otherClusterID, otherEvidenceID, true, "2026-04-20T10:04:30Z", "", "other evidence")
+
+	if _, err := db.Exec(`INSERT INTO import_run_event_review_clusters (import_run_id, cluster_id, linked_at) VALUES (?, ?, ?)`, runID, openClusterID, "2026-04-20T10:02:00Z"); err != nil {
+		t.Fatalf("link open cluster: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO import_run_event_review_clusters (import_run_id, cluster_id, linked_at) VALUES (?, ?, ?)`, runID, resolvedClusterID, "2026-04-20T10:03:00Z"); err != nil {
+		t.Fatalf("link resolved cluster: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO import_run_event_review_clusters (import_run_id, cluster_id, linked_at) VALUES (?, ?, ?)`, otherRunID, otherClusterID, "2026-04-20T10:04:00Z"); err != nil {
+		t.Fatalf("link other cluster: %v", err)
+	}
+
+	mustInsertWebEventReviewResolution(t, db, resolvedClusterID, "resolved", `{"repair_run_id":77,"applied_live_actions":[{"event_id":`+strconvFormatInt(resolvedEventID)+`,"event_slug":"import-run-event-review-resolved","action":"keep_separate","reason":"kept"},{"event_id":`+strconvFormatInt(openEventID)+`,"event_slug":"import-run-event-review-open","action":"withhold_duplicate","reason":"withhold"}]}`, "")
+
+	return openClusterID, resolvedClusterID
+}
+
+func mustWebEventIDBySlug(t *testing.T, db *sql.DB, slug string) int64 {
+	t.Helper()
+
+	var id int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, slug).Scan(&id); err != nil {
+		t.Fatalf("lookup event %q: %v", slug, err)
+	}
+	return id
+}
+
+func mustInsertWebEventReviewCluster(t *testing.T, db *sql.DB, status string, canonicalEventID int64, conflictType, conflictReason, linkedAt string) int64 {
+	t.Helper()
+
+	res, err := db.Exec(`
+		INSERT INTO event_review_clusters (
+			status,
+			version,
+			staging_key,
+			staging_key_version,
+			superseded_by_cluster_id,
+			previous_cluster_id,
+			canonical_event_id,
+			conflict_type,
+			conflict_reason,
+			created_at,
+			updated_at
+		) VALUES (?, 1, NULL, 0, NULL, NULL, ?, ?, ?, ?, ?)
+	`, status, canonicalEventID, conflictType, conflictReason, linkedAt, linkedAt)
+	if err != nil {
+		t.Fatalf("insert event review cluster: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("cluster last insert id: %v", err)
+	}
+	return id
+}
+
+func mustInsertWebEventReviewEvidence(t *testing.T, db *sql.DB, sourceID, eventID int64, fingerprint, payload string) int64 {
+	t.Helper()
+
+	res, err := db.Exec(`
+		INSERT INTO event_review_evidence (
+			source_id,
+			event_id,
+			evidence_fingerprint,
+			fingerprint_version,
+			payload,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, sourceID, eventID, fingerprint, 1, payload, "2026-04-20T10:00:00Z", "2026-04-20T10:00:00Z")
+	if err != nil {
+		t.Fatalf("insert event review evidence: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("evidence last insert id: %v", err)
+	}
+	return id
+}
+
+func mustInsertWebEventReviewClusterEvidence(t *testing.T, db *sql.DB, clusterID, evidenceID int64, active bool, linkedAt, unlinkedAt, reason string) int64 {
+	t.Helper()
+
+	var unlinkedAtValue any
+	if unlinkedAt != "" {
+		unlinkedAtValue = unlinkedAt
+	}
+	activeValue := 0
+	if active {
+		activeValue = 1
+	}
+	res, err := db.Exec(`
+		INSERT INTO event_review_cluster_evidence (
+			cluster_id,
+			evidence_id,
+			active,
+			linked_at,
+			unlinked_at,
+			link_reason
+		) VALUES (?, ?, ?, ?, ?, ?)
+	`, clusterID, evidenceID, activeValue, linkedAt, unlinkedAtValue, reason)
+	if err != nil {
+		t.Fatalf("insert cluster evidence: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("cluster evidence last insert id: %v", err)
+	}
+	return id
+}
+
+func mustInsertWebEventReviewResolution(t *testing.T, db *sql.DB, clusterID int64, status, snapshot, discardReason string) int64 {
+	t.Helper()
+
+	res, err := db.Exec(`
+		INSERT INTO event_review_resolutions (
+			cluster_id,
+			status,
+			snapshot,
+			discard_reason,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?)
+	`, clusterID, status, snapshot, discardReason, "2026-04-20T10:05:00Z", "2026-04-20T10:05:00Z")
+	if err != nil {
+		t.Fatalf("insert event review resolution: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("resolution last insert id: %v", err)
+	}
+	return id
+}
+
 func seedAdminVenueFixtures(t *testing.T, path string) {
 	t.Helper()
 
@@ -4646,6 +6922,35 @@ func seedAdminVenueFixtures(t *testing.T, path string) {
 	mustInsertAdminEvent(t, db, sourceID, "imaginary-hall-future-show", "imaginary-hall", "Future Show", fixtureLocalTime(2026, time.April, 20, 19, 30), fixtureLocalTime(2026, time.April, 20, 22, 0), "Upcoming linked event description.")
 	mustInsertAdminEvent(t, db, sourceID, "imaginary-hall-past-show", "imaginary-hall", "Past Show", fixtureLocalTime(2026, time.April, 18, 19, 0), fixtureLocalTime(2026, time.April, 18, 21, 0), "Past linked event description.")
 	mustInsertAdminEvent(t, db, sourceID, "validated-room-future-show", "validated-room", "Validated Venue Show", fixtureLocalTime(2026, time.April, 21, 20, 0), fixtureLocalTime(2026, time.April, 21, 22, 0), "Validated venue event.")
+}
+
+func seedAdminRoomFixture(t *testing.T, path, venueSlug, roomSlug, roomName string, sortOrder int) {
+	t.Helper()
+
+	db := mustRawDB(t, path)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close raw db: %v", err)
+		}
+	}()
+
+	venueID := lookupWebVenueID(t, db, venueSlug)
+	if _, err := db.Exec(`
+		INSERT INTO venue_rooms (venue_id, slug, name, sort_order, validation_state, origin)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, venueID, roomSlug, roomName, sortOrder, string(domain.ValidationStateProvisional), string(domain.OriginLive)); err != nil {
+		t.Fatalf("insert room %q: %v", roomSlug, err)
+	}
+}
+
+func lookupWebVenueID(t *testing.T, db *sql.DB, slug string) int64 {
+	t.Helper()
+
+	var venueID int64
+	if err := db.QueryRow(`SELECT id FROM venues WHERE slug = ?`, slug).Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue id %q: %v", slug, err)
+	}
+	return venueID
 }
 
 func mustWebSnapshotPayload(t *testing.T, result ingest.FetchResult) string {
@@ -4704,23 +7009,6 @@ func seedImportRunHistoryWithDB(db *sql.DB) error {
 	return nil
 }
 
-func ensureImportRunFixtureForNotes(t *testing.T, path, notes string) {
-	t.Helper()
-
-	importRunID, ok := review.ParseOriginImportRunID(notes)
-	if !ok {
-		return
-	}
-	db := mustRawDB(t, path)
-	defer db.Close()
-	if _, err := db.Exec(`
-		INSERT OR IGNORE INTO import_runs (id, started_at, finished_at, status, notes)
-		VALUES (?, ?, ?, ?, ?)
-	`, importRunID, "2026-04-20T10:00:00Z", "2026-04-20T10:05:00Z", "succeeded", "fixture import run"); err != nil {
-		t.Fatalf("insert import run fixture %d: %v", importRunID, err)
-	}
-}
-
 func nullableString(value sql.NullString) any {
 	if value.Valid {
 		return value.String
@@ -4730,148 +7018,6 @@ func nullableString(value sql.NullString) any {
 
 func contextForTesting() context.Context {
 	return httptest.NewRequest(http.MethodGet, "/", nil).Context()
-}
-
-func fullWebReviewChoices(t *testing.T, group review.Group) []review.DraftChoiceInput {
-	t.Helper()
-
-	if len(group.Candidates) == 0 {
-		t.Fatal("review group has no candidates")
-	}
-	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
-	for _, field := range review.CanonicalFields {
-		choices = append(choices, review.DraftChoiceInput{
-			Field:       field,
-			CandidateID: group.Candidates[0].ID,
-		})
-	}
-	return choices
-}
-
-func fullWebReviewChoicesForCandidate(t *testing.T, candidateID int64) []review.DraftChoiceInput {
-	t.Helper()
-
-	if candidateID <= 0 {
-		t.Fatal("candidate ID is required")
-	}
-	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
-	for _, field := range review.CanonicalFields {
-		choices = append(choices, review.DraftChoiceInput{
-			Field:       field,
-			CandidateID: candidateID,
-		})
-	}
-	return choices
-}
-
-func mustCreateWebCanonicalReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, path, title, notes string) int64 {
-	t.Helper()
-
-	groupID := mustCreateWebReviewGroupForImportRun(t, st, path, title, notes, 3)
-	group, ok, err := st.LoadReviewGroup(contextForTesting(), groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if len(group.Candidates) != 3 {
-		t.Fatalf("candidate count = %d, want 3", len(group.Candidates))
-	}
-	canonical := group.Candidates[2]
-
-	db := mustRawDB(t, path)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Fatalf("close raw db: %v", err)
-		}
-	}()
-
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET canonical_event_id = ?
-		WHERE id = ?
-	`, canonical.ID+1000, canonical.ID); err != nil {
-		t.Fatalf("mark canonical snapshot candidate: %v", err)
-	}
-	if _, err := db.Exec(`
-		DELETE FROM review_field_defaults
-		WHERE group_id = ?
-	`, groupID); err != nil {
-		t.Fatalf("clear review field defaults: %v", err)
-	}
-	for _, field := range review.CanonicalFields {
-		if _, err := db.Exec(`
-			INSERT INTO review_field_defaults (
-				group_id,
-				field,
-				candidate_id,
-				value,
-				updated_at
-			) VALUES (?, ?, ?, ?, ?)
-		`, groupID, string(field), canonical.ID, review.CandidateValue(canonical, field), "2026-04-21T10:00:00Z"); err != nil {
-			t.Fatalf("set review field default for %s: %v", field, err)
-		}
-	}
-
-	return groupID
-}
-
-func mustCreateWebReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, path, title, notes string, candidateCount int) int64 {
-	t.Helper()
-	ensureImportRunFixtureForNotes(t, path, notes)
-
-	candidates := make([]review.CandidateInput, 0, candidateCount)
-	for i := 0; i < candidateCount; i++ {
-		candidates = append(candidates, review.CandidateInput{
-			Name:       fmt.Sprintf("%s candidate %d", title, i+1),
-			StartAt:    "2026-05-01T19:00:00Z",
-			SourceName: "Fixture ICS",
-			SourceURL:  "file:test.ics",
-		})
-	}
-	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      title,
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:test.ics",
-		Notes:      notes,
-		Candidates: candidates,
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-	return groupID
-}
-
-func mustCreateWebPublishableReviewGroupForImportRun(t *testing.T, st *sqlitestore.Store, path, title, notes string) int64 {
-	t.Helper()
-	ensureImportRunFixtureForNotes(t, path, notes)
-
-	groupID, err := st.CreateReviewGroup(contextForTesting(), review.GroupInput{
-		Title:      title,
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:published.ics",
-		Notes:      notes,
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "utc-1",
-				Name:        "UTC Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First line",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/utc-show",
-				Provenance:  "fixture UID utc-1",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create publishable review group: %v", err)
-	}
-	return groupID
 }
 
 func mustInsertAdminVenue(t *testing.T, db *sql.DB, venue domain.Venue) {
@@ -4944,41 +7090,168 @@ func (readOnlyStoreStub) Validate(context.Context) error { return nil }
 
 func (readOnlyStoreStub) Ready(context.Context) error { return nil }
 
-type reviewOnlyStoreStub struct {
+type adminReviewEventReviewStoreStub struct {
 	readOnlyStoreStub
-	group        review.Group
-	closedGroups []review.GroupSummary
+	clusters                    []store.EventReviewClusterSummary
+	closedClusters              []store.EventReviewClusterHistorySummary
+	detail                      store.EventReviewClusterDetail
+	sourceIdentityChoicesCalled bool
+	sourceIdentityChoicesInput  store.SetEventReviewSourceIdentityChoicesInput
+	sourceIdentityChoicesErr    error
+	discardCalled               bool
+	discardInput                store.EventReviewDiscardInput
+	discardErr                  error
+	resolveCalled               bool
+	resolveInput                store.EventReviewResolutionInput
+	resolveErr                  error
+	supersedeCalled             bool
+	supersedeInput              store.EventReviewSupersedeInput
+	supersedeErr                error
 }
 
-func (reviewOnlyStoreStub) ListOpenReviewGroups(context.Context) ([]review.GroupSummary, error) {
-	return nil, nil
+func (s adminReviewEventReviewStoreStub) ListOpenEventReviewClusters(context.Context) ([]store.EventReviewClusterSummary, error) {
+	return s.clusters, nil
 }
 
-func (s reviewOnlyStoreStub) ListClosedReviewGroups(context.Context, int) ([]review.GroupSummary, error) {
-	return s.closedGroups, nil
+func (s adminReviewEventReviewStoreStub) ListClosedEventReviewClusters(context.Context, int) ([]store.EventReviewClusterHistorySummary, error) {
+	return s.closedClusters, nil
 }
 
-func (s reviewOnlyStoreStub) LoadReviewGroup(_ context.Context, id int64) (review.Group, bool, error) {
-	if s.group.ID == id {
-		return s.group, true, nil
+func (s adminReviewEventReviewStoreStub) LoadEventReviewCluster(_ context.Context, id int64) (store.EventReviewClusterDetail, bool, error) {
+	if s.detail.Summary.ID != id {
+		return store.EventReviewClusterDetail{}, false, nil
 	}
-	return review.Group{}, false, nil
+	return s.detail, true, nil
 }
 
-func (reviewOnlyStoreStub) SaveReviewDraftChoices(context.Context, int64, []review.DraftChoiceInput) error {
+func (s *adminReviewEventReviewStoreStub) SetEventReviewSourceIdentityChoices(_ context.Context, input store.SetEventReviewSourceIdentityChoicesInput) error {
+	s.sourceIdentityChoicesCalled = true
+	s.sourceIdentityChoicesInput = input
+	return s.sourceIdentityChoicesErr
+}
+
+func (s *adminReviewEventReviewStoreStub) DiscardEventReviewCluster(_ context.Context, input store.EventReviewDiscardInput) error {
+	s.discardCalled = true
+	s.discardInput = input
+	return s.discardErr
+}
+
+func (s *adminReviewEventReviewStoreStub) ResolveEventReviewCluster(_ context.Context, input store.EventReviewResolutionInput) error {
+	s.resolveCalled = true
+	s.resolveInput = input
+	return s.resolveErr
+}
+
+func (s *adminReviewEventReviewStoreStub) SupersedeEventReviewCluster(_ context.Context, input store.EventReviewSupersedeInput) error {
+	s.supersedeCalled = true
+	s.supersedeInput = input
+	return s.supersedeErr
+}
+
+type eventReviewOnlyStoreStub struct {
+	readOnlyStoreStub
+	clusters                    []store.EventReviewClusterSummary
+	closedClusters              []store.EventReviewClusterHistorySummary
+	detail                      store.EventReviewClusterDetail
+	sourceIdentityChoicesCalled bool
+	sourceIdentityChoicesInput  store.SetEventReviewSourceIdentityChoicesInput
+	sourceIdentityChoicesErr    error
+	discardCalled               bool
+	discardInput                store.EventReviewDiscardInput
+	discardErr                  error
+	resolveCalled               bool
+	resolveInput                store.EventReviewResolutionInput
+	resolveErr                  error
+	supersedeCalled             bool
+	supersedeInput              store.EventReviewSupersedeInput
+	supersedeErr                error
+}
+
+func (s eventReviewOnlyStoreStub) ListOpenEventReviewClusters(context.Context) ([]store.EventReviewClusterSummary, error) {
+	return s.clusters, nil
+}
+
+func (s eventReviewOnlyStoreStub) ListClosedEventReviewClusters(context.Context, int) ([]store.EventReviewClusterHistorySummary, error) {
+	return s.closedClusters, nil
+}
+
+func (s eventReviewOnlyStoreStub) LoadEventReviewCluster(_ context.Context, id int64) (store.EventReviewClusterDetail, bool, error) {
+	if s.detail.Summary.ID != id {
+		return store.EventReviewClusterDetail{}, false, nil
+	}
+	return s.detail, true, nil
+}
+
+func (s *eventReviewOnlyStoreStub) DiscardEventReviewCluster(_ context.Context, input store.EventReviewDiscardInput) error {
+	s.discardCalled = true
+	s.discardInput = input
+	return s.discardErr
+}
+
+func (s *eventReviewOnlyStoreStub) SetEventReviewSourceIdentityChoices(_ context.Context, input store.SetEventReviewSourceIdentityChoicesInput) error {
+	s.sourceIdentityChoicesCalled = true
+	s.sourceIdentityChoicesInput = input
+	if s.sourceIdentityChoicesErr != nil {
+		return s.sourceIdentityChoicesErr
+	}
+	if s.detail.Summary.ID != input.ClusterID {
+		return nil
+	}
+	s.detail.Summary.Version++
+	if s.detail.ImportReadiness == nil {
+		return nil
+	}
+	updatedAt := fixtureLocalTime(2026, time.May, 15, 10, 55)
+	choiceByKey := make(map[eventReviewSourceIdentityChoiceKey]store.EventReviewImportCandidateSourceIdentityStatus, len(input.Choices))
+	for _, choice := range input.Choices {
+		key := eventReviewSourceIdentityChoiceKey{sourceID: choice.SourceID, sourceIdentityKey: strings.TrimSpace(choice.SourceIdentityKey)}
+		choiceByKey[key] = store.EventReviewImportCandidateSourceIdentityStatus{
+			SourceID:          choice.SourceID,
+			SourceIdentityKey: key.sourceIdentityKey,
+			ChoiceSelected:    choice.Selected,
+			ChoiceReason:      strings.TrimSpace(choice.SelectionReason),
+			ChoiceUpdatedAt:   &updatedAt,
+		}
+	}
+	for i := range s.detail.ImportReadiness.CandidateIdentityStatuses {
+		for j := range s.detail.ImportReadiness.CandidateIdentityStatuses[i].SourceKeys {
+			sourceKey := strings.TrimSpace(s.detail.ImportReadiness.CandidateIdentityStatuses[i].SourceKeys[j].SourceIdentityKey)
+			key := eventReviewSourceIdentityChoiceKey{
+				sourceID:          s.detail.ImportReadiness.CandidateIdentityStatuses[i].SourceKeys[j].SourceID,
+				sourceIdentityKey: sourceKey,
+			}
+			if choice, ok := choiceByKey[key]; ok {
+				s.detail.ImportReadiness.CandidateIdentityStatuses[i].SourceKeys[j].ChoiceSelected = choice.ChoiceSelected
+				s.detail.ImportReadiness.CandidateIdentityStatuses[i].SourceKeys[j].ChoiceReason = choice.ChoiceReason
+				s.detail.ImportReadiness.CandidateIdentityStatuses[i].SourceKeys[j].ChoiceUpdatedAt = choice.ChoiceUpdatedAt
+			}
+		}
+	}
 	return nil
 }
 
-func (reviewOnlyStoreStub) ResolveReviewGroup(context.Context, int64, []review.DraftChoiceInput) error {
-	return nil
+func (s *eventReviewOnlyStoreStub) ResolveEventReviewCluster(_ context.Context, input store.EventReviewResolutionInput) error {
+	s.resolveCalled = true
+	s.resolveInput = input
+	return s.resolveErr
 }
 
-func (reviewOnlyStoreStub) UpdateReviewGroupStatus(context.Context, int64, string) error {
-	return nil
+func (s *eventReviewOnlyStoreStub) SupersedeEventReviewCluster(_ context.Context, input store.EventReviewSupersedeInput) error {
+	s.supersedeCalled = true
+	s.supersedeInput = input
+	return s.supersedeErr
 }
 
 type provisionalVenueReadOnlyReviewStoreStub struct {
-	reviewOnlyStoreStub
+	readOnlyStoreStub
+}
+
+func (provisionalVenueReadOnlyReviewStoreStub) ListImportRuns(context.Context, int) ([]ingest.ImportRunSummary, error) {
+	return nil, nil
+}
+
+func (provisionalVenueReadOnlyReviewStoreStub) LatestSuccessfulImport(context.Context) (*ingest.ImportRunSummary, error) {
+	return nil, nil
 }
 
 func (provisionalVenueReadOnlyReviewStoreStub) ListVenues(context.Context) ([]domain.Venue, error) {
@@ -5034,31 +7307,16 @@ func (importHistoryOnlyStoreStub) LatestSuccessfulImport(context.Context) (*inge
 	}, nil
 }
 
-type reviewImportHistoryOnlyStoreStub struct {
-	reviewOnlyStoreStub
-}
-
-func (reviewImportHistoryOnlyStoreStub) ListImportRuns(ctx context.Context, limit int) ([]ingest.ImportRunSummary, error) {
-	return importHistoryOnlyStoreStub{}.ListImportRuns(ctx, limit)
-}
-
-func (reviewImportHistoryOnlyStoreStub) LatestSuccessfulImport(ctx context.Context) (*ingest.ImportRunSummary, error) {
-	return importHistoryOnlyStoreStub{}.LatestSuccessfulImport(ctx)
-}
-
-type importHistoryWithReviewGroupsNoDetailStoreStub struct {
+type importHistoryWithDetailEventReviewErrorStoreStub struct {
 	importHistoryOnlyStoreStub
 }
 
-func (importHistoryWithReviewGroupsNoDetailStoreStub) ListReviewGroupsForImportRun(context.Context, int64) ([]review.GroupSummary, error) {
-	return []review.GroupSummary{
-		{ID: 1, Status: review.StatusOpen},
-		{ID: 2, Status: review.StatusResolved},
-		{ID: 3, Status: review.StatusResolved},
-	}, nil
+type importHistoryWithEventReviewRowsStoreStub struct {
+	runs     []ingest.ImportRunSummary
+	clusters map[int64][]store.EventReviewClusterSummary
 }
 
-type importHistoryWithDetailNoReviewStoreStub struct {
+type importHistoryWithEventReviewErrorStoreStub struct {
 	importHistoryOnlyStoreStub
 }
 
@@ -5094,7 +7352,11 @@ func (s failingGenreConfigurationStore) RecomputeEventGenres(context.Context) er
 	return s.recomputeErr
 }
 
-func (importHistoryWithDetailNoReviewStoreStub) LoadImportRun(context.Context, int64) (ingest.ReplayRun, error) {
+func (importHistoryWithDetailEventReviewErrorStoreStub) ListEventReviewClustersForImportRun(context.Context, int64) ([]store.EventReviewClusterSummary, error) {
+	return nil, fmt.Errorf("event review clusters failed")
+}
+
+func (importHistoryWithDetailEventReviewErrorStoreStub) LoadImportRun(context.Context, int64) (ingest.ReplayRun, error) {
 	return ingest.ReplayRun{
 		ID:        1,
 		StartedAt: time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
@@ -5103,15 +7365,51 @@ func (importHistoryWithDetailNoReviewStoreStub) LoadImportRun(context.Context, i
 	}, nil
 }
 
-func (importHistoryWithDetailNoReviewStoreStub) ListReviewGroupsForImportRun(context.Context, int64) ([]review.GroupSummary, error) {
-	return []review.GroupSummary{
-		{
-			ID:             1,
-			Title:          "Fixture review group",
-			Status:         review.StatusOpen,
-			CandidateCount: 1,
-			UpdatedAt:      time.Date(2026, time.April, 20, 10, 1, 0, 0, time.UTC),
-		},
+func (s importHistoryWithEventReviewRowsStoreStub) ListImportRuns(context.Context, int) ([]ingest.ImportRunSummary, error) {
+	return append([]ingest.ImportRunSummary(nil), s.runs...), nil
+}
+
+func (s importHistoryWithEventReviewRowsStoreStub) LatestSuccessfulImport(context.Context) (*ingest.ImportRunSummary, error) {
+	if len(s.runs) == 0 {
+		return nil, nil
+	}
+	run := s.runs[0]
+	return &run, nil
+}
+
+func (s importHistoryWithEventReviewRowsStoreStub) LoadImportRun(_ context.Context, id int64) (ingest.ReplayRun, error) {
+	for _, run := range s.runs {
+		if run.ID == id {
+			return ingest.ReplayRun{
+				ID:        run.ID,
+				StartedAt: run.StartedAt,
+				Status:    run.Status,
+				Notes:     run.Notes,
+			}, nil
+		}
+	}
+	return ingest.ReplayRun{
+		ID:        id,
+		StartedAt: time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
+		Status:    "succeeded",
+		Notes:     "fixture",
+	}, nil
+}
+
+func (s importHistoryWithEventReviewRowsStoreStub) ListEventReviewClustersForImportRun(_ context.Context, importRunID int64) ([]store.EventReviewClusterSummary, error) {
+	return s.clusters[importRunID], nil
+}
+
+func (importHistoryWithEventReviewErrorStoreStub) ListEventReviewClustersForImportRun(context.Context, int64) ([]store.EventReviewClusterSummary, error) {
+	return nil, fmt.Errorf("event review clusters failed")
+}
+
+func (importHistoryWithEventReviewErrorStoreStub) LoadImportRun(context.Context, int64) (ingest.ReplayRun, error) {
+	return ingest.ReplayRun{
+		ID:        1,
+		StartedAt: time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC),
+		Status:    "succeeded",
+		Notes:     "fixture",
 	}, nil
 }
 
@@ -5226,7 +7524,7 @@ func mustFixtureServer(t *testing.T) *Server {
 	))
 }
 
-func mustClockedServer(t *testing.T, st *store.Store) *Server {
+func mustClockedServer(t *testing.T, st store.CatalogStore) *Server {
 	t.Helper()
 
 	server, err := NewServer(testServerDeps(st))
@@ -5247,17 +7545,14 @@ func testServerDeps(value any) ServerDeps {
 	if catalog, ok := value.(store.CatalogStore); ok {
 		deps.Catalog = catalog
 	}
-	if reviewStore, ok := value.(ReviewStore); ok {
-		deps.ReviewStore = reviewStore
-	}
 	if importRunStore, ok := value.(ingest.ImportRunStore); ok {
 		deps.ImportRunStore = importRunStore
 	}
 	if replayStore, ok := value.(ingest.ReplayStore); ok {
 		deps.ReplayStore = replayStore
 	}
-	if importRunReviewGroupStore, ok := value.(ImportRunReviewGroupStore); ok {
-		deps.ImportRunReviewGroupStore = importRunReviewGroupStore
+	if importRunEventReviewClusterStore, ok := value.(ImportRunEventReviewClusterStore); ok {
+		deps.ImportRunEventReviewClusterStore = importRunEventReviewClusterStore
 	}
 	if secondarySourceStore, ok := value.(EventSecondarySourceInfoStore); ok {
 		deps.EventSecondarySourceStore = secondarySourceStore
@@ -5284,6 +7579,18 @@ func testAdminAuthDeps(value any) ServerDeps {
 	return deps
 }
 
+func requestPath(t *testing.T, server http.Handler, method, path string, body io.Reader, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, body)
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	return rr
+}
+
 func loginAdmin(t *testing.T, server *Server, next string) (*http.Cookie, string) {
 	t.Helper()
 
@@ -5308,6 +7615,22 @@ func loginAdmin(t *testing.T, server *Server, next string) (*http.Cookie, string
 	return nil, ""
 }
 
+type aliasResolverStore struct {
+	*store.Store
+	aliases map[string]string
+}
+
+func (s aliasResolverStore) ResolveEventSlugAlias(_ context.Context, aliasSlug string) (string, bool, error) {
+	if s.aliases == nil {
+		return "", false, nil
+	}
+	targetSlug, ok := s.aliases[strings.TrimSpace(aliasSlug)]
+	if !ok {
+		return "", false, nil
+	}
+	return targetSlug, true, nil
+}
+
 func extractCSRFToken(t *testing.T, body string) string {
 	t.Helper()
 
@@ -5322,6 +7645,10 @@ func extractCSRFToken(t *testing.T, body string) string {
 		t.Fatalf("body has unterminated CSRF token: %q", body)
 	}
 	return rest[:end]
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
 }
 
 func fixtureLocalTime(year int, month time.Month, day, hour, minute int) time.Time {

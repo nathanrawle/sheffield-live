@@ -1,6 +1,29 @@
 package ingest
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestParseYellowArchDateTimeTreatsBareTimesAsUTC(t *testing.T) {
+	got, err := parseYellowArchDateTime("2026-05-10T18:30")
+	if err != nil {
+		t.Fatalf("parseYellowArchDateTime: %v", err)
+	}
+	if got := got.UTC().Format(time.RFC3339); got != "2026-05-10T18:30:00Z" {
+		t.Fatalf("parsed time = %q, want %q", got, "2026-05-10T18:30:00Z")
+	}
+}
+
+func TestParseYellowArchDateTimeRespectsExplicitOffset(t *testing.T) {
+	got, err := parseYellowArchDateTime("2026-05-10T18:30:00+01:00")
+	if err != nil {
+		t.Fatalf("parseYellowArchDateTime: %v", err)
+	}
+	if got := got.UTC().Format(time.RFC3339); got != "2026-05-10T17:30:00Z" {
+		t.Fatalf("parsed time = %q, want %q", got, "2026-05-10T17:30:00Z")
+	}
+}
 
 func TestParseYellowArchPage(t *testing.T) {
 	result := ParseYellowArchPage(readFixture(t, "yellow_arch.html"))
@@ -46,7 +69,7 @@ func TestParseYellowArchSourcePageResolvesRelativeURLsAndAppliesLimit(t *testing
 	if got, want := result.Candidates[0].URL, "https://www.yellowarch.com/event/late-junction/"; got != want {
 		t.Fatalf("url = %q, want %q", got, want)
 	}
-	if got, want := result.Candidates[0].UID, "https://www.yellowarch.com/event/late-junction/"; got != want {
+	if got, want := result.Candidates[0].UID, ""; got != want {
 		t.Fatalf("uid = %q, want %q", got, want)
 	}
 	if got, want := len(result.Skips), 1; got != want {

@@ -64,31 +64,31 @@ Copied image files are not snapshot payloads. They are local media assets keyed 
 
 ## Review Staging
 
-`cmd/ingest` can stage review groups from a successful ingest report.
+`cmd/ingest` can stage event-review clusters from a successful ingest report.
 
-Review staging always creates duplicate clusters, and it creates singleton review groups only when a singleton is not auto-promoted first. Duplicate review groups support field-level canonical choices, a canonical draft summary, persisted majority defaults, and optional live canonical snapshot context. Singleton review groups support accept or reject.
+Review staging always creates duplicate event-review clusters, and it creates singleton event-review clusters only when a singleton is not auto-promoted first. Duplicate event-review clusters support field-level canonical choices, a canonical draft summary, persisted majority defaults, and optional live canonical snapshot context. Singleton event-review clusters use the same resolve or discard flow.
 Each persisted review candidate keeps the staged venue slug plus source-derived venue evidence used to interpret it: `venue_text` and `venue_location_raw`. For ICS sources, `venue_text` stays cleaned for display, while `venue_location_raw` preserves the unfolded raw `LOCATION` text so later venue parsing can decode ICS escapes before applying the normal comma/newline split; the fetched ICS payload remains raw in the snapshot. Candidates can also carry optional room evidence (`room_text` and room slug/name rows) when a source exposes room-level listings.
 Singletons may auto-promote from any source when they are the first matching live record the application has seen. Source authority controls later overwrite rights rather than initial publish eligibility.
 
-Review staging uses a durable key, so source metadata changes alone do not create a new group, closed groups are not reopened, and reruns link the group to the current import run through the persisted `import_run_review_groups` relation.
-When every candidate in a staged group agrees on one owned-venue source identity from a registry-owned venue source, the group persists that authoritative source name, URL, and event key for later resolution. Duplicate staging also derives the current live slug from `name + venue_slug + start_at`, derives shared-venue summary fields through deterministic venue matching over candidate venue evidence, can create a provisional venue row immediately for newly created staged groups when the venue evidence is uniquely new, can create provisional room rows under known venues when room evidence is new, and can attach one live canonical snapshot row when all staged slug matches point to the same `events.origin = 'live'` row. Exact staged `venue_slug` matches take precedence over conflicting `venue_text` or `venue_location_raw` heuristics, so a known canonical slug is not blocked by noisier venue evidence. ICS-derived venue evidence keeps the raw `LOCATION` text for later decoding, but venue identity is still derived from the decoded comma/newline split rather than treating escaped commas as venue-name structure. New provisional venues derive both slug and display name from that location-head venue name rather than the full generic ICS `LOCATION` string, derive their address from the remaining evidence, drop an address line that duplicates the venue name, normalize comma/newline-separated address parts for display, and set neighbourhood when a recognized Sheffield district appears in the source-derived address. Open-group restaging refreshes that snapshot, refreshes staged venue and room evidence in place for existing open candidates, can backfill a provisional venue row only when a previously evidence-less open candidate is restaged with usable raw venue evidence, and recomputes persisted defaults while preserving manual draft choices. Supporting singleton auto-promotion does not mint authoritative event identities, does not create `event_source_links` or `event_secondary_source_info` rows, and can also create a provisional venue row immediately for a uniquely new venue. Internally, first-seen supporting publishes are stored as `provisional` until a review or authoritative update confirms them.
+Review staging uses a durable key, so source metadata changes alone do not create a new cluster, terminal clusters are not reopened, and reruns link the cluster to the current import run through the persisted `import_run_event_review_clusters` relation.
+When every candidate in a staged cluster agrees on one owned-venue source identity from a registry-owned venue source, the cluster persists that authoritative source name, URL, and event key for later resolution. Duplicate staging also derives the current live slug from `name + venue_slug + start_at`, derives shared-venue summary fields through deterministic venue matching over candidate venue evidence, can create a provisional venue row immediately for newly created staged clusters when the venue evidence is uniquely new, can create provisional room rows under known venues when room evidence is new, and can attach one live canonical snapshot row when all staged slug matches point to the same `events.origin = 'live'` row. Exact staged `venue_slug` matches take precedence over conflicting `venue_text` or `venue_location_raw` heuristics, so a known canonical slug is not blocked by noisier venue evidence. ICS-derived venue evidence keeps the raw `LOCATION` text for later decoding, but venue identity is still derived from the decoded comma/newline split rather than treating escaped commas as venue-name structure. New provisional venues derive both slug and display name from that location-head venue name rather than the full generic ICS `LOCATION` string, derive their address from the remaining evidence, drop an address line that duplicates the venue name, normalize comma/newline-separated address parts for display, and set neighbourhood when a recognized Sheffield district appears in the source-derived address. Open-cluster restaging refreshes that snapshot, refreshes staged venue and room evidence in place for existing open candidates, can backfill a provisional venue row only when a previously evidence-less open candidate is restaged with usable raw venue evidence, and recomputes persisted defaults while preserving manual draft choices. Supporting singleton auto-promotion does not mint authoritative event identities, does not create `event_source_links` or `event_secondary_source_info` rows, and can also create a provisional venue row immediately for a uniquely new venue. Internally, first-seen supporting publishes are stored as `provisional` until a review or authoritative update confirms them.
 Exact canonical duplicates and unanimous staged duplicates are stored as closed review history rows through duplicate auto-resolution rather than remaining in the open queue.
 
 Replay auto-detects the source from stored page snapshot metadata, reconstructs the same catalog-selected extraction path from stored snapshots, validates the snapshot envelope version and SHA-256, and refuses missing or ambiguous snapshot matches.
 
 ## Publish Rules
 
-Resolving a duplicate group or accepting a singleton publishes exactly one canonical public event in the same SQLite transaction. Successful singleton auto-promotion also publishes exactly one canonical public event.
+Resolving an event-review cluster publishes exactly one canonical public event in the same SQLite transaction. Successful singleton auto-promotion also publishes exactly one canonical public event.
 
-Rejecting either a duplicate or singleton review does not publish an event.
+Discarding an event-review cluster does not publish an event.
 
-When a review group resolves:
+When an event-review cluster resolves:
 
 - selected review fields map to `internal/domain.Event`
 - event genres are inferred from the selected canonical description plus persisted secondary-source descriptions; all matches are stored as ranked event genre rows and the public event row keeps the top two as its summary genre
 - selected image fields publish copied image URL, original source URL, alt text, and dimensions
-- authoritative groups pin source name and source URL from the persisted authoritative tuple
-- non-authoritative groups let source name and source URL fall back to the review-group source only when the selected field is blank
+- authoritative clusters pin source name and source URL from the persisted authoritative tuple
+- non-authoritative clusters let source name and source URL fall back to the cluster source only when the selected field is blank
 - canonical end times may be omitted; unknown canonical ends publish as `events.end_at = NULL`
 - venue matching first trusts an exact staged `venue_slug` match when it names one existing venue, then falls back to deterministic matching over `venue_text` and `venue_location_raw`
 - when that match is unique, the published event uses the existing venue slug
@@ -96,10 +96,10 @@ When a review group resolves:
 - when there is no existing match, resolution inserts a `provisional` live venue row in the same transaction and publishes the event against it if staging or singleton auto-promotion has not already created that venue
 - when venue evidence is ambiguous, resolution fails closed and the transaction rolls back
 - the source row is ensured transactionally
-- authoritative groups resolve through `event_source_links` identity before any slug-based publish path
+- authoritative clusters resolve through `event_source_links` identity before any slug-based publish path
 - if authoritative identity and canonical slug match point at different live events, authoritative identity wins
-- authoritative groups reconcile secondary-source `genre` and `description` rows for explicit non-authoritative candidate sources in the same transaction
-- non-authoritative groups upsert matching secondary-source `genre` and `description` rows as cumulative evidence; matching requires the same venue slug and start time plus a title match after case and whitespace normalization
+- authoritative clusters reconcile secondary-source `genre` and `description` rows for explicit non-authoritative candidate sources in the same transaction
+- non-authoritative clusters upsert matching secondary-source `genre` and `description` rows as cumulative evidence; matching requires the same venue slug and start time plus a title match after case and whitespace normalization
 - a missing source in a later accepted non-authoritative review does not delete an earlier stored secondary-source row
 - the published event origin is `live`
 - published event images reference copied media assets rather than hotlinking the source site
@@ -110,11 +110,11 @@ When a review group resolves:
 
 When a singleton auto-promotes without review:
 
-- duplicate groups still require review
+- duplicate clusters still require review
 - authoritative auto-promotion can insert a new event or update an existing linked event through owned-source identity and marks the event `reviewed`
 - supporting auto-promotion creates a `provisional` live event when no existing live event matches by exact slug or exact `name + venue_slug + start_at`
 - later supporting matches may fill blank canonical fields, but conflicting populated fields stay in review rather than silently rewriting the live event
-- supporting auto-promotion resolves matching stale open singleton groups by `staging_key` and links those groups to the current import run
+- supporting auto-promotion resolves the matching event-review cluster by deterministic `staging_key` and links that cluster to the current import run
 - authoritative later matches can upgrade a provisional live event in place and mark it `reviewed`
 
 ## Source Strategy

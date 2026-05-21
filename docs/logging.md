@@ -34,7 +34,7 @@ ADMIN_AUTH_DISABLED=1 LOG_LEVEL=debug LOG_FORMAT=json go run ./cmd/web
 ```
 
 ```bash
-LOG_FORMAT=json go run ./cmd/ingest -review-ics-fixture internal/ingest/testdata/sidney.ics >report.json
+LOG_FORMAT=json go run ./cmd/ingest -source sidney-and-matilda -stage-event-reviews >report.json
 ```
 
 If `LOG_LEVEL` or `LOG_FORMAT` is invalid, the command exits before starting and writes the configuration error to stderr.
@@ -92,7 +92,7 @@ Ingest start logs include:
 - `source`
 - `all_sources`
 - `import_run_id`
-- `stage_review_groups`
+- `stage_event_reviews`
 - `db_path`
 
 Ingest finish logs include:
@@ -114,12 +114,12 @@ When `-all-sources` is used, the finish log also includes:
 - `sources`
 - `failed_sources`
 
-When `-stage-review-groups` is used, the finish log also includes:
+When `-stage-event-reviews` is used, the finish log also includes:
 
-- `review_groups_created`
-- `review_groups_reused`
+- `event_review_clusters_created`
+- `event_review_clusters_reused`
 - `auto_promoted`
-- `duplicate_auto_resolved`
+- `event_review_clusters_auto_resolved_count`
 
 Ingest modes:
 
@@ -128,7 +128,9 @@ Ingest modes:
 - `replay`
 - `description_repair_live`
 - `description_repair_replay`
-- `review_fixture`
+- `title_repair_live`
+- `title_repair_replay`
+- `title_repair_all_sources`
 - `image_focus_backfill`
 
 Example:

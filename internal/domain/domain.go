@@ -18,6 +18,7 @@ const (
 
 	PublicationStateReviewed    PublicationState = "reviewed"
 	PublicationStateProvisional PublicationState = "provisional"
+	PublicationStateWithheld    PublicationState = "withheld"
 
 	ValidationStateValidated   ValidationState = "validated"
 	ValidationStateProvisional ValidationState = "provisional"

@@ -2,13 +2,13 @@
   <p class="eyebrow">Admin</p>
   <h1>Provisional venues</h1>
   <p class="lede">Queue of provisional venue rows created from newly detected venue evidence. Some rows may not have linked events yet.</p>
-  {{if or .HasReviewStorage .HasImportHistory}}
+  {{if or .HasEventReviewStorage .HasImportHistory}}
   <p class="review-group-meta">
-    {{if .HasReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
-    {{if and .HasReviewStorage .HasImportHistory}} · {{end}}
+    {{if .HasEventReviewStorage}}<a href="/admin/review">Review queue</a>{{end}}
+    {{if and .HasEventReviewStorage .HasImportHistory}} · {{end}}
     {{if .HasImportHistory}}<a href="/admin/import-runs">Import history</a>{{end}}
-    {{if .HasRoomAdmin}}{{if or .HasReviewStorage .HasImportHistory}} · {{end}}<a href="/admin/rooms">Provisional rooms</a>{{end}}
-    {{if .HasGenreConfiguration}}{{if or .HasReviewStorage .HasImportHistory .HasRoomAdmin}} · {{end}}<a href="/admin/configuration">Configuration</a>{{end}}
+    {{if .HasRoomAdmin}}{{if or .HasEventReviewStorage .HasImportHistory}} · {{end}}<a href="/admin/rooms">Provisional rooms</a>{{end}}
+    {{if .HasGenreConfiguration}}{{if or .HasEventReviewStorage .HasImportHistory .HasRoomAdmin}} · {{end}}<a href="/admin/configuration">Configuration</a>{{end}}
   </p>
   {{end}}
 </section>
@@ -43,7 +43,7 @@
           <td>{{.UpcomingEventCount}}</td>
           <td>
             {{with .NextEvent}}
-            <a href="/events/{{.Slug}}">{{.Name}}</a>
+            <a href="/admin/events/{{.Slug}}">{{.Name}}</a>
             <span class="venue-meta">{{dateShort .Start}} {{timeShort .Start}}</span>
             {{else}}
             &mdash;
