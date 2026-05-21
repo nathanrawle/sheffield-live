@@ -11,13 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/logging"
-	"sheffield-live/internal/review"
+	seedstore "sheffield-live/internal/store"
 	"sheffield-live/internal/store/sqlite"
 )
 
@@ -38,23 +39,21 @@ func run() error {
 }
 
 type ingestCommandConfig struct {
-	source             string
-	allSources         bool
-	limit              int
-	timeout            time.Duration
-	httpUserAgent      string
-	contact            string
-	dbPath             string
-	reviewICSFixture   string
-	reviewTitle        string
-	stageReviewGroups  bool
-	repairDescriptions bool
-	repairEventTitles  bool
-	applyTitleRepairs  bool
-	backfillImageFocus bool
-	importRunID        int64
-	imageFetcher       ingest.Fetcher
-	imageStorage       ingest.ImageStorage
+	source                   string
+	allSources               bool
+	limit                    int
+	timeout                  time.Duration
+	httpUserAgent            string
+	contact                  string
+	dbPath                   string
+	stageEventReviewClusters bool
+	repairDescriptions       bool
+	repairEventTitles        bool
+	applyTitleRepairs        bool
+	backfillImageFocus       bool
+	importRunID              int64
+	imageFetcher             ingest.Fetcher
+	imageStorage             ingest.ImageStorage
 }
 
 var (
@@ -170,10 +169,6 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 		}
 	}()
 
-	fixtureMode := strings.TrimSpace(cfg.reviewICSFixture) != ""
-	if fixtureMode {
-		return createReviewGroupFromFixture(context.Background(), st, stdout, cfg.reviewICSFixture, cfg.reviewTitle)
-	}
 	if cfg.backfillImageFocus {
 		return runImageFocusBackfill(context.Background(), st, stdout, env("MEDIA_ROOT", "./data/media"))
 	}
@@ -214,9 +209,9 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 			return runEventTitleRepair(context.Background(), st, stdout, catalog, report, runErr, cfg.applyTitleRepairs)
 		}
 		result = manualRunExecution{Report: report, Err: runErr}
-		if cfg.stageReviewGroups && !(runErr != nil && report.ImportRunID == 0) {
-			stageReport, stageErr := reviewStageForReport(context.Background(), st, catalog, report, runErr)
-			result.ReviewStage = &stageReport
+		if cfg.stageEventReviewClusters && !(runErr != nil && report.ImportRunID == 0) {
+			stageReport, stageErr := eventReviewClustersForReport(context.Background(), st, catalog, report, runErr)
+			result.EventReviewClusters = &stageReport
 			if stageErr != nil {
 				result.Err = stageErr
 			}
@@ -253,7 +248,7 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 		result = runSingleManualSource(context.Background(), st, fetcher, catalog, cfg, cfg.source)
 	}
 	summary.applyManualRun(result)
-	return encodeManualRunResult(stdout, cfg.stageReviewGroups, result)
+	return encodeManualRunResult(stdout, cfg.stageEventReviewClusters, result)
 }
 
 func configureImageIngest(cfg *ingestCommandConfig) error {
@@ -279,10 +274,7 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 		sourceFlag             trackedStringFlag
 		canonicalHTTPUserAgent trackedStringFlag
 		aliasHTTPUserAgent     trackedStringFlag
-		canonicalFixture       trackedStringFlag
-		aliasFixture           trackedStringFlag
 		canonicalStage         trackedBoolFlag
-		aliasStage             trackedBoolFlag
 	)
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -295,11 +287,7 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	fs.Var(&aliasHTTPUserAgent, "user-agent", "HTTP User-Agent header")
 	fs.StringVar(&cfg.contact, "contact", "", "contact detail for the default HTTP User-Agent header; use none|null|false to suppress contact info")
 	fs.StringVar(&cfg.dbPath, "db", "", "SQLite database path")
-	fs.Var(&canonicalFixture, "review-ics-fixture", "offline ICS fixture path used to create an admin review group")
-	fs.Var(&aliasFixture, "review-fixture", "offline ICS fixture path used to create an admin review group")
-	fs.StringVar(&cfg.reviewTitle, "review-title", "", "title for a review group created from -review-ics-fixture")
-	fs.Var(&canonicalStage, "stage-review-groups", "stage ingest candidates into admin review groups")
-	fs.Var(&aliasStage, "stage-review", "stage ingest candidates into admin review groups")
+	fs.Var(&canonicalStage, "stage-event-reviews", "stage ingest candidates into admin event-review clusters")
 	fs.BoolVar(&cfg.repairDescriptions, "repair-descriptions", false, "repair existing event descriptions from ingest candidates without staging or promotion")
 	fs.BoolVar(&cfg.repairEventTitles, "repair-event-titles", false, "repair existing event titles from ingest candidates; dry-run unless -apply-title-repairs is set")
 	fs.BoolVar(&cfg.applyTitleRepairs, "apply-title-repairs", false, "apply event title repairs instead of reporting a dry-run")
@@ -322,27 +310,11 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	} else {
 		cfg.httpUserAgent = aliasHTTPUserAgent.value
 	}
-	if conflictOnTrackedValues(canonicalFixture.values, aliasFixture.values) {
-		return ingestCommandConfig{}, errors.New("-review-ics-fixture and -review-fixture must match")
-	}
-	if canonicalFixture.set {
-		cfg.reviewICSFixture = canonicalFixture.value
-	} else {
-		cfg.reviewICSFixture = aliasFixture.value
-	}
-	if conflictOnTrackedValues(canonicalStage.values, aliasStage.values) {
-		return ingestCommandConfig{}, errors.New("-stage-review-groups and -stage-review must match")
-	}
 	if canonicalStage.set {
-		cfg.stageReviewGroups = canonicalStage.value
-	} else {
-		cfg.stageReviewGroups = aliasStage.value
+		cfg.stageEventReviewClusters = canonicalStage.value
 	}
 	if cfg.importRunID < 0 {
 		return ingestCommandConfig{}, errors.New("-import-run-id must be positive")
-	}
-	if strings.TrimSpace(cfg.reviewICSFixture) != "" && cfg.importRunID > 0 {
-		return ingestCommandConfig{}, errors.New("-review-ics-fixture and -import-run-id are mutually exclusive")
 	}
 	if cfg.allSources && sourceFlag.set {
 		return ingestCommandConfig{}, errors.New("-all-sources and -source are mutually exclusive")
@@ -350,26 +322,17 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	if cfg.allSources && cfg.importRunID > 0 {
 		return ingestCommandConfig{}, errors.New("-all-sources and -import-run-id are mutually exclusive")
 	}
-	if cfg.allSources && strings.TrimSpace(cfg.reviewICSFixture) != "" {
-		return ingestCommandConfig{}, errors.New("-all-sources and -review-ics-fixture are mutually exclusive")
+	if cfg.repairDescriptions && cfg.stageEventReviewClusters {
+		return ingestCommandConfig{}, errors.New("-repair-descriptions and -stage-event-reviews are mutually exclusive")
 	}
-	if cfg.repairDescriptions && cfg.stageReviewGroups {
-		return ingestCommandConfig{}, errors.New("-repair-descriptions and -stage-review-groups are mutually exclusive")
-	}
-	if cfg.repairEventTitles && cfg.stageReviewGroups {
-		return ingestCommandConfig{}, errors.New("-repair-event-titles and -stage-review-groups are mutually exclusive")
+	if cfg.repairEventTitles && cfg.stageEventReviewClusters {
+		return ingestCommandConfig{}, errors.New("-repair-event-titles and -stage-event-reviews are mutually exclusive")
 	}
 	if cfg.repairDescriptions && cfg.allSources {
 		return ingestCommandConfig{}, errors.New("-repair-descriptions and -all-sources are mutually exclusive")
 	}
-	if cfg.repairDescriptions && strings.TrimSpace(cfg.reviewICSFixture) != "" {
-		return ingestCommandConfig{}, errors.New("-repair-descriptions and -review-ics-fixture are mutually exclusive")
-	}
 	if cfg.repairEventTitles && cfg.repairDescriptions {
 		return ingestCommandConfig{}, errors.New("-repair-event-titles and -repair-descriptions are mutually exclusive")
-	}
-	if cfg.repairEventTitles && strings.TrimSpace(cfg.reviewICSFixture) != "" {
-		return ingestCommandConfig{}, errors.New("-repair-event-titles and -review-ics-fixture are mutually exclusive")
 	}
 	if cfg.applyTitleRepairs && !cfg.repairEventTitles {
 		return ingestCommandConfig{}, errors.New("-apply-title-repairs requires -repair-event-titles")
@@ -390,11 +353,8 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 		if cfg.importRunID > 0 {
 			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -import-run-id are mutually exclusive")
 		}
-		if strings.TrimSpace(cfg.reviewICSFixture) != "" {
-			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -review-ics-fixture are mutually exclusive")
-		}
-		if cfg.stageReviewGroups {
-			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -stage-review-groups are mutually exclusive")
+		if cfg.stageEventReviewClusters {
+			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -stage-event-reviews are mutually exclusive")
 		}
 		if cfg.repairDescriptions {
 			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -repair-descriptions are mutually exclusive")
@@ -475,28 +435,33 @@ func (f *trackedBoolFlag) Set(value string) error {
 	return nil
 }
 
-func conflictOnTrackedValues[T comparable](canonical, alias []T) bool {
-	if len(canonical)+len(alias) == 0 {
+func conflictOnTrackedValues[T comparable](valueSets ...[]T) bool {
+	total := 0
+	for _, values := range valueSets {
+		total += len(values)
+	}
+	if total == 0 {
 		return false
 	}
-	seen := make(map[T]struct{}, len(canonical)+len(alias))
-	for _, value := range canonical {
-		seen[value] = struct{}{}
-	}
-	for _, value := range alias {
-		seen[value] = struct{}{}
+	seen := make(map[T]struct{}, total)
+	for _, values := range valueSets {
+		for _, value := range values {
+			seen[value] = struct{}{}
+		}
 	}
 	return len(seen) > 1
 }
 
-type reviewStageStore interface {
-	StageReviewGroup(ctx context.Context, input review.GroupInput) (review.StageGroupResult, error)
-	PromoteSingletonReviewGroupIfMissing(ctx context.Context, input review.GroupInput) (string, bool, error)
+type eventReviewClusterStore interface {
+	EnsureSource(ctx context.Context, name, sourceURL string) (int64, error)
+	StageEventReviewEvidence(ctx context.Context, input seedstore.StageEventReviewEvidenceInput) (seedstore.StageEventReviewEvidenceResult, error)
+	PromoteSingletonReviewClusterIfMissing(ctx context.Context, input ingest.ReviewStageClusterInput) (string, bool, error)
+	FinalizeOpenEventReviewClusterRestage(ctx context.Context, clusterID int64, evidenceIDs []int64) (*seedstore.EventReviewResolutionSummary, error)
 }
 
 type manualIngestReport struct {
-	Report      ingest.Report     `json:"report"`
-	ReviewStage reviewStageReport `json:"review_stage"`
+	Report              ingest.Report            `json:"report"`
+	EventReviewClusters eventReviewClusterReport `json:"review_stage"`
 }
 
 type descriptionRepairRunReport struct {
@@ -518,26 +483,26 @@ type imageFocusBackfillReport struct {
 }
 
 type manualRunExecution struct {
-	Report      ingest.Report
-	ReviewStage *reviewStageReport
-	Err         error
+	Report              ingest.Report
+	EventReviewClusters *eventReviewClusterReport
+	Err                 error
 }
 
 type ingestLogSummary struct {
-	Mode                  string
-	DBPath                string
-	Source                string
-	AllSources            bool
-	StageReviewGroups     bool
-	ImportRunID           int64
-	Status                string
-	Totals                ingest.ReportTotals
-	SourceCount           int
-	FailedSourceCount     int
-	ReviewGroupsCreated   int
-	ReviewGroupsReused    int
-	AutoPromoted          int
-	DuplicateAutoResolved int
+	Mode                            string
+	DBPath                          string
+	Source                          string
+	AllSources                      bool
+	StageEventReviewClusters        bool
+	ImportRunID                     int64
+	Status                          string
+	Totals                          ingest.ReportTotals
+	SourceCount                     int
+	FailedSourceCount               int
+	EventReviewClustersCreated      int
+	EventReviewClustersReused       int
+	AutoPromoted                    int
+	EventReviewClustersAutoResolved int
 }
 
 type batchManualIngestReport struct {
@@ -545,67 +510,69 @@ type batchManualIngestReport struct {
 }
 
 type batchManualIngestResult struct {
-	Source      string                         `json:"source"`
-	Report      ingest.Report                  `json:"report"`
-	ReviewStage *reviewStageReport             `json:"review_stage,omitempty"`
-	TitleRepair *sqlite.EventTitleRepairReport `json:"title_repair,omitempty"`
-	Error       string                         `json:"error,omitempty"`
+	Source              string                         `json:"source"`
+	Report              ingest.Report                  `json:"report"`
+	EventReviewClusters *eventReviewClusterReport      `json:"review_stage,omitempty"`
+	TitleRepair         *sqlite.EventTitleRepairReport `json:"title_repair,omitempty"`
+	Error               string                         `json:"error,omitempty"`
 }
 
-type reviewStageReport struct {
-	Enabled                    bool                                     `json:"enabled"`
-	GroupsCreated              int                                      `json:"groups_created"`
-	GroupsReused               int                                      `json:"groups_reused"`
-	CandidateCount             int                                      `json:"candidate_count"`
-	ReviewCandidateCount       int                                      `json:"review_candidate_count"`
-	AutoPromotedCount          int                                      `json:"auto_promoted_count"`
-	DuplicateAutoResolvedCount int                                      `json:"duplicate_auto_resolved_count"`
-	Groups                     []reviewStageGroupReport                 `json:"groups"`
-	AutoPromoted               []reviewStageAutoPromotedReport          `json:"auto_promoted"`
-	DuplicateAutoResolved      []reviewStageDuplicateAutoResolvedReport `json:"duplicate_auto_resolved"`
-	Errors                     []string                                 `json:"errors"`
+type eventReviewClusterReport struct {
+	Enabled                              bool                                   `json:"enabled"`
+	EventReviewClustersCreated           int                                    `json:"event_review_clusters_created"`
+	EventReviewClustersReused            int                                    `json:"event_review_clusters_reused"`
+	CandidateCount                       int                                    `json:"candidate_count"`
+	ReviewCandidateCount                 int                                    `json:"review_candidate_count"`
+	AutoPromotedCount                    int                                    `json:"auto_promoted_count"`
+	EventReviewClustersAutoResolvedCount int                                    `json:"event_review_clusters_auto_resolved_count"`
+	EventReviewClusters                  []eventReviewClusterReportItem         `json:"event_review_clusters"`
+	AutoPromoted                         []eventReviewClusterAutoPromotedReport `json:"auto_promoted"`
+	EventReviewClustersAutoResolved      []eventReviewClusterAutoResolvedReport `json:"event_review_clusters_auto_resolved"`
+	Errors                               []string                               `json:"errors"`
 }
 
-type reviewStageGroupReport struct {
-	ID             int64  `json:"id"`
-	Title          string `json:"title"`
-	CandidateCount int    `json:"candidate_count"`
-	SourceURL      string `json:"source_url"`
-	Result         string `json:"result"`
+type eventReviewClusterReportItem struct {
+	ID                   int64   `json:"-"`
+	ClusterID            int64   `json:"cluster_id,omitempty"`
+	Title                string  `json:"title"`
+	CandidateCount       int     `json:"candidate_count"`
+	SourceURL            string  `json:"source_url"`
+	Result               string  `json:"result"`
+	SupersededClusterIDs []int64 `json:"superseded_cluster_ids,omitempty"`
 }
 
-type reviewStageAutoPromotedReport struct {
+type eventReviewClusterAutoPromotedReport struct {
 	Title     string `json:"title"`
 	EventSlug string `json:"event_slug"`
 	SourceURL string `json:"source_url"`
 	Result    string `json:"result"`
 }
 
-type reviewStageDuplicateAutoResolvedReport struct {
+type eventReviewClusterAutoResolvedReport struct {
 	Title              string `json:"title"`
 	Result             string `json:"result"`
-	ReviewGroupID      int64  `json:"review_group_id"`
+	ClusterID          int64  `json:"cluster_id,omitempty"`
 	CandidateCount     int    `json:"candidate_count"`
 	CanonicalEventSlug string `json:"canonical_event_slug,omitempty"`
 }
 
 func newIngestLogSummary(cfg ingestCommandConfig, dbPath string) ingestLogSummary {
 	return ingestLogSummary{
-		Mode:              ingestMode(cfg),
-		DBPath:            dbPath,
-		Source:            cfg.source,
-		AllSources:        cfg.allSources,
-		StageReviewGroups: cfg.stageReviewGroups,
-		ImportRunID:       cfg.importRunID,
+		Mode:                     ingestMode(cfg),
+		DBPath:                   dbPath,
+		Source:                   cfg.source,
+		AllSources:               cfg.allSources,
+		StageEventReviewClusters: cfg.stageEventReviewClusters,
+		ImportRunID:              cfg.importRunID,
 	}
 }
 
 func ingestMode(cfg ingestCommandConfig) string {
 	switch {
-	case strings.TrimSpace(cfg.reviewICSFixture) != "":
-		return "review_fixture"
 	case cfg.backfillImageFocus:
 		return "image_focus_backfill"
+	case cfg.repairEventTitles && cfg.allSources:
+		return "title_repair_all_sources"
 	case cfg.allSources:
 		return "all_sources"
 	case cfg.repairDescriptions && cfg.importRunID > 0:
@@ -614,8 +581,6 @@ func ingestMode(cfg ingestCommandConfig) string {
 		return "description_repair_live"
 	case cfg.repairEventTitles && cfg.importRunID > 0:
 		return "title_repair_replay"
-	case cfg.repairEventTitles && cfg.allSources:
-		return "title_repair_all_sources"
 	case cfg.repairEventTitles:
 		return "title_repair_live"
 	case cfg.importRunID > 0:
@@ -631,7 +596,7 @@ func (s ingestLogSummary) startAttrs() []any {
 		"source", s.Source,
 		"all_sources", s.AllSources,
 		"import_run_id", s.ImportRunID,
-		"stage_review_groups", s.StageReviewGroups,
+		"stage_event_reviews", s.StageEventReviewClusters,
 		"db_path", s.DBPath,
 	}
 }
@@ -656,12 +621,12 @@ func (s ingestLogSummary) finishAttrs(duration time.Duration) []any {
 			"failed_sources", s.FailedSourceCount,
 		)
 	}
-	if s.StageReviewGroups {
+	if s.StageEventReviewClusters {
 		attrs = append(attrs,
-			"review_groups_created", s.ReviewGroupsCreated,
-			"review_groups_reused", s.ReviewGroupsReused,
+			"event_review_clusters_created", s.EventReviewClustersCreated,
+			"event_review_clusters_reused", s.EventReviewClustersReused,
 			"auto_promoted", s.AutoPromoted,
-			"duplicate_auto_resolved", s.DuplicateAutoResolved,
+			"event_review_clusters_auto_resolved_count", s.EventReviewClustersAutoResolved,
 		)
 	}
 	return attrs
@@ -675,19 +640,19 @@ func (s *ingestLogSummary) applyManualRun(result manualRunExecution) {
 	s.ImportRunID = result.Report.ImportRunID
 	s.Status = result.Report.Status
 	s.Totals = result.Report.Totals
-	if result.ReviewStage != nil {
-		s.ReviewGroupsCreated = result.ReviewStage.GroupsCreated
-		s.ReviewGroupsReused = result.ReviewStage.GroupsReused
-		s.AutoPromoted = result.ReviewStage.AutoPromotedCount
-		s.DuplicateAutoResolved = result.ReviewStage.DuplicateAutoResolvedCount
+	if result.EventReviewClusters != nil {
+		s.EventReviewClustersCreated = result.EventReviewClusters.EventReviewClustersCreated
+		s.EventReviewClustersReused = result.EventReviewClusters.EventReviewClustersReused
+		s.AutoPromoted = result.EventReviewClusters.AutoPromotedCount
+		s.EventReviewClustersAutoResolved = result.EventReviewClusters.EventReviewClustersAutoResolvedCount
 	}
 }
 
-func reviewStageForReport(ctx context.Context, st reviewStageStore, catalog *ingest.Catalog, report ingest.Report, runErr error) (reviewStageReport, error) {
+func eventReviewClustersForReport(ctx context.Context, st eventReviewClusterStore, catalog *ingest.Catalog, report ingest.Report, runErr error) (eventReviewClusterReport, error) {
 	if runErr != nil {
-		return emptyReviewStageReport(), nil
+		return emptyEventReviewClusterReport(), nil
 	}
-	return createReviewGroupsFromReport(ctx, st, catalog, report)
+	return createEventReviewClustersFromReport(ctx, st, catalog, report)
 }
 
 func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, source string) manualRunExecution {
@@ -700,14 +665,14 @@ func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest
 	if runErr != nil && report.ImportRunID == 0 {
 		return manualRunExecution{Report: report, Err: runErr}
 	}
-	if !cfg.stageReviewGroups {
+	if !cfg.stageEventReviewClusters {
 		return manualRunExecution{Report: report, Err: runErr}
 	}
-	stageReport, stageErr := reviewStageForReport(ctx, st, catalog, report, runErr)
+	stageReport, stageErr := eventReviewClustersForReport(ctx, st, catalog, report, runErr)
 	if stageErr != nil {
-		return manualRunExecution{Report: report, ReviewStage: &stageReport, Err: stageErr}
+		return manualRunExecution{Report: report, EventReviewClusters: &stageReport, Err: stageErr}
 	}
-	return manualRunExecution{Report: report, ReviewStage: &stageReport, Err: runErr}
+	return manualRunExecution{Report: report, EventReviewClusters: &stageReport, Err: runErr}
 }
 
 func encodeManualRunResult(stdout io.Writer, stageEnabled bool, result manualRunExecution) error {
@@ -717,13 +682,13 @@ func encodeManualRunResult(stdout io.Writer, stageEnabled bool, result manualRun
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	if stageEnabled {
-		stage := emptyReviewStageReport()
-		if result.ReviewStage != nil {
-			stage = *result.ReviewStage
+		stage := emptyEventReviewClusterReport()
+		if result.EventReviewClusters != nil {
+			stage = *result.EventReviewClusters
 		}
 		if err := encoder.Encode(manualIngestReport{
-			Report:      result.Report,
-			ReviewStage: stage,
+			Report:              result.Report,
+			EventReviewClusters: stage,
 		}); err != nil {
 			return err
 		}
@@ -855,9 +820,9 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 			Source: source,
 			Report: result.Report,
 		}
-		if result.ReviewStage != nil {
-			stageCopy := *result.ReviewStage
-			batchResult.ReviewStage = &stageCopy
+		if result.EventReviewClusters != nil {
+			stageCopy := *result.EventReviewClusters
+			batchResult.EventReviewClusters = &stageCopy
 		}
 		if result.Err != nil {
 			batchResult.Error = result.Err.Error()
@@ -881,11 +846,11 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 			summary.Totals.Candidates += result.Report.Totals.Candidates
 			summary.Totals.Skips += result.Report.Totals.Skips
 			summary.Totals.Errors += result.Report.Totals.Errors
-			if result.ReviewStage != nil {
-				summary.ReviewGroupsCreated += result.ReviewStage.GroupsCreated
-				summary.ReviewGroupsReused += result.ReviewStage.GroupsReused
-				summary.AutoPromoted += result.ReviewStage.AutoPromotedCount
-				summary.DuplicateAutoResolved += result.ReviewStage.DuplicateAutoResolvedCount
+			if result.EventReviewClusters != nil {
+				summary.EventReviewClustersCreated += result.EventReviewClusters.EventReviewClustersCreated
+				summary.EventReviewClustersReused += result.EventReviewClusters.EventReviewClustersReused
+				summary.AutoPromoted += result.EventReviewClusters.AutoPromotedCount
+				summary.EventReviewClustersAutoResolved += result.EventReviewClusters.EventReviewClustersAutoResolvedCount
 			}
 		}
 	}
@@ -970,12 +935,12 @@ func logIngestSourceFinished(logger *slog.Logger, source string, result manualRu
 		"skips", result.Report.Totals.Skips,
 		"errors", result.Report.Totals.Errors,
 	}
-	if result.ReviewStage != nil {
+	if result.EventReviewClusters != nil {
 		attrs = append(attrs,
-			"review_groups_created", result.ReviewStage.GroupsCreated,
-			"review_groups_reused", result.ReviewStage.GroupsReused,
-			"auto_promoted", result.ReviewStage.AutoPromotedCount,
-			"duplicate_auto_resolved", result.ReviewStage.DuplicateAutoResolvedCount,
+			"event_review_clusters_created", result.EventReviewClusters.EventReviewClustersCreated,
+			"event_review_clusters_reused", result.EventReviewClusters.EventReviewClustersReused,
+			"auto_promoted", result.EventReviewClusters.AutoPromotedCount,
+			"event_review_clusters_auto_resolved_count", result.EventReviewClusters.EventReviewClustersAutoResolvedCount,
 		)
 	}
 	if result.Err != nil {
@@ -986,162 +951,192 @@ func logIngestSourceFinished(logger *slog.Logger, source string, result manualRu
 	logger.Info("ingest source finished", attrs...)
 }
 
-func createReviewGroupsFromReport(ctx context.Context, st reviewStageStore, catalog *ingest.Catalog, report ingest.Report) (reviewStageReport, error) {
-	groups := ingest.ReviewGroupsFromReportWithCatalog(catalog, report)
-	stage := emptyReviewStageReport()
-	stage.Groups = make([]reviewStageGroupReport, 0, len(groups))
-	for _, group := range groups {
-		stage.CandidateCount += len(group.Candidates)
+func createEventReviewClustersFromReport(ctx context.Context, st eventReviewClusterStore, catalog *ingest.Catalog, report ingest.Report) (eventReviewClusterReport, error) {
+	clusters := ingest.ReviewClustersFromReportWithCatalog(catalog, report)
+	stage := emptyEventReviewClusterReport()
+	stage.EventReviewClusters = make([]eventReviewClusterReportItem, 0, len(clusters))
+	sourceIDs := make(map[string]int64)
+	for _, cluster := range clusters {
+		stage.CandidateCount += len(cluster.Candidates)
 	}
 
-	for _, group := range groups {
-		if len(group.Candidates) == 1 {
-			eventSlug, applied, err := st.PromoteSingletonReviewGroupIfMissing(ctx, group)
+	for _, cluster := range clusters {
+		if len(cluster.Candidates) == 1 {
+			eventSlug, applied, err := st.PromoteSingletonReviewClusterIfMissing(ctx, cluster)
 			if err != nil {
-				message := fmt.Sprintf("auto-promote review group %q: %v", group.Title, err)
+				message := fmt.Sprintf("auto-promote event-review cluster %q: %v", cluster.Title, err)
 				stage.Errors = append(stage.Errors, message)
 				return stage, errors.New(message)
 			}
 			if applied {
 				stage.AutoPromotedCount++
-				stage.AutoPromoted = append(stage.AutoPromoted, reviewStageAutoPromotedReport{
-					Title:     group.Title,
+				stage.AutoPromoted = append(stage.AutoPromoted, eventReviewClusterAutoPromotedReport{
+					Title:     cluster.Title,
 					EventSlug: eventSlug,
-					SourceURL: group.SourceURL,
+					SourceURL: cluster.SourceURL,
 					Result:    "applied",
 				})
 				continue
 			}
 		}
 
-		stage.ReviewCandidateCount += len(group.Candidates)
-		result, err := st.StageReviewGroup(ctx, group)
-		if err != nil {
-			message := fmt.Sprintf("stage review group %q: %v", group.Title, err)
-			stage.Errors = append(stage.Errors, message)
-			return stage, errors.New(message)
-		}
-		if result.AutoResolved {
-			stage.DuplicateAutoResolvedCount++
-			stage.DuplicateAutoResolved = append(stage.DuplicateAutoResolved, reviewStageDuplicateAutoResolvedReport{
-				Title:              group.Title,
-				Result:             result.AutoResolvedResult,
-				ReviewGroupID:      result.ID,
-				CandidateCount:     len(group.Candidates),
-				CanonicalEventSlug: result.CanonicalEventSlug,
-			})
+		stage.ReviewCandidateCount += len(cluster.Candidates)
+		evidenceInputs := ingest.ReviewStageClusterEventReviewEvidenceInputs(cluster)
+		if len(evidenceInputs) == 0 {
 			continue
+		}
+		results := make([]seedstore.StageEventReviewEvidenceResult, 0, len(evidenceInputs))
+		for _, evidenceInput := range evidenceInputs {
+			sourceID, err := resolveEventReviewClusterSourceID(ctx, st, sourceIDs, evidenceInput.SourceName, evidenceInput.SourceURL)
+			if err != nil {
+				message := fmt.Sprintf("ensure source for event-review cluster %q: %v", cluster.Title, err)
+				stage.Errors = append(stage.Errors, message)
+				return stage, errors.New(message)
+			}
+			evidenceInput.RunRef = seedstore.EventReviewRunRef{
+				Kind: seedstore.EventReviewRunKindImport,
+				ID:   report.ImportRunID,
+			}
+			evidenceInput.SourceID = sourceID
+			result, err := st.StageEventReviewEvidence(ctx, evidenceInput)
+			if err != nil {
+				message := fmt.Sprintf("stage event review evidence for %q: %v", cluster.Title, err)
+				stage.Errors = append(stage.Errors, message)
+				return stage, errors.New(message)
+			}
+			results = append(results, result)
 		}
 
 		reportResult := "reused"
-		if result.Created {
-			stage.GroupsCreated++
-			reportResult = "created"
-		} else {
-			stage.GroupsReused++
+		clusterID := int64(0)
+		openClusterEvidenceIDs := make(map[int64]map[int64]struct{})
+		autoResolved := false
+		autoResolvedResult := ""
+		autoResolvedCanonicalSlug := ""
+		for _, result := range results {
+			if clusterID == 0 && result.ClusterID != 0 {
+				clusterID = result.ClusterID
+			}
+			if result.ClusterCreated {
+				reportResult = "created"
+			}
+			if result.AutoResolved && result.ClusterStatus != seedstore.EventReviewClusterStatusOpen && !autoResolved {
+				autoResolved = true
+				autoResolvedResult = result.AutoResolvedResult
+				autoResolvedCanonicalSlug = result.CanonicalEventSlug
+			}
+			if result.ClusterStatus != seedstore.EventReviewClusterStatusOpen || result.ClusterID == 0 || result.EvidenceID == 0 {
+				continue
+			}
+			evidenceIDs, ok := openClusterEvidenceIDs[result.ClusterID]
+			if !ok {
+				evidenceIDs = make(map[int64]struct{})
+				openClusterEvidenceIDs[result.ClusterID] = evidenceIDs
+			}
+			evidenceIDs[result.EvidenceID] = struct{}{}
 		}
-		stage.Groups = append(stage.Groups, reviewStageGroupReport{
-			ID:             result.ID,
-			Title:          group.Title,
-			CandidateCount: len(group.Candidates),
-			SourceURL:      group.SourceURL,
-			Result:         reportResult,
+		if reportResult == "created" {
+			stage.EventReviewClustersCreated++
+		} else {
+			stage.EventReviewClustersReused++
+		}
+		if autoResolved {
+			stage.EventReviewClustersAutoResolvedCount++
+			stage.EventReviewClustersAutoResolved = append(stage.EventReviewClustersAutoResolved, eventReviewClusterAutoResolvedReport{
+				Title:              cluster.Title,
+				Result:             autoResolvedResult,
+				ClusterID:          clusterID,
+				CandidateCount:     len(cluster.Candidates),
+				CanonicalEventSlug: autoResolvedCanonicalSlug,
+			})
+		}
+		supersededClusterIDs := mergeStageSupersededClusterIDs(results)
+		stage.EventReviewClusters = append(stage.EventReviewClusters, eventReviewClusterReportItem{
+			ID:                   clusterID,
+			ClusterID:            clusterID,
+			Title:                cluster.Title,
+			CandidateCount:       len(cluster.Candidates),
+			SourceURL:            cluster.SourceURL,
+			Result:               reportResult,
+			SupersededClusterIDs: supersededClusterIDs,
 		})
+
+		if len(openClusterEvidenceIDs) > 0 {
+			openClusterIDs := make([]int64, 0, len(openClusterEvidenceIDs))
+			for openClusterID := range openClusterEvidenceIDs {
+				openClusterIDs = append(openClusterIDs, openClusterID)
+			}
+			sort.Slice(openClusterIDs, func(i, j int) bool { return openClusterIDs[i] < openClusterIDs[j] })
+			for _, openClusterID := range openClusterIDs {
+				ids := openClusterEvidenceIDs[openClusterID]
+				evidenceIDs := make([]int64, 0, len(ids))
+				for evidenceID := range ids {
+					evidenceIDs = append(evidenceIDs, evidenceID)
+				}
+				sort.Slice(evidenceIDs, func(i, j int) bool { return evidenceIDs[i] < evidenceIDs[j] })
+				resolution, err := st.FinalizeOpenEventReviewClusterRestage(ctx, openClusterID, evidenceIDs)
+				if err != nil {
+					message := fmt.Sprintf("finalize event-review cluster %q: %v", cluster.Title, err)
+					stage.Errors = append(stage.Errors, message)
+					return stage, errors.New(message)
+				}
+				if resolution != nil && resolution.AppliedAutoResolution != nil {
+					stage.EventReviewClustersAutoResolvedCount++
+					stage.EventReviewClustersAutoResolved = append(stage.EventReviewClustersAutoResolved, eventReviewClusterAutoResolvedReport{
+						Title:              cluster.Title,
+						Result:             resolution.AppliedAutoResolution.Result,
+						ClusterID:          resolution.ClusterID,
+						CandidateCount:     len(cluster.Candidates),
+						CanonicalEventSlug: resolution.AppliedAutoResolution.EventSlug,
+					})
+				}
+			}
+		}
 	}
 	return stage, nil
 }
 
-func emptyReviewStageReport() reviewStageReport {
-	return reviewStageReport{
-		Enabled:               true,
-		Groups:                []reviewStageGroupReport{},
-		AutoPromoted:          []reviewStageAutoPromotedReport{},
-		DuplicateAutoResolved: []reviewStageDuplicateAutoResolvedReport{},
-		Errors:                []string{},
-	}
-}
-
-type reviewFixtureReport struct {
-	Fixture    string             `json:"fixture"`
-	GroupID    int64              `json:"group_id"`
-	Candidates int                `json:"candidates"`
-	Skips      []ingest.ParseSkip `json:"skips,omitempty"`
-	Errors     []string           `json:"errors,omitempty"`
-}
-
-func createReviewGroupFromFixture(ctx context.Context, st *sqlite.Store, stdout io.Writer, fixturePath, title string) error {
-	raw, err := os.ReadFile(fixturePath)
-	if err != nil {
-		return fmt.Errorf("read review fixture: %w", err)
-	}
-	parse := ingest.ParseICS(raw)
-	sourceURL := "file:" + fixturePath
-	sourceName := "Fixture ICS"
-	if strings.TrimSpace(title) == "" {
-		title = "Fixture review: " + filepath.Base(fixturePath)
-	}
-
-	candidates := make([]review.CandidateInput, 0, len(parse.Candidates))
-	for _, candidate := range parse.Candidates {
-		status := strings.TrimSpace(candidate.Status)
-		if strings.EqualFold(status, "CONFIRMED") {
-			status = "Listed"
-		}
-		candidates = append(candidates, review.CandidateInput{
-			ExternalID:  candidate.UID,
-			Name:        candidate.Summary,
-			VenueSlug:   ingest.VenueSlugFromText(candidate.Location),
-			StartAt:     candidate.StartAt,
-			EndAt:       candidate.EndAt,
-			Genre:       "",
-			Status:      status,
-			Description: candidate.Description,
-			SourceName:  sourceName,
-			SourceURL:   firstNonEmpty(candidate.URL, sourceURL),
-			Provenance:  provenanceForFixtureCandidate(candidate),
-		})
-	}
-
-	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
-		Title:      title,
-		SourceName: sourceName,
-		SourceURL:  sourceURL,
-		Notes:      "Created from offline fixture.",
-		Candidates: candidates,
-	})
-	if err != nil {
-		return fmt.Errorf("create review group: %w", err)
-	}
-
-	report := reviewFixtureReport{
-		Fixture:    fixturePath,
-		GroupID:    groupID,
-		Candidates: len(candidates),
-		Skips:      parse.Skips,
-		Errors:     parse.Errors,
-	}
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(report)
-}
-
-func provenanceForFixtureCandidate(candidate ingest.EventCandidate) string {
-	if candidate.UID != "" {
-		return "fixture UID " + candidate.UID
-	}
-	if candidate.URL != "" {
-		return "fixture URL " + candidate.URL
-	}
-	return "fixture ICS"
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
+func mergeStageSupersededClusterIDs(results []seedstore.StageEventReviewEvidenceResult) []int64 {
+	seen := make(map[int64]struct{})
+	var ids []int64
+	for _, result := range results {
+		for _, id := range result.SupersededClusterIDs {
+			if id <= 0 {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
 		}
 	}
-	return ""
+	return ids
+}
+
+func resolveEventReviewClusterSourceID(ctx context.Context, st eventReviewClusterStore, cache map[string]int64, name, sourceURL string) (int64, error) {
+	name = strings.TrimSpace(name)
+	sourceURL = strings.TrimSpace(sourceURL)
+	key := name + "\x00" + sourceURL
+	if sourceID, ok := cache[key]; ok {
+		return sourceID, nil
+	}
+	sourceID, err := st.EnsureSource(ctx, name, sourceURL)
+	if err != nil {
+		return 0, err
+	}
+	cache[key] = sourceID
+	return sourceID, nil
+}
+
+func emptyEventReviewClusterReport() eventReviewClusterReport {
+	return eventReviewClusterReport{
+		Enabled:                         true,
+		EventReviewClusters:             []eventReviewClusterReportItem{},
+		AutoPromoted:                    []eventReviewClusterAutoPromotedReport{},
+		EventReviewClustersAutoResolved: []eventReviewClusterAutoResolvedReport{},
+		Errors:                          []string{},
+	}
 }
 
 func env(key, fallback string) string {

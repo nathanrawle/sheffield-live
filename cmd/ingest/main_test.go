@@ -22,6 +22,7 @@ import (
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/review"
+	seedstore "sheffield-live/internal/store"
 	"sheffield-live/internal/store/sqlite"
 )
 
@@ -34,61 +35,283 @@ func testSourceCatalog(t *testing.T) *ingest.Catalog {
 	return catalog
 }
 
-func TestCreateReviewGroupsFromReportStagesReviewGroups(t *testing.T) {
-	st := &fakeReviewStageStore{results: []fakeReviewStageResult{
+func TestCreateEventReviewClustersFromReportStagesEventReviewClusters(t *testing.T) {
+	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{
 		{id: 101, created: true},
+		{id: 101, created: false},
 		{id: 102, created: false},
 	}}
-	report := successfulManualReportForReviewStage()
+	report := successfulManualReportForEventReviewClusters()
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
-		t.Fatalf("stage review groups: %v", err)
+		t.Fatalf("stage event-review clusters: %v", err)
 	}
 
-	if got, want := len(st.inputs), 2; got != want {
+	if got, want := len(st.inputs), 3; got != want {
 		t.Fatalf("created groups = %d, want %d", got, want)
 	}
-	if got, want := stage.GroupsCreated, 1; got != want {
-		t.Fatalf("stage groups created = %d, want %d", got, want)
+	if got, want := stage.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("stage event-review clusters created = %d, want %d", got, want)
 	}
-	if got, want := stage.GroupsReused, 1; got != want {
-		t.Fatalf("stage groups reused = %d, want %d", got, want)
+	if got, want := stage.EventReviewClustersReused, 1; got != want {
+		t.Fatalf("stage event-review clusters reused = %d, want %d", got, want)
 	}
 	if got, want := stage.CandidateCount, 3; got != want {
 		t.Fatalf("stage candidate count = %d, want %d", got, want)
 	}
-	if got, want := len(stage.Groups), 2; got != want {
-		t.Fatalf("stage groups = %d, want %d", got, want)
+	if got, want := stage.ReviewCandidateCount, 3; got != want {
+		t.Fatalf("stage review candidate count = %d, want %d", got, want)
 	}
-	if got, want := stage.Groups[0].ID, int64(101); got != want {
-		t.Fatalf("stage group ID = %d, want %d", got, want)
+	if got, want := len(stage.EventReviewClusters), 2; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
 	}
-	if got, want := stage.Groups[0].CandidateCount, 2; got != want {
-		t.Fatalf("first stage group candidates = %d, want %d", got, want)
+	if got, want := stage.EventReviewClusters[0].ClusterID, int64(101); got != want {
+		t.Fatalf("stage cluster ID = %d, want %d", got, want)
 	}
-	if got, want := stage.Groups[0].Result, "created"; got != want {
-		t.Fatalf("first stage group result = %q, want %q", got, want)
+	if got, want := stage.EventReviewClusters[0].CandidateCount, 2; got != want {
+		t.Fatalf("first stage cluster candidates = %d, want %d", got, want)
 	}
-	if got, want := stage.Groups[1].ID, int64(102); got != want {
-		t.Fatalf("second stage group ID = %d, want %d", got, want)
+	if got, want := stage.EventReviewClusters[0].Result, "created"; got != want {
+		t.Fatalf("first stage cluster result = %q, want %q", got, want)
 	}
-	if got, want := stage.Groups[1].CandidateCount, 1; got != want {
-		t.Fatalf("second stage group candidates = %d, want %d", got, want)
+	if got, want := stage.EventReviewClusters[1].ClusterID, int64(102); got != want {
+		t.Fatalf("second stage cluster ID = %d, want %d", got, want)
 	}
-	if got, want := stage.Groups[1].Result, "reused"; got != want {
-		t.Fatalf("second stage group result = %q, want %q", got, want)
+	if got, want := stage.EventReviewClusters[1].CandidateCount, 1; got != want {
+		t.Fatalf("second stage cluster candidates = %d, want %d", got, want)
 	}
-	if got, want := st.inputs[0].Title, "Duplicate review: Duplicate one"; got != want {
-		t.Fatalf("first staged title = %q, want %q", got, want)
+	if got, want := stage.EventReviewClusters[1].Result, "reused"; got != want {
+		t.Fatalf("second stage cluster result = %q, want %q", got, want)
 	}
-	if got, want := st.inputs[1].Title, "New listing review: Singleton"; got != want {
-		t.Fatalf("second staged title = %q, want %q", got, want)
+	var firstPayload map[string]any
+	if err := json.Unmarshal([]byte(st.inputs[0].Payload), &firstPayload); err != nil {
+		t.Fatalf("decode first payload: %v", err)
+	}
+	if got, want := firstPayload["group_title"], "Duplicate review: Duplicate one"; got != want {
+		t.Fatalf("first staged cluster title = %q, want %q", got, want)
+	}
+	var secondPayload map[string]any
+	if err := json.Unmarshal([]byte(st.inputs[2].Payload), &secondPayload); err != nil {
+		t.Fatalf("decode second payload: %v", err)
+	}
+	if got, want := secondPayload["group_title"], "New listing review: Singleton"; got != want {
+		t.Fatalf("second staged cluster title = %q, want %q", got, want)
 	}
 }
 
-func TestCreateReviewGroupsFromReportAutoPromotesOwnedVenueSingleton(t *testing.T) {
-	st := &fakeReviewStageStore{
+func TestCreateEventReviewClustersFromReportReportsSupersededClusterIDsAndStagingKey(t *testing.T) {
+	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{
+		{id: 201, created: true, supersededClusterIDs: []int64{88, 77}},
+		{id: 201, created: false},
+	}}
+	report := ingest.Report{
+		Source:      ingest.DefaultSource,
+		SourceURL:   "https://www.sidneyandmatilda.com/",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://calendar.example.test/one.ics",
+			Candidates: []ingest.EventCandidate{
+				{
+					UID:      "shared-uid",
+					Summary:  "Duplicate one",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-01T19:00:00Z",
+				},
+				{
+					UID:      "shared-uid",
+					Summary:  "Duplicate two",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-02T19:00:00Z",
+				},
+			},
+		}},
+	}
+
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create event-review clusters: %v", err)
+	}
+
+	if got, want := len(st.inputs), 2; got != want {
+		t.Fatalf("staged evidence inputs = %d, want %d", got, want)
+	}
+	if st.inputs[0].StagingKey == "" || st.inputs[0].StagingKeyVersion != 1 {
+		t.Fatalf("first staging key = %q v%d, want populated key v1", st.inputs[0].StagingKey, st.inputs[0].StagingKeyVersion)
+	}
+	if got, want := st.inputs[1].StagingKey, st.inputs[0].StagingKey; got != want {
+		t.Fatalf("second staging key = %q, want %q", got, want)
+	}
+	if got, want := len(stage.EventReviewClusters), 1; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
+	}
+	if got, want := stage.EventReviewClusters[0].SupersededClusterIDs, []int64{88, 77}; !equalInt64Slices(got, want) {
+		t.Fatalf("superseded cluster ids = %#v, want %#v", got, want)
+	}
+}
+
+func TestCreateEventReviewClustersFromReportReportsAutoResolvedClusters(t *testing.T) {
+	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{
+		{id: 301, created: true, clusterStatus: seedstore.EventReviewClusterStatusOpen},
+		{id: 301, created: false, clusterStatus: seedstore.EventReviewClusterStatusOpen},
+	}, finalizeResults: []*seedstore.EventReviewResolutionSummary{
+		{
+			ClusterID: 301,
+			Status:    seedstore.EventReviewResolutionStatusResolved,
+			AppliedAutoResolution: &seedstore.EventReviewResolutionAppliedAutoResolutionSummary{
+				EventID:       9001,
+				EventSlug:     "roots-night-yellow-arch-20260510183000",
+				Result:        "canonical_exact_match",
+				SourceID:      77,
+				SourceName:    "Store test source",
+				SourceURL:     "https://example.test/store-test",
+				EvidenceCount: 2,
+			},
+		},
+	}}
+	report := ingest.Report{
+		Source:      ingest.DefaultSource,
+		SourceURL:   "https://www.sidneyandmatilda.com/",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://calendar.example.test/auto-resolve.ics",
+			Candidates: []ingest.EventCandidate{
+				{
+					UID:      "shared-uid",
+					Summary:  "Roots Night",
+					Location: "Yellow Arch Studios",
+					StartAt:  "2026-05-10T18:30:00Z",
+				},
+				{
+					UID:      "shared-uid",
+					Summary:  "Roots Night",
+					Location: "Yellow Arch Studios",
+					StartAt:  "2026-05-10T18:30:00Z",
+				},
+			},
+		}},
+	}
+
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create event-review clusters: %v", err)
+	}
+	if got, want := stage.EventReviewClustersAutoResolvedCount, 1; got != want {
+		t.Fatalf("auto-resolved count = %d, want %d", got, want)
+	}
+	if got, want := len(stage.EventReviewClustersAutoResolved), 1; got != want {
+		t.Fatalf("auto-resolved rows = %d, want %d", got, want)
+	}
+	row := stage.EventReviewClustersAutoResolved[0]
+	if got, want := row.Result, "canonical_exact_match"; got != want {
+		t.Fatalf("auto-resolved result = %q, want %q", got, want)
+	}
+	if got, want := row.CanonicalEventSlug, "roots-night-yellow-arch-20260510183000"; got != want {
+		t.Fatalf("auto-resolved canonical slug = %q, want %q", got, want)
+	}
+	if got, want := row.CandidateCount, 2; got != want {
+		t.Fatalf("auto-resolved candidate count = %d, want %d", got, want)
+	}
+	if got, want := len(st.finalizedCalls), 1; got != want {
+		t.Fatalf("finalized calls = %d, want %d", got, want)
+	}
+	if got, want := st.finalizedCalls[0].clusterID, int64(301); got != want {
+		t.Fatalf("finalized cluster id = %d, want %d", got, want)
+	}
+}
+
+func TestCreateEventReviewClustersFromReportSkipsFinalizationForTerminalReusedCluster(t *testing.T) {
+	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{
+		{id: 301, created: false, clusterStatus: seedstore.EventReviewClusterStatusResolved},
+		{id: 301, created: false, clusterStatus: seedstore.EventReviewClusterStatusResolved},
+	}}
+	report := ingest.Report{
+		Source:      ingest.DefaultSource,
+		SourceURL:   "https://www.sidneyandmatilda.com/",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://calendar.example.test/one.ics",
+			Candidates: []ingest.EventCandidate{
+				{
+					UID:      "shared-uid",
+					Summary:  "Reuse one",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-01T19:00:00Z",
+				},
+				{
+					UID:      "shared-uid",
+					Summary:  "Reuse two",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-02T19:00:00Z",
+				},
+			},
+		}},
+	}
+
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create event-review clusters: %v", err)
+	}
+	if got, want := len(stage.EventReviewClusters), 1; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
+	}
+	if got := len(st.finalizedCalls); got != 0 {
+		t.Fatalf("finalize calls = %d, want 0", got)
+	}
+}
+
+func TestCreateEventReviewClustersFromReportFinalizesOnlyOpenClusterInMixedResults(t *testing.T) {
+	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{
+		{id: 301, created: false, clusterStatus: seedstore.EventReviewClusterStatusResolved},
+		{id: 302, created: true, clusterStatus: seedstore.EventReviewClusterStatusOpen},
+	}}
+	report := ingest.Report{
+		Source:      ingest.DefaultSource,
+		SourceURL:   "https://www.sidneyandmatilda.com/",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://calendar.example.test/one.ics",
+			Candidates: []ingest.EventCandidate{
+				{
+					UID:      "shared-uid",
+					Summary:  "Mixed one",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-01T19:00:00Z",
+				},
+				{
+					UID:      "shared-uid",
+					Summary:  "Mixed two",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-02T19:00:00Z",
+				},
+			},
+		}},
+	}
+
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create event-review clusters: %v", err)
+	}
+	if got, want := len(stage.EventReviewClusters), 1; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
+	}
+	if got, want := len(st.finalizedCalls), 1; got != want {
+		t.Fatalf("finalize calls = %d, want %d", got, want)
+	}
+	if got, want := st.finalizedCalls[0].clusterID, int64(302); got != want {
+		t.Fatalf("finalized cluster id = %d, want %d", got, want)
+	}
+	if got, want := st.finalizedCalls[0].evidenceIDs, []int64{302}; !equalInt64Slices(got, want) {
+		t.Fatalf("finalized evidence ids = %#v, want %#v", got, want)
+	}
+}
+
+func TestCreateEventReviewClustersFromReportAutoPromotesOwnedVenueSingleton(t *testing.T) {
+	st := &fakeEventReviewClustersStore{
 		promotionResults: []fakePromotionResult{{
 			eventSlug: "live-late-junction-yellow-arch-20260510183000",
 			promoted:  true,
@@ -111,9 +334,9 @@ func TestCreateReviewGroupsFromReportAutoPromotesOwnedVenueSingleton(t *testing.
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
-		t.Fatalf("create review groups: %v", err)
+		t.Fatalf("create event-review clusters: %v", err)
 	}
 
 	if got, want := stage.CandidateCount, 1; got != want {
@@ -125,8 +348,8 @@ func TestCreateReviewGroupsFromReportAutoPromotesOwnedVenueSingleton(t *testing.
 	if got, want := stage.AutoPromotedCount, 1; got != want {
 		t.Fatalf("auto promoted count = %d, want %d", got, want)
 	}
-	if got, want := len(stage.Groups), 0; got != want {
-		t.Fatalf("review groups = %d, want %d", got, want)
+	if got, want := len(stage.EventReviewClusters), 0; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
 	}
 	if got, want := len(stage.AutoPromoted), 1; got != want {
 		t.Fatalf("auto promoted = %d, want %d", got, want)
@@ -135,14 +358,14 @@ func TestCreateReviewGroupsFromReportAutoPromotesOwnedVenueSingleton(t *testing.
 		t.Fatalf("event slug = %q, want %q", got, want)
 	}
 	if got, want := len(st.inputs), 0; got != want {
-		t.Fatalf("staged review groups = %d, want %d", got, want)
+		t.Fatalf("staged event-review clusters = %d, want %d", got, want)
 	}
 	if got, want := len(st.promotedInputs), 1; got != want {
 		t.Fatalf("promoted inputs = %d, want %d", got, want)
 	}
 }
 
-func TestCreateReviewGroupsFromReportAutoPromotesCafeNo9SingletonWithoutEndTime(t *testing.T) {
+func TestCreateEventReviewClustersFromReportAutoPromotesCafeNo9SingletonWithoutEndTime(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -172,9 +395,9 @@ func TestCreateReviewGroupsFromReportAutoPromotesCafeNo9SingletonWithoutEndTime(
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), report)
+	stage, err := createEventReviewClustersFromReport(ctx, st, testSourceCatalog(t), report)
 	if err != nil {
-		t.Fatalf("create review groups: %v", err)
+		t.Fatalf("create event-review clusters: %v", err)
 	}
 	if got, want := stage.AutoPromotedCount, 1; got != want {
 		t.Fatalf("auto promoted count = %d, want %d", got, want)
@@ -182,8 +405,8 @@ func TestCreateReviewGroupsFromReportAutoPromotesCafeNo9SingletonWithoutEndTime(
 	if got, want := stage.ReviewCandidateCount, 0; got != want {
 		t.Fatalf("review candidate count = %d, want %d", got, want)
 	}
-	if got, want := len(stage.Groups), 0; got != want {
-		t.Fatalf("review groups = %d, want %d", got, want)
+	if got, want := len(stage.EventReviewClusters), 0; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
 	}
 	if got, want := len(stage.AutoPromoted), 1; got != want {
 		t.Fatalf("auto promoted = %d, want %d", got, want)
@@ -198,7 +421,7 @@ func TestCreateReviewGroupsFromReportAutoPromotesCafeNo9SingletonWithoutEndTime(
 	}
 }
 
-func TestCreateReviewGroupsFromReportAutoPromotesJazzAtTheLescarSingleton(t *testing.T) {
+func TestCreateEventReviewClustersFromReportAutoPromotesJazzAtTheLescarSingleton(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -229,9 +452,9 @@ func TestCreateReviewGroupsFromReportAutoPromotesJazzAtTheLescarSingleton(t *tes
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), report)
+	stage, err := createEventReviewClustersFromReport(ctx, st, testSourceCatalog(t), report)
 	if err != nil {
-		t.Fatalf("create review groups: %v", err)
+		t.Fatalf("create event-review clusters: %v", err)
 	}
 	if got, want := stage.AutoPromotedCount, 1; got != want {
 		t.Fatalf("auto promoted count = %d, want %d", got, want)
@@ -239,8 +462,8 @@ func TestCreateReviewGroupsFromReportAutoPromotesJazzAtTheLescarSingleton(t *tes
 	if got, want := stage.ReviewCandidateCount, 0; got != want {
 		t.Fatalf("review candidate count = %d, want %d", got, want)
 	}
-	if got, want := len(stage.Groups), 0; got != want {
-		t.Fatalf("review groups = %d, want %d", got, want)
+	if got, want := len(stage.EventReviewClusters), 0; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
 	}
 
 	event, ok := st.EventBySlug(stage.AutoPromoted[0].EventSlug)
@@ -252,7 +475,7 @@ func TestCreateReviewGroupsFromReportAutoPromotesJazzAtTheLescarSingleton(t *tes
 	}
 }
 
-func TestCreateReviewGroupsFromReportAutoPromotesSingletonAtNewProvisionalVenue(t *testing.T) {
+func TestCreateEventReviewClustersFromReportAutoPromotesSingletonAtNewProvisionalVenue(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -284,9 +507,9 @@ func TestCreateReviewGroupsFromReportAutoPromotesSingletonAtNewProvisionalVenue(
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), report)
+	stage, err := createEventReviewClustersFromReport(ctx, st, testSourceCatalog(t), report)
 	if err != nil {
-		t.Fatalf("create review groups: %v", err)
+		t.Fatalf("create event-review clusters: %v", err)
 	}
 	if got, want := stage.AutoPromotedCount, 1; got != want {
 		t.Fatalf("auto promoted count = %d, want %d", got, want)
@@ -294,8 +517,8 @@ func TestCreateReviewGroupsFromReportAutoPromotesSingletonAtNewProvisionalVenue(
 	if got, want := stage.ReviewCandidateCount, 0; got != want {
 		t.Fatalf("review candidate count = %d, want %d", got, want)
 	}
-	if got, want := len(stage.Groups), 0; got != want {
-		t.Fatalf("review groups = %d, want %d", got, want)
+	if got, want := len(stage.EventReviewClusters), 0; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
 	}
 
 	venue, ok := st.VenueBySlug("imaginary-hall")
@@ -315,88 +538,8 @@ func TestCreateReviewGroupsFromReportAutoPromotesSingletonAtNewProvisionalVenue(
 	}
 }
 
-func TestCreateReviewGroupsFromReportResolvesMatchingStaleCafeNo9Singleton(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := sqlite.Open(path)
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close sqlite store: %v", err)
-		}
-	}()
-
-	report := ingest.Report{
-		Source:      ingest.CafeNo9Source,
-		SourceURL:   "https://www.wegottickets.com/Cafe9",
-		ImportRunID: 99,
-		Status:      "succeeded",
-		Calendars: []ingest.CalendarReport{{
-			URL: "https://www.wegottickets.com/Cafe9",
-			Candidates: []ingest.EventCandidate{{
-				UID:      "cafe-no-9-stale-1",
-				Summary:  "Cafe No. 9 Late Show",
-				Location: "Cafe No. 9",
-				StartAt:  "2026-05-10T18:30:00Z",
-			}},
-		}},
-	}
-	groups := ingest.ReviewGroupsFromReport(report)
-	if got, want := len(groups), 1; got != want {
-		t.Fatalf("seed groups = %d, want %d", got, want)
-	}
-	stageResult, err := st.StageReviewGroup(ctx, groups[0])
-	if err != nil {
-		t.Fatalf("stage stale review group: %v", err)
-	}
-	staleGroupID := stageResult.ID
-	if !stageResult.Created {
-		t.Fatal("created = false, want true")
-	}
-
-	stage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), report)
-	if err != nil {
-		t.Fatalf("create review groups: %v", err)
-	}
-	if got, want := stage.AutoPromotedCount, 1; got != want {
-		t.Fatalf("auto promoted count = %d, want %d", got, want)
-	}
-	if got, want := stage.GroupsCreated, 0; got != want {
-		t.Fatalf("groups created = %d, want %d", got, want)
-	}
-	if got, want := stage.GroupsReused, 0; got != want {
-		t.Fatalf("groups reused = %d, want %d", got, want)
-	}
-	if got, want := stage.ReviewCandidateCount, 0; got != want {
-		t.Fatalf("review candidate count = %d, want %d", got, want)
-	}
-	if got, want := len(stage.Groups), 0; got != want {
-		t.Fatalf("review groups = %d, want %d", got, want)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, staleGroupID)
-	if err != nil {
-		t.Fatalf("load stale review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("stale review group not found")
-	}
-	if group.Status != review.StatusResolved {
-		t.Fatalf("stale group status = %q, want %q", group.Status, review.StatusResolved)
-	}
-
-	db := openRawDB(t, path)
-	defer db.Close()
-	if got, want := countRows(t, db, "review_groups"), 1; got != want {
-		t.Fatalf("review_groups rows = %d, want %d", got, want)
-	}
-}
-
-func TestCreateReviewGroupsFromReportKeepsOffsiteLeadmillSingletonInReview(t *testing.T) {
-	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 101, created: true}}}
+func TestCreateEventReviewClustersFromReportKeepsOffsiteLeadmillSingletonInReview(t *testing.T) {
+	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{{id: 101, created: true}}}
 	report := ingest.Report{
 		Source:      ingest.LeadmillSource,
 		SourceURL:   "https://leadmill.co.uk/live/",
@@ -414,13 +557,13 @@ func TestCreateReviewGroupsFromReportKeepsOffsiteLeadmillSingletonInReview(t *te
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
-		t.Fatalf("create review groups: %v", err)
+		t.Fatalf("create event-review clusters: %v", err)
 	}
 
-	if got, want := stage.GroupsCreated, 1; got != want {
-		t.Fatalf("groups created = %d, want %d", got, want)
+	if got, want := stage.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event-review clusters created = %d, want %d", got, want)
 	}
 	if got, want := stage.AutoPromotedCount, 0; got != want {
 		t.Fatalf("auto promoted count = %d, want %d", got, want)
@@ -432,12 +575,12 @@ func TestCreateReviewGroupsFromReportKeepsOffsiteLeadmillSingletonInReview(t *te
 		t.Fatalf("promoted inputs = %d, want %d", got, want)
 	}
 	if got, want := len(st.inputs), 1; got != want {
-		t.Fatalf("staged review groups = %d, want %d", got, want)
+		t.Fatalf("staged event review evidence inputs = %d, want %d", got, want)
 	}
 }
 
-func TestCreateReviewGroupsFromReportStagesDuplicateJazzAtTheLescarGroup(t *testing.T) {
-	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 301, created: true}}}
+func TestCreateEventReviewClustersFromReportStagesDuplicateJazzAtTheLescarGroup(t *testing.T) {
+	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{{id: 301, created: true}}}
 	report := ingest.Report{
 		Source:      ingest.JazzAtTheLescarSource,
 		SourceURL:   "http://www.jazzatthelescar.com/index.html",
@@ -464,16 +607,16 @@ func TestCreateReviewGroupsFromReportStagesDuplicateJazzAtTheLescarGroup(t *test
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
-		t.Fatalf("create review groups: %v", err)
+		t.Fatalf("create event-review clusters: %v", err)
 	}
 
 	if got, want := stage.AutoPromotedCount, 0; got != want {
 		t.Fatalf("auto promoted count = %d, want %d", got, want)
 	}
-	if got, want := stage.GroupsCreated, 1; got != want {
-		t.Fatalf("groups created = %d, want %d", got, want)
+	if got, want := stage.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event-review clusters created = %d, want %d", got, want)
 	}
 	if got, want := stage.ReviewCandidateCount, 2; got != want {
 		t.Fatalf("review candidate count = %d, want %d", got, want)
@@ -481,13 +624,13 @@ func TestCreateReviewGroupsFromReportStagesDuplicateJazzAtTheLescarGroup(t *test
 	if got, want := len(st.promotedInputs), 0; got != want {
 		t.Fatalf("promoted inputs = %d, want %d", got, want)
 	}
-	if got, want := len(st.inputs), 1; got != want {
-		t.Fatalf("staged review groups = %d, want %d", got, want)
+	if got, want := len(st.inputs), 2; got != want {
+		t.Fatalf("staged event-review clusters = %d, want %d", got, want)
 	}
 }
 
-func TestCreateReviewGroupsFromReportKeepsWrongVenueJazzAtTheLescarSingletonInReview(t *testing.T) {
-	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 302, created: true}}}
+func TestCreateEventReviewClustersFromReportKeepsWrongVenueJazzAtTheLescarSingletonInReview(t *testing.T) {
+	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{{id: 302, created: true}}}
 	report := ingest.Report{
 		Source:      ingest.JazzAtTheLescarSource,
 		SourceURL:   "http://www.jazzatthelescar.com/index.html",
@@ -505,13 +648,13 @@ func TestCreateReviewGroupsFromReportKeepsWrongVenueJazzAtTheLescarSingletonInRe
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
-		t.Fatalf("create review groups: %v", err)
+		t.Fatalf("create event-review clusters: %v", err)
 	}
 
-	if got, want := stage.GroupsCreated, 1; got != want {
-		t.Fatalf("groups created = %d, want %d", got, want)
+	if got, want := stage.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event-review clusters created = %d, want %d", got, want)
 	}
 	if got, want := stage.AutoPromotedCount, 0; got != want {
 		t.Fatalf("auto promoted count = %d, want %d", got, want)
@@ -523,13 +666,13 @@ func TestCreateReviewGroupsFromReportKeepsWrongVenueJazzAtTheLescarSingletonInRe
 		t.Fatalf("promoted inputs = %d, want %d", got, want)
 	}
 	if got, want := len(st.inputs), 1; got != want {
-		t.Fatalf("staged review groups = %d, want %d", got, want)
+		t.Fatalf("staged event-review clusters = %d, want %d", got, want)
 	}
 }
 
-func TestCreateReviewGroupsFromReportFallsBackToReviewWhenAutoPromoteSeesExistingCanonical(t *testing.T) {
-	st := &fakeReviewStageStore{
-		results: []fakeReviewStageResult{{id: 201, created: true}},
+func TestCreateEventReviewClustersFromReportFallsBackToReviewWhenAutoPromoteSeesExistingCanonical(t *testing.T) {
+	st := &fakeEventReviewClustersStore{
+		results: []fakeEventReviewClustersResult{{id: 201, created: true}},
 		promotionResults: []fakePromotionResult{{
 			eventSlug: "live-solo-show-sidney-and-matilda-20260503190000",
 			promoted:  false,
@@ -552,26 +695,26 @@ func TestCreateReviewGroupsFromReportFallsBackToReviewWhenAutoPromoteSeesExistin
 		}},
 	}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), report)
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
 	if err != nil {
-		t.Fatalf("create review groups: %v", err)
+		t.Fatalf("create event-review clusters: %v", err)
 	}
 
 	if got, want := stage.AutoPromotedCount, 0; got != want {
 		t.Fatalf("auto promoted count = %d, want %d", got, want)
 	}
-	if got, want := stage.GroupsCreated, 1; got != want {
-		t.Fatalf("groups created = %d, want %d", got, want)
+	if got, want := stage.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event-review clusters created = %d, want %d", got, want)
 	}
 	if got, want := stage.ReviewCandidateCount, 1; got != want {
 		t.Fatalf("review candidate count = %d, want %d", got, want)
 	}
 	if got, want := len(st.inputs), 1; got != want {
-		t.Fatalf("staged review groups = %d, want %d", got, want)
+		t.Fatalf("staged event-review clusters = %d, want %d", got, want)
 	}
 }
 
-func TestCreateReviewGroupsFromReportReusesExistingGroupWhenOnlySourceMetadataDiffers(t *testing.T) {
+func TestCreateEventReviewClustersFromReportReusesExistingGroupWhenOnlySourceMetadataDiffers(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -584,11 +727,15 @@ func TestCreateReviewGroupsFromReportReusesExistingGroupWhenOnlySourceMetadataDi
 			t.Fatalf("close sqlite store: %v", err)
 		}
 	}()
+	importRunID, _, err := st.CreateImportRun(ctx, "succeeded", "event review staging test")
+	if err != nil {
+		t.Fatalf("create import run: %v", err)
+	}
 
 	firstReport := ingest.Report{
 		Source:      "Source A",
 		SourceURL:   "https://source-a.example.test/events.ics",
-		ImportRunID: 99,
+		ImportRunID: importRunID,
 		Status:      "succeeded",
 		Calendars: []ingest.CalendarReport{
 			{
@@ -611,24 +758,24 @@ func TestCreateReviewGroupsFromReportReusesExistingGroupWhenOnlySourceMetadataDi
 			},
 		},
 	}
-	firstStage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), firstReport)
+	firstStage, err := createEventReviewClustersFromReport(ctx, st, testSourceCatalog(t), firstReport)
 	if err != nil {
 		t.Fatalf("stage first report: %v", err)
 	}
-	if got, want := firstStage.GroupsCreated, 1; got != want {
-		t.Fatalf("first stage groups created = %d, want %d", got, want)
+	if got, want := firstStage.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("first stage event-review clusters created = %d, want %d", got, want)
 	}
-	if got, want := firstStage.GroupsReused, 0; got != want {
-		t.Fatalf("first stage groups reused = %d, want %d", got, want)
+	if got, want := firstStage.EventReviewClustersReused, 0; got != want {
+		t.Fatalf("first stage event-review clusters reused = %d, want %d", got, want)
 	}
-	if got, want := len(firstStage.Groups), 1; got != want {
-		t.Fatalf("first stage groups = %d, want %d", got, want)
+	if got, want := len(firstStage.EventReviewClusters), 1; got != want {
+		t.Fatalf("first stage clusters = %d, want %d", got, want)
 	}
 
 	secondReport := ingest.Report{
 		Source:      "Source B",
 		SourceURL:   "https://source-b.example.test/events.ics",
-		ImportRunID: 99,
+		ImportRunID: importRunID,
 		Status:      "succeeded",
 		Calendars: []ingest.CalendarReport{
 			{
@@ -651,45 +798,40 @@ func TestCreateReviewGroupsFromReportReusesExistingGroupWhenOnlySourceMetadataDi
 			},
 		},
 	}
-	secondStage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), secondReport)
+	secondStage, err := createEventReviewClustersFromReport(ctx, st, testSourceCatalog(t), secondReport)
 	if err != nil {
 		t.Fatalf("stage second report: %v", err)
 	}
-	if got, want := secondStage.GroupsCreated, 0; got != want {
-		t.Fatalf("second stage groups created = %d, want %d", got, want)
+	if got, want := secondStage.EventReviewClustersCreated, 0; got != want {
+		t.Fatalf("second stage event-review clusters created = %d, want %d", got, want)
 	}
-	if got, want := secondStage.GroupsReused, 1; got != want {
-		t.Fatalf("second stage groups reused = %d, want %d", got, want)
+	if got, want := secondStage.EventReviewClustersReused, 1; got != want {
+		t.Fatalf("second stage event-review clusters reused = %d, want %d", got, want)
 	}
-	if got, want := len(secondStage.Groups), 1; got != want {
-		t.Fatalf("second stage groups = %d, want %d", got, want)
+	if got, want := len(secondStage.EventReviewClusters), 1; got != want {
+		t.Fatalf("second stage clusters = %d, want %d", got, want)
 	}
-	if got, want := firstStage.Groups[0].ID, secondStage.Groups[0].ID; got != want {
-		t.Fatalf("staged group id = %d, want %d", got, want)
+	if got, want := firstStage.EventReviewClusters[0].ClusterID, secondStage.EventReviewClusters[0].ClusterID; got != want {
+		t.Fatalf("staged cluster id = %d, want %d", got, want)
 	}
 
 	db := openRawDB(t, path)
 	defer db.Close()
-	if got, want := countRows(t, db, "review_groups"), 1; got != want {
-		t.Fatalf("review groups = %d, want %d", got, want)
+	if got, want := countRows(t, db, "event_review_clusters"), 1; got != want {
+		t.Fatalf("event_review_clusters rows = %d, want %d", got, want)
 	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, firstStage.Groups[0].ID)
-	if err != nil {
-		t.Fatalf("load staged review group: %v", err)
+	if got, want := countRows(t, db, "event_review_evidence"), 4; got != want {
+		t.Fatalf("event_review_evidence rows = %d, want %d", got, want)
 	}
-	if !ok {
-		t.Fatal("staged review group not found")
+	if got, want := countRows(t, db, "import_run_event_review_clusters"), 1; got != want {
+		t.Fatalf("import_run_event_review_clusters rows = %d, want %d", got, want)
 	}
-	if got, want := group.SourceName, "Source A manual ingest"; got != want {
-		t.Fatalf("group source name = %q, want %q", got, want)
-	}
-	if got, want := group.SourceURL, "https://source-a.example.test/events.ics"; got != want {
-		t.Fatalf("group source url = %q, want %q", got, want)
+	if got, want := countRows(t, db, "review_groups"), 0; got != want {
+		t.Fatalf("review_groups rows = %d, want %d", got, want)
 	}
 }
 
-func TestCreateReviewGroupsFromReportPersistsAuthoritativeGroupMetadata(t *testing.T) {
+func TestCreateEventReviewClustersFromReportPersistsAuthoritativeGroupMetadata(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -698,11 +840,15 @@ func TestCreateReviewGroupsFromReportPersistsAuthoritativeGroupMetadata(t *testi
 		t.Fatalf("open sqlite store: %v", err)
 	}
 	defer st.Close()
+	importRunID, _, err := st.CreateImportRun(ctx, "succeeded", "event review staging test")
+	if err != nil {
+		t.Fatalf("create import run: %v", err)
+	}
 
 	report := ingest.Report{
 		Source:      ingest.DefaultSource,
 		SourceURL:   "https://www.sidneyandmatilda.com/",
-		ImportRunID: 99,
+		ImportRunID: importRunID,
 		Status:      "succeeded",
 		Calendars: []ingest.CalendarReport{
 			{
@@ -727,29 +873,71 @@ func TestCreateReviewGroupsFromReportPersistsAuthoritativeGroupMetadata(t *testi
 		},
 	}
 
-	stage, err := createReviewGroupsFromReport(ctx, st, testSourceCatalog(t), report)
+	stage, err := createEventReviewClustersFromReport(ctx, st, testSourceCatalog(t), report)
 	if err != nil {
-		t.Fatalf("create review groups: %v", err)
+		t.Fatalf("create event-review clusters: %v", err)
 	}
-	if got, want := len(stage.Groups), 1; got != want {
-		t.Fatalf("review groups = %d, want %d", got, want)
+	if got, want := len(stage.EventReviewClusters), 1; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
 	}
 
-	group, ok, err := st.LoadReviewGroup(ctx, stage.Groups[0].ID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got, want := countRows(t, db, "event_review_clusters"), 1; got != want {
+		t.Fatalf("event_review_clusters rows = %d, want %d", got, want)
 	}
-	if !ok {
-		t.Fatal("review group not found")
+	if got, want := countRows(t, db, "event_review_evidence"), 2; got != want {
+		t.Fatalf("event_review_evidence rows = %d, want %d", got, want)
 	}
-	if got, want := group.AuthoritativeSourceName, "Sidney & Matilda manual ingest"; got != want {
-		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	if got, want := countRows(t, db, "import_run_event_review_clusters"), 1; got != want {
+		t.Fatalf("import_run_event_review_clusters rows = %d, want %d", got, want)
 	}
-	if got, want := group.AuthoritativeSourceURL, "https://calendar.example.test/live.ics"; got != want {
-		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	if got, want := countRows(t, db, "review_groups"), 0; got != want {
+		t.Fatalf("review_groups rows = %d, want %d", got, want)
 	}
-	if got, want := group.AuthoritativeSourceEventKey, "shared-uid"; got != want {
-		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+
+	var payload string
+	var sourceID int64
+	if err := db.QueryRow(`
+		SELECT payload, source_id
+		FROM event_review_evidence
+		ORDER BY id
+		LIMIT 1
+	`).Scan(&payload, &sourceID); err != nil {
+		t.Fatalf("load event review evidence: %v", err)
+	}
+
+	var sourceName string
+	var sourceURL string
+	if err := db.QueryRow(`
+		SELECT name, url
+		FROM sources
+		WHERE id = ?
+	`, sourceID).Scan(&sourceName, &sourceURL); err != nil {
+		t.Fatalf("load event review source: %v", err)
+	}
+	if got, want := sourceName, "Sidney & Matilda manual ingest"; got != want {
+		t.Fatalf("source name = %q, want %q", got, want)
+	}
+	if got, want := sourceURL, "https://calendar.example.test/live.ics"; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+
+	var evidencePayload map[string]any
+	if err := json.Unmarshal([]byte(payload), &evidencePayload); err != nil {
+		t.Fatalf("decode evidence payload: %v", err)
+	}
+	if got, want := evidencePayload["source_authority"], "authoritative"; got != want {
+		t.Fatalf("payload source authority = %q, want %q", got, want)
+	}
+	if got, want := evidencePayload["group_authoritative_source_name"], "Sidney & Matilda manual ingest"; got != want {
+		t.Fatalf("payload authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := evidencePayload["group_authoritative_source_url"], "https://calendar.example.test/live.ics"; got != want {
+		t.Fatalf("payload authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := evidencePayload["group_authoritative_source_event_key"], "uid:shared-uid"; got != want {
+		t.Fatalf("payload authoritative source event key = %q, want %q", got, want)
 	}
 }
 
@@ -764,7 +952,6 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 		wantStage    bool
 		wantTitle    bool
 		wantApply    bool
-		wantFixture  string
 		wantImportID int64
 		wantAll      bool
 		wantErr      bool
@@ -776,18 +963,11 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 		{name: "reordered user agent mismatch", args: []string{"-http-user-agent", "agent-a", "-user-agent", "agent-b", "-http-user-agent", "agent-a"}, wantErr: true},
 		{name: "contact override", args: []string{"-contact", "ops@example.com"}, wantContact: "ops@example.com"},
 		{name: "contact suppression", args: []string{"-contact", "none"}, wantContact: "none"},
-		{name: "canonical stage groups", args: []string{"-stage-review-groups"}, wantStage: true},
-		{name: "alias stage groups", args: []string{"-stage-review"}, wantStage: true},
-		{name: "canonical+alias stage groups same", args: []string{"-stage-review-groups=true", "-stage-review=true"}, wantStage: true},
-		{name: "canonical+alias stage groups different", args: []string{"-stage-review-groups=true", "-stage-review=false"}, wantErr: true},
-		{name: "reordered stage groups mismatch", args: []string{"-stage-review-groups=true", "-stage-review=false", "-stage-review-groups=true"}, wantErr: true},
+		{name: "canonical stage event reviews", args: []string{"-stage-event-reviews"}, wantStage: true},
+		{name: "removed stage review groups alias", args: []string{"-stage-review-groups"}, wantErr: true},
+		{name: "removed stage review alias", args: []string{"-stage-review"}, wantErr: true},
 		{name: "event title repair dry run", args: []string{"-repair-event-titles"}, wantTitle: true},
 		{name: "event title repair apply", args: []string{"-repair-event-titles", "-apply-title-repairs"}, wantTitle: true, wantApply: true},
-		{name: "canonical fixture", args: []string{"-review-ics-fixture", "fixture.ics"}, wantFixture: "fixture.ics"},
-		{name: "alias fixture", args: []string{"-review-fixture", "fixture.ics"}, wantFixture: "fixture.ics"},
-		{name: "canonical+alias fixture same", args: []string{"-review-ics-fixture", "fixture.ics", "-review-fixture", "fixture.ics"}, wantFixture: "fixture.ics"},
-		{name: "canonical+alias fixture different", args: []string{"-review-ics-fixture", "one.ics", "-review-fixture", "two.ics"}, wantErr: true},
-		{name: "reordered fixture mismatch", args: []string{"-review-ics-fixture", "one.ics", "-review-fixture", "two.ics", "-review-ics-fixture", "one.ics"}, wantErr: true},
 		{name: "replay mode", args: []string{"-import-run-id", "42"}, wantImportID: 42},
 		{name: "all sources mode", args: []string{"-all-sources"}, wantAll: true},
 	}
@@ -811,17 +991,14 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 			if got := cfg.contact; got != tc.wantContact {
 				t.Fatalf("contact = %q, want %q", got, tc.wantContact)
 			}
-			if got := cfg.stageReviewGroups; got != tc.wantStage {
-				t.Fatalf("stage review groups = %v, want %v", got, tc.wantStage)
+			if got := cfg.stageEventReviewClusters; got != tc.wantStage {
+				t.Fatalf("stage event reviews = %v, want %v", got, tc.wantStage)
 			}
 			if got := cfg.repairEventTitles; got != tc.wantTitle {
 				t.Fatalf("repair event titles = %v, want %v", got, tc.wantTitle)
 			}
 			if got := cfg.applyTitleRepairs; got != tc.wantApply {
 				t.Fatalf("apply title repairs = %v, want %v", got, tc.wantApply)
-			}
-			if got := cfg.reviewICSFixture; got != tc.wantFixture {
-				t.Fatalf("fixture = %q, want %q", got, tc.wantFixture)
 			}
 			if got := cfg.importRunID; got != tc.wantImportID {
 				t.Fatalf("import run id = %d, want %d", got, tc.wantImportID)
@@ -830,6 +1007,16 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 				t.Fatalf("all sources = %v, want %v", got, tc.wantAll)
 			}
 		})
+	}
+}
+
+func TestIngestModeReportsAllSourcesTitleRepair(t *testing.T) {
+	cfg := ingestCommandConfig{
+		allSources:        true,
+		repairEventTitles: true,
+	}
+	if got, want := ingestMode(cfg), "title_repair_all_sources"; got != want {
+		t.Fatalf("ingest mode = %q, want %q", got, want)
 	}
 }
 
@@ -907,7 +1094,7 @@ func TestParseIngestArgsRejectsRepairDescriptionConflicts(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "stage review groups", args: []string{"-repair-descriptions", "-stage-review-groups"}},
+		{name: "stage event reviews", args: []string{"-repair-descriptions", "-stage-event-reviews"}},
 		{name: "all sources", args: []string{"-repair-descriptions", "-all-sources"}},
 		{name: "fixture", args: []string{"-repair-descriptions", "-review-ics-fixture", "fixture.ics"}},
 		{name: "unsupported source", args: []string{"-repair-descriptions", "-source", ingest.LeadmillSource}},
@@ -927,7 +1114,7 @@ func TestParseIngestArgsRejectsRepairEventTitleConflicts(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "stage review groups", args: []string{"-repair-event-titles", "-stage-review-groups"}},
+		{name: "stage event reviews", args: []string{"-repair-event-titles", "-stage-event-reviews"}},
 		{name: "descriptions", args: []string{"-repair-event-titles", "-repair-descriptions"}},
 		{name: "fixture", args: []string{"-repair-event-titles", "-review-ics-fixture", "fixture.ics"}},
 		{name: "apply without repair", args: []string{"-apply-title-repairs"}},
@@ -937,6 +1124,29 @@ func TestParseIngestArgsRejectsRepairEventTitleConflicts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parseIngestArgs(tc.args); err == nil {
 				t.Fatal("expected repair event title flag conflict")
+			}
+		})
+	}
+}
+
+func TestParseIngestArgsRejectsHistoricalDuplicateConflicts(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "apply without repair", args: []string{"-apply-historical-duplicate-repairs"}},
+		{name: "stage event reviews", args: []string{"-repair-historical-duplicates", "-stage-event-reviews"}},
+		{name: "descriptions", args: []string{"-repair-historical-duplicates", "-repair-descriptions"}},
+		{name: "title repair", args: []string{"-repair-historical-duplicates", "-repair-event-titles"}},
+		{name: "all sources", args: []string{"-repair-historical-duplicates", "-all-sources"}},
+		{name: "source", args: []string{"-repair-historical-duplicates", "-source", ingest.LeadmillSource}},
+		{name: "replay", args: []string{"-repair-historical-duplicates", "-import-run-id", "1"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseIngestArgs(tc.args); err == nil {
+				t.Fatal("expected historical duplicate repair flag conflict")
 			}
 		})
 	}
@@ -1098,148 +1308,119 @@ func TestRunWithArgsRepairDescriptionsUpdatesOnlyDescriptions(t *testing.T) {
 	}
 }
 
-func TestRunWithArgsReviewICSFixtureCreatesReviewGroupWithoutUserAgent(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "sheffield-live.db")
-	fixturePath := filepath.Join("..", "..", "internal", "ingest", "testdata", "sidney.ics")
-
-	var stdout bytes.Buffer
-	if err := runWithArgs([]string{
-		"-db", dbPath,
-		"-review-ics-fixture", fixturePath,
-		"-review-title", "Custom fixture title",
-	}, &stdout, io.Discard); err != nil {
-		t.Fatalf("fixture run: %v", err)
-	}
-
-	var got reviewFixtureReport
-	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
-		t.Fatalf("decode fixture output: %v", err)
-	}
-	if got.Fixture != fixturePath {
-		t.Fatalf("fixture = %q, want %q", got.Fixture, fixturePath)
-	}
-	if got.GroupID == 0 {
-		t.Fatal("group id = 0, want persisted review group")
-	}
-	if got.Candidates != 3 {
-		t.Fatalf("candidates = %d, want 3", got.Candidates)
-	}
-	if len(got.Skips) != 4 {
-		t.Fatalf("skips = %d, want 4", len(got.Skips))
-	}
-	if len(got.Errors) != 0 {
-		t.Fatalf("errors = %#v, want none", got.Errors)
-	}
-
-	db := openRawDB(t, dbPath)
-	defer db.Close()
-	if got := countRows(t, db, "review_groups"); got != 1 {
-		t.Fatalf("review groups = %d, want 1", got)
-	}
-
-	st, err := sqlite.Open(dbPath)
-	if err != nil {
-		t.Fatalf("reopen sqlite store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close sqlite store: %v", err)
-		}
-	}()
-
-	group, ok, err := st.LoadReviewGroup(context.Background(), got.GroupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if group.Title != "Custom fixture title" {
-		t.Fatalf("group title = %q, want custom title", group.Title)
-	}
-	if group.SourceURL != "file:"+fixturePath {
-		t.Fatalf("group source url = %q, want file fixture URL", group.SourceURL)
-	}
-	if got := len(group.Candidates); got != 3 {
-		t.Fatalf("group candidates = %d, want 3", got)
-	}
-	if got, want := group.Candidates[0].VenueSlug, "sidney-and-matilda"; got != want {
-		t.Fatalf("first candidate venue slug = %q, want %q", got, want)
-	}
-}
-
-func TestRunWithArgsReviewICSFixtureUsesDefaultTitle(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "sheffield-live.db")
-	fixturePath := filepath.Join("..", "..", "internal", "ingest", "testdata", "sidney.ics")
-
-	var stdout bytes.Buffer
-	if err := runWithArgs([]string{
-		"-db", dbPath,
-		"-review-ics-fixture", fixturePath,
-	}, &stdout, io.Discard); err != nil {
-		t.Fatalf("fixture run: %v", err)
-	}
-
-	var got reviewFixtureReport
-	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
-		t.Fatalf("decode fixture output: %v", err)
-	}
-
-	st, err := sqlite.Open(dbPath)
-	if err != nil {
-		t.Fatalf("reopen sqlite store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close sqlite store: %v", err)
-		}
-	}()
-
-	group, ok, err := st.LoadReviewGroup(context.Background(), got.GroupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if group.Title != "Fixture review: sidney.ics" {
-		t.Fatalf("group title = %q, want default fixture title", group.Title)
-	}
-}
-
 func TestRunWithArgsReplayDoesNotRequireUserAgent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	runID := seedReplayRunForCLI(t, path)
 
-	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-review-groups"}, &stdout, io.Discard); err != nil {
-		t.Fatalf("replay run: %v", err)
+	runReplay := func() (manualIngestReport, []byte) {
+		t.Helper()
+		var stdout bytes.Buffer
+		if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+			t.Fatalf("replay run: %v", err)
+		}
+		var got manualIngestReport
+		if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+			t.Fatalf("decode replay output: %v", err)
+		}
+		return got, append([]byte(nil), stdout.Bytes()...)
 	}
 
-	var got manualIngestReport
-	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
-		t.Fatalf("decode replay output: %v", err)
+	first, firstRaw := runReplay()
+	second, _ := runReplay()
+
+	var firstPayload map[string]json.RawMessage
+	if err := json.Unmarshal(firstRaw, &firstPayload); err != nil {
+		t.Fatalf("decode replay payload: %v", err)
 	}
-	if got.Report.Limit != 1 {
-		t.Fatalf("report limit = %d, want 1", got.Report.Limit)
+	var firstStagePayload map[string]json.RawMessage
+	if err := json.Unmarshal(firstPayload["review_stage"], &firstStagePayload); err != nil {
+		t.Fatalf("decode replay stage payload: %v", err)
 	}
-	if got.Report.ImportRunID != runID {
-		t.Fatalf("import run id = %d, want %d", got.Report.ImportRunID, runID)
+	for _, key := range []string{"event_review_clusters_created", "event_review_clusters_reused", "event_review_clusters_auto_resolved_count", "event_review_clusters", "event_review_clusters_auto_resolved"} {
+		if _, ok := firstStagePayload[key]; !ok {
+			t.Fatalf("review stage missing %q key: %s", key, firstRaw)
+		}
 	}
-	if got.Report.Status != "succeeded" {
-		t.Fatalf("report status = %q, want succeeded", got.Report.Status)
+	if _, ok := firstStagePayload["duplicate_auto_resolved"]; ok {
+		t.Fatalf("review stage contains legacy duplicate_auto_resolved key: %s", firstRaw)
 	}
-	if got := len(got.Report.Links); got != 1 {
-		t.Fatalf("links = %d, want 1", got)
+	if _, ok := firstStagePayload["groups_created"]; ok {
+		t.Fatalf("review stage contains legacy groups_created key: %s", firstRaw)
 	}
-	if got := got.ReviewStage.GroupsCreated; got != 1 {
-		t.Fatalf("review groups created = %d, want 1", got)
+	var firstClusters []map[string]json.RawMessage
+	if err := json.Unmarshal(firstStagePayload["event_review_clusters"], &firstClusters); err != nil {
+		t.Fatalf("decode replay clusters: %v", err)
 	}
-	if got := got.ReviewStage.AutoPromotedCount; got != 1 {
-		t.Fatalf("auto promoted count = %d, want 1", got)
+	var firstAutoResolved []map[string]json.RawMessage
+	if err := json.Unmarshal(firstStagePayload["event_review_clusters_auto_resolved"], &firstAutoResolved); err != nil {
+		t.Fatalf("decode replay auto-resolved rows: %v", err)
 	}
-	if got := got.ReviewStage.ReviewCandidateCount; got != 2 {
-		t.Fatalf("review candidate count = %d, want 2", got)
+	if len(firstClusters) != 1 {
+		t.Fatalf("replay clusters = %d, want 1", len(firstClusters))
+	}
+	if len(firstAutoResolved) != 0 {
+		t.Fatalf("replay auto-resolved rows = %d, want 0", len(firstAutoResolved))
+	}
+	if _, ok := firstClusters[0]["cluster_id"]; !ok {
+		t.Fatalf("review cluster missing cluster_id key: %s", firstRaw)
+	}
+	if _, ok := firstClusters[0]["id"]; ok {
+		t.Fatalf("review cluster contains legacy id key: %s", firstRaw)
+	}
+	if got := firstStagePayload["event_review_clusters_auto_resolved_count"]; string(got) != "0" {
+		t.Fatalf("auto-resolved count = %s, want 0", got)
+	}
+
+	if first.Report.Limit != 1 || second.Report.Limit != 1 {
+		t.Fatalf("report limits = %d, %d, want 1", first.Report.Limit, second.Report.Limit)
+	}
+	if first.Report.ImportRunID != runID || second.Report.ImportRunID != runID {
+		t.Fatalf("import run ids = %d, %d, want %d", first.Report.ImportRunID, second.Report.ImportRunID, runID)
+	}
+	if first.Report.Status != "succeeded" || second.Report.Status != "succeeded" {
+		t.Fatalf("report statuses = %q, %q, want succeeded", first.Report.Status, second.Report.Status)
+	}
+	if got := len(first.Report.Links); got != 1 {
+		t.Fatalf("first links = %d, want 1", got)
+	}
+	if got := len(second.Report.Links); got != 1 {
+		t.Fatalf("second links = %d, want 1", got)
+	}
+	if got := first.EventReviewClusters.EventReviewClustersCreated; got != 1 {
+		t.Fatalf("first event-review clusters created = %d, want 1", got)
+	}
+	if got := second.EventReviewClusters.EventReviewClustersCreated; got != 0 {
+		t.Fatalf("second event-review clusters created = %d, want 0", got)
+	}
+	if got := second.EventReviewClusters.EventReviewClustersReused; got != 1 {
+		t.Fatalf("second event-review clusters reused = %d, want 1", got)
+	}
+	if got := first.EventReviewClusters.AutoPromotedCount; got != 1 {
+		t.Fatalf("first auto promoted count = %d, want 1", got)
+	}
+	if got := second.EventReviewClusters.AutoPromotedCount; got != 1 {
+		t.Fatalf("second auto promoted count = %d, want 1", got)
+	}
+	if got := first.EventReviewClusters.ReviewCandidateCount; got != 2 {
+		t.Fatalf("first review candidate count = %d, want 2", got)
+	}
+	if got := second.EventReviewClusters.ReviewCandidateCount; got != 2 {
+		t.Fatalf("second review candidate count = %d, want 2", got)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got := countRows(t, db, "event_review_evidence"); got != 2 {
+		t.Fatalf("event_review_evidence rows = %d, want 2", got)
+	}
+	if got := countRows(t, db, "event_review_clusters"); got != 1 {
+		t.Fatalf("event_review_clusters rows = %d, want 1", got)
+	}
+	if got := countRows(t, db, "import_run_event_review_clusters"); got != 1 {
+		t.Fatalf("import_run_event_review_clusters rows = %d, want 1", got)
+	}
+	if got := countRows(t, db, "review_groups"); got != 0 {
+		t.Fatalf("review_groups rows = %d, want 0", got)
 	}
 }
 
@@ -1248,7 +1429,7 @@ func TestRunWithArgsReplayYellowArchUsesStoredSourcePath(t *testing.T) {
 	runID := seedReplayRunForCLIYellowArch(t, path)
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-review-groups"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
 
@@ -1271,19 +1452,19 @@ func TestRunWithArgsReplayYellowArchUsesStoredSourcePath(t *testing.T) {
 	if got := len(got.Report.Calendars[0].Candidates); got != 1 {
 		t.Fatalf("candidates = %d, want 1", got)
 	}
-	if got := got.ReviewStage.GroupsCreated; got != 0 {
-		t.Fatalf("review groups created = %d, want 0", got)
+	if got := got.EventReviewClusters.EventReviewClustersCreated; got != 0 {
+		t.Fatalf("event-review clusters created = %d, want 0", got)
 	}
-	if got := got.ReviewStage.AutoPromotedCount; got != 1 {
+	if got := got.EventReviewClusters.AutoPromotedCount; got != 1 {
 		t.Fatalf("auto promoted count = %d, want 1", got)
 	}
-	if got := len(got.ReviewStage.Groups); got != 0 {
-		t.Fatalf("review groups = %d, want 0", got)
+	if got := len(got.EventReviewClusters.EventReviewClusters); got != 0 {
+		t.Fatalf("event-review clusters = %d, want 0", got)
 	}
-	if got := len(got.ReviewStage.AutoPromoted); got != 1 {
+	if got := len(got.EventReviewClusters.AutoPromoted); got != 1 {
 		t.Fatalf("auto promoted groups = %d, want 1", got)
 	}
-	if got := got.ReviewStage.AutoPromoted[0].SourceURL; got != "https://www.yellowarch.com/events/" {
+	if got := got.EventReviewClusters.AutoPromoted[0].SourceURL; got != "https://www.yellowarch.com/events/" {
 		t.Fatalf("auto promoted source url = %q, want Yellow Arch events page", got)
 	}
 
@@ -1297,8 +1478,8 @@ func TestRunWithArgsReplayYellowArchUsesStoredSourcePath(t *testing.T) {
 		}
 	}()
 
-	if _, ok := st.EventBySlug(got.ReviewStage.AutoPromoted[0].EventSlug); !ok {
-		t.Fatalf("published event %q not found", got.ReviewStage.AutoPromoted[0].EventSlug)
+	if _, ok := st.EventBySlug(got.EventReviewClusters.AutoPromoted[0].EventSlug); !ok {
+		t.Fatalf("published event %q not found", got.EventReviewClusters.AutoPromoted[0].EventSlug)
 	}
 }
 
@@ -1309,7 +1490,7 @@ func TestRunWithArgsReplayYellowArchReappliesLinkedAuthoritativeEvent(t *testing
 	runReplay := func() manualIngestReport {
 		t.Helper()
 		var stdout bytes.Buffer
-		if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-review-groups"}, &stdout, io.Discard); err != nil {
+		if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
 			t.Fatalf("replay run: %v", err)
 		}
 		var got manualIngestReport
@@ -1322,22 +1503,22 @@ func TestRunWithArgsReplayYellowArchReappliesLinkedAuthoritativeEvent(t *testing
 	first := runReplay()
 	second := runReplay()
 
-	if got := first.ReviewStage.AutoPromotedCount; got != 1 {
+	if got := first.EventReviewClusters.AutoPromotedCount; got != 1 {
 		t.Fatalf("first auto promoted count = %d, want 1", got)
 	}
-	if got := second.ReviewStage.AutoPromotedCount; got != 1 {
+	if got := second.EventReviewClusters.AutoPromotedCount; got != 1 {
 		t.Fatalf("second auto promoted count = %d, want 1", got)
 	}
-	if got := second.ReviewStage.GroupsCreated; got != 0 {
-		t.Fatalf("second review groups created = %d, want 0", got)
+	if got := second.EventReviewClusters.EventReviewClustersCreated; got != 0 {
+		t.Fatalf("second event-review clusters created = %d, want 0", got)
 	}
-	if got := len(second.ReviewStage.Groups); got != 0 {
-		t.Fatalf("second review groups = %d, want 0", got)
+	if got := len(second.EventReviewClusters.EventReviewClusters); got != 0 {
+		t.Fatalf("second event-review clusters = %d, want 0", got)
 	}
-	if got := len(second.ReviewStage.AutoPromoted); got != 1 {
+	if got := len(second.EventReviewClusters.AutoPromoted); got != 1 {
 		t.Fatalf("second auto promoted groups = %d, want 1", got)
 	}
-	if got, want := second.ReviewStage.AutoPromoted[0].EventSlug, first.ReviewStage.AutoPromoted[0].EventSlug; got != want {
+	if got, want := second.EventReviewClusters.AutoPromoted[0].EventSlug, first.EventReviewClusters.AutoPromoted[0].EventSlug; got != want {
 		t.Fatalf("second event slug = %q, want %q", got, want)
 	}
 
@@ -1359,7 +1540,7 @@ func TestRunWithArgsReplayLeadmillUsesStoredSourcePath(t *testing.T) {
 	runID := seedReplayRunForCLILeadmill(t, path)
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "20", "-stage-review-groups"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "20", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
 
@@ -1382,16 +1563,16 @@ func TestRunWithArgsReplayLeadmillUsesStoredSourcePath(t *testing.T) {
 	if got := len(got.Report.Calendars[0].Candidates); got != 1 {
 		t.Fatalf("candidates = %d, want 1", got)
 	}
-	if got := got.ReviewStage.GroupsCreated; got != 0 {
-		t.Fatalf("review groups created = %d, want 0", got)
+	if got := got.EventReviewClusters.EventReviewClustersCreated; got != 0 {
+		t.Fatalf("event-review clusters created = %d, want 0", got)
 	}
-	if got := got.ReviewStage.AutoPromotedCount; got != 1 {
+	if got := got.EventReviewClusters.AutoPromotedCount; got != 1 {
 		t.Fatalf("auto promoted count = %d, want 1", got)
 	}
-	if got := len(got.ReviewStage.Groups); got != 0 {
-		t.Fatalf("review groups = %d, want 0", got)
+	if got := len(got.EventReviewClusters.EventReviewClusters); got != 0 {
+		t.Fatalf("event-review clusters = %d, want 0", got)
 	}
-	if got := got.ReviewStage.ReviewCandidateCount; got != 0 {
+	if got := got.EventReviewClusters.ReviewCandidateCount; got != 0 {
 		t.Fatalf("review candidate count = %d, want 0", got)
 	}
 	st, err := sqlite.Open(path)
@@ -1404,12 +1585,12 @@ func TestRunWithArgsReplayLeadmillUsesStoredSourcePath(t *testing.T) {
 		}
 	}()
 
-	if got := len(got.ReviewStage.AutoPromoted); got != 1 {
+	if got := len(got.EventReviewClusters.AutoPromoted); got != 1 {
 		t.Fatalf("auto promoted groups = %d, want 1", got)
 	}
-	event, ok := st.EventBySlug(got.ReviewStage.AutoPromoted[0].EventSlug)
+	event, ok := st.EventBySlug(got.EventReviewClusters.AutoPromoted[0].EventSlug)
 	if !ok {
-		t.Fatalf("published event %q not found", got.ReviewStage.AutoPromoted[0].EventSlug)
+		t.Fatalf("published event %q not found", got.EventReviewClusters.AutoPromoted[0].EventSlug)
 	}
 	if got := event.VenueSlug; got != "leadmill" {
 		t.Fatalf("venue slug = %q, want leadmill", got)
@@ -1552,7 +1733,7 @@ func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.
 		"-db", path,
 		"-import-run-id", strconv.FormatInt(runID, 10),
 		"-limit", "1",
-		"-stage-review-groups",
+		"-stage-event-reviews",
 	}, &stdout, io.Discard)
 	if !errors.Is(err, ingest.ErrRunFailed) {
 		t.Fatalf("error = %v, want ErrRunFailed", err)
@@ -1571,17 +1752,17 @@ func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.
 	if len(got.Report.Errors) == 0 || !strings.Contains(got.Report.Errors[0], "no ICS links found") {
 		t.Fatalf("report errors = %#v, want no ICS links failure", got.Report.Errors)
 	}
-	if !got.ReviewStage.Enabled {
-		t.Fatal("review stage enabled = false, want true")
+	if !got.EventReviewClusters.Enabled {
+		t.Fatal("event-review clusters enabled = false, want true")
 	}
-	if got.ReviewStage.GroupsCreated != 0 {
-		t.Fatalf("review groups created = %d, want 0", got.ReviewStage.GroupsCreated)
+	if got.EventReviewClusters.EventReviewClustersCreated != 0 {
+		t.Fatalf("event-review clusters created = %d, want 0", got.EventReviewClusters.EventReviewClustersCreated)
 	}
 
 	db := openRawDB(t, path)
 	defer db.Close()
 	if got := countRows(t, db, "review_groups"); got != 0 {
-		t.Fatalf("review groups = %d, want 0", got)
+		t.Fatalf("event-review clusters = %d, want 0", got)
 	}
 }
 
@@ -1882,7 +2063,7 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 		}, nil
 	}
 
-	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent", "-stage-review-groups"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("all-sources staged run: %v", err)
 	}
 
@@ -1894,17 +2075,23 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 		t.Fatalf("results = %d, want %d", gotCount, wantCount)
 	}
 	for _, result := range got.Results {
-		if result.ReviewStage == nil {
+		if result.EventReviewClusters == nil {
 			t.Fatalf("review stage missing for source %q", result.Source)
 		}
-		if result.ReviewStage.AutoPromotedCount != 1 {
-			t.Fatalf("auto promoted count for %q = %d, want 1", result.Source, result.ReviewStage.AutoPromotedCount)
+		if result.EventReviewClusters.AutoPromotedCount != 1 {
+			t.Fatalf("auto promoted count for %q = %d, want 1", result.Source, result.EventReviewClusters.AutoPromotedCount)
 		}
-		if result.ReviewStage.GroupsCreated != 0 {
-			t.Fatalf("groups created for %q = %d, want 0", result.Source, result.ReviewStage.GroupsCreated)
+		if result.EventReviewClusters.EventReviewClustersCreated != 0 {
+			t.Fatalf("event-review clusters created for %q = %d, want 0", result.Source, result.EventReviewClusters.EventReviewClustersCreated)
 		}
-		if result.ReviewStage.ReviewCandidateCount != 0 {
-			t.Fatalf("review candidate count for %q = %d, want 0", result.Source, result.ReviewStage.ReviewCandidateCount)
+		if result.EventReviewClusters.ReviewCandidateCount != 0 {
+			t.Fatalf("review candidate count for %q = %d, want 0", result.Source, result.EventReviewClusters.ReviewCandidateCount)
+		}
+		if result.EventReviewClusters.EventReviewClustersAutoResolvedCount != 0 {
+			t.Fatalf("auto-resolved count for %q = %d, want 0", result.Source, result.EventReviewClusters.EventReviewClustersAutoResolvedCount)
+		}
+		if len(result.EventReviewClusters.EventReviewClustersAutoResolved) != 0 {
+			t.Fatalf("auto-resolved rows for %q = %d, want 0", result.Source, len(result.EventReviewClusters.EventReviewClustersAutoResolved))
 		}
 	}
 
@@ -1915,10 +2102,10 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 	}
 }
 
-func TestReviewStageForReportSkipsFailedManualRun(t *testing.T) {
-	st := &fakeReviewStageStore{results: []fakeReviewStageResult{{id: 101, created: true}}}
+func TestEventReviewClustersForReportSkipsFailedManualRun(t *testing.T) {
+	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{{id: 101, created: true}}}
 
-	stage, err := reviewStageForReport(context.Background(), st, testSourceCatalog(t), successfulManualReportForReviewStage(), errors.New("manual ingest failed"))
+	stage, err := eventReviewClustersForReport(context.Background(), st, testSourceCatalog(t), successfulManualReportForEventReviewClusters(), errors.New("manual ingest failed"))
 	if err != nil {
 		t.Fatalf("review stage for failed run: %v", err)
 	}
@@ -1928,20 +2115,20 @@ func TestReviewStageForReportSkipsFailedManualRun(t *testing.T) {
 	if !stage.Enabled {
 		t.Fatal("stage enabled = false, want true")
 	}
-	if stage.GroupsCreated != 0 || stage.CandidateCount != 0 {
-		t.Fatalf("stage counts = groups %d candidates %d, want zero", stage.GroupsCreated, stage.CandidateCount)
+	if stage.EventReviewClustersCreated != 0 || stage.CandidateCount != 0 {
+		t.Fatalf("stage counts = groups %d candidates %d, want zero", stage.EventReviewClustersCreated, stage.CandidateCount)
 	}
 }
 
-func TestCreateReviewGroupsFromReportReportsCreateError(t *testing.T) {
-	st := &fakeReviewStageStore{err: errors.New("insert failed")}
+func TestCreateEventReviewClustersFromReportReportsCreateError(t *testing.T) {
+	st := &fakeEventReviewClustersStore{err: errors.New("insert failed")}
 
-	stage, err := createReviewGroupsFromReport(context.Background(), st, testSourceCatalog(t), successfulManualReportForReviewStage())
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), successfulManualReportForEventReviewClusters())
 	if err == nil {
 		t.Fatal("expected staging error")
 	}
-	if got, want := stage.GroupsCreated, 0; got != want {
-		t.Fatalf("stage groups created = %d, want %d", got, want)
+	if got, want := stage.EventReviewClustersCreated, 0; got != want {
+		t.Fatalf("stage event-review clusters created = %d, want %d", got, want)
 	}
 	if got, want := len(stage.Errors), 1; got != want {
 		t.Fatalf("stage errors = %d, want %d", got, want)
@@ -1949,14 +2136,61 @@ func TestCreateReviewGroupsFromReportReportsCreateError(t *testing.T) {
 	if !strings.Contains(stage.Errors[0], "insert failed") {
 		t.Fatalf("stage error = %q, want insert failure", stage.Errors[0])
 	}
+	if !strings.Contains(stage.Errors[0], "event-review cluster") {
+		t.Fatalf("stage error = %q, want event-review cluster wording", stage.Errors[0])
+	}
+	if strings.Contains(stage.Errors[0], "review group") {
+		t.Fatalf("stage error = %q, want no legacy review group wording", stage.Errors[0])
+	}
 }
 
-type fakeReviewStageStore struct {
-	results          []fakeReviewStageResult
+func TestCreateEventReviewClustersFromReportReportsAutoPromoteErrorWithClusterWording(t *testing.T) {
+	st := &fakeEventReviewClustersStore{
+		promotionResults: []fakePromotionResult{{err: errors.New("promotion failed")}},
+	}
+	report := ingest.Report{
+		Source:      ingest.YellowArchSource,
+		SourceURL:   "https://www.yellowarch.com/events/",
+		ImportRunID: 99,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.yellowarch.com/events/",
+			Candidates: []ingest.EventCandidate{{
+				UID:      "yellow-arch-promotion-error",
+				Summary:  "Promotion Error",
+				Location: "Yellow Arch Studios",
+				StartAt:  "2026-05-10T18:30:00Z",
+			}},
+		}},
+	}
+
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
+	if err == nil {
+		t.Fatal("expected staging error")
+	}
+	if got, want := len(stage.Errors), 1; got != want {
+		t.Fatalf("stage errors = %d, want %d", got, want)
+	}
+	if !strings.Contains(stage.Errors[0], "promotion failed") {
+		t.Fatalf("stage error = %q, want promotion failure", stage.Errors[0])
+	}
+	if !strings.Contains(stage.Errors[0], "event-review cluster") {
+		t.Fatalf("stage error = %q, want event-review cluster wording", stage.Errors[0])
+	}
+	if strings.Contains(stage.Errors[0], "review group") {
+		t.Fatalf("stage error = %q, want no legacy review group wording", stage.Errors[0])
+	}
+}
+
+type fakeEventReviewClustersStore struct {
+	results          []fakeEventReviewClustersResult
 	promotionResults []fakePromotionResult
+	finalizeResults  []*seedstore.EventReviewResolutionSummary
 	err              error
-	inputs           []review.GroupInput
-	promotedInputs   []review.GroupInput
+	inputs           []seedstore.StageEventReviewEvidenceInput
+	promotedInputs   []ingest.ReviewStageClusterInput
+	finalizedCalls   []fakeFinalizeCall
+	sourceIDs        map[string]int64
 }
 
 type fakeFetcher struct{}
@@ -1977,12 +2211,26 @@ func equalStrings(got, want []string) bool {
 	return true
 }
 
-type fakeReviewStageResult struct {
-	id                 int64
-	created            bool
-	autoResolved       bool
-	autoResolvedResult string
-	canonicalEventSlug string
+func equalInt64Slices(got, want []int64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+type fakeEventReviewClustersResult struct {
+	id                   int64
+	created              bool
+	autoResolved         bool
+	autoResolvedResult   string
+	canonicalEventSlug   string
+	supersededClusterIDs []int64
+	clusterStatus        seedstore.EventReviewClusterStatus
 }
 
 type fakePromotionResult struct {
@@ -1991,26 +2239,58 @@ type fakePromotionResult struct {
 	err       error
 }
 
-func (s *fakeReviewStageStore) StageReviewGroup(_ context.Context, input review.GroupInput) (review.StageGroupResult, error) {
+type fakeFinalizeCall struct {
+	clusterID   int64
+	evidenceIDs []int64
+}
+
+func (s *fakeEventReviewClustersStore) EnsureSource(_ context.Context, name, sourceURL string) (int64, error) {
+	if s.sourceIDs == nil {
+		s.sourceIDs = make(map[string]int64)
+	}
+	if s.err != nil {
+		return 0, s.err
+	}
+	key := strings.TrimSpace(name) + "\x00" + strings.TrimSpace(sourceURL)
+	if id, ok := s.sourceIDs[key]; ok {
+		return id, nil
+	}
+	id := int64(len(s.sourceIDs) + 1)
+	s.sourceIDs[key] = id
+	return id, nil
+}
+
+func (s *fakeEventReviewClustersStore) StageEventReviewEvidence(_ context.Context, input seedstore.StageEventReviewEvidenceInput) (seedstore.StageEventReviewEvidenceResult, error) {
 	s.inputs = append(s.inputs, input)
 	if s.err != nil {
-		return review.StageGroupResult{}, s.err
+		return seedstore.StageEventReviewEvidenceResult{}, s.err
 	}
-	if len(s.results) == 0 {
-		return review.StageGroupResult{ID: int64(len(s.inputs)), Created: true}, nil
+	result := fakeEventReviewClustersResult{created: true}
+	if len(s.results) > 0 {
+		result = s.results[0]
+		s.results = s.results[1:]
 	}
-	result := s.results[0]
-	s.results = s.results[1:]
-	return review.StageGroupResult{
-		ID:                 result.id,
-		Created:            result.created,
-		AutoResolved:       result.autoResolved,
-		AutoResolvedResult: result.autoResolvedResult,
-		CanonicalEventSlug: result.canonicalEventSlug,
+	clusterID := result.id
+	if clusterID == 0 {
+		clusterID = int64(len(s.inputs))
+	}
+	return seedstore.StageEventReviewEvidenceResult{
+		EvidenceID:           clusterID,
+		ClusterID:            clusterID,
+		ClusterStatus:        result.clusterStatus,
+		Created:              result.created,
+		Reused:               !result.created,
+		Attached:             true,
+		ClusterCreated:       result.created,
+		ClusterReused:        !result.created,
+		AutoResolved:         result.autoResolved,
+		AutoResolvedResult:   result.autoResolvedResult,
+		CanonicalEventSlug:   result.canonicalEventSlug,
+		SupersededClusterIDs: append([]int64(nil), result.supersededClusterIDs...),
 	}, nil
 }
 
-func (s *fakeReviewStageStore) PromoteSingletonReviewGroupIfMissing(_ context.Context, input review.GroupInput) (string, bool, error) {
+func (s *fakeEventReviewClustersStore) PromoteSingletonReviewClusterIfMissing(_ context.Context, input ingest.ReviewStageClusterInput) (string, bool, error) {
 	s.promotedInputs = append(s.promotedInputs, input)
 	if s.err != nil {
 		return "", false, s.err
@@ -2023,11 +2303,24 @@ func (s *fakeReviewStageStore) PromoteSingletonReviewGroupIfMissing(_ context.Co
 	return result.eventSlug, result.promoted, result.err
 }
 
-func successfulManualReportForReviewStage() ingest.Report {
-	return successfulManualReportForReviewStageWithSource(ingest.DefaultSource, "https://www.sidneyandmatilda.com/")
+func (s *fakeEventReviewClustersStore) FinalizeOpenEventReviewClusterRestage(_ context.Context, clusterID int64, evidenceIDs []int64) (*seedstore.EventReviewResolutionSummary, error) {
+	s.finalizedCalls = append(s.finalizedCalls, fakeFinalizeCall{clusterID: clusterID, evidenceIDs: append([]int64(nil), evidenceIDs...)})
+	if s.err != nil {
+		return nil, s.err
+	}
+	if len(s.finalizeResults) == 0 {
+		return nil, nil
+	}
+	result := s.finalizeResults[0]
+	s.finalizeResults = s.finalizeResults[1:]
+	return result, nil
 }
 
-func successfulManualReportForReviewStageWithSource(source, sourceURL string) ingest.Report {
+func successfulManualReportForEventReviewClusters() ingest.Report {
+	return successfulManualReportForEventReviewClustersWithSource(ingest.DefaultSource, "https://www.sidneyandmatilda.com/")
+}
+
+func successfulManualReportForEventReviewClustersWithSource(source, sourceURL string) ingest.Report {
 	return ingest.Report{
 		Source:      source,
 		SourceURL:   sourceURL,
@@ -2376,10 +2669,11 @@ func seedReplayRunForCLIRepairDescriptions(t *testing.T, path string) (int64, st
 		t.Fatalf("finish import run: %v", err)
 	}
 
-	seedSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Cafe No. 9 singleton",
-		SourceName: "Cafe No. 9 manual ingest",
-		SourceURL:  "https://www.wegottickets.com/Cafe9",
+	seedSlug, promoted, err := st.PromoteSingletonReviewClusterIfMissing(ctx, ingest.ReviewStageClusterInput{
+		ImportRunID: runID,
+		Title:       "Cafe No. 9 singleton",
+		SourceName:  "Cafe No. 9 manual ingest",
+		SourceURL:   "https://www.wegottickets.com/event/700001",
 		Candidates: []review.CandidateInput{{
 			ExternalID:  "https://www.wegottickets.com/event/700001",
 			Name:        "An evening with Ellie Gowers at Cafe No9",
@@ -2507,6 +2801,35 @@ func insertCLIEvent(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, n
 	`, slug, venueID, sourceID, name, startAt, "Test", "Listed", "Existing description.", "2026-05-01T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed)); err != nil {
 		t.Fatalf("insert CLI event: %v", err)
 	}
+}
+
+func insertHistoricalDuplicateCLIEvent(t *testing.T, db *sql.DB, sourceID int64, slug string, venueID int64, name, startAt string, publicationState string) int64 {
+	t.Helper()
+
+	res, err := db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			last_checked_at,
+			origin,
+			publication_state
+		) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, name, startAt, "Test", "Listed", "Historical duplicate repair", "2026-05-01T10:00:00Z", string(domain.OriginLive), publicationState)
+	if err != nil {
+		t.Fatalf("insert historical duplicate CLI event: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("historical duplicate CLI event id: %v", err)
+	}
+	return id
 }
 
 func loadEventRow(t *testing.T, db *sql.DB, slug string) eventRow {
