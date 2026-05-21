@@ -65,9 +65,6 @@ func ParseYellowArchSourcePage(pageURL string, raw []byte, limit int) ParseResul
 			continue
 		}
 		result.Candidates[i].URL = resolvedURL
-		if strings.TrimSpace(result.Candidates[i].UID) == "" && strings.TrimSpace(resolvedURL) != "" {
-			result.Candidates[i].UID = resolvedURL
-		}
 		if imageURL := resolveImageSourceURL(pageURL, result.Candidates[i].ImageSourceURL); imageURL != "" {
 			result.Candidates[i].ImageSourceURL = imageURL
 		}
@@ -194,15 +191,11 @@ func parseYellowArchDateTime(value string) (time.Time, error) {
 		return parsed.UTC(), nil
 	}
 
-	loc, err := time.LoadLocation("Europe/London")
-	if err != nil {
-		return time.Time{}, err
-	}
 	for _, layout := range []string{
 		"2006-01-02T15:04:05",
 		"2006-01-02T15:04",
 	} {
-		parsed, err := time.ParseInLocation(layout, value, loc)
+		parsed, err := time.Parse(layout, value)
 		if err == nil {
 			return parsed.UTC(), nil
 		}

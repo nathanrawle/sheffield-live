@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS repair_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL,
+  notes TEXT NOT NULL DEFAULT ''
+);

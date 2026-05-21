@@ -40,8 +40,8 @@ func TestExtractSidneyAndMatildaICSLinksAppliesLimit(t *testing.T) {
 	}
 }
 
-func TestExtractSidneyAndMatildaICSLinksAcceptsFormatICALAndLegacyLabel(t *testing.T) {
-	body := []byte(`<a href="/events/plain.ics">ICS</a><a href="/events/ical.ics?format=ical">ICS</a><a href="/events/legacy.ics">Google Calendar ICS</a>`)
+func TestExtractSidneyAndMatildaICSLinksRejectsFeedShapedEventSegmentsButKeepsDetailSlugs(t *testing.T) {
+	body := []byte(`<a href="/events/ical.ics?format=ical">ICS</a><a href="/events/ical.ical?format=ical">ICS</a><a href="/events/dealbreaker?format=ical">ICS</a><a href="/events/legacy.ics">Google Calendar ICS</a>`)
 
 	got, err := ExtractSidneyAndMatildaICSLinks("https://www.sidneyandmatilda.com/events/", body, 10)
 	if err != nil {
@@ -49,7 +49,7 @@ func TestExtractSidneyAndMatildaICSLinksAcceptsFormatICALAndLegacyLabel(t *testi
 	}
 
 	want := []string{
-		"https://www.sidneyandmatilda.com/events/ical.ics?format=ical",
+		"https://www.sidneyandmatilda.com/events/dealbreaker?format=ical",
 		"https://www.sidneyandmatilda.com/events/legacy.ics",
 	}
 	if !reflect.DeepEqual(got, want) {
