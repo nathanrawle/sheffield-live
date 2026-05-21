@@ -15,7 +15,6 @@ import (
 
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
-	"sheffield-live/internal/review"
 	seedstore "sheffield-live/internal/store"
 )
 
@@ -40,7 +39,15 @@ const (
 	schemaVersionV17     = 17
 	schemaVersionV18     = 18
 	schemaVersionV19     = 19
-	schemaVersionCurrent = schemaVersionV19
+	schemaVersionV20     = 20
+	schemaVersionV21     = 21
+	schemaVersionV22     = 22
+	schemaVersionV23     = 23
+	schemaVersionV24     = 24
+	schemaVersionV25     = 25
+	schemaVersionV26     = 26
+	schemaVersionV27     = 27
+	schemaVersionCurrent = schemaVersionV27
 	rfc3339Timestamp     = time.RFC3339
 	foreignKeysPragma    = "PRAGMA foreign_keys = ON"
 )
@@ -68,6 +75,14 @@ var migrations = []struct {
 	{version: schemaVersionV17, path: "migrations/0017_event_images.sql"},
 	{version: schemaVersionV18, path: "migrations/0018_image_focus.sql"},
 	{version: schemaVersionV19, path: "migrations/0019_venue_rooms.sql"},
+	{version: schemaVersionV20, path: "migrations/0020_repair_runs.sql"},
+	{version: schemaVersionV21, path: "migrations/0021_events_withheld_fields.sql"},
+	{version: schemaVersionV22, path: "migrations/0022_slug_aliases.sql"},
+	{version: schemaVersionV23, path: "migrations/0023_event_exact_identities.sql"},
+	{version: schemaVersionV24, path: "migrations/0024_event_source_attribute_observations.sql"},
+	{version: schemaVersionV25, path: "migrations/0025_event_source_attribute_observations_source_id_identity.sql"},
+	{version: schemaVersionV26, path: "migrations/0026_event_review_schema_foundation.sql"},
+	{version: schemaVersionV27, path: "migrations/0027_event_review_cluster_staging_key.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -152,20 +167,14 @@ func Open(path string, sourceMetadata ...ingest.SourceMetadataLookup) (st *Store
 	if err := syncSeedVenueRooms(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: sync seed venue rooms: %w", path, err)
 	}
-	if err := backfillReviewGroupImportRunLinks(ctx, tx); err != nil {
-		return nil, fmt.Errorf("open sqlite store %q: backfill review group import-run links: %w", path, err)
-	}
-	if err := backfillOpenReviewGroupsAuthoritativeLinks(ctx, tx, metadata); err != nil {
-		return nil, fmt.Errorf("open sqlite store %q: backfill review group authoritative links: %w", path, err)
-	}
-	if err := backfillReviewFieldDefaults(ctx, tx); err != nil {
-		return nil, fmt.Errorf("open sqlite store %q: backfill review field defaults: %w", path, err)
-	}
 	if err := backfillCanonicalUnknownEnds(ctx, tx, metadata); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill canonical unknown ends: %w", path, err)
 	}
 	if err := backfillEventPublicLinks(ctx, tx, metadata); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill event public links: %w", path, err)
+	}
+	if err := backfillUnit2Schema(ctx, tx); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: backfill unit 2 schema: %w", path, err)
 	}
 	if err := auditCanonicalEqualTimeEnds(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: audit canonical equal-time ends: %w", path, err)
@@ -456,7 +465,10 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 		return err
 	}
 	if version > schemaVersionCurrent {
-		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersionCurrent)
+		return fmt.Errorf("database schema version %d is newer than supported version %d; reset or recreate the local DB", version, schemaVersionCurrent)
+	}
+	if err := failFastOnAbandonedBranchSchema(ctx, tx, version); err != nil {
+		return err
 	}
 	if err := reconcileRebasedEventImageMigrations(ctx, tx, version); err != nil {
 		return err
@@ -758,7 +770,10 @@ func validate(ctx context.Context, q queryer) error {
 	if err := validateDanglingEventSecondarySourceInfoRefs(ctx, q); err != nil {
 		return err
 	}
-	if err := validateDanglingImportRunReviewGroupRefs(ctx, q); err != nil {
+	if err := validateUnit2Schema(ctx, q); err != nil {
+		return err
+	}
+	if err := validateEventReviewSchema(ctx, q); err != nil {
 		return err
 	}
 	if err := validateDanglingEventGenreRefs(ctx, q); err != nil {
@@ -881,27 +896,6 @@ func validateDanglingEventSecondarySourceInfoRefs(ctx context.Context, q queryer
 		return err
 	}
 	return fmt.Errorf("event secondary source info %d references missing source or event", infoID)
-}
-
-func validateDanglingImportRunReviewGroupRefs(ctx context.Context, q queryer) error {
-	row := q.QueryRowContext(ctx, `
-		SELECT l.import_run_id, l.review_group_id
-		FROM import_run_review_groups l
-		LEFT JOIN import_runs ir ON ir.id = l.import_run_id
-		LEFT JOIN review_groups rg ON rg.id = l.review_group_id
-		WHERE ir.id IS NULL OR rg.id IS NULL
-		ORDER BY l.review_group_id, l.import_run_id
-		LIMIT 1
-	`)
-	var importRunID int64
-	var reviewGroupID int64
-	switch err := row.Scan(&importRunID, &reviewGroupID); {
-	case errors.Is(err, sql.ErrNoRows):
-		return nil
-	case err != nil:
-		return err
-	}
-	return fmt.Errorf("import-run review-group link (%d, %d) references missing rows", importRunID, reviewGroupID)
 }
 
 func countRows(ctx context.Context, q queryer, table string) (int, error) {
@@ -1279,6 +1273,8 @@ func normalizedPublicationState(state domain.PublicationState) domain.Publicatio
 	switch state {
 	case domain.PublicationStateProvisional:
 		return domain.PublicationStateProvisional
+	case domain.PublicationStateWithheld:
+		return domain.PublicationStateWithheld
 	case domain.PublicationStateReviewed, "":
 		return domain.PublicationStateReviewed
 	default:
@@ -1422,68 +1418,6 @@ func auditCanonicalEqualTimeEnds(ctx context.Context, q queryer) error {
 	return fmt.Errorf("event %q still uses placeholder end_at equal to start_at; set a real end or clear end_at to NULL", slug)
 }
 
-func backfillReviewGroupImportRunLinks(ctx context.Context, tx interface {
-	execer
-	queryer
-}) error {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, notes, created_at
-		FROM review_groups
-		ORDER BY id
-	`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var groupID int64
-		var notes string
-		var createdAt string
-		if err := rows.Scan(&groupID, &notes, &createdAt); err != nil {
-			return err
-		}
-		importRunID, ok := review.ParseOriginImportRunID(notes)
-		if !ok {
-			continue
-		}
-		linkedAt, err := parseRFC3339UTC(createdAt)
-		if err != nil {
-			return fmt.Errorf("parse review group %d created_at for import-run backfill: %w", groupID, err)
-		}
-		if err := linkReviewGroupToImportRunTx(ctx, tx, importRunID, groupID, linkedAt); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
-}
-
-func linkReviewGroupToImportRunTx(ctx context.Context, tx interface {
-	execer
-	queryer
-}, importRunID, reviewGroupID int64, linkedAt time.Time) error {
-	if importRunID <= 0 || reviewGroupID <= 0 {
-		return nil
-	}
-	var exists int
-	switch err := tx.QueryRowContext(ctx, `
-		SELECT 1
-		FROM import_runs
-		WHERE id = ?
-		LIMIT 1
-	`, importRunID).Scan(&exists); {
-	case errors.Is(err, sql.ErrNoRows):
-		return nil
-	case err != nil:
-		return err
-	}
-	_, err := tx.ExecContext(ctx, `
-		INSERT OR IGNORE INTO import_run_review_groups (import_run_id, review_group_id, linked_at)
-		VALUES (?, ?, ?)
-	`, importRunID, reviewGroupID, formatRFC3339UTC(linkedAt))
-	return err
-}
-
 func backfillEventPublicLinks(ctx context.Context, tx interface {
 	execer
 	queryer
@@ -1556,4 +1490,80 @@ func normalizedCoverageKindValue(value string) string {
 		return string(domain.CoverageKindProgram)
 	}
 	return string(domain.CoverageKindVenue)
+}
+
+func failFastOnAbandonedBranchSchema(ctx context.Context, q queryer, version int) error {
+	if version == schemaVersionV26 {
+		abandoned, err := abandonedHistoricalDuplicateReviewGroupSchemaExists(ctx, q)
+		if err != nil {
+			return err
+		}
+		if abandoned {
+			return fmt.Errorf("database appears to use an abandoned branch schema; reset or recreate the local DB")
+		}
+	}
+	if version == schemaVersionV27 {
+		exists, err := tableExists(ctx, q, "event_review_clusters")
+		if err != nil {
+			return err
+		}
+		if exists {
+			hasStagingKey, err := columnExists(ctx, q, "event_review_clusters", "staging_key")
+			if err != nil {
+				return err
+			}
+			if !hasStagingKey {
+				return fmt.Errorf("database appears to use an abandoned branch schema; reset or recreate the local DB")
+			}
+		}
+	}
+	return nil
+}
+
+func abandonedHistoricalDuplicateReviewGroupSchemaExists(ctx context.Context, q queryer) (bool, error) {
+	exists, err := tableExists(ctx, q, "review_historical_duplicate_actions")
+	if err != nil || exists {
+		return exists, err
+	}
+
+	exists, err = columnExists(ctx, q, "review_groups", "kind")
+	if err != nil || exists {
+		return exists, err
+	}
+
+	for _, trigger := range []string{
+		"review_groups_kind_validate_insert",
+		"review_groups_kind_validate_update",
+		"review_candidates_event_id_exclusivity_insert",
+		"review_candidates_event_id_exclusivity_update",
+		"review_historical_duplicate_actions_validate_insert",
+		"review_historical_duplicate_actions_validate_update",
+		"review_candidates_historical_duplicate_action_protect_delete",
+		"review_candidates_historical_duplicate_action_protect_update",
+		"review_groups_historical_duplicate_actions_protect_kind_change",
+	} {
+		exists, err = triggerExists(ctx, q, trigger)
+		if err != nil || exists {
+			return exists, err
+		}
+	}
+	return false, nil
+}
+
+func triggerExists(ctx context.Context, q queryer, trigger string) (bool, error) {
+	row := q.QueryRowContext(ctx, `
+		SELECT 1
+		FROM sqlite_master
+		WHERE type = 'trigger'
+			AND name = ?
+	`, trigger)
+	var exists int
+	switch err := row.Scan(&exists); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, err
+	default:
+		return true, nil
+	}
 }

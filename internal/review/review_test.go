@@ -38,3 +38,28 @@ func TestCandidateRoomValuePrefersRoomSlugsOverSourceText(t *testing.T) {
 		t.Fatalf("CandidateValue room field = %q, want %q", got, want)
 	}
 }
+
+func TestGroupKindParseDefaultsBlankToStandard(t *testing.T) {
+	kind, ok := ParseGroupKind("")
+	if !ok {
+		t.Fatal("ParseGroupKind blank value failed")
+	}
+	if kind != GroupKindStandard {
+		t.Fatalf("ParseGroupKind blank value = %q, want %q", kind, GroupKindStandard)
+	}
+	if !GroupKindHistoricalDuplicate.Valid() {
+		t.Fatal("historical duplicate group kind should be valid")
+	}
+}
+
+func TestHistoricalDuplicateActionValidation(t *testing.T) {
+	if !HistoricalDuplicateActionKeep.Valid() {
+		t.Fatal("keep action should be valid")
+	}
+	if !HistoricalDuplicateActionWithhold.Valid() {
+		t.Fatal("withhold action should be valid")
+	}
+	if HistoricalDuplicateAction("").Valid() {
+		t.Fatal("blank historical duplicate action should be invalid")
+	}
+}

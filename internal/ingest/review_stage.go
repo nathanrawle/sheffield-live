@@ -3,29 +3,44 @@ package ingest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"sheffield-live/internal/domain"
+	"sheffield-live/internal/eventidentity"
 	"sheffield-live/internal/review"
+	seedstore "sheffield-live/internal/store"
 )
 
 const reviewStageDefaultSourceName = "Sidney & Matilda manual ingest"
+const reviewStageStagingKeyVersion = 1
 
-type reviewStageCluster struct {
-	group review.GroupInput
+type ReviewStageClusterInput struct {
+	ImportRunID                 int64
+	Title                       string
+	SourceName                  string
+	SourceURL                   string
+	Notes                       string
+	StagingKey                  string
+	StagingKeyVersion           int
+	AuthoritativeSourceName     string
+	AuthoritativeSourceURL      string
+	AuthoritativeSourceEventKey string
+	Candidates                  []review.CandidateInput
 }
 
-func ReviewGroupsFromReport(report Report) []review.GroupInput {
+func ReviewClustersFromReport(report Report) []ReviewStageClusterInput {
 	catalog, err := DefaultCatalog()
 	if err != nil {
 		return nil
 	}
-	return ReviewGroupsFromReportWithCatalog(catalog, report)
+	return ReviewClustersFromReportWithCatalog(catalog, report)
 }
 
-func ReviewGroupsFromReportWithCatalog(catalog *Catalog, report Report) []review.GroupInput {
+func ReviewClustersFromReportWithCatalog(catalog *Catalog, report Report) []ReviewStageClusterInput {
 	if catalog == nil {
 		return nil
 	}
@@ -33,7 +48,7 @@ func ReviewGroupsFromReportWithCatalog(catalog *Catalog, report Report) []review
 		return nil
 	}
 
-	clusters := make(map[string]*reviewStageCluster)
+	clusters := make(map[string]*ReviewStageClusterInput)
 	var order []string
 
 	for _, calendar := range report.Calendars {
@@ -46,43 +61,42 @@ func ReviewGroupsFromReportWithCatalog(catalog *Catalog, report Report) []review
 
 			cluster, exists := clusters[key]
 			if !exists {
-				cluster = &reviewStageCluster{
-					group: review.GroupInput{
-						SourceName:  reviewStageSourceName(catalog, report),
-						SourceURL:   reviewStageFirstNonEmpty(calendar.URL, report.SourceURL),
-						ImportRunID: report.ImportRunID,
-						Notes:       reviewStageNotes(report),
-					},
+				cluster = &ReviewStageClusterInput{
+					SourceName: reviewStageSourceName(catalog, report),
+					SourceURL:  reviewStageFirstNonEmpty(calendar.URL, report.SourceURL),
+					Notes:      reviewStageNotes(report),
 				}
 				clusters[key] = cluster
 				order = append(order, key)
 			}
 
-			cluster.group.Candidates = append(cluster.group.Candidates, reviewStageCandidateInput(catalog, report, calendar, candidate))
+			cluster.Candidates = append(cluster.Candidates, reviewStageCandidateInput(catalog, report, calendar, candidate))
 		}
 	}
 
-	groups := make([]review.GroupInput, 0, len(order))
+	result := make([]ReviewStageClusterInput, 0, len(order))
 	for _, key := range order {
-		group := clusters[key].group
-		group.Title = reviewStageTitle(group)
-		group.StagingKey = reviewStageStagingKey(group)
-		group.AuthoritativeSourceName, group.AuthoritativeSourceURL, group.AuthoritativeSourceEventKey = reviewStageAuthoritativeSource(catalog, report.Source, group)
-		groups = append(groups, group)
+		cluster := clusters[key]
+		cluster.ImportRunID = report.ImportRunID
+		cluster.Title = reviewStageTitle(cluster.Candidates)
+		cluster.StagingKey = reviewStageStagingKeyFromCandidates(cluster.Candidates)
+		cluster.StagingKeyVersion = reviewStageStagingKeyVersion
+		cluster.AuthoritativeSourceName, cluster.AuthoritativeSourceURL, cluster.AuthoritativeSourceEventKey = reviewStageAuthoritativeSource(catalog, report.Source, cluster.SourceName, cluster.SourceURL, cluster.Candidates)
+		result = append(result, *cluster)
 	}
-	return groups
+	return result
 }
 
-func reviewStageAuthoritativeSource(catalog *Catalog, source string, group review.GroupInput) (string, string, string) {
+func reviewStageAuthoritativeSource(catalog *Catalog, source, baseSourceName, baseSourceURL string, candidates []review.CandidateInput) (string, string, string) {
 	ownedVenueSlug := strings.TrimSpace(catalog.OwnedVenueSlugForSource(source))
-	if ownedVenueSlug == "" || len(group.Candidates) == 0 {
+	if ownedVenueSlug == "" || len(candidates) == 0 {
 		return "", "", ""
 	}
 
-	var sourceName string
-	var sourceURL string
-	var sourceEventKey string
-	for _, candidate := range group.Candidates {
+	var authoritativeSourceName string
+	var authoritativeSourceURL string
+	var authoritativeSourceEventKey string
+	for _, candidate := range candidates {
 		if strings.TrimSpace(candidate.VenueSlug) != ownedVenueSlug {
 			return "", "", ""
 		}
@@ -90,31 +104,52 @@ func reviewStageAuthoritativeSource(catalog *Catalog, source string, group revie
 		if candidateEventKey == "" {
 			return "", "", ""
 		}
-		candidateSourceName := reviewStageFirstNonEmpty(candidate.SourceName, group.SourceName)
-		candidateSourceURL := reviewStageFirstNonEmpty(candidate.CalendarURL, candidate.SourceURL, group.SourceURL)
+		candidateSourceName := reviewStageFirstNonEmpty(candidate.SourceName, baseSourceName, authoritativeSourceName)
+		candidateSourceURL := reviewStageFirstNonEmpty(candidate.CalendarURL, candidate.SourceURL, baseSourceURL, authoritativeSourceURL)
 		if candidateSourceName == "" || candidateSourceURL == "" {
 			return "", "", ""
 		}
-		if sourceEventKey == "" {
-			sourceName = candidateSourceName
-			sourceURL = candidateSourceURL
-			sourceEventKey = candidateEventKey
+		if authoritativeSourceEventKey == "" {
+			authoritativeSourceName = candidateSourceName
+			authoritativeSourceURL = candidateSourceURL
+			authoritativeSourceEventKey = candidateEventKey
 			continue
 		}
-		if candidateSourceName != sourceName || candidateSourceURL != sourceURL || candidateEventKey != sourceEventKey {
+		if candidateSourceName != authoritativeSourceName || candidateSourceURL != authoritativeSourceURL || candidateEventKey != authoritativeSourceEventKey {
 			return "", "", ""
 		}
 	}
-	return sourceName, sourceURL, sourceEventKey
+	return authoritativeSourceName, authoritativeSourceURL, authoritativeSourceEventKey
 }
 
 func reviewStageAuthoritativeSourceEventKey(candidate review.CandidateInput) string {
-	return reviewStageFirstNonEmpty(candidate.ExternalID, candidate.SourceURL)
+	if key, ok := SourceIdentityKey(candidate.ExternalID); ok {
+		return key
+	}
+	if reviewStageHasRealSourceURL(candidate.Provenance) {
+		if normalized, ok := NormalizeEventIdentityURL(candidate.SourceURL); ok {
+			return "url:" + normalized
+		}
+	}
+	return ""
 }
 
-func reviewStageStagingKey(group review.GroupInput) string {
-	candidateFingerprints := make([]string, 0, len(group.Candidates))
-	for _, candidate := range group.Candidates {
+func reviewStageHasRealSourceURL(provenance string) bool {
+	for _, part := range strings.Split(strings.TrimSpace(provenance), ";") {
+		if strings.HasPrefix(strings.TrimSpace(part), "URL ") {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewStageStagingKey(cluster ReviewStageClusterInput) string {
+	return reviewStageStagingKeyFromCandidates(cluster.Candidates)
+}
+
+func reviewStageStagingKeyFromCandidates(candidates []review.CandidateInput) string {
+	candidateFingerprints := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
 		candidateFingerprints = append(candidateFingerprints, reviewStageCandidateFingerprint(candidate))
 	}
 	sort.Strings(candidateFingerprints)
@@ -240,13 +275,13 @@ func reviewStageCalendarURL(calendar CalendarReport, candidate EventCandidate) s
 	return ""
 }
 
-func reviewStageTitle(group review.GroupInput) string {
+func reviewStageTitle(candidates []review.CandidateInput) string {
 	prefix := "Duplicate review"
-	if len(group.Candidates) == 1 {
+	if len(candidates) == 1 {
 		prefix = "New listing review"
 	}
 
-	for _, candidate := range group.Candidates {
+	for _, candidate := range candidates {
 		if name := normalizeReviewStageDisplay(candidate.Name); name != "" {
 			return prefix + ": " + name
 		}
@@ -322,4 +357,259 @@ func reviewStageVenueSlugValue(candidate EventCandidate) string {
 		return head
 	}
 	return strings.TrimSpace(candidate.Location)
+}
+
+type reviewStageEventReviewEvidencePayload struct {
+	GroupTitle                       string                    `json:"group_title"`
+	GroupSourceName                  string                    `json:"group_source_name"`
+	GroupSourceURL                   string                    `json:"group_source_url"`
+	SourceAuthority                  string                    `json:"source_authority"`
+	GroupAuthoritativeSourceName     string                    `json:"group_authoritative_source_name,omitempty"`
+	GroupAuthoritativeSourceURL      string                    `json:"group_authoritative_source_url,omitempty"`
+	GroupAuthoritativeSourceEventKey string                    `json:"group_authoritative_source_event_key,omitempty"`
+	GroupNotes                       string                    `json:"group_notes,omitempty"`
+	SourceName                       string                    `json:"source_name"`
+	SourceURL                        string                    `json:"source_url,omitempty"`
+	CalendarURL                      string                    `json:"calendar_url,omitempty"`
+	Provenance                       string                    `json:"provenance,omitempty"`
+	CandidateExternalID              string                    `json:"candidate_external_id,omitempty"`
+	CandidateTitle                   string                    `json:"candidate_title,omitempty"`
+	CandidateVenueSlug               string                    `json:"candidate_venue_slug,omitempty"`
+	CandidateVenueText               string                    `json:"candidate_venue_text,omitempty"`
+	CandidateVenueLocationRaw        string                    `json:"candidate_venue_location_raw,omitempty"`
+	CandidateRoomText                string                    `json:"candidate_room_text,omitempty"`
+	CandidateRooms                   []reviewStageEvidenceRoom `json:"candidate_rooms,omitempty"`
+	CandidateStartAt                 string                    `json:"candidate_start_at,omitempty"`
+	CandidateEndAt                   string                    `json:"candidate_end_at,omitempty"`
+	CandidateGenre                   string                    `json:"candidate_genre,omitempty"`
+	CandidateStatus                  string                    `json:"candidate_status,omitempty"`
+	CandidateDescription             string                    `json:"candidate_description,omitempty"`
+	CandidateImageURL                string                    `json:"candidate_image_url,omitempty"`
+	CandidateImageSourceURL          string                    `json:"candidate_image_source_url,omitempty"`
+	CandidateImageAlt                string                    `json:"candidate_image_alt,omitempty"`
+	CandidateImageWidth              int                       `json:"candidate_image_width,omitempty"`
+	CandidateImageHeight             int                       `json:"candidate_image_height,omitempty"`
+	CandidateImageFocusX             int                       `json:"candidate_image_focus_x,omitempty"`
+	CandidateImageFocusY             int                       `json:"candidate_image_focus_y,omitempty"`
+}
+
+type reviewStageEvidenceRoom struct {
+	VenueSlug string `json:"venue_slug"`
+	Slug      string `json:"slug"`
+	Name      string `json:"name"`
+}
+
+func ReviewStageClusterEventReviewEvidenceInputs(cluster ReviewStageClusterInput) []seedstore.StageEventReviewEvidenceInput {
+	inputs := make([]seedstore.StageEventReviewEvidenceInput, 0, len(cluster.Candidates))
+	for _, candidate := range cluster.Candidates {
+		inputs = append(inputs, reviewStageClusterEventReviewEvidenceInput(cluster, candidate))
+	}
+	return inputs
+}
+
+func reviewStageClusterEventReviewEvidenceInput(cluster ReviewStageClusterInput, candidate review.CandidateInput) seedstore.StageEventReviewEvidenceInput {
+	sourceName, sourceURL, sourceAuthority := reviewStageClusterEvidenceSourceRef(cluster, candidate)
+	payloadSourceName := reviewStageFirstNonEmpty(candidate.SourceName, cluster.SourceName)
+	payloadSourceURL := reviewStageFirstNonEmpty(candidate.SourceURL, candidate.CalendarURL, cluster.SourceURL)
+
+	payload := reviewStageEventReviewEvidencePayload{
+		GroupTitle:                       strings.TrimSpace(cluster.Title),
+		GroupSourceName:                  strings.TrimSpace(cluster.SourceName),
+		GroupSourceURL:                   strings.TrimSpace(cluster.SourceURL),
+		SourceAuthority:                  string(sourceAuthority),
+		GroupAuthoritativeSourceName:     strings.TrimSpace(cluster.AuthoritativeSourceName),
+		GroupAuthoritativeSourceURL:      strings.TrimSpace(cluster.AuthoritativeSourceURL),
+		GroupAuthoritativeSourceEventKey: strings.TrimSpace(cluster.AuthoritativeSourceEventKey),
+		GroupNotes:                       strings.TrimSpace(cluster.Notes),
+		SourceName:                       payloadSourceName,
+		SourceURL:                        payloadSourceURL,
+		CalendarURL:                      strings.TrimSpace(candidate.CalendarURL),
+		Provenance:                       strings.TrimSpace(candidate.Provenance),
+		CandidateExternalID:              strings.TrimSpace(candidate.ExternalID),
+		CandidateTitle:                   strings.TrimSpace(candidate.Name),
+		CandidateVenueSlug:               strings.TrimSpace(candidate.VenueSlug),
+		CandidateVenueText:               strings.TrimSpace(candidate.VenueText),
+		CandidateVenueLocationRaw:        strings.TrimSpace(candidate.VenueLocationRaw),
+		CandidateRoomText:                strings.TrimSpace(candidate.RoomText),
+		CandidateRooms:                   reviewStageEvidenceRooms(candidate.Rooms),
+		CandidateStartAt:                 strings.TrimSpace(candidate.StartAt),
+		CandidateEndAt:                   strings.TrimSpace(candidate.EndAt),
+		CandidateGenre:                   strings.TrimSpace(candidate.Genre),
+		CandidateStatus:                  strings.TrimSpace(candidate.Status),
+		CandidateDescription:             strings.TrimSpace(candidate.Description),
+		CandidateImageURL:                strings.TrimSpace(candidate.ImageURL),
+		CandidateImageSourceURL:          strings.TrimSpace(candidate.ImageSourceURL),
+		CandidateImageAlt:                strings.TrimSpace(candidate.ImageAlt),
+		CandidateImageWidth:              candidate.ImageWidth,
+		CandidateImageHeight:             candidate.ImageHeight,
+		CandidateImageFocusX:             candidate.ImageFocusX,
+		CandidateImageFocusY:             candidate.ImageFocusY,
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	sourceIdentityKeys, exactIdentityKeys, weakEvidence, weakReason := reviewStageClusterEvidenceIdentityKeys(cluster, candidate)
+	fingerprintMaterialBytes, _ := json.Marshal(reviewStageEventReviewEvidenceFingerprintMaterial{
+		SourceAuthority:           string(sourceAuthority),
+		SourceURL:                 sourceURL,
+		CalendarURL:               strings.TrimSpace(candidate.CalendarURL),
+		Provenance:                strings.TrimSpace(candidate.Provenance),
+		CandidateExternalID:       strings.TrimSpace(candidate.ExternalID),
+		CandidateTitle:            normalizeReviewStageDisplay(candidate.Name),
+		CandidateVenueSlug:        strings.TrimSpace(candidate.VenueSlug),
+		CandidateVenueText:        strings.TrimSpace(candidate.VenueText),
+		CandidateVenueLocationRaw: strings.TrimSpace(candidate.VenueLocationRaw),
+		CandidateRoomText:         strings.TrimSpace(candidate.RoomText),
+		CandidateRooms:            reviewStageEvidenceRooms(candidate.Rooms),
+		CandidateStartAt:          strings.TrimSpace(candidate.StartAt),
+		CandidateEndAt:            strings.TrimSpace(candidate.EndAt),
+		CandidateGenre:            strings.TrimSpace(candidate.Genre),
+		CandidateStatus:           strings.TrimSpace(candidate.Status),
+		CandidateDescription:      strings.TrimSpace(candidate.Description),
+		CandidateImageURL:         strings.TrimSpace(candidate.ImageURL),
+		CandidateImageSourceURL:   strings.TrimSpace(candidate.ImageSourceURL),
+		CandidateImageAlt:         strings.TrimSpace(candidate.ImageAlt),
+		CandidateImageWidth:       candidate.ImageWidth,
+		CandidateImageHeight:      candidate.ImageHeight,
+		CandidateImageFocusX:      candidate.ImageFocusX,
+		CandidateImageFocusY:      candidate.ImageFocusY,
+		SourceIdentityKeys:        reviewStageUniqueSortedKeys(sourceIdentityKeys),
+		ExactIdentityKeys:         reviewStageUniqueSortedKeys(exactIdentityKeys),
+	})
+
+	return seedstore.StageEventReviewEvidenceInput{
+		SourceName:          sourceName,
+		SourceURL:           sourceURL,
+		SourceAuthority:     sourceAuthority,
+		StagingKey:          strings.TrimSpace(cluster.StagingKey),
+		StagingKeyVersion:   cluster.StagingKeyVersion,
+		ConflictType:        seedstore.EventReviewConflictTypeImportReview,
+		ConflictReason:      seedstore.EventReviewConflictReasonIngestCandidate,
+		Payload:             string(payloadBytes),
+		EvidenceFingerprint: reviewStageEventReviewEvidenceFingerprint(fingerprintMaterialBytes),
+		SourceIdentityKeys:  sourceIdentityKeys,
+		ExactIdentityKeys:   exactIdentityKeys,
+		WeakEvidence:        weakEvidence,
+		WeakEvidenceReason:  weakReason,
+	}
+}
+
+func reviewStageClusterEvidenceSourceRef(cluster ReviewStageClusterInput, candidate review.CandidateInput) (string, string, seedstore.SourceAuthority) {
+	if authoritativeName := strings.TrimSpace(cluster.AuthoritativeSourceName); authoritativeName != "" {
+		authoritativeURL := strings.TrimSpace(cluster.AuthoritativeSourceURL)
+		authoritativeEventKey := strings.TrimSpace(cluster.AuthoritativeSourceEventKey)
+		if authoritativeURL != "" && authoritativeEventKey != "" {
+			return authoritativeName, authoritativeURL, seedstore.SourceAuthorityAuthoritative
+		}
+	}
+	return reviewStageFirstNonEmpty(candidate.SourceName, cluster.SourceName), reviewStageFirstNonEmpty(candidate.SourceURL, candidate.CalendarURL, cluster.SourceURL), seedstore.SourceAuthoritySupporting
+}
+
+func reviewStageEvidenceRooms(rooms []domain.VenueRoom) []reviewStageEvidenceRoom {
+	if len(rooms) == 0 {
+		return nil
+	}
+	out := make([]reviewStageEvidenceRoom, 0, len(rooms))
+	for _, room := range rooms {
+		out = append(out, reviewStageEvidenceRoom{
+			VenueSlug: strings.TrimSpace(room.VenueSlug),
+			Slug:      strings.TrimSpace(room.Slug),
+			Name:      strings.TrimSpace(room.Name),
+		})
+	}
+	return out
+}
+
+func reviewStageClusterEvidenceIdentityKeys(cluster ReviewStageClusterInput, candidate review.CandidateInput) ([]string, []string, bool, string) {
+	sourceIdentityKeys := reviewStageEventReviewSourceIdentityKeys(cluster, candidate)
+	exactIdentityKeys := reviewStageExactIdentityKeys(candidate)
+	if len(sourceIdentityKeys) == 0 && len(exactIdentityKeys) == 0 {
+		return nil, nil, true, "missing source and exact identity keys"
+	}
+	return sourceIdentityKeys, exactIdentityKeys, false, ""
+}
+
+func reviewStageEventReviewSourceIdentityKeys(cluster ReviewStageClusterInput, candidate review.CandidateInput) []string {
+	identities := SourceIdentities(SourceIdentityInput{
+		ExternalID:  candidate.ExternalID,
+		SourceURL:   candidate.SourceURL,
+		CalendarURL: candidate.CalendarURL,
+	})
+	keys := append([]string(nil), identities.Keys()...)
+	if key := strings.TrimSpace(cluster.AuthoritativeSourceEventKey); key != "" {
+		keys = append(keys, key)
+	}
+	return reviewStageUniqueSortedKeys(keys)
+}
+
+func reviewStageExactIdentityKeys(candidate review.CandidateInput) []string {
+	startAt := strings.TrimSpace(candidate.StartAt)
+	venueSlug := strings.TrimSpace(candidate.VenueSlug)
+	if startAt == "" || venueSlug == "" || strings.TrimSpace(candidate.Name) == "" {
+		return nil
+	}
+	start, err := time.Parse(time.RFC3339, startAt)
+	if err != nil {
+		return nil
+	}
+	cleanTitle := strings.TrimSpace(CleanEventTitleForVenue(candidate.Name, venueSlug))
+	if cleanTitle == "" {
+		return nil
+	}
+	return []string{eventidentity.BuildKey(eventidentity.ExactKeyVersion, venueSlug, start.UTC(), cleanTitle)}
+}
+
+type reviewStageEventReviewEvidenceFingerprintMaterial struct {
+	SourceAuthority           string                    `json:"source_authority,omitempty"`
+	SourceURL                 string                    `json:"source_url,omitempty"`
+	CalendarURL               string                    `json:"calendar_url,omitempty"`
+	Provenance                string                    `json:"provenance,omitempty"`
+	CandidateExternalID       string                    `json:"candidate_external_id,omitempty"`
+	CandidateTitle            string                    `json:"candidate_title,omitempty"`
+	CandidateVenueSlug        string                    `json:"candidate_venue_slug,omitempty"`
+	CandidateVenueText        string                    `json:"candidate_venue_text,omitempty"`
+	CandidateVenueLocationRaw string                    `json:"candidate_venue_location_raw,omitempty"`
+	CandidateRoomText         string                    `json:"candidate_room_text,omitempty"`
+	CandidateRooms            []reviewStageEvidenceRoom `json:"candidate_rooms,omitempty"`
+	CandidateStartAt          string                    `json:"candidate_start_at,omitempty"`
+	CandidateEndAt            string                    `json:"candidate_end_at,omitempty"`
+	CandidateGenre            string                    `json:"candidate_genre,omitempty"`
+	CandidateStatus           string                    `json:"candidate_status,omitempty"`
+	CandidateDescription      string                    `json:"candidate_description,omitempty"`
+	CandidateImageURL         string                    `json:"candidate_image_url,omitempty"`
+	CandidateImageSourceURL   string                    `json:"candidate_image_source_url,omitempty"`
+	CandidateImageAlt         string                    `json:"candidate_image_alt,omitempty"`
+	CandidateImageWidth       int                       `json:"candidate_image_width,omitempty"`
+	CandidateImageHeight      int                       `json:"candidate_image_height,omitempty"`
+	CandidateImageFocusX      int                       `json:"candidate_image_focus_x,omitempty"`
+	CandidateImageFocusY      int                       `json:"candidate_image_focus_y,omitempty"`
+	SourceIdentityKeys        []string                  `json:"source_identity_keys,omitempty"`
+	ExactIdentityKeys         []string                  `json:"exact_identity_keys,omitempty"`
+}
+
+func reviewStageEventReviewEvidenceFingerprint(material []byte) string {
+	sum := sha256.New()
+	writeReviewStageHashPart(sum, "event-review-evidence:v1")
+	writeReviewStageHashPart(sum, string(material))
+	return "v1:" + hex.EncodeToString(sum.Sum(nil))
+}
+
+func reviewStageUniqueSortedKeys(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(keys))
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }

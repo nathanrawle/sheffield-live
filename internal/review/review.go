@@ -25,6 +25,30 @@ const (
 	FieldSourceURL   Field = "source_url"
 )
 
+type GroupKind string
+
+const (
+	GroupKindStandard            GroupKind = "standard"
+	GroupKindHistoricalDuplicate GroupKind = "historical_duplicate"
+)
+
+func ParseGroupKind(value string) (GroupKind, bool) {
+	kind := GroupKind(strings.TrimSpace(value))
+	if kind == "" {
+		kind = GroupKindStandard
+	}
+	return kind, kind.Valid()
+}
+
+func (k GroupKind) Valid() bool {
+	switch k {
+	case GroupKindStandard, GroupKindHistoricalDuplicate:
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	StatusOpen     = "open"
 	StatusResolved = "resolved"
@@ -47,6 +71,7 @@ var CanonicalFields = []Field{
 
 type GroupSummary struct {
 	ID                int64
+	Kind              GroupKind
 	Title             string
 	SourceName        string
 	SourceURL         string
@@ -65,6 +90,7 @@ type GroupSummary struct {
 
 type Group struct {
 	ID                          int64
+	Kind                        GroupKind
 	Title                       string
 	SourceName                  string
 	SourceURL                   string
@@ -80,6 +106,7 @@ type Group struct {
 	SharedVenueSlug             string
 	SharedVenueName             string
 	Candidates                  []Candidate
+	HistoricalDuplicateActions  map[int64]HistoricalDuplicateActionChoice
 	StagedCandidateCount        int
 	DraftChoices                map[Field]DraftChoice
 	DefaultChoices              map[Field]DraftChoice
@@ -90,6 +117,7 @@ type Candidate struct {
 	GroupID          int64
 	Position         int
 	CanonicalEventID int64
+	ExistingEventID  int64
 	ExternalID       string
 	Name             string
 	VenueSlug        string
@@ -115,21 +143,9 @@ type Candidate struct {
 	Provenance       string
 }
 
-type GroupInput struct {
-	Title                       string
-	SourceName                  string
-	SourceURL                   string
-	AuthoritativeSourceName     string
-	AuthoritativeSourceURL      string
-	AuthoritativeSourceEventKey string
-	ImportRunID                 int64
-	Notes                       string
-	StagingKey                  string
-	Candidates                  []CandidateInput
-}
-
 type CandidateInput struct {
 	CanonicalEventID int64
+	ExistingEventID  int64
 	ExternalID       string
 	Name             string
 	VenueSlug        string
@@ -165,6 +181,43 @@ type DraftChoice struct {
 type DraftChoiceInput struct {
 	Field       Field
 	CandidateID int64
+}
+
+type HistoricalDuplicateDraftInput struct {
+	FieldChoices []DraftChoiceInput
+	Actions      map[int64]HistoricalDuplicateActionInput
+}
+
+type HistoricalDuplicateResolutionInput struct {
+	FieldChoices []DraftChoiceInput
+	Actions      map[int64]HistoricalDuplicateActionInput
+}
+
+type HistoricalDuplicateAction string
+
+const (
+	HistoricalDuplicateActionKeep     HistoricalDuplicateAction = "keep"
+	HistoricalDuplicateActionWithhold HistoricalDuplicateAction = "withhold"
+)
+
+func (a HistoricalDuplicateAction) Valid() bool {
+	switch a {
+	case HistoricalDuplicateActionKeep, HistoricalDuplicateActionWithhold:
+		return true
+	default:
+		return false
+	}
+}
+
+type HistoricalDuplicateActionChoice struct {
+	IsCanonical bool
+	Action      HistoricalDuplicateAction
+	UpdatedAt   time.Time
+}
+
+type HistoricalDuplicateActionInput struct {
+	IsCanonical bool
+	Action      HistoricalDuplicateAction
 }
 
 type StageGroupResult struct {

@@ -3,7 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,5477 +16,63 @@ import (
 	seedstore "sheffield-live/internal/store"
 )
 
-func TestReviewGroupDraftRoundTripDoesNotPublishEvents(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+const (
+	testSupportingSourceName = "Fixture supporting manual ingest"
+	testSupportingSourceURL  = "https://fixture.example.test/listings/"
+)
 
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	eventCount := mustCount(t, db, "events")
-
-	input := review.GroupInput{
-		Title:      "Fixture review",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:testdata/sidney.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:       "candidate-a",
-				Name:             "Candidate A",
-				VenueSlug:        "leadmill",
-				VenueText:        "Leadmill",
-				VenueLocationRaw: "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
-				StartAt:          "2026-05-01T19:00:00Z",
-				EndAt:            "2026-05-01T22:00:00Z",
-				Genre:            "Indie",
-				Status:           "Listed",
-				Description:      "First description",
-				SourceName:       "Fixture ICS",
-				SourceURL:        "file:a.ics",
-				Provenance:       "fixture UID candidate-a",
-			},
-			{
-				ExternalID:  "candidate-b",
-				Name:        "Candidate B",
-				VenueSlug:   "yellow-arch",
-				StartAt:     "2026-05-02T19:30:00Z",
-				EndAt:       "2026-05-02T22:30:00Z",
-				Genre:       "Jazz",
-				Status:      "Listed",
-				Description: "Second description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:b.ics",
-				Provenance:  "fixture UID candidate-b",
-			},
-		},
-	}
-	if input.Candidates[0].VenueText != "Leadmill" {
-		t.Fatalf("fixture venue text = %q, want %q", input.Candidates[0].VenueText, "Leadmill")
-	}
-	groupID, err := st.CreateReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if len(group.Candidates) != 2 {
-		t.Fatalf("candidate count = %d, want 2", len(group.Candidates))
-	}
-
-	if err := st.SaveReviewDraftChoices(ctx, groupID, []review.DraftChoiceInput{
-		{Field: review.FieldName, CandidateID: group.Candidates[1].ID},
-		{Field: review.FieldStartAt, CandidateID: group.Candidates[0].ID},
-		{Field: review.FieldVenueSlug, CandidateID: group.Candidates[1].ID},
-	}); err != nil {
-		t.Fatalf("save review draft choices: %v", err)
-	}
-
-	group, ok, err = st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after save")
-	}
-	assertDraftChoice(t, group, review.FieldName, group.Candidates[1].ID, "Candidate B")
-	assertDraftChoice(t, group, review.FieldStartAt, group.Candidates[0].ID, "2026-05-01T19:00:00Z")
-	assertDraftChoice(t, group, review.FieldVenueSlug, group.Candidates[1].ID, "yellow-arch")
-
-	groups, err := st.ListOpenReviewGroups(ctx)
-	if err != nil {
-		t.Fatalf("list open review groups: %v", err)
-	}
-	if len(groups) != 1 {
-		t.Fatalf("open review groups = %d, want 1", len(groups))
-	}
-	if groups[0].CandidateCount != 2 || groups[0].DraftCount != 3 {
-		t.Fatalf("summary counts = candidates %d drafts %d, want 2 and 3", groups[0].CandidateCount, groups[0].DraftCount)
-	}
-	if got := mustCount(t, db, "events"); got != eventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, eventCount)
-	}
-}
-
-func TestReviewGroupSharedVenueSummaryUsesResolvedIdentity(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	input := review.GroupInput{
-		Title:      "Shared venue summary",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:shared-venue.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID: "candidate-a",
-				Name:       "Candidate A",
-				VenueSlug:  "leadmill-temp-a",
-				VenueText:  "The Leadmill",
-				StartAt:    "2026-05-01T19:00:00Z",
-				SourceName: "Fixture ICS",
-				SourceURL:  "file:a.ics",
-				Provenance: "fixture UID candidate-a",
-			},
-			{
-				ExternalID:       "candidate-b",
-				Name:             "Candidate B",
-				VenueSlug:        "leadmill-temp-b",
-				VenueLocationRaw: "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
-				StartAt:          "2026-05-01T19:00:00Z",
-				SourceName:       "Fixture ICS",
-				SourceURL:        "file:b.ics",
-				Provenance:       "fixture UID candidate-b",
-			},
-		},
-	}
-
-	groupID, err := st.CreateReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if got, want := group.SharedVenueSlug, "leadmill"; got != want {
-		t.Fatalf("shared venue slug = %q, want %q", got, want)
-	}
-	if got, want := group.SharedVenueName, "The Leadmill"; got != want {
-		t.Fatalf("shared venue name = %q, want %q", got, want)
-	}
-
-	summaries, err := st.ListOpenReviewGroups(ctx)
-	if err != nil {
-		t.Fatalf("list open review groups: %v", err)
-	}
-	if len(summaries) != 1 {
-		t.Fatalf("open review groups = %d, want 1", len(summaries))
-	}
-	if got, want := summaries[0].ID, groupID; got != want {
-		t.Fatalf("summary id = %d, want %d", got, want)
-	}
-	if got, want := summaries[0].SharedVenueSlug, "leadmill"; got != want {
-		t.Fatalf("summary shared venue slug = %q, want %q", got, want)
-	}
-	if got, want := summaries[0].SharedVenueName, "The Leadmill"; got != want {
-		t.Fatalf("summary shared venue name = %q, want %q", got, want)
-	}
-}
-
-func TestCreateReviewGroupDefaultsBlankCandidateSourceFieldsAndPreservesProvenance(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-	db := mustRawDB(t, path)
-	defer db.Close()
-
-	tx, err := st.db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("begin transaction: %v", err)
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	now := time.Now().UTC()
-	res, err := tx.ExecContext(ctx, `
-		INSERT INTO review_groups (
-			title,
-			source_name,
-			source_url,
-			authoritative_source_name,
-			authoritative_source_url,
-			authoritative_source_event_key,
-			staging_key,
-			status,
-			notes,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, "Source defaults", "Fixture ICS", "file:defaults.ics", nullableReviewText(""), nullableReviewText(""), nullableReviewText(""), stagingKeyValue(""), review.StatusOpen, "", formatRFC3339UTC(now), formatRFC3339UTC(now))
-	if err != nil {
-		t.Fatalf("insert review group: %v", err)
-	}
-	groupID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("review group last insert id: %v", err)
-	}
-
-	if err := insertReviewCandidate(ctx, tx, groupID, 1, review.CandidateInput{
-		ExternalID:       "candidate-a",
-		Name:             "Candidate A",
-		VenueSlug:        "leadmill",
-		VenueText:        "Leadmill",
-		VenueLocationRaw: "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
-		StartAt:          "2026-05-01T19:00:00Z",
-		EndAt:            "2026-05-01T22:00:00Z",
-		Genre:            "Indie",
-		Status:           "Listed",
-		Description:      "First description",
-		Provenance:       "fixture UID candidate-a",
-	}, "Fixture ICS", "file:defaults.ics"); err != nil {
-		t.Fatalf("insert review candidate: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit transaction: %v", err)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if group.SourceName != "Fixture ICS" {
-		t.Fatalf("group source name = %q, want %q", group.SourceName, "Fixture ICS")
-	}
-	if group.SourceURL != "file:defaults.ics" {
-		t.Fatalf("group source url = %q, want %q", group.SourceURL, "file:defaults.ics")
-	}
-	if len(group.Candidates) != 1 {
-		t.Fatalf("candidate count = %d, want 1", len(group.Candidates))
-	}
-	candidate := group.Candidates[0]
-	if candidate.SourceName != group.SourceName {
-		t.Fatalf("candidate source name = %q, want %q", candidate.SourceName, group.SourceName)
-	}
-	if candidate.SourceURL != group.SourceURL {
-		t.Fatalf("candidate source url = %q, want %q", candidate.SourceURL, group.SourceURL)
-	}
-	if candidate.Provenance != "fixture UID candidate-a" {
-		t.Fatalf("candidate provenance = %q, want %q", candidate.Provenance, "fixture UID candidate-a")
-	}
-	if candidate.VenueText != "Leadmill" {
-		t.Fatalf("candidate venue text = %q, want %q", candidate.VenueText, "Leadmill")
-	}
-	if candidate.VenueLocationRaw != "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE" {
-		t.Fatalf("candidate venue location raw = %q, want %q", candidate.VenueLocationRaw, "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE")
-	}
-	var venueText string
-	var venueLocationRaw string
-	if err := db.QueryRow(`SELECT venue_text, venue_location_raw FROM review_candidates WHERE group_id = ? ORDER BY id LIMIT 1`, groupID).Scan(&venueText, &venueLocationRaw); err != nil {
-		t.Fatalf("scan review candidate venue evidence: %v", err)
-	}
-	if venueText != "Leadmill" {
-		t.Fatalf("stored venue text = %q, want %q", venueText, "Leadmill")
-	}
-	if venueLocationRaw != "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE" {
-		t.Fatalf("stored venue location raw = %q, want %q", venueLocationRaw, "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE")
-	}
-}
-
-func TestStageReviewGroupReusesMatchingGroupAndPreservesDraftChoices(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	input := review.GroupInput{
-		Title:      "Stage reuse",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:stage-reuse.ics",
-		StagingKey: "v1:stage-reuse",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:       "candidate-a",
-				Name:             "Candidate A",
-				VenueSlug:        "leadmill",
-				VenueText:        "Leadmill",
-				VenueLocationRaw: "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
-				StartAt:          "2026-05-01T19:00:00Z",
-				EndAt:            "2026-05-01T22:00:00Z",
-				Genre:            "Indie",
-				Status:           "Listed",
-				Description:      "First description",
-				SourceName:       "Fixture ICS",
-				SourceURL:        "file:a.ics",
-				Provenance:       "fixture UID candidate-a",
-			},
-			{
-				ExternalID:       "candidate-b",
-				Name:             "Candidate B",
-				VenueSlug:        "yellow-arch",
-				VenueText:        "Yellow Arch",
-				VenueLocationRaw: "Yellow Arch, 30-36 Burton Road, Neepsend, S3 8BX",
-				StartAt:          "2026-05-02T19:30:00Z",
-				EndAt:            "2026-05-02T22:30:00Z",
-				Genre:            "Jazz",
-				Status:           "Listed",
-				Description:      "Second description",
-				SourceName:       "Fixture ICS",
-				SourceURL:        "file:b.ics",
-				Provenance:       "fixture UID candidate-b",
-			},
-		},
-	}
-
-	stageResult, err := st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	groupID := stageResult.ID
-	if !stageResult.Created {
-		t.Fatal("created = false, want true")
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if err := st.SaveReviewDraftChoices(ctx, groupID, []review.DraftChoiceInput{
-		{Field: review.FieldName, CandidateID: group.Candidates[1].ID},
-		{Field: review.FieldVenueSlug, CandidateID: group.Candidates[0].ID},
-	}); err != nil {
-		t.Fatalf("save review draft choices: %v", err)
-	}
-
-	changed := input
-	changed.Title = "Stage reuse changed"
-	changed.SourceName = "Changed source name"
-	changed.SourceURL = "file:stage-reuse-changed.ics"
-	changed.Candidates = []review.CandidateInput{
-		{
-			ExternalID:       "candidate-b",
-			Name:             "Candidate B",
-			VenueSlug:        "yellow-arch-restaged",
-			VenueText:        "Yellow Arch refreshed",
-			VenueLocationRaw: "Yellow Arch refreshed, 30-36 Burton Road, Neepsend, S3 8BX",
-			StartAt:          "2026-05-02T19:30:00Z",
-			EndAt:            "2026-05-02T22:30:00Z",
-			Genre:            "Jazz",
-			Status:           "Listed",
-			Description:      "Second description",
-			SourceName:       "Changed candidate source B",
-			SourceURL:        "file:changed-b.ics",
-			Provenance:       "fixture UID candidate-b",
-		},
-		{
-			ExternalID:       "candidate-a",
-			Name:             "Candidate A",
-			VenueSlug:        "leadmill-restaged",
-			VenueText:        "Leadmill refreshed",
-			VenueLocationRaw: "The Leadmill refreshed, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
-			StartAt:          "2026-05-01T19:00:00Z",
-			EndAt:            "2026-05-01T22:00:00Z",
-			Genre:            "Indie",
-			Status:           "Listed",
-			Description:      "First description",
-			SourceName:       "Changed candidate source A",
-			SourceURL:        "file:changed-a.ics",
-			Provenance:       "fixture UID candidate-a",
-		},
-	}
-
-	reusedResult, err := st.StageReviewGroup(ctx, changed)
-	if err != nil {
-		t.Fatalf("restage review group: %v", err)
-	}
-	reusedID := reusedResult.ID
-	if reusedResult.Created {
-		t.Fatal("created = true, want false")
-	}
-	if reusedID != groupID {
-		t.Fatalf("reused id = %d, want %d", reusedID, groupID)
-	}
-
-	reused, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after restage")
-	}
-	if reused.SourceName != input.SourceName {
-		t.Fatalf("group source name = %q, want %q", reused.SourceName, input.SourceName)
-	}
-	if reused.SourceURL != input.SourceURL {
-		t.Fatalf("group source url = %q, want %q", reused.SourceURL, input.SourceURL)
-	}
-	if reused.Candidates[0].SourceName != input.Candidates[0].SourceName {
-		t.Fatalf("candidate 0 source name = %q, want %q", reused.Candidates[0].SourceName, input.Candidates[0].SourceName)
-	}
-	if reused.Candidates[0].SourceURL != input.Candidates[0].SourceURL {
-		t.Fatalf("candidate 0 source url = %q, want %q", reused.Candidates[0].SourceURL, input.Candidates[0].SourceURL)
-	}
-	if reused.Candidates[1].SourceName != input.Candidates[1].SourceName {
-		t.Fatalf("candidate 1 source name = %q, want %q", reused.Candidates[1].SourceName, input.Candidates[1].SourceName)
-	}
-	if reused.Candidates[1].SourceURL != input.Candidates[1].SourceURL {
-		t.Fatalf("candidate 1 source url = %q, want %q", reused.Candidates[1].SourceURL, input.Candidates[1].SourceURL)
-	}
-	if reused.Candidates[0].ID != group.Candidates[0].ID || reused.Candidates[0].Position != group.Candidates[0].Position {
-		t.Fatalf("candidate 0 identity changed: got id %d position %d, want id %d position %d", reused.Candidates[0].ID, reused.Candidates[0].Position, group.Candidates[0].ID, group.Candidates[0].Position)
-	}
-	if reused.Candidates[1].ID != group.Candidates[1].ID || reused.Candidates[1].Position != group.Candidates[1].Position {
-		t.Fatalf("candidate 1 identity changed: got id %d position %d, want id %d position %d", reused.Candidates[1].ID, reused.Candidates[1].Position, group.Candidates[1].ID, group.Candidates[1].Position)
-	}
-	if reused.Candidates[0].VenueText != "Leadmill refreshed" {
-		t.Fatalf("candidate 0 venue text = %q, want %q", reused.Candidates[0].VenueText, "Leadmill refreshed")
-	}
-	if reused.Candidates[0].VenueSlug != "leadmill" {
-		t.Fatalf("candidate 0 venue slug = %q, want %q", reused.Candidates[0].VenueSlug, "leadmill")
-	}
-	if reused.Candidates[0].VenueLocationRaw != "The Leadmill refreshed, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE" {
-		t.Fatalf("candidate 0 venue location raw = %q, want %q", reused.Candidates[0].VenueLocationRaw, "The Leadmill refreshed, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE")
-	}
-	if reused.Candidates[1].VenueText != "Yellow Arch refreshed" {
-		t.Fatalf("candidate 1 venue text = %q, want %q", reused.Candidates[1].VenueText, "Yellow Arch refreshed")
-	}
-	if reused.Candidates[1].VenueSlug != "yellow-arch" {
-		t.Fatalf("candidate 1 venue slug = %q, want %q", reused.Candidates[1].VenueSlug, "yellow-arch")
-	}
-	if reused.Candidates[1].VenueLocationRaw != "Yellow Arch refreshed, 30-36 Burton Road, Neepsend, S3 8BX" {
-		t.Fatalf("candidate 1 venue location raw = %q, want %q", reused.Candidates[1].VenueLocationRaw, "Yellow Arch refreshed, 30-36 Burton Road, Neepsend, S3 8BX")
-	}
-	assertDraftChoice(t, reused, review.FieldName, group.Candidates[1].ID, "Candidate B")
-	assertDraftChoice(t, reused, review.FieldVenueSlug, group.Candidates[0].ID, "leadmill")
-}
-
-func TestStageReviewGroupRestagingOpenGroupPopulatesAndRefreshesAuthoritativeTuple(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	input := review.GroupInput{
-		Title:      "Authoritative restage",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:authoritative-restage.ics",
-		StagingKey: "v1:authoritative-restage",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "shared-uid",
-				Name:        "UTC Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/utc-show",
-				Provenance:  "fixture UID shared-uid",
-			},
-		},
-	}
-
-	stageResult, err := st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	groupID := stageResult.ID
-	if !stageResult.Created {
-		t.Fatal("created = false, want true")
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if got := group.AuthoritativeSourceEventKey; got != "" {
-		t.Fatalf("initial authoritative source event key = %q, want empty", got)
-	}
-
-	populated := input
-	populated.AuthoritativeSourceName = "Sidney & Matilda manual ingest"
-	populated.AuthoritativeSourceURL = "https://calendar.example.test/live.ics"
-	populated.AuthoritativeSourceEventKey = "shared-uid"
-
-	reusedResult, err := st.StageReviewGroup(ctx, populated)
-	if err != nil {
-		t.Fatalf("restage review group with authoritative tuple: %v", err)
-	}
-	reusedID := reusedResult.ID
-	if reusedResult.Created {
-		t.Fatal("created = true, want false")
-	}
-	if reusedID != groupID {
-		t.Fatalf("reused id = %d, want %d", reusedID, groupID)
-	}
-
-	group, ok, err = st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group after populate: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after populate")
-	}
-	if got, want := group.AuthoritativeSourceName, populated.AuthoritativeSourceName; got != want {
-		t.Fatalf("authoritative source name = %q, want %q", got, want)
-	}
-	if got, want := group.AuthoritativeSourceURL, populated.AuthoritativeSourceURL; got != want {
-		t.Fatalf("authoritative source url = %q, want %q", got, want)
-	}
-	if got, want := group.AuthoritativeSourceEventKey, populated.AuthoritativeSourceEventKey; got != want {
-		t.Fatalf("authoritative source event key = %q, want %q", got, want)
-	}
-	if got, want := group.SourceName, input.SourceName; got != want {
-		t.Fatalf("group source name = %q, want preserved %q", got, want)
-	}
-	if got, want := group.SourceURL, input.SourceURL; got != want {
-		t.Fatalf("group source url = %q, want preserved %q", got, want)
-	}
-
-	refreshed := populated
-	refreshed.AuthoritativeSourceURL = "https://calendar.example.test/live-updated.ics"
-	refreshed.AuthoritativeSourceEventKey = "shared-uid-updated"
-
-	reusedResult, err = st.StageReviewGroup(ctx, refreshed)
-	if err != nil {
-		t.Fatalf("restage review group with refreshed authoritative tuple: %v", err)
-	}
-	reusedID = reusedResult.ID
-	if reusedResult.Created {
-		t.Fatal("created = true, want false")
-	}
-	if reusedID != groupID {
-		t.Fatalf("reused id = %d, want %d", reusedID, groupID)
-	}
-
-	group, ok, err = st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group after refresh: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after refresh")
-	}
-	if got, want := group.AuthoritativeSourceURL, refreshed.AuthoritativeSourceURL; got != want {
-		t.Fatalf("authoritative source url = %q, want %q", got, want)
-	}
-	if got, want := group.AuthoritativeSourceEventKey, refreshed.AuthoritativeSourceEventKey; got != want {
-		t.Fatalf("authoritative source event key = %q, want %q", got, want)
-	}
-}
-
-func TestStageReviewGroupRestagingOpenGroupRefreshesImageFields(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	input := review.GroupInput{
-		Title:      "Image restage",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:image-restage.ics",
-		StagingKey: "v1:image-restage",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "shared-image-uid",
-			Name:        "Image Restage Show",
-			VenueSlug:   "sidney-and-matilda",
-			StartAt:     "2026-05-01T19:00:00Z",
-			EndAt:       "2026-05-01T22:00:00Z",
-			Genre:       "Indie",
-			Status:      "Listed",
-			Description: "First description",
-			SourceName:  "Fixture ICS",
-			SourceURL:   "https://example.test/image-restage",
-			Provenance:  "fixture UID shared-image-uid",
-		}},
-	}
-
-	stageResult, err := st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	groupID := stageResult.ID
-	withImage := input
-	withImage.Candidates[0].ImageURL = "/media/events/restaged.jpg"
-	withImage.Candidates[0].ImageSourceURL = "https://example.test/restaged.jpg"
-	withImage.Candidates[0].ImageAlt = "Restaged poster"
-	withImage.Candidates[0].ImageWidth = 1200
-	withImage.Candidates[0].ImageHeight = 800
-	withImage.Candidates[0].ImageFocusX = 25
-	withImage.Candidates[0].ImageFocusY = 75
-
-	reused, err := st.StageReviewGroup(ctx, withImage)
-	if err != nil {
-		t.Fatalf("restage review group with image: %v", err)
-	}
-	if reused.Created || reused.ID != groupID {
-		t.Fatalf("restaged result = %#v, want reused group %d", reused, groupID)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if got := len(group.Candidates); got != 1 {
-		t.Fatalf("candidates = %d, want 1", got)
-	}
-	candidate := group.Candidates[0]
-	if candidate.ImageURL != "/media/events/restaged.jpg" ||
-		candidate.ImageSourceURL != "https://example.test/restaged.jpg" ||
-		candidate.ImageAlt != "Restaged poster" ||
-		candidate.ImageWidth != 1200 ||
-		candidate.ImageHeight != 800 ||
-		candidate.ImageFocusX != 25 ||
-		candidate.ImageFocusY != 75 {
-		t.Fatalf("candidate image fields = %q,%q,%q,%d,%d,%d,%d, want restaged image", candidate.ImageURL, candidate.ImageSourceURL, candidate.ImageAlt, candidate.ImageWidth, candidate.ImageHeight, candidate.ImageFocusX, candidate.ImageFocusY)
-	}
-
-	reused, err = st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("restage review group with blank image: %v", err)
-	}
-	if reused.Created || reused.ID != groupID {
-		t.Fatalf("blank restaged result = %#v, want reused group %d", reused, groupID)
-	}
-	group, ok, err = st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after blank restage")
-	}
-	if got := group.Candidates[0].ImageURL; got != "/media/events/restaged.jpg" {
-		t.Fatalf("image url after blank restage = %q, want preserved image", got)
-	}
-}
-
-func TestStageReviewGroupRestagingOpenGroupRefreshesRoomEvidence(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	input := review.GroupInput{
-		Title:      "Room restage",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:room-restage.ics",
-		StagingKey: "v1:room-restage",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "shared-room-uid",
-			Name:        "Room Restage Show",
-			VenueSlug:   "sidney-and-matilda",
-			StartAt:     "2026-05-01T19:00:00Z",
-			EndAt:       "2026-05-01T22:00:00Z",
-			Genre:       "Indie",
-			Status:      "Listed",
-			Description: "First description",
-			SourceName:  "Fixture ICS",
-			SourceURL:   "https://example.test/room-restage",
-			Provenance:  "fixture UID shared-room-uid",
-		}},
-	}
-
-	stageResult, err := st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	groupID := stageResult.ID
-
-	withRoom := input
-	withRoom.Candidates[0].RoomText = "COURTYARD STAGE"
-	withRoom.Candidates[0].Rooms = []domain.VenueRoom{{Slug: "courtyard-stage", Name: "Courtyard Stage"}}
-	reused, err := st.StageReviewGroup(ctx, withRoom)
-	if err != nil {
-		t.Fatalf("restage review group with room: %v", err)
-	}
-	if reused.Created || reused.ID != groupID {
-		t.Fatalf("restaged result = %#v, want reused group %d", reused, groupID)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if got := group.Candidates[0].RoomText; got != "COURTYARD STAGE" {
-		t.Fatalf("room text = %q, want %q", got, "COURTYARD STAGE")
-	}
-	if got := review.RoomSlugsValue(group.Candidates[0].Rooms); got != "courtyard-stage" {
-		t.Fatalf("room slugs = %q, want %q", got, "courtyard-stage")
-	}
-	assertDefaultChoice(t, group, review.FieldRoomSlugs, group.Candidates[0].ID, "courtyard-stage")
-
-	room, ok, err := st.LoadVenueRoomBySlug(ctx, "sidney-and-matilda", "courtyard-stage")
-	if err != nil {
-		t.Fatalf("load room: %v", err)
-	}
-	if !ok {
-		t.Fatal("provisional room not found after restage")
-	}
-	if room.Name != "Courtyard Stage" || room.ValidationState != domain.ValidationStateProvisional {
-		t.Fatalf("room = %#v, want provisional Courtyard Stage", room)
-	}
-}
-
-func TestStageReviewGroupReusesClosedMatchingGroupWithoutReopening(t *testing.T) {
-	cases := []struct {
-		name       string
-		closeGroup func(context.Context, *Store, int64, review.Group) error
-		wantStatus string
-	}{
-		{
-			name: "resolved",
-			closeGroup: func(ctx context.Context, st *Store, groupID int64, group review.Group) error {
-				return st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group))
-			},
-			wantStatus: review.StatusResolved,
-		},
-		{
-			name: "rejected",
-			closeGroup: func(ctx context.Context, st *Store, groupID int64, _ review.Group) error {
-				return st.UpdateReviewGroupStatus(ctx, groupID, review.StatusRejected)
-			},
-			wantStatus: review.StatusRejected,
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-			if err != nil {
-				t.Fatalf("open store: %v", err)
-			}
-			defer st.Close()
-
-			input := review.GroupInput{
-				Title:      "Closed reuse",
-				SourceName: "Fixture ICS",
-				SourceURL:  "file:closed-reuse.ics",
-				StagingKey: "v1:closed-reuse-" + tc.name,
-				Candidates: []review.CandidateInput{
-					{
-						ExternalID:  "candidate-a",
-						Name:        "UTC Show",
-						VenueSlug:   "sidney-and-matilda",
-						StartAt:     "2026-05-01T19:00:00Z",
-						EndAt:       "2026-05-01T22:00:00Z",
-						Genre:       "Indie",
-						Status:      "Listed",
-						Description: "First line",
-						SourceName:  "Fixture ICS",
-						SourceURL:   "https://example.test/utc-show",
-						Provenance:  "fixture UID candidate-a",
-					},
-				},
-			}
-
-			stageResult, err := st.StageReviewGroup(ctx, input)
-			if err != nil {
-				t.Fatalf("stage review group: %v", err)
-			}
-			groupID := stageResult.ID
-			if !stageResult.Created {
-				t.Fatal("created = false, want true")
-			}
-
-			group, ok, err := st.LoadReviewGroup(ctx, groupID)
-			if err != nil {
-				t.Fatalf("load review group: %v", err)
-			}
-			if !ok {
-				t.Fatal("review group not found")
-			}
-			if err := tc.closeGroup(ctx, st, groupID, group); err != nil {
-				t.Fatalf("close review group: %v", err)
-			}
-
-			reusedResult, err := st.StageReviewGroup(ctx, input)
-			if err != nil {
-				t.Fatalf("restage review group: %v", err)
-			}
-			reusedID := reusedResult.ID
-			if reusedResult.Created {
-				t.Fatal("created = true, want false")
-			}
-			if reusedID != groupID {
-				t.Fatalf("reused id = %d, want %d", reusedID, groupID)
-			}
-
-			reused, ok, err := st.LoadReviewGroup(ctx, groupID)
-			if err != nil {
-				t.Fatalf("reload review group: %v", err)
-			}
-			if !ok {
-				t.Fatal("review group not found after restage")
-			}
-			if reused.Status != tc.wantStatus {
-				t.Fatalf("status = %q, want %q", reused.Status, tc.wantStatus)
-			}
-		})
-	}
-}
-
-func TestStageReviewGroupCreatesNewGroupWhenStagingKeyChanges(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	base := review.GroupInput{
-		Title:      "Stage change",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:stage-change.ics",
-		StagingKey: "v1:stage-change-a",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "candidate-a",
-				Name:        "Candidate A",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:a.ics",
-				Provenance:  "fixture UID candidate-a",
-			},
-		},
-	}
-	changed := base
-	changed.StagingKey = "v1:stage-change-b"
-	changed.Candidates = append([]review.CandidateInput(nil), base.Candidates...)
-	changed.Candidates[0].EndAt = "2026-05-01T23:00:00Z"
-
-	firstResult, err := st.StageReviewGroup(ctx, base)
-	if err != nil {
-		t.Fatalf("stage first group: %v", err)
-	}
-	firstID := firstResult.ID
-	if !firstResult.Created {
-		t.Fatal("first group created = false, want true")
-	}
-
-	secondResult, err := st.StageReviewGroup(ctx, changed)
-	if err != nil {
-		t.Fatalf("stage changed group: %v", err)
-	}
-	secondID := secondResult.ID
-	if !secondResult.Created {
-		t.Fatal("changed group created = false, want true")
-	}
-	if secondID == firstID {
-		t.Fatal("staging key change reused existing group, want new group")
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	if got := mustCount(t, db, "review_groups"); got != 2 {
-		t.Fatalf("review groups = %d, want 2", got)
-	}
-}
-
-func TestStageReviewGroupCanonicalExactMatchPromotesProvisionalEventToReviewed(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	sourceID, err := st.EnsureSource(ctx, "Fixture ICS", "https://example.test/provisional")
-	if err != nil {
-		t.Fatalf("ensure source: %v", err)
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-
-	var venueID int64
-	if err := db.QueryRow(`SELECT id FROM venues WHERE slug = ?`, "yellow-arch").Scan(&venueID); err != nil {
-		t.Fatalf("lookup venue id: %v", err)
-	}
-
-	start := "2026-05-10T18:30:00Z"
-	end := "2026-05-10T22:00:00Z"
-	slug := "live-roots-night-yellow-arch-20260510183000"
-	if _, err := db.Exec(`
-		INSERT INTO events (
-			slug, venue_id, source_id, name, start_at, end_at, genre, status, description, last_checked_at, origin, publication_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, slug, venueID, sourceID, "Roots Night", start, end, "Indie", "Listed", "First description", "2026-05-09T12:00:00Z", string(domain.OriginLive), string(domain.PublicationStateProvisional)); err != nil {
-		t.Fatalf("insert provisional event: %v", err)
-	}
-
-	stageResult, err := st.StageReviewGroup(ctx, review.GroupInput{
-		Title:      "Exact canonical match",
-		SourceName: "Fixture ICS",
-		SourceURL:  "https://example.test/provisional",
-		StagingKey: "v1:exact-canonical-match",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "candidate-a",
-			Name:        "Roots Night",
-			VenueSlug:   "yellow-arch",
-			StartAt:     start,
-			EndAt:       end,
-			Genre:       "Indie",
-			Status:      "Listed",
-			Description: "First description",
-			SourceName:  "Fixture ICS",
-			SourceURL:   "https://example.test/provisional",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if !stageResult.Created {
-		t.Fatal("created = false, want true")
-	}
-	if !stageResult.AutoResolved {
-		t.Fatal("auto resolved = false, want true")
-	}
-	if got, want := stageResult.AutoResolvedResult, "canonical_exact_match"; got != want {
-		t.Fatalf("auto resolved result = %q, want %q", got, want)
-	}
-
-	event, ok := st.EventBySlug(slug)
-	if !ok {
-		t.Fatalf("missing event %q", slug)
-	}
-	if got, want := event.PublicationState, domain.PublicationStateReviewed; got != want {
-		t.Fatalf("publication state = %q, want %q", got, want)
-	}
-}
-
-func TestStageReviewGroupDistinguishesWholeVenueRoomEvidenceFromBlank(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	result, err := st.StageReviewGroup(ctx, review.GroupInput{
-		Title:      "Whole venue evidence",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:whole-venue.ics",
-		StagingKey: "v1:whole-venue-evidence",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "whole-venue-a",
-				Name:        "Whole Venue Show",
-				VenueSlug:   "sidney-and-matilda",
-				RoomText:    "WHOLE VENUE",
-				StartAt:     "2026-05-10T18:30:00Z",
-				EndAt:       "2026-05-10T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "Whole venue fixture.",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/whole-venue-a",
-			},
-			{
-				ExternalID:  "whole-venue-b",
-				Name:        "Whole Venue Show",
-				VenueSlug:   "sidney-and-matilda",
-				RoomText:    "WHOLE VENUE",
-				StartAt:     "2026-05-10T18:30:00Z",
-				EndAt:       "2026-05-10T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "Whole venue fixture.",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/whole-venue-b",
-			},
-			{
-				ExternalID:  "blank-room",
-				Name:        "Whole Venue Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-10T18:30:00Z",
-				EndAt:       "2026-05-10T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "Whole venue fixture.",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/blank-room",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if !result.Created {
-		t.Fatal("created = false, want true")
-	}
-	if result.AutoResolved {
-		t.Fatalf("auto resolved = true, want false")
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, result.ID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if group.Status != review.StatusOpen {
-		t.Fatalf("status = %q, want %q", group.Status, review.StatusOpen)
-	}
-	assertDefaultChoice(t, group, review.FieldRoomSlugs, group.Candidates[0].ID, "WHOLE VENUE")
-}
-
-func TestReviewCandidateMatchesEventRejectsTextOnlyRoomEvidenceAgainstConcreteRooms(t *testing.T) {
-	start := time.Date(2026, time.May, 10, 18, 30, 0, 0, time.UTC)
-	candidate := review.Candidate{
-		Name:      "Whole Venue Show",
-		VenueSlug: "sidney-and-matilda",
-		RoomText:  "WHOLE VENUE",
-		StartAt:   formatRFC3339UTC(start),
-	}
-	event := domain.Event{
-		Name:      "Whole Venue Show",
-		VenueSlug: "sidney-and-matilda",
-		RoomText:  "FACTORY",
-		Rooms:     []domain.VenueRoom{{VenueSlug: "sidney-and-matilda", Slug: "factory", Name: "Factory"}},
-		Start:     start,
-	}
-
-	if reviewCandidateMatchesEvent(candidate, event) {
-		t.Fatal("text-only room evidence matched concrete room evidence")
-	}
-}
-
-func TestSupportingEventConflictDetectsTextOnlyRoomEvidenceAgainstConcreteRooms(t *testing.T) {
-	start := time.Date(2026, time.May, 10, 18, 30, 0, 0, time.UTC)
-	existing := domain.Event{
-		Name:      "Whole Venue Show",
-		VenueSlug: "sidney-and-matilda",
-		RoomText:  "WHOLE VENUE",
-		Start:     start,
-	}
-	incoming := domain.Event{
-		Name:      "Whole Venue Show",
-		VenueSlug: "sidney-and-matilda",
-		RoomText:  "FACTORY",
-		Rooms:     []domain.VenueRoom{{VenueSlug: "sidney-and-matilda", Slug: "factory", Name: "Factory"}},
-		Start:     start,
-	}
-
-	if !supportingEventConflict(existing, incoming) {
-		t.Fatal("text-only room evidence did not conflict with concrete room evidence")
-	}
-
-	existing.RoomText = ""
-	if supportingEventConflict(existing, incoming) {
-		t.Fatal("blank room evidence conflicted with concrete room evidence")
-	}
-}
-
-func TestStageReviewGroupUnanimousDuplicateAutoResolvesWithNewProvisionalVenue(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-	beforeEventCount := mustCount(t, db, "events")
-
-	result, err := st.StageReviewGroup(ctx, review.GroupInput{
-		Title:      "Unanimous duplicate new venue",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:unanimous-new-venue.ics",
-		StagingKey: "v1:unanimous-new-venue",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:       "candidate-a",
-				Name:             "Unknown venue show",
-				VenueSlug:        "imagniary-hal-temp",
-				VenueText:        "Imaginary Hall",
-				VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
-				StartAt:          "2026-05-10T18:30:00Z",
-				EndAt:            "2026-05-10T22:00:00Z",
-				Status:           "Listed",
-				Description:      "Duplicate one",
-			},
-			{
-				ExternalID:       "candidate-b",
-				Name:             "Unknown venue show",
-				VenueSlug:        "imagniary-hal-temp",
-				VenueText:        "Imaginary Hall",
-				VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
-				StartAt:          "2026-05-10T18:30:00Z",
-				EndAt:            "2026-05-10T22:00:00Z",
-				Status:           "Listed",
-				Description:      "Duplicate one",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if !result.Created {
-		t.Fatal("created = false, want true")
-	}
-	if !result.AutoResolved {
-		t.Fatal("auto resolved = false, want true")
-	}
-	if got, want := result.AutoResolvedResult, "unanimous_duplicate"; got != want {
-		t.Fatalf("auto resolved result = %q, want %q", got, want)
-	}
-
-	venue, ok := st.VenueBySlug("imaginary-hall")
-	if !ok {
-		t.Fatal("provisional venue not found")
-	}
-	if venue.ValidationState != domain.ValidationStateProvisional {
-		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
-	}
-	event, ok := st.EventBySlug("live-unknown-venue-show-imaginary-hall-20260510183000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	if event.VenueSlug != "imaginary-hall" {
-		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "imaginary-hall")
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
-		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-}
-
-func TestStageReviewGroupUnanimousDuplicateAutoResolvesWhenExplicitVenueSlugConflictsWithEvidence(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-	beforeEventCount := mustCount(t, db, "events")
-
-	result, err := st.StageReviewGroup(ctx, review.GroupInput{
-		Title:      "Unanimous duplicate conflicting venue evidence",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:unanimous-conflicting-venue.ics",
-		StagingKey: "v1:unanimous-conflicting-venue",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:       "candidate-a",
-				Name:             "Known venue show",
-				VenueSlug:        "leadmill",
-				VenueText:        "Sidney & Matilda",
-				VenueLocationRaw: "Rivelin Works, 46 Sidney Street, Sheffield",
-				StartAt:          "2026-05-10T18:30:00Z",
-				EndAt:            "2026-05-10T22:00:00Z",
-				Status:           "Listed",
-				Description:      "Duplicate one",
-			},
-			{
-				ExternalID:       "candidate-b",
-				Name:             "Known venue show",
-				VenueSlug:        "leadmill",
-				VenueText:        "Sidney & Matilda",
-				VenueLocationRaw: "Rivelin Works, 46 Sidney Street, Sheffield",
-				StartAt:          "2026-05-10T18:30:00Z",
-				EndAt:            "2026-05-10T22:00:00Z",
-				Status:           "Listed",
-				Description:      "Duplicate one",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if !result.Created {
-		t.Fatal("created = false, want true")
-	}
-	if !result.AutoResolved {
-		t.Fatal("auto resolved = false, want true")
-	}
-	if got, want := result.AutoResolvedResult, "unanimous_duplicate"; got != want {
-		t.Fatalf("auto resolved result = %q, want %q", got, want)
-	}
-
-	event, ok := st.EventBySlug("live-known-venue-show-leadmill-20260510183000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	if event.VenueSlug != "leadmill" {
-		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "leadmill")
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
-		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-}
-
-func TestStageReviewGroupCreatesProvisionalVenueImmediatelyWhenVenueIsMissing(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-	beforeEventCount := mustCount(t, db, "events")
-
-	input := review.GroupInput{
-		Title:      "Immediate provisional venue",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:immediate-provisional.ics",
-		StagingKey: "v1:immediate-provisional",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "candidate-a",
-			Name:             "Unknown venue show",
-			VenueSlug:        "imagniary-hal-temp",
-			VenueText:        "Imaginary Hall",
-			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Neepsend, Sheffield",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Should stage with a new provisional venue row.",
-		}},
-	}
-
-	result, err := st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if !result.Created {
-		t.Fatal("created = false, want true")
-	}
-
-	venue, ok := st.VenueBySlug("imaginary-hall")
-	if !ok {
-		t.Fatal("provisional venue not found")
-	}
-	if venue.Name != "Imaginary Hall" {
-		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
-	}
-	if venue.Address != "1 Void Street,\nNeepsend,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nNeepsend,\nSheffield")
-	}
-	if venue.Neighbourhood != "Neepsend" {
-		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
-	}
-	if venue.ValidationState != domain.ValidationStateProvisional {
-		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
-		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, result.ID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if got, want := group.Candidates[0].VenueSlug, "imagniary-hal-temp"; got != want {
-		t.Fatalf("staged venue slug = %q, want preserved %q", got, want)
-	}
-}
-
-func TestStageReviewGroupGenericICSLocationVariantsReuseProvisionalVenueSlug(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-
-	first := review.GroupInput{
-		Title:      "Generic ICS provisional venue one",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:generic-provisional-one.ics",
-		StagingKey: "v1:generic-provisional-one",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "candidate-a",
-			Name:             "Generic hall show",
-			VenueSlug:        "imaginary-hall-1-void-street-sheffield",
-			VenueText:        "Imaginary Hall, 1 Void Street, Sheffield",
-			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "First generic location variant.",
-		}},
-	}
-	if _, err := st.StageReviewGroup(ctx, first); err != nil {
-		t.Fatalf("stage first review group: %v", err)
-	}
-	venue, ok := st.VenueBySlug("imaginary-hall")
-	if !ok {
-		t.Fatal("normalized provisional venue not found after first stage")
-	}
-	if venue.Name != "Imaginary Hall" {
-		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
-	}
-	if venue.Address != "1 Void Street,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nSheffield")
-	}
-	if _, ok := st.VenueBySlug("imaginary-hall-1-void-street-sheffield"); ok {
-		t.Fatal("full-location provisional venue slug was inserted")
-	}
-
-	second := review.GroupInput{
-		Title:      "Generic ICS provisional venue two",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:generic-provisional-two.ics",
-		StagingKey: "v1:generic-provisional-two",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "candidate-b",
-			Name:             "Generic hall late show",
-			VenueSlug:        "imaginary-hall-1-void-street-sheffield-s1-2ja",
-			VenueText:        "Imaginary Hall\n1 Void Street\nSheffield\nS1 2JA",
-			VenueLocationRaw: "Imaginary Hall\n1 Void Street\nSheffield\nS1 2JA",
-			StartAt:          "2026-05-11T18:30:00Z",
-			EndAt:            "2026-05-11T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Second generic location variant.",
-		}},
-	}
-	if _, err := st.StageReviewGroup(ctx, second); err != nil {
-		t.Fatalf("stage second review group: %v", err)
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
-		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
-	}
-	venue, ok = st.VenueBySlug("imaginary-hall")
-	if !ok {
-		t.Fatal("normalized provisional venue not found after second stage")
-	}
-	if venue.Name != "Imaginary Hall" {
-		t.Fatalf("venue name after second stage = %q, want %q", venue.Name, "Imaginary Hall")
-	}
-	if venue.Address != "1 Void Street,\nSheffield" {
-		t.Fatalf("venue address after second stage = %q, want %q", venue.Address, "1 Void Street,\nSheffield")
-	}
-	if _, ok := st.VenueBySlug("imaginary-hall-1-void-street-sheffield-s1-2ja"); ok {
-		t.Fatal("postcode variant provisional venue slug was inserted")
-	}
-}
-
-func TestStageReviewGroupCreatesProvisionalVenueFromEscapedICSLocationEvidence(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	input := review.GroupInput{
-		Title:      "Escaped ICS provisional venue",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:escaped-venue.ics",
-		StagingKey: "v1:escaped-ics-provisional",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "candidate-a",
-			Name:             "Escaped venue show",
-			VenueSlug:        "memorial-hall-1-void-street-sheffield",
-			VenueText:        "Memorial Hall, Barkers Pool, 1 Void Street, Sheffield",
-			VenueLocationRaw: "Memorial Hall\\, Barkers Pool, 1 Void Street, Sheffield",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Should truncate escaped comma venue head.",
-		}},
-	}
-
-	result, err := st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if !result.Created {
-		t.Fatal("created = false, want true")
-	}
-
-	venue, ok := st.VenueBySlug("memorial-hall")
-	if !ok {
-		t.Fatal("provisional venue not found")
-	}
-	if venue.Name != "Memorial Hall" {
-		t.Fatalf("venue name = %q, want %q", venue.Name, "Memorial Hall")
-	}
-	if venue.Address != "Barkers Pool,\n1 Void Street,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "Barkers Pool,\n1 Void Street,\nSheffield")
-	}
-}
-
-func TestStageReviewGroupRestagingDoesNotDuplicateOrOverwriteProvisionalVenue(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	input := review.GroupInput{
-		Title:      "Immediate provisional venue restage",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:immediate-provisional-restage.ics",
-		StagingKey: "v1:immediate-provisional-restage",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "candidate-a",
-			Name:             "Unknown venue show",
-			VenueSlug:        "imagniary-hal-temp",
-			VenueText:        "Imaginary Hall",
-			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Should stage with a new provisional venue row.",
-		}},
-	}
-
-	result, err := st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if _, ok := st.VenueBySlug("imaginary-hall"); !ok {
-		t.Fatal("provisional venue not found after initial stage")
-	}
-	if err := st.UpdateProvisionalVenue(ctx, seedstore.VenueUpdateInput{
-		Slug:          "imaginary-hall",
-		Name:          "Edited Hall",
-		Address:       "99 Edited Street, Sheffield",
-		Neighbourhood: "Kelham",
-		Description:   "Edited provisional venue",
-		Website:       "https://example.test/edited-hall",
-		CoverageKind:  domain.CoverageKindProgram,
-		CoverageNote:  "Edited note",
-	}); err != nil {
-		t.Fatalf("edit provisional venue: %v", err)
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-
-	restaged := input
-	restaged.Candidates = []review.CandidateInput{{
-		ExternalID:       "candidate-a",
-		Name:             "Unknown venue show",
-		VenueSlug:        "imagniary-hal-temp",
-		VenueText:        "Imaginary Hall refreshed",
-		VenueLocationRaw: "Imaginary Hall refreshed, 1 Void Street, Sheffield",
-		StartAt:          "2026-05-10T18:30:00Z",
-		EndAt:            "2026-05-10T22:00:00Z",
-		Status:           "Listed",
-		Description:      "Should stage with a new provisional venue row.",
-	}}
-
-	reused, err := st.StageReviewGroup(ctx, restaged)
-	if err != nil {
-		t.Fatalf("restage review group: %v", err)
-	}
-	if reused.Created {
-		t.Fatal("created = true, want false")
-	}
-	if reused.ID != result.ID {
-		t.Fatalf("reused id = %d, want %d", reused.ID, result.ID)
-	}
-
-	venue, ok := st.VenueBySlug("imaginary-hall")
-	if !ok {
-		t.Fatal("provisional venue not found after restage")
-	}
-	if venue.Name != "Edited Hall" {
-		t.Fatalf("venue name = %q, want preserved %q", venue.Name, "Edited Hall")
-	}
-	if venue.Address != "99 Edited Street, Sheffield" {
-		t.Fatalf("venue address = %q, want preserved %q", venue.Address, "99 Edited Street, Sheffield")
-	}
-	if venue.CoverageKind != domain.CoverageKindProgram {
-		t.Fatalf("venue coverage kind = %q, want %q", venue.CoverageKind, domain.CoverageKindProgram)
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
-		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, result.ID)
-	if err != nil {
-		t.Fatalf("load review group after restage: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after restage")
-	}
-	if got, want := group.Candidates[0].VenueText, "Imaginary Hall refreshed"; got != want {
-		t.Fatalf("candidate venue text = %q, want %q", got, want)
-	}
-	if got, want := group.Candidates[0].VenueLocationRaw, "Imaginary Hall refreshed, 1 Void Street, Sheffield"; got != want {
-		t.Fatalf("candidate venue location raw = %q, want %q", got, want)
-	}
-}
-
-func TestStageReviewGroupRestagingLegacyBlankVenueEvidenceBackfillsProvisionalVenue(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	input := review.GroupInput{
-		Title:      "Legacy blank venue evidence",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:legacy-blank-venue.ics",
-		StagingKey: "v1:legacy-blank-venue",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "candidate-a",
-			Name:             "Unknown venue show",
-			VenueSlug:        "",
-			VenueText:        "",
-			VenueLocationRaw: "",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Should backfill venue evidence on restage.",
-		}},
-	}
-
-	result, err := st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if result.Created != true {
-		t.Fatal("created = false, want true")
-	}
-	if _, ok := st.VenueBySlug("imaginary-hall"); ok {
-		t.Fatal("unexpected provisional venue created before restage evidence")
-	}
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-
-	restaged := input
-	restaged.Candidates = []review.CandidateInput{{
-		ExternalID:       "candidate-a",
-		Name:             "Unknown venue show",
-		VenueSlug:        "imaginary-hall-1-void-street-sheffield",
-		VenueText:        "Imaginary Hall, 1 Void Street, Sheffield",
-		VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
-		StartAt:          "2026-05-10T18:30:00Z",
-		EndAt:            "2026-05-10T22:00:00Z",
-		Status:           "Listed",
-		Description:      "Should backfill venue evidence on restage.",
-	}}
-
-	reused, err := st.StageReviewGroup(ctx, restaged)
-	if err != nil {
-		t.Fatalf("restage review group: %v", err)
-	}
-	if reused.Created {
-		t.Fatal("created = true, want false")
-	}
-
-	venue, ok := st.VenueBySlug("imaginary-hall")
-	if !ok {
-		t.Fatal("provisional venue not found after restage")
-	}
-	if venue.Name != "Imaginary Hall" {
-		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
-	}
-	if venue.Address != "1 Void Street,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nSheffield")
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
-		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, result.ID)
-	if err != nil {
-		t.Fatalf("load review group after restage: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after restage")
-	}
-	if got, want := group.Candidates[0].VenueText, "Imaginary Hall, 1 Void Street, Sheffield"; got != want {
-		t.Fatalf("candidate venue text = %q, want %q", got, want)
-	}
-	if got, want := group.Candidates[0].VenueLocationRaw, "Imaginary Hall, 1 Void Street, Sheffield"; got != want {
-		t.Fatalf("candidate venue location raw = %q, want %q", got, want)
-	}
-	if got, want := group.Candidates[0].VenueSlug, ""; got != want {
-		t.Fatalf("candidate venue slug = %q, want preserved %q", got, want)
-	}
-
-	reusedAgain, err := st.StageReviewGroup(ctx, restaged)
-	if err != nil {
-		t.Fatalf("restage review group again: %v", err)
-	}
-	if reusedAgain.Created {
-		t.Fatal("created = true on second restage, want false")
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
-		t.Fatalf("venues rows after second restage = %d, want %d", got, beforeVenueCount+1)
-	}
-}
-
-func TestStageReviewGroupRestagingLegacyBlankVenueEvidenceRespectsIncomingExactVenueSlug(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	input := review.GroupInput{
-		Title:      "Legacy blank venue evidence exact slug",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:legacy-blank-venue-exact-slug.ics",
-		StagingKey: "v1:legacy-blank-venue-exact-slug",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "candidate-a",
-			Name:             "Unknown venue show",
-			VenueSlug:        "",
-			VenueText:        "",
-			VenueLocationRaw: "",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Should keep exact slug precedence on restage.",
-		}},
-	}
-
-	result, err := st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if !result.Created {
-		t.Fatal("created = false, want true")
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-
-	restaged := input
-	restaged.Candidates = []review.CandidateInput{{
-		ExternalID:       "candidate-a",
-		Name:             "Unknown venue show",
-		VenueSlug:        "leadmill",
-		VenueText:        "Imaginary Hall",
-		VenueLocationRaw: "Imaginary Hall, 1 Void Street, Sheffield",
-		StartAt:          "2026-05-10T18:30:00Z",
-		EndAt:            "2026-05-10T22:00:00Z",
-		Status:           "Listed",
-		Description:      "Should keep exact slug precedence on restage.",
-	}}
-
-	reused, err := st.StageReviewGroup(ctx, restaged)
-	if err != nil {
-		t.Fatalf("restage review group: %v", err)
-	}
-	if reused.Created {
-		t.Fatal("created = true, want false")
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
-		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
-	}
-	if _, ok := st.VenueBySlug("imaginary-hall"); ok {
-		t.Fatal("unexpected provisional venue created from conflicting raw evidence")
-	}
-}
-
-func TestCreateReviewGroupWithBlankStagingKeyStillCreatesNewRows(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	input := review.GroupInput{
-		Title:      "Blank staging key",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:blank-key.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "candidate-a",
-				Name:        "Candidate A",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:a.ics",
-				Provenance:  "fixture UID candidate-a",
-			},
-		},
-	}
-
-	firstID, err := st.CreateReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("create first group: %v", err)
-	}
-	secondID, err := st.CreateReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("create second group: %v", err)
-	}
-	if secondID == firstID {
-		t.Fatal("blank staging key reused existing group, want new row")
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	if got := mustCount(t, db, "review_groups"); got != 2 {
-		t.Fatalf("review groups = %d, want 2", got)
-	}
-}
-
-func TestListOpenReviewGroupsOnlyReturnsOpenGroups(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-	db := mustRawDB(t, path)
-	defer db.Close()
-	eventCount := mustCount(t, db, "events")
-
-	openID := mustCreateReviewGroup(t, st, "Open group", "Open candidate")
-	resolvedID := mustCreatePublishableReviewGroup(t, st, "Resolved group")
-	rejectedID := mustCreateReviewGroup(t, st, "Rejected group", "Rejected candidate")
-
-	resolved, ok, err := st.LoadReviewGroup(ctx, resolvedID)
-	if err != nil {
-		t.Fatalf("load resolved review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("resolved review group not found")
-	}
-	if err := st.ResolveReviewGroup(ctx, resolvedID, fullReviewChoices(t, resolved)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-	if err := st.UpdateReviewGroupStatus(ctx, rejectedID, review.StatusRejected); err != nil {
-		t.Fatalf("reject review group: %v", err)
-	}
-
-	groups, err := st.ListOpenReviewGroups(ctx)
-	if err != nil {
-		t.Fatalf("list open review groups: %v", err)
-	}
-	if len(groups) != 1 {
-		t.Fatalf("open review groups = %d, want 1", len(groups))
-	}
-	if groups[0].ID != openID {
-		t.Fatalf("open review group ID = %d, want %d", groups[0].ID, openID)
-	}
-	if got := mustCount(t, db, "events"); got != eventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, eventCount+1)
-	}
-}
-
-func TestListClosedReviewGroupsReturnsResolvedAndRejectedNewestFirstWithLimit(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-
-	openID := mustCreateReviewGroup(t, st, "Open group", "Open candidate")
-	resolvedID := mustCreatePublishableReviewGroup(t, st, "Resolved group")
-	resolved, ok, err := st.LoadReviewGroup(ctx, resolvedID)
-	if err != nil {
-		t.Fatalf("load resolved review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("resolved review group not found")
-	}
-	if err := st.ResolveReviewGroup(ctx, resolvedID, fullReviewChoices(t, resolved)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-	if err := setReviewGroupUpdatedAt(db, resolvedID, time.Date(2026, time.April, 20, 12, 0, 0, 0, time.UTC)); err != nil {
-		t.Fatalf("set resolved updated_at: %v", err)
-	}
-	if err := setReviewGroupUpdatedAt(db, openID, time.Date(2026, time.April, 20, 13, 0, 0, 0, time.UTC)); err != nil {
-		t.Fatalf("set open updated_at: %v", err)
-	}
-
-	var rejectedIDs []int64
-	for i := 0; i < 51; i++ {
-		groupID := mustCreateReviewGroup(t, st, fmt.Sprintf("Rejected group %02d", i), "Rejected candidate")
-		if err := st.UpdateReviewGroupStatus(ctx, groupID, review.StatusRejected); err != nil {
-			t.Fatalf("reject review group %d: %v", i, err)
-		}
-		updatedAt := time.Date(2026, time.April, 20, 11, 0, 0, 0, time.UTC).Add(-time.Duration(i) * time.Minute)
-		if err := setReviewGroupUpdatedAt(db, groupID, updatedAt); err != nil {
-			t.Fatalf("set rejected updated_at %d: %v", i, err)
-		}
-		rejectedIDs = append(rejectedIDs, groupID)
-	}
-
-	groups, err := st.ListClosedReviewGroups(ctx, 50)
-	if err != nil {
-		t.Fatalf("list closed review groups: %v", err)
-	}
-	if len(groups) != 50 {
-		t.Fatalf("closed review groups = %d, want 50", len(groups))
-	}
-	if groups[0].ID != resolvedID {
-		t.Fatalf("first group ID = %d, want resolved group %d", groups[0].ID, resolvedID)
-	}
-	if groups[0].Status != review.StatusResolved {
-		t.Fatalf("first group status = %q, want %q", groups[0].Status, review.StatusResolved)
-	}
-	if groups[1].ID != rejectedIDs[0] {
-		t.Fatalf("second group ID = %d, want newest rejected group %d", groups[1].ID, rejectedIDs[0])
-	}
-	for _, group := range groups {
-		if group.ID == openID {
-			t.Fatal("closed history included open group")
-		}
-		if group.Status != review.StatusResolved && group.Status != review.StatusRejected {
-			t.Fatalf("closed history included status %q", group.Status)
-		}
-	}
-	if groups[len(groups)-1].ID == rejectedIDs[len(rejectedIDs)-1] {
-		t.Fatal("closed history included oldest rejected group beyond limit")
-	}
-}
-
-func TestListReviewGroupsForImportRunReturnsAllStatusesWithStrictNoteMatch(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	openID := mustCreateReviewGroupForImportRun(t, st, "Open import 12", "Created from manual ingest run 12 review staging.")
-	resolvedID := mustCreatePublishableReviewGroupForImportRun(t, st, "Resolved import 12", "Created from import run 12 review staging.")
-	rejectedID := mustCreateReviewGroupForImportRun(t, st, "Rejected import 12", "Created from manual ingest run 12 review staging.")
-	_ = mustCreateReviewGroupForImportRun(t, st, "Wrong import 123", "Created from manual ingest run 123 review staging.")
-	_ = mustCreateReviewGroupForImportRun(t, st, "Malformed import 12abc", "Created from manual ingest run 12abc review staging.")
-	_ = mustCreateReviewGroupForImportRun(t, st, "No import", "Created from offline fixture.")
-
-	resolved, ok, err := st.LoadReviewGroup(ctx, resolvedID)
-	if err != nil {
-		t.Fatalf("load resolved group: %v", err)
-	}
-	if !ok {
-		t.Fatal("resolved group not found")
-	}
-	open, ok, err := st.LoadReviewGroup(ctx, openID)
-	if err != nil {
-		t.Fatalf("load open group: %v", err)
-	}
-	if !ok {
-		t.Fatal("open group not found")
-	}
-	if err := st.SaveReviewDraftChoices(ctx, openID, []review.DraftChoiceInput{{Field: review.FieldName, CandidateID: open.Candidates[0].ID}}); err != nil {
-		t.Fatalf("save open draft: %v", err)
-	}
-	if err := st.ResolveReviewGroup(ctx, resolvedID, fullReviewChoices(t, resolved)); err != nil {
-		t.Fatalf("resolve group: %v", err)
-	}
-	if err := st.UpdateReviewGroupStatus(ctx, rejectedID, review.StatusRejected); err != nil {
-		t.Fatalf("reject group: %v", err)
-	}
-
-	groups, err := st.ListReviewGroupsForImportRun(ctx, 12)
-	if err != nil {
-		t.Fatalf("list review groups for import run: %v", err)
-	}
-	if len(groups) != 3 {
-		t.Fatalf("review groups = %d, want 3: %#v", len(groups), groups)
-	}
-
-	gotByID := make(map[int64]review.GroupSummary, len(groups))
-	for _, group := range groups {
-		gotByID[group.ID] = group
-	}
-	if gotByID[openID].Status != review.StatusOpen {
-		t.Fatalf("open group status = %q, want %q", gotByID[openID].Status, review.StatusOpen)
-	}
-	if gotByID[resolvedID].Status != review.StatusResolved {
-		t.Fatalf("resolved group status = %q, want %q", gotByID[resolvedID].Status, review.StatusResolved)
-	}
-	if gotByID[rejectedID].Status != review.StatusRejected {
-		t.Fatalf("rejected group status = %q, want %q", gotByID[rejectedID].Status, review.StatusRejected)
-	}
-	if gotByID[openID].CandidateCount != 1 || gotByID[openID].DraftCount != 1 {
-		t.Fatalf("open group counts = candidates %d drafts %d, want 1 and 1", gotByID[openID].CandidateCount, gotByID[openID].DraftCount)
-	}
-	for _, group := range groups {
-		if group.Title == "Wrong import 123" || group.Title == "Malformed import 12abc" || group.Title == "No import" {
-			t.Fatalf("strict import-run match included %q", group.Title)
-		}
-	}
-}
-
-func TestResolveReviewGroupPublishesCanonicalEvent(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeCount := mustCount(t, db, "events")
-
-	groupID := mustCreatePublishableReviewGroup(t, st, "Published resolve")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	publishStart := time.Now().UTC().Add(-1 * time.Second)
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-	publishEnd := time.Now().UTC().Add(1 * time.Second)
-
-	final, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	if final.Status != review.StatusResolved {
-		t.Fatalf("status = %q, want %q", final.Status, review.StatusResolved)
-	}
-	if got := len(final.DraftChoices); got != len(review.CanonicalFields) {
-		t.Fatalf("draft choices = %d, want %d", got, len(review.CanonicalFields))
-	}
-
-	eventSlug := "live-utc-show-sidney-and-matilda-20260501190000"
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	if event.Name != "UTC Show" {
-		t.Fatalf("name = %q, want %q", event.Name, "UTC Show")
-	}
-	if event.VenueSlug != "sidney-and-matilda" {
-		t.Fatalf("venue slug = %q, want %q", event.VenueSlug, "sidney-and-matilda")
-	}
-	if !event.Start.Equal(time.Date(2026, time.May, 1, 19, 0, 0, 0, time.UTC)) {
-		t.Fatalf("start = %v, want %v", event.Start, time.Date(2026, time.May, 1, 19, 0, 0, 0, time.UTC))
-	}
-	if !event.End.Equal(time.Date(2026, time.May, 1, 22, 0, 0, 0, time.UTC)) {
-		t.Fatalf("end = %v, want %v", event.End, time.Date(2026, time.May, 1, 22, 0, 0, 0, time.UTC))
-	}
-	if event.Genre != "" {
-		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
-	}
-	if event.Status != "Listed" {
-		t.Fatalf("status = %q, want %q", event.Status, "Listed")
-	}
-	if event.Description != "First line" {
-		t.Fatalf("description = %q, want %q", event.Description, "First line")
-	}
-	if event.SourceName != "Fixture ICS" {
-		t.Fatalf("source name = %q, want %q", event.SourceName, "Fixture ICS")
-	}
-	if event.SourceURL != "https://example.test/utc-show" {
-		t.Fatalf("source url = %q, want %q", event.SourceURL, "https://example.test/utc-show")
-	}
-	if event.Origin != domain.OriginLive {
-		t.Fatalf("origin = %q, want %q", event.Origin, domain.OriginLive)
-	}
-	if event.LastChecked.IsZero() {
-		t.Fatal("last checked is zero")
-	}
-	if event.LastChecked.Before(publishStart) || event.LastChecked.After(publishEnd) {
-		t.Fatalf("last checked = %v, want between %v and %v", event.LastChecked, publishStart, publishEnd)
-	}
-	if got := mustCount(t, db, "events"); got != beforeCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeCount+1)
-	}
-}
-
-func TestResolveReviewGroupPublishesRoomAssignment(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
-		Title:      "Room resolve",
-		SourceName: "Sidney & Matilda Google Calendar ICS",
-		SourceURL:  "file:sidney.ics",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "parallel-delusion",
-			Name:        "Parallel Delusion",
-			VenueSlug:   "sidney-and-matilda",
-			RoomText:    "FACTORY",
-			Rooms:       []domain.VenueRoom{{Slug: "factory", Name: "Factory"}},
-			StartAt:     "2026-05-04T19:00:00Z",
-			EndAt:       "2026-05-04T22:00:00Z",
-			Genre:       "Experimental",
-			Status:      "Listed",
-			Description: "Factory room fixture.",
-			SourceName:  "Sidney & Matilda Google Calendar ICS",
-			SourceURL:   "https://www.sidneyandmatilda.com/events/parallel-delusion",
-			Provenance:  "fixture UID parallel-delusion",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	event, ok := st.EventBySlug("live-parallel-delusion-sidney-and-matilda-20260504190000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	if event.RoomText != "FACTORY" {
-		t.Fatalf("room text = %q, want %q", event.RoomText, "FACTORY")
-	}
-	if len(event.Rooms) != 1 {
-		t.Fatalf("rooms = %#v, want one room", event.Rooms)
-	}
-	room := event.Rooms[0]
-	if room.VenueSlug != "sidney-and-matilda" || room.Slug != "factory" || room.Name != "Factory" {
-		t.Fatalf("room = %#v, want Sidney & Matilda Factory", room)
-	}
-	if room.ValidationState != domain.ValidationStateValidated {
-		t.Fatalf("room validation state = %q, want %q", room.ValidationState, domain.ValidationStateValidated)
-	}
-
-	final, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load final group: %v", err)
-	}
-	if !ok {
-		t.Fatal("final review group not found")
-	}
-	assertDraftChoice(t, final, review.FieldRoomSlugs, group.Candidates[0].ID, "factory")
-}
-
-func TestResolveReviewGroupRequiresRoomChoice(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	groupID := mustCreatePublishableReviewGroup(t, st, "Missing room choice")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields)-1)
-	for _, choice := range fullReviewChoices(t, group) {
-		if choice.Field != review.FieldRoomSlugs {
-			choices = append(choices, choice)
-		}
-	}
-
-	err = st.ResolveReviewGroup(ctx, groupID, choices)
-	if err == nil {
-		t.Fatal("expected missing room choice to be rejected")
-	}
-	if !strings.Contains(err.Error(), "all review fields must be selected before resolving") {
-		t.Fatalf("error = %v, want missing fields error", err)
-	}
-
-	after, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after failed resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after failed resolve")
-	}
-	if after.Status != review.StatusOpen {
-		t.Fatalf("status = %q, want %q", after.Status, review.StatusOpen)
-	}
-	if len(after.DraftChoices) != 0 {
-		t.Fatalf("draft choices = %d, want 0", len(after.DraftChoices))
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-}
-
-func TestResolveReviewGroupRejectsRoomChoiceFromDifferentVenue(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
-		Title:      "Mixed room venue resolve",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:mixed-room-venue.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "sidney-room",
-				Name:        "Parallel Delusion",
-				VenueSlug:   "sidney-and-matilda",
-				RoomText:    "FACTORY",
-				Rooms:       []domain.VenueRoom{{VenueSlug: "sidney-and-matilda", Slug: "factory", Name: "Factory"}},
-				StartAt:     "2026-05-04T19:00:00Z",
-				EndAt:       "2026-05-04T22:00:00Z",
-				Genre:       "Experimental",
-				Status:      "Listed",
-				Description: "Factory room fixture.",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/sidney-room",
-				Provenance:  "fixture UID sidney-room",
-			},
-			{
-				ExternalID:  "leadmill-venue",
-				Name:        "Parallel Delusion",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-04T19:00:00Z",
-				EndAt:       "2026-05-04T22:00:00Z",
-				Genre:       "Experimental",
-				Status:      "Listed",
-				Description: "Factory room fixture.",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/leadmill-venue",
-				Provenance:  "fixture UID leadmill-venue",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	choices := fullReviewChoices(t, group)
-	for i := range choices {
-		if choices[i].Field == review.FieldVenueSlug {
-			choices[i].CandidateID = group.Candidates[1].ID
-		}
-	}
-
-	err = st.ResolveReviewGroup(ctx, groupID, choices)
-	if err == nil {
-		t.Fatal("expected mixed room and venue choices to be rejected")
-	}
-	if !strings.Contains(err.Error(), `review room choice venue "sidney-and-matilda" does not match selected venue "leadmill"`) {
-		t.Fatalf("resolve error = %q, want room venue mismatch", err)
-	}
-
-	final, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load final group: %v", err)
-	}
-	if !ok {
-		t.Fatal("final review group not found")
-	}
-	if final.Status != review.StatusOpen {
-		t.Fatalf("final status = %q, want %q", final.Status, review.StatusOpen)
-	}
-}
-
-func TestResolveReviewGroupPublishesChosenImage(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
-		Title:      "Image resolve",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:image.ics",
-		Candidates: []review.CandidateInput{{
-			ExternalID:     "image-1",
-			Name:           "Image Show",
-			VenueSlug:      "sidney-and-matilda",
-			StartAt:        "2026-05-01T19:00:00Z",
-			EndAt:          "2026-05-01T22:00:00Z",
-			Genre:          "Indie",
-			Status:         "Listed",
-			Description:    "First line",
-			ImageURL:       "/media/events/image-show.jpg",
-			ImageSourceURL: "https://example.test/image-show.jpg",
-			ImageAlt:       "Image Show poster",
-			ImageWidth:     1200,
-			ImageHeight:    800,
-			SourceName:     "Fixture ICS",
-			SourceURL:      "https://example.test/image-show",
-			Provenance:     "fixture UID image-1",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	event, ok := st.EventBySlug("live-image-show-sidney-and-matilda-20260501190000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	if got, want := event.ImageURL, "/media/events/image-show.jpg"; got != want {
-		t.Fatalf("image url = %q, want %q", got, want)
-	}
-	if got, want := event.ImageSourceURL, "https://example.test/image-show.jpg"; got != want {
-		t.Fatalf("image source url = %q, want %q", got, want)
-	}
-	if got, want := event.ImageAlt, "Image Show poster"; got != want {
-		t.Fatalf("image alt = %q, want %q", got, want)
-	}
-	if got, want := event.ImageWidth, 1200; got != want {
-		t.Fatalf("image width = %d, want %d", got, want)
-	}
-	if got, want := event.ImageHeight, 800; got != want {
-		t.Fatalf("image height = %d, want %d", got, want)
-	}
-}
-
-func TestSaveReviewDraftChoicesUpsertsPerField(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID := mustCreatePublishableReviewGroup(t, st, "Draft upsert")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	if err := st.SaveReviewDraftChoices(ctx, groupID, []review.DraftChoiceInput{
-		{Field: review.FieldName, CandidateID: group.Candidates[0].ID},
-	}); err != nil {
-		t.Fatalf("save first draft choice: %v", err)
-	}
-	before, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after first save: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after first save")
-	}
-	if _, ok := before.DraftChoices[review.FieldName]; !ok {
-		t.Fatal("missing first draft choice")
-	}
-
-	if err := st.SaveReviewDraftChoices(ctx, groupID, []review.DraftChoiceInput{
-		{Field: review.FieldName, CandidateID: group.Candidates[1].ID},
-	}); err != nil {
-		t.Fatalf("save replacement draft choice: %v", err)
-	}
-
-	after, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after second save: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after second save")
-	}
-	if got := len(after.DraftChoices); got != 1 {
-		t.Fatalf("draft choices = %d, want 1", got)
-	}
-	choice, ok := after.DraftChoices[review.FieldName]
-	if !ok {
-		t.Fatal("missing replacement draft choice")
-	}
-	if choice.CandidateID != group.Candidates[1].ID {
-		t.Fatalf("draft choice candidate = %d, want %d", choice.CandidateID, group.Candidates[1].ID)
-	}
-	wantValue := review.CandidateValue(group.Candidates[1], review.FieldName)
-	if choice.Value != wantValue {
-		t.Fatalf("draft choice value = %q, want %q", choice.Value, wantValue)
-	}
-
-	groups, err := st.ListOpenReviewGroups(ctx)
-	if err != nil {
-		t.Fatalf("list open review groups: %v", err)
-	}
-	if len(groups) != 1 {
-		t.Fatalf("open review groups = %d, want 1", len(groups))
-	}
-	if groups[0].CandidateCount != 2 {
-		t.Fatalf("candidate count = %d, want 2", groups[0].CandidateCount)
-	}
-	if groups[0].DraftCount != 1 {
-		t.Fatalf("draft count = %d, want 1", groups[0].DraftCount)
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	var rowCount int
-	var storedCandidateID int64
-	if err := db.QueryRow(`
-		SELECT COUNT(*), MAX(candidate_id)
-		FROM review_draft_choices
-		WHERE group_id = ? AND field = ?
-	`, groupID, string(review.FieldName)).Scan(&rowCount, &storedCandidateID); err != nil {
-		t.Fatalf("count stored draft choices: %v", err)
-	}
-	if rowCount != 1 {
-		t.Fatalf("stored draft choice rows = %d, want 1", rowCount)
-	}
-	if storedCandidateID != group.Candidates[1].ID {
-		t.Fatalf("stored draft candidate = %d, want %d", storedCandidateID, group.Candidates[1].ID)
-	}
-}
-
-func TestResolveReviewGroupCanonicalMatchPreservesExistingImageWhenChosenImageBlank(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	sourceID := mustEnsureReviewTestSource(t, st.db)
-	venueID := lookupStoreVenueID(t, st.db, "leadmill")
-	slug := "live-canonical-image-show-leadmill-20260501190000"
-	res, err := st.db.Exec(`
-		INSERT INTO events (
-			slug,
-			venue_id,
-			source_id,
-			name,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			image_url,
-			image_source_url,
-			image_alt,
-			image_width,
-			image_height,
-			image_focus_x,
-			image_focus_y,
-			last_checked_at,
-			origin,
-			publication_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, slug, venueID, sourceID, "Canonical Image Show", "2026-05-01T19:00:00Z", "2026-05-01T22:00:00Z", "Indie", "Listed", "Existing description", "/media/events/original-canonical.jpg", "https://example.test/original-canonical.jpg", "Original canonical poster", 1200, 800, 20, 80, "2026-05-09T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed))
-	if err != nil {
-		t.Fatalf("insert canonical event: %v", err)
-	}
-	eventID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("event id: %v", err)
-	}
-
-	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
-		Title:      "Canonical image preserve",
-		SourceName: "Review test source",
-		SourceURL:  "https://example.test/review-test",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "blank-image-candidate",
-				Name:        "Canonical Image Show",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "Updated description",
-				SourceName:  "Review test source",
-				SourceURL:   "https://example.test/review-test",
-				Provenance:  "blank image candidate",
-			},
-			{
-				CanonicalEventID: eventID,
-				Name:             "Canonical Image Show",
-				VenueSlug:        "leadmill",
-				StartAt:          "2026-05-01T19:00:00Z",
-				EndAt:            "2026-05-01T22:00:00Z",
-				Genre:            "Indie",
-				Status:           "Listed",
-				Description:      "Existing description",
-				ImageURL:         "/media/events/original-canonical.jpg",
-				ImageSourceURL:   "https://example.test/original-canonical.jpg",
-				ImageAlt:         "Original canonical poster",
-				ImageWidth:       1200,
-				ImageHeight:      800,
-				ImageFocusX:      20,
-				ImageFocusY:      80,
-				SourceName:       "Review test source",
-				SourceURL:        "https://example.test/review-test",
-				Provenance:       "Canonical live event snapshot",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	assertEventImageFields(t, st.db, slug, "/media/events/original-canonical.jpg", "https://example.test/original-canonical.jpg", "Original canonical poster", 1200, 800, 20, 80)
-}
-
-func TestResolveReviewGroupPublishesSingletonEventWithSourceFallback(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeCount := mustCount(t, db, "events")
-
-	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Singleton publish")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	candidateID := group.Candidates[0].ID
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?, source_name = '', source_url = ''
-		WHERE id = ?
-	`, "leadmill-temp", "Sidney & Matilda", "Rivelin Works, 46 Sidney Street, Sheffield", candidateID); err != nil {
-		t.Fatalf("rewrite singleton review candidate venue evidence: %v", err)
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	eventSlug := "live-solo-show-sidney-and-matilda-20260503190000"
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	if event.SourceName != "Fixture ICS" {
-		t.Fatalf("source name = %q, want %q", event.SourceName, "Fixture ICS")
-	}
-	if event.SourceURL != "file:sidney.ics" {
-		t.Fatalf("source url = %q, want %q", event.SourceURL, "file:sidney.ics")
-	}
-	if event.VenueSlug != "sidney-and-matilda" {
-		t.Fatalf("venue slug = %q, want %q", event.VenueSlug, "sidney-and-matilda")
-	}
-	if event.Origin != domain.OriginLive {
-		t.Fatalf("origin = %q, want %q", event.Origin, domain.OriginLive)
-	}
-	final, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group after resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	assertDraftChoice(t, final, review.FieldVenueSlug, candidateID, "sidney-and-matilda")
-	if got := mustCount(t, db, "events"); got != beforeCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeCount+1)
-	}
-}
-
-func TestCreateReviewGroupPersistsAuthoritativeSourceMetadata(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative persisted")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if got, want := group.AuthoritativeSourceName, "Sidney & Matilda manual ingest"; got != want {
-		t.Fatalf("authoritative source name = %q, want %q", got, want)
-	}
-	if got, want := group.AuthoritativeSourceURL, "https://calendar.example.test/live.ics"; got != want {
-		t.Fatalf("authoritative source url = %q, want %q", got, want)
-	}
-	if got, want := group.AuthoritativeSourceEventKey, "shared-uid"; got != want {
-		t.Fatalf("authoritative source event key = %q, want %q", got, want)
-	}
-}
-
-func TestResolveReviewGroupUsesAuthoritativeSourceLinkIdentity(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative resolve")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	candidateID := group.Candidates[0].ID
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
-		WHERE id = ?
-	`, "leadmill-temp", "Sidney & Matilda", "Rivelin Works, 46 Sidney Street, Sheffield", candidateID); err != nil {
-		t.Fatalf("rewrite authoritative review candidate venue evidence: %v", err)
-	}
-
-	var venueID int64
-	if err := db.QueryRow(`SELECT id FROM venues WHERE slug = ?`, "sidney-and-matilda").Scan(&venueID); err != nil {
-		t.Fatalf("lookup venue id: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Sidney & Matilda manual ingest", "https://calendar.example.test/live.ics"); err != nil {
-		t.Fatalf("insert authoritative source: %v", err)
-	}
-	var sourceID int64
-	if err := db.QueryRow(`SELECT id FROM sources WHERE name = ? AND url = ?`, "Sidney & Matilda manual ingest", "https://calendar.example.test/live.ics").Scan(&sourceID); err != nil {
-		t.Fatalf("lookup source id: %v", err)
-	}
-	const linkedSlug = "existing-linked-event"
-	if _, err := db.Exec(`
-		INSERT INTO events (
-			slug,
-			venue_id,
-			source_id,
-			name,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			last_checked_at,
-			origin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, linkedSlug, venueID, sourceID, "Old linked event", "2026-04-30T18:00:00Z", "2026-04-30T21:00:00Z", "Old genre", "Listed", "Old description", "2026-04-29T10:00:00Z", string(domain.OriginTest)); err != nil {
-		t.Fatalf("insert linked event: %v", err)
-	}
-	var eventID int64
-	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, linkedSlug).Scan(&eventID); err != nil {
-		t.Fatalf("lookup event id: %v", err)
-	}
-	if _, err := db.Exec(`
-		INSERT INTO event_source_links (
-			event_id,
-			source_id,
-			source_event_key,
-			is_authoritative,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, 1, ?, ?)
-	`, eventID, sourceID, "shared-uid", "2026-04-29T10:00:00Z", "2026-04-29T10:00:00Z"); err != nil {
-		t.Fatalf("insert source link: %v", err)
-	}
-	beforeEventCount := mustCount(t, db, "events")
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-	if _, ok := st.EventBySlug("live-utc-show-sidney-and-matilda-20260501190000"); ok {
-		t.Fatal("unexpected slug-upsert event created")
-	}
-
-	event, ok := st.EventBySlug(linkedSlug)
-	if !ok {
-		t.Fatalf("missing linked event %q", linkedSlug)
-	}
-	if event.Name != "UTC Show" {
-		t.Fatalf("name = %q, want %q", event.Name, "UTC Show")
-	}
-	if event.SourceName != "Sidney & Matilda manual ingest" {
-		t.Fatalf("source name = %q, want %q", event.SourceName, "Sidney & Matilda manual ingest")
-	}
-	if event.SourceURL != "https://calendar.example.test/live.ics" {
-		t.Fatalf("source url = %q, want %q", event.SourceURL, "https://calendar.example.test/live.ics")
-	}
-	if event.VenueSlug != "sidney-and-matilda" {
-		t.Fatalf("venue slug = %q, want %q", event.VenueSlug, "sidney-and-matilda")
-	}
-	final, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group after resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	assertDraftChoice(t, final, review.FieldVenueSlug, candidateID, "sidney-and-matilda")
-	if event.Genre != "" {
-		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
-	}
-	if event.Description != "First line" {
-		t.Fatalf("description = %q, want %q", event.Description, "First line")
-	}
-}
-
-func TestResolveReviewGroupRollsBackWhenVenueResolutionFails(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-	beforeEventCount := mustCount(t, db, "events")
-
-	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Failed venue resolution")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	candidateID := group.Candidates[0].ID
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
-		WHERE id = ?
-	`, "imaginary-hall", "Sidney & Matilda", "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE", candidateID); err != nil {
-		t.Fatalf("rewrite review candidate venue evidence: %v", err)
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err == nil {
-		t.Fatal("expected venue resolution failure")
-	}
-
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
-		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-	if got := mustCount(t, db, "review_draft_choices"); got != 0 {
-		t.Fatalf("review_draft_choices rows = %d, want 0", got)
-	}
-	if _, ok := st.VenueBySlug("imaginary-hall"); ok {
-		t.Fatal("unexpected provisional venue created for ambiguous evidence")
-	}
-
-	final, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group after failed resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after failed resolve")
-	}
-	if final.Status != review.StatusOpen {
-		t.Fatalf("status = %q, want %q", final.Status, review.StatusOpen)
-	}
-	if len(final.DraftChoices) != 0 {
-		t.Fatalf("draft choices = %d, want 0", len(final.DraftChoices))
-	}
-}
-
-func TestResolveReviewGroupAuthoritativePathCreatesSecondarySourceInfoRows(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative secondary info")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	rows := loadSecondarySourceInfoRows(t, db)
-	if got, want := len(rows), 2; got != want {
-		t.Fatalf("secondary source info rows = %d, want %d", got, want)
-	}
-	if rows[0].InfoType != "description" || rows[0].Value != "First line" {
-		t.Fatalf("first secondary row = %#v, want description First line", rows[0])
-	}
-	if rows[1].InfoType != "genre" || rows[1].Value != "Indie" {
-		t.Fatalf("second secondary row = %#v, want genre Indie", rows[1])
-	}
-}
-
-func TestResolveReviewGroupAuthoritativePathPreservesSecondaryDetailURLWhenCalendarURLExists(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative secondary detail")
-	db := mustRawDB(t, path)
-	defer db.Close()
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET calendar_url = ?
-		WHERE group_id = ? AND position = 1
-	`, "https://secondary.example.test/feed.ics", groupID); err != nil {
-		t.Fatalf("set secondary calendar url: %v", err)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	event, ok := st.EventBySlug("live-utc-show-sidney-and-matilda-20260501190000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	secondary, err := st.EventSecondarySourceInfoByEventSlug(ctx, event.Slug)
-	if err != nil {
-		t.Fatalf("load secondary source info: %v", err)
-	}
-	if got, want := len(secondary), 1; got != want {
-		t.Fatalf("secondary source groups = %d, want %d", got, want)
-	}
-	if got, want := secondary[0].SourceURL, "https://example.test/utc-show"; got != want {
-		t.Fatalf("secondary source url = %q, want %q", got, want)
-	}
-}
-
-func TestResolveReviewGroupAuthoritativePathUpsertsSecondarySourceInfoRows(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	firstGroupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative secondary first")
-	firstGroup, ok, err := st.LoadReviewGroup(ctx, firstGroupID)
-	if err != nil {
-		t.Fatalf("load first review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("first review group not found")
-	}
-	if err := st.ResolveReviewGroup(ctx, firstGroupID, fullReviewChoices(t, firstGroup)); err != nil {
-		t.Fatalf("resolve first review group: %v", err)
-	}
-
-	secondGroupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative secondary second")
-	db := mustRawDB(t, path)
-	defer db.Close()
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET genre = ?, description = ?
-		WHERE group_id = ? AND position = 1
-	`, "Ambient", "Updated secondary description", secondGroupID); err != nil {
-		t.Fatalf("update second review candidate: %v", err)
-	}
-	secondGroup, ok, err := st.LoadReviewGroup(ctx, secondGroupID)
-	if err != nil {
-		t.Fatalf("load second review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("second review group not found")
-	}
-	if err := st.ResolveReviewGroup(ctx, secondGroupID, fullReviewChoices(t, secondGroup)); err != nil {
-		t.Fatalf("resolve second review group: %v", err)
-	}
-
-	rows := loadSecondarySourceInfoRows(t, db)
-	if got, want := len(rows), 2; got != want {
-		t.Fatalf("secondary source info rows = %d, want %d", got, want)
-	}
-	if rows[0].InfoType != "description" || rows[0].Value != "Updated secondary description" {
-		t.Fatalf("first secondary row = %#v, want updated description", rows[0])
-	}
-	if rows[1].InfoType != "genre" || rows[1].Value != "Ambient" {
-		t.Fatalf("second secondary row = %#v, want updated genre", rows[1])
-	}
-}
-
-func TestResolveReviewGroupAuthoritativePathReconcilesStaleSecondarySourceInfoRows(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	firstGroupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative stale secondary first")
-	firstGroup, ok, err := st.LoadReviewGroup(ctx, firstGroupID)
-	if err != nil {
-		t.Fatalf("load first review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("first review group not found")
-	}
-	if err := st.ResolveReviewGroup(ctx, firstGroupID, fullReviewChoices(t, firstGroup)); err != nil {
-		t.Fatalf("resolve first review group: %v", err)
-	}
-
-	secondGroupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative stale secondary second")
-	db := mustRawDB(t, path)
-	defer db.Close()
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET genre = '', description = ''
-		WHERE group_id = ? AND position = 1
-	`, secondGroupID); err != nil {
-		t.Fatalf("blank second review candidate secondary info: %v", err)
-	}
-	secondGroup, ok, err := st.LoadReviewGroup(ctx, secondGroupID)
-	if err != nil {
-		t.Fatalf("load second review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("second review group not found")
-	}
-	if err := st.ResolveReviewGroup(ctx, secondGroupID, fullReviewChoices(t, secondGroup)); err != nil {
-		t.Fatalf("resolve second review group: %v", err)
-	}
-
-	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
-		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
-	}
-}
-
-func TestResolveReviewGroupNonAuthoritativePathUpsertsSecondaryDescriptions(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	createGroup := func(title, secondaryDescription string) int64 {
-		t.Helper()
-
-		id, err := st.CreateReviewGroup(ctx, review.GroupInput{
-			Title:      title,
-			SourceName: "Manual review",
-			SourceURL:  "https://reviews.example.test/fusion-night",
-			Candidates: []review.CandidateInput{
-				{
-					ExternalID:  "primary-fusion",
-					Name:        "Fusion Night",
-					VenueSlug:   "leadmill",
-					StartAt:     "2026-06-01T19:00:00Z",
-					EndAt:       "2026-06-01T22:00:00Z",
-					Status:      "Listed",
-					Description: "Jazz from the first source.",
-					SourceName:  "Primary Listings",
-					SourceURL:   "https://primary.example.test/fusion-night",
-				},
-				{
-					ExternalID:  "secondary-fusion",
-					Name:        "  fusion   night  ",
-					VenueSlug:   "leadmill",
-					StartAt:     "2026-06-01T19:00:00Z",
-					EndAt:       "2026-06-01T22:00:00Z",
-					Status:      "Listed",
-					Description: secondaryDescription,
-					SourceName:  "Secondary Listings",
-					SourceURL:   "https://secondary.example.test/fusion-night",
-				},
-			},
-		})
-		if err != nil {
-			t.Fatalf("create review group %q: %v", title, err)
-		}
-		return id
-	}
-
-	resolveGroup := func(groupID int64) {
-		t.Helper()
-
-		group, ok, err := st.LoadReviewGroup(ctx, groupID)
-		if err != nil {
-			t.Fatalf("load review group: %v", err)
-		}
-		if !ok {
-			t.Fatal("review group not found")
-		}
-		if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-			t.Fatalf("resolve review group: %v", err)
-		}
-	}
-
-	firstGroupID := createGroup("Non-authoritative secondary first", "Funk from the second source.")
-	resolveGroup(firstGroupID)
-
-	eventSlug := "live-fusion-night-leadmill-20260601190000"
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	if event.Genre != "Jazz, Funk" {
-		t.Fatalf("genre = %q, want Jazz, Funk", event.Genre)
-	}
-	if err := st.RecomputeEventGenres(ctx); err != nil {
-		t.Fatalf("recompute event genres: %v", err)
-	}
-	event, ok = st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing recomputed event %q", eventSlug)
-	}
-	if event.Genre != "Jazz, Funk" {
-		t.Fatalf("recomputed genre = %q, want Jazz, Funk", event.Genre)
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	rows := loadSecondarySourceInfoRows(t, db)
-	if got, want := len(rows), 1; got != want {
-		t.Fatalf("secondary source info rows = %d, want %d", got, want)
-	}
-	if rows[0].InfoType != "description" || rows[0].Value != "Funk from the second source." {
-		t.Fatalf("secondary row = %#v, want secondary description", rows[0])
-	}
-
-	secondGroupID := createGroup("Non-authoritative secondary second", "Funk and soul from updated second source.")
-	resolveGroup(secondGroupID)
-
-	rows = loadSecondarySourceInfoRows(t, db)
-	if got, want := len(rows), 1; got != want {
-		t.Fatalf("secondary source info rows after update = %d, want %d", got, want)
-	}
-	if rows[0].InfoType != "description" || rows[0].Value != "Funk and soul from updated second source." {
-		t.Fatalf("updated secondary row = %#v, want updated secondary description", rows[0])
-	}
-}
-
-func TestSaveReviewDraftRejectsCandidateFromAnotherGroup(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	firstID := mustCreateReviewGroup(t, st, "First", "First candidate")
-	secondID := mustCreateReviewGroup(t, st, "Second", "Second candidate")
-
-	second, ok, err := st.LoadReviewGroup(ctx, secondID)
-	if err != nil {
-		t.Fatalf("load second group: %v", err)
-	}
-	if !ok || len(second.Candidates) != 1 {
-		t.Fatalf("second group = %#v, found %v", second, ok)
-	}
-
-	err = st.SaveReviewDraftChoices(ctx, firstID, []review.DraftChoiceInput{
-		{Field: review.FieldName, CandidateID: second.Candidates[0].ID},
-	})
-	if err == nil {
-		t.Fatal("expected candidate from another group to be rejected")
-	}
-}
-
-func TestSaveReviewDraftRejectsEmptyChoicesWithoutUpdatingGroup(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID := mustCreateReviewGroup(t, st, "Empty draft", "Draft candidate")
-	fixedUpdatedAt := time.Date(2026, time.April, 19, 10, 0, 0, 0, time.UTC)
-	db := mustRawDB(t, path)
-	if _, err := db.Exec(`
-		UPDATE review_groups
-		SET updated_at = ?
-		WHERE id = ?
-	`, formatRFC3339UTC(fixedUpdatedAt), groupID); err != nil {
-		t.Fatalf("set fixed updated_at: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close raw db: %v", err)
-	}
-
-	if err := st.SaveReviewDraftChoices(ctx, groupID, nil); err == nil {
-		t.Fatal("expected empty choices to be rejected")
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if !group.UpdatedAt.Equal(fixedUpdatedAt) {
-		t.Fatalf("updated_at = %v, want unchanged %v", group.UpdatedAt, fixedUpdatedAt)
-	}
-	if len(group.DraftChoices) != 0 {
-		t.Fatalf("draft choices = %d, want 0", len(group.DraftChoices))
-	}
-}
-
-func TestSaveReviewDraftRejectsClosedGroup(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID := mustCreatePublishableReviewGroup(t, st, "Closed draft")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	if err := st.SaveReviewDraftChoices(ctx, groupID, []review.DraftChoiceInput{
-		{Field: review.FieldName, CandidateID: group.Candidates[0].ID},
-	}); err == nil {
-		t.Fatal("expected closed group draft save to be rejected")
-	}
-}
-
-func TestUpdateReviewGroupStatusRejectsClosedGroup(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID := mustCreatePublishableReviewGroup(t, st, "Closed status")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	if err := st.UpdateReviewGroupStatus(ctx, groupID, review.StatusRejected); err == nil {
-		t.Fatal("expected closed group status flip to be rejected")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-}
-
-func TestResolveReviewGroupIsAtomic(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	groupID := mustCreatePublishableReviewGroup(t, st, "Atomic resolve")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	before, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found before resolve")
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, []review.DraftChoiceInput{
-		{Field: review.FieldName, CandidateID: group.Candidates[0].ID},
-	}); err == nil {
-		t.Fatal("expected incomplete resolve to be rejected")
-	}
-
-	after, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after failed resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after failed resolve")
-	}
-	if after.Status != before.Status {
-		t.Fatalf("status = %q, want unchanged %q", after.Status, before.Status)
-	}
-	if len(after.DraftChoices) != 0 {
-		t.Fatalf("draft choices = %d, want 0 after failed resolve", len(after.DraftChoices))
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-	final, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	if final.Status != review.StatusResolved {
-		t.Fatalf("status = %q, want %q", final.Status, review.StatusResolved)
-	}
-	if got := len(final.DraftChoices); got != len(review.CanonicalFields) {
-		t.Fatalf("draft choices = %d, want %d", got, len(review.CanonicalFields))
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-}
-
-func TestResolveReviewGroupRollsBackProvisionalVenueWhenLaterCanonicalUpdateFails(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-	beforeEventCount := mustCount(t, db, "events")
-
-	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Atomic provisional rollback")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
-		WHERE id = ?
-	`, "imagniary-hal-temp", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Sheffield", group.Candidates[0].ID); err != nil {
-		t.Fatalf("rewrite venue evidence: %v", err)
-	}
-
-	sourceID := mustEnsureReviewTestSource(t, db)
-	canonicalEventID := mustInsertReviewTestEvent(t, db, sourceID, "canonical-rollback-anchor", "sidney-and-matilda", "Canonical Rollback Anchor")
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET canonical_event_id = ?
-		WHERE id = ?
-	`, canonicalEventID, group.Candidates[0].ID); err != nil {
-		t.Fatalf("set canonical event id: %v", err)
-	}
-
-	var venueID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM venues
-		WHERE slug = ?
-	`, "leadmill").Scan(&venueID); err != nil {
-		t.Fatalf("lookup venue id: %v", err)
-	}
-	if _, err := db.Exec(`
-		INSERT INTO events (
-			slug,
-			venue_id,
-			source_id,
-			name,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			last_checked_at,
-			origin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, "live-solo-show-imaginary-hall-20260503190000", venueID, sourceID, "Existing conflict", "2026-05-10T10:00:00Z", "2026-05-10T12:00:00Z", "Other", "Listed", "Conflict row", "2026-05-09T09:00:00Z", string(domain.OriginTest)); err != nil {
-		t.Fatalf("insert conflicting event: %v", err)
-	}
-	beforeEventCount = mustCount(t, db, "events")
-
-	err = st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group))
-	if err == nil {
-		t.Fatal("expected resolve review group to fail")
-	}
-	if got, want := err.Error(), `review event slug "live-solo-show-imaginary-hall-20260503190000" already belongs to a different event`; got != want {
-		t.Fatalf("resolve error = %q, want %q", got, want)
-	}
-
-	if _, ok := st.VenueBySlug("imaginary-hall"); ok {
-		t.Fatal("provisional venue row survived rolled-back resolve")
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
-		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-
-	after, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after failed resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after failed resolve")
-	}
-	if after.Status != review.StatusOpen {
-		t.Fatalf("status = %q, want %q", after.Status, review.StatusOpen)
-	}
-	if len(after.DraftChoices) != 0 {
-		t.Fatalf("draft choices = %d, want 0 after failed resolve", len(after.DraftChoices))
-	}
-}
-
-func TestResolveReviewGroupMergesCanonicalSlugConflictWithSameIdentity(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-
-	const startAt = "2026-05-03T19:00:00Z"
-	sourceID := mustEnsureReviewTestSource(t, db)
-	dirtySlug := mustLiveEventSlug(t, "Solo Show at Sidney and Matilda", "sidney-and-matilda", startAt)
-	cleanSlug := mustLiveEventSlug(t, "Solo Show", "sidney-and-matilda", startAt)
-	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "sidney-and-matilda", "Solo Show at Sidney and Matilda", startAt, "Dirty duplicate.")
-	mustInsertRepairLegacyEvent(t, db, sourceID, cleanSlug, "sidney-and-matilda", "Solo Show", startAt, "Clean duplicate.")
-
-	var duplicateEventID int64
-	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, dirtySlug).Scan(&duplicateEventID); err != nil {
-		t.Fatalf("lookup duplicate event: %v", err)
-	}
-	var targetEventID int64
-	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, cleanSlug).Scan(&targetEventID); err != nil {
-		t.Fatalf("lookup target event: %v", err)
-	}
-	if _, err := db.Exec(`
-		INSERT INTO event_source_links (
-			source_id,
-			event_id,
-			source_event_key,
-			is_authoritative,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, 1, ?, ?)
-	`, sourceID, duplicateEventID, "legacy-solo", "2026-05-01T10:00:00Z", "2026-05-01T10:00:00Z"); err != nil {
-		t.Fatalf("insert duplicate source link: %v", err)
-	}
-
-	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Canonical duplicate merge")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET canonical_event_id = ?
-		WHERE id = ?
-	`, duplicateEventID, group.Candidates[0].ID); err != nil {
-		t.Fatalf("set canonical event id: %v", err)
-	}
-	group, ok, err = st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after canonical update")
-	}
-
-	beforeEventCount := mustCount(t, db, "events")
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	if got := mustCount(t, db, "events"); got != beforeEventCount-1 {
-		t.Fatalf("events rows = %d, want merged duplicate count %d", got, beforeEventCount-1)
-	}
-	if _, ok := st.EventBySlug(dirtySlug); ok {
-		t.Fatalf("dirty duplicate slug %q still exists", dirtySlug)
-	}
-	event, ok := st.EventBySlug(cleanSlug)
-	if !ok {
-		t.Fatalf("missing target event %q", cleanSlug)
-	}
-	if event.Description != "One listing" {
-		t.Fatalf("description = %q, want resolved candidate description", event.Description)
-	}
-
-	var linkedEventID int64
-	if err := db.QueryRow(`
-		SELECT event_id
-		FROM event_source_links
-		WHERE source_event_key = ?
-	`, "legacy-solo").Scan(&linkedEventID); err != nil {
-		t.Fatalf("lookup moved source link: %v", err)
-	}
-	if linkedEventID != targetEventID {
-		t.Fatalf("source link event_id = %d, want target %d", linkedEventID, targetEventID)
-	}
-	var staleCandidateRefs int
-	if err := db.QueryRow(`
-		SELECT COUNT(*)
-		FROM review_candidates
-		WHERE canonical_event_id = ?
-	`, duplicateEventID).Scan(&staleCandidateRefs); err != nil {
-		t.Fatalf("count stale canonical candidate refs: %v", err)
-	}
-	if staleCandidateRefs != 0 {
-		t.Fatalf("review candidates still reference merged event = %d, want 0", staleCandidateRefs)
-	}
-}
-
-func TestResolveReviewGroupCreatesProvisionalVenueWhenVenueIsMissing(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-	beforeEventCount := mustCount(t, db, "events")
-
-	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Missing venue")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
-		WHERE id = ?
-	`, "imaginary-hall", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Neepsend, Sheffield", group.Candidates[0].ID); err != nil {
-		t.Fatalf("rewrite venue evidence: %v", err)
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	venue, ok := st.VenueBySlug("imaginary-hall")
-	if !ok {
-		t.Fatal("provisional venue not found")
-	}
-	if venue.Name != "Imaginary Hall" {
-		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
-	}
-	if venue.Address != "1 Void Street,\nNeepsend,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nNeepsend,\nSheffield")
-	}
-	if venue.Neighbourhood != "Neepsend" {
-		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
-	}
-	if venue.ValidationState != domain.ValidationStateProvisional {
-		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
-	}
-	if venue.Origin != domain.OriginLive {
-		t.Fatalf("venue origin = %q, want %q", venue.Origin, domain.OriginLive)
-	}
-
-	event, ok := st.EventBySlug("live-solo-show-imaginary-hall-20260503190000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	if event.VenueSlug != "imaginary-hall" {
-		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "imaginary-hall")
-	}
-
-	after, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	if after.Status != review.StatusResolved {
-		t.Fatalf("status = %q, want %q", after.Status, review.StatusResolved)
-	}
-	assertDraftChoice(t, after, review.FieldVenueSlug, group.Candidates[0].ID, "imaginary-hall")
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
-		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-}
-
-func TestResolveReviewGroupUsesExplicitVenueSlugWhenVenueEvidenceConflicts(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Conflicting venue evidence")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
-		WHERE id = ?
-	`, "leadmill", "Sidney & Matilda", "Rivelin Works, 46 Sidney Street, Sheffield", group.Candidates[0].ID); err != nil {
-		t.Fatalf("rewrite venue evidence: %v", err)
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	event, ok := st.EventBySlug("live-solo-show-leadmill-20260503190000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	if event.VenueSlug != "leadmill" {
-		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "leadmill")
-	}
-
-	after, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	assertDraftChoice(t, after, review.FieldVenueSlug, group.Candidates[0].ID, "leadmill")
-}
-
-func TestResolveReviewGroupCreatesProvisionalVenueFromNormalizedHumanEvidence(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-	beforeEventCount := mustCount(t, db, "events")
-
-	groupID := mustCreatePublishableSingletonReviewGroup(t, st, "Missing venue normalized")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
-		WHERE id = ?
-	`, "imagniary-hal-temp", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Neepsend, Sheffield", group.Candidates[0].ID); err != nil {
-		t.Fatalf("rewrite venue evidence: %v", err)
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	venue, ok := st.VenueBySlug("imaginary-hall")
-	if !ok {
-		t.Fatal("normalized provisional venue not found")
-	}
-	if venue.Name != "Imaginary Hall" {
-		t.Fatalf("venue name = %q, want %q", venue.Name, "Imaginary Hall")
-	}
-	if venue.Address != "1 Void Street,\nNeepsend,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nNeepsend,\nSheffield")
-	}
-	if venue.Neighbourhood != "Neepsend" {
-		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
-	}
-	if _, ok := st.VenueBySlug("imagniary-hal-temp"); ok {
-		t.Fatal("stale provisional venue slug was inserted")
-	}
-
-	event, ok := st.EventBySlug("live-solo-show-imaginary-hall-20260503190000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	if event.VenueSlug != "imaginary-hall" {
-		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "imaginary-hall")
-	}
-
-	after, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	if after.Status != review.StatusResolved {
-		t.Fatalf("status = %q, want %q", after.Status, review.StatusResolved)
-	}
-	assertDraftChoice(t, after, review.FieldVenueSlug, group.Candidates[0].ID, "imaginary-hall")
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
-		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-}
-
-func TestResolveReviewGroupAuthoritativePathCreatesProvisionalVenueWhenVenueIsMissing(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID := mustCreateAuthoritativeReviewGroup(t, st, "Authoritative missing venue")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
-		WHERE group_id = ?
-	`, "imaginary-hall", "Imaginary Hall", "Imaginary Hall, 1 Void Street, Sheffield", groupID); err != nil {
-		t.Fatalf("set missing venue: %v", err)
-	}
-	beforeEventCount := mustCount(t, db, "events")
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve authoritative review group: %v", err)
-	}
-
-	venue, ok := st.VenueBySlug("imaginary-hall")
-	if !ok {
-		t.Fatal("provisional venue not found")
-	}
-	if venue.ValidationState != domain.ValidationStateProvisional {
-		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
-	}
-
-	event, ok := st.EventBySlug("live-utc-show-imaginary-hall-20260501190000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	if event.VenueSlug != "imaginary-hall" {
-		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "imaginary-hall")
-	}
-	if event.SourceName != "Sidney & Matilda manual ingest" {
-		t.Fatalf("event source name = %q, want %q", event.SourceName, "Sidney & Matilda manual ingest")
-	}
-	if event.SourceURL != "https://calendar.example.test/live.ics" {
-		t.Fatalf("event source url = %q, want %q", event.SourceURL, "https://calendar.example.test/live.ics")
-	}
-
-	after, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	if after.Status != review.StatusResolved {
-		t.Fatalf("status = %q, want %q", after.Status, review.StatusResolved)
-	}
-	assertDraftChoice(t, after, review.FieldVenueSlug, group.Candidates[0].ID, "imaginary-hall")
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
-		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 1 {
-		t.Fatalf("event_source_links rows = %d, want 1", got)
-	}
-	if got := mustCount(t, db, "event_secondary_source_info"); got != 2 {
-		t.Fatalf("event_secondary_source_info rows = %d, want 2", got)
-	}
-}
-
-func TestResolveReviewGroupRejectsMissingEndForOwnedVenueSource(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	groupID, err := st.CreateReviewGroup(ctx, review.GroupInput{
-		Title:      "Cafe No. 9 review",
-		SourceName: "Cafe No. 9 manual ingest",
-		SourceURL:  "https://www.wegottickets.com/Cafe9",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "cafe-no-9-review-missing-end",
-			Name:        "Cafe No. 9 Late Show",
-			VenueSlug:   "cafe-no-9",
-			StartAt:     "2026-05-10T18:30:00Z",
-			Status:      "Listed",
-			Description: "Missing end time from source page",
-			SourceName:  "Cafe No. 9 manual ingest",
-			SourceURL:   "https://www.wegottickets.com/Cafe9",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-
-	after, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group after resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	if after.Status != review.StatusResolved {
-		t.Fatalf("status = %q, want %q", after.Status, review.StatusResolved)
-	}
-
-	event, ok := st.EventBySlug("live-cafe-no-9-late-show-cafe-no-9-20260510183000")
-	if !ok {
-		t.Fatal("published event not found")
-	}
-	if !event.End.IsZero() {
-		t.Fatalf("end = %v, want zero time for unknown end", event.End)
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingCreatesProvisionalVenueWhenVenueIsUnknown(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-	beforeEventCount := mustCount(t, db, "events")
-
-	input := review.GroupInput{
-		Title:      "Unknown venue",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:fixture.ics",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "missing-venue-1",
-			Name:             "Unknown venue show",
-			VenueSlug:        "imagniary-hal-temp",
-			VenueText:        "Imaginary Hall",
-			VenueLocationRaw: "Imaginary Hall, 1 Void Street, Neepsend, Sheffield",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Missing venue row",
-		}},
-	}
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input)
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if got, want := eventSlug, "live-unknown-venue-show-imaginary-hall-20260510183000"; got != want {
-		t.Fatalf("event slug = %q, want %q", got, want)
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
-		t.Fatalf("venues rows = %d, want %d", got, beforeVenueCount+1)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-
-	venue, ok := st.VenueBySlug("imaginary-hall")
-	if !ok {
-		t.Fatal("provisional venue not found")
-	}
-	if venue.ValidationState != domain.ValidationStateProvisional {
-		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
-	}
-	if venue.Address != "1 Void Street,\nNeepsend,\nSheffield" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "1 Void Street,\nNeepsend,\nSheffield")
-	}
-	if venue.Neighbourhood != "Neepsend" {
-		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
-	}
-
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	if event.VenueSlug != "imaginary-hall" {
-		t.Fatalf("event venue slug = %q, want %q", event.VenueSlug, "imaginary-hall")
-	}
-
-	secondSlug, secondPromoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input)
-	if err != nil {
-		t.Fatalf("rerun promote singleton review group: %v", err)
-	}
-	if !secondPromoted {
-		t.Fatal("rerun promoted = false, want true")
-	}
-	if secondSlug != eventSlug {
-		t.Fatalf("rerun slug = %q, want %q", secondSlug, eventSlug)
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount+1 {
-		t.Fatalf("rerun venues rows = %d, want %d", got, beforeVenueCount+1)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("rerun events rows = %d, want %d", got, beforeEventCount+1)
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingBackfillsBlankProvisionalVenueAddress(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	if _, err := insertVenue(ctx, st.db, domain.Venue{
-		Slug:            "memorial-hall",
-		Name:            "Memorial Hall",
-		ValidationState: domain.ValidationStateProvisional,
-		CoverageKind:    domain.CoverageKindVenue,
-		Origin:          domain.OriginLive,
-	}); err != nil {
-		t.Fatalf("insert blank provisional venue: %v", err)
-	}
-
-	input := review.GroupInput{
-		Title:      "Memorial Hall singleton",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:fixture.ics",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "memorial-hall-1",
-			Name:             "Memorial Hall show",
-			VenueSlug:        "memorial-hall",
-			VenueText:        "Memorial Hall",
-			VenueLocationRaw: "Memorial Hall, Barkers Pool, Sheffield City Centre, Sheffield, S1 2JA",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Missing address venue row should be backfilled.",
-		}},
-	}
-	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input); err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	} else if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-
-	venue, ok := st.VenueBySlug("memorial-hall")
-	if !ok {
-		t.Fatal("provisional venue not found")
-	}
-	if venue.Address != "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
-	}
-	if venue.Neighbourhood != "City Centre" {
-		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "City Centre")
-	}
-	if venue.ValidationState != domain.ValidationStateProvisional {
-		t.Fatalf("venue validation state = %q, want %q", venue.ValidationState, domain.ValidationStateProvisional)
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingBackfillsAddressOnlyLocationEvidence(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	if _, err := st.db.ExecContext(ctx, `
-		UPDATE venues
-		SET address = '',
-			neighbourhood = '',
-			validation_state = ?
-		WHERE slug = ?
-	`, string(domain.ValidationStateProvisional), "yellow-arch"); err != nil {
-		t.Fatalf("blank existing provisional venue: %v", err)
-	}
-
-	input := review.GroupInput{
-		Title:      "Yellow Arch singleton",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:fixture.ics",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "yellow-arch-1",
-			Name:             "Yellow Arch show",
-			VenueSlug:        "yellow-arch",
-			VenueText:        "Yellow Arch Studios",
-			VenueLocationRaw: "Yellow Arch Road, Neepsend, Sheffield, S3 8BX",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Address-only raw evidence should backfill when venue text agrees.",
-		}},
-	}
-	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input); err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	} else if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-
-	venue, ok := st.VenueBySlug("yellow-arch")
-	if !ok {
-		t.Fatal("provisional venue not found")
-	}
-	if venue.Address != "Yellow Arch Road,\nNeepsend,\nSheffield,\nS3 8BX" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "Yellow Arch Road,\nNeepsend,\nSheffield,\nS3 8BX")
-	}
-	if venue.Neighbourhood != "Neepsend" {
-		t.Fatalf("venue neighbourhood = %q, want %q", venue.Neighbourhood, "Neepsend")
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingDoesNotBackfillConflictingVenueEvidence(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	if _, err := insertVenue(ctx, st.db, domain.Venue{
-		Slug:            "memorial-hall",
-		Name:            "Memorial Hall",
-		ValidationState: domain.ValidationStateProvisional,
-		CoverageKind:    domain.CoverageKindVenue,
-		Origin:          domain.OriginLive,
-	}); err != nil {
-		t.Fatalf("insert blank provisional venue: %v", err)
-	}
-
-	input := review.GroupInput{
-		Title:      "Conflicting venue singleton",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:fixture.ics",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "conflicting-venue-1",
-			Name:             "Conflicting venue show",
-			VenueSlug:        "memorial-hall",
-			VenueText:        "Memorial Hall",
-			VenueLocationRaw: "Wrong Hall, 10 Wrong Street, Sheffield City Centre, Sheffield, S1 2JA",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Explicit slug should not allow conflicting raw evidence to backfill the venue.",
-		}},
-	}
-	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, input); err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	} else if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-
-	venue, ok := st.VenueBySlug("memorial-hall")
-	if !ok {
-		t.Fatal("provisional venue not found")
-	}
-	if venue.Address != "" {
-		t.Fatalf("venue address = %q, want empty", venue.Address)
-	}
-	if venue.Neighbourhood != "" {
-		t.Fatalf("venue neighbourhood = %q, want empty", venue.Neighbourhood)
-	}
-}
-
-func TestStageReviewGroupBackfilledAddressMatchesLaterCandidateInSameBatch(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	if _, err := insertVenue(ctx, st.db, domain.Venue{
-		Slug:            "memorial-hall",
-		Name:            "Memorial Hall",
-		ValidationState: domain.ValidationStateProvisional,
-		CoverageKind:    domain.CoverageKindVenue,
-		Origin:          domain.OriginLive,
-	}); err != nil {
-		t.Fatalf("insert blank provisional venue: %v", err)
-	}
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-
-	input := review.GroupInput{
-		Title:      "Memorial Hall duplicate candidates",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:fixture.ics",
-		StagingKey: "v1:memorial-hall-address-backfill-batch",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:       "memorial-hall-1",
-				Name:             "Memorial Hall show",
-				VenueSlug:        "memorial-hall",
-				VenueText:        "Memorial Hall",
-				VenueLocationRaw: "Memorial Hall, Barkers Pool, Sheffield City Centre, Sheffield, S1 2JA",
-				StartAt:          "2026-05-10T18:30:00Z",
-				EndAt:            "2026-05-10T22:00:00Z",
-				Status:           "Listed",
-				Description:      "Backfills the existing blank provisional venue.",
-			},
-			{
-				ExternalID:       "memorial-hall-2",
-				Name:             "Memorial Hall address-only show",
-				VenueSlug:        "barkers-pool",
-				VenueText:        "Barkers Pool",
-				VenueLocationRaw: "Barkers Pool, Sheffield City Centre, Sheffield, S1 2JA",
-				StartAt:          "2026-05-11T18:30:00Z",
-				EndAt:            "2026-05-11T22:00:00Z",
-				Status:           "Listed",
-				Description:      "Can only match the existing venue by its newly backfilled address.",
-			},
-		},
-	}
-	result, err := st.StageReviewGroup(ctx, input)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	if !result.Created {
-		t.Fatal("created = false, want true")
-	}
-
-	venue, ok := st.VenueBySlug("memorial-hall")
-	if !ok {
-		t.Fatal("provisional venue not found")
-	}
-	if venue.Address != "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA" {
-		t.Fatalf("venue address = %q, want %q", venue.Address, "Barkers Pool,\nSheffield City Centre,\nSheffield,\nS1 2JA")
-	}
-	if _, ok := st.VenueBySlug("barkers-pool"); ok {
-		t.Fatal("address-only candidate created duplicate provisional venue")
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
-		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenVenueEvidenceIsAmbiguous(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeVenueCount := mustCount(t, db, "venues")
-	beforeEventCount := mustCount(t, db, "events")
-
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Ambiguous unknown venue",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:fixture.ics",
-		Candidates: []review.CandidateInput{{
-			ExternalID:       "ambiguous-venue-1",
-			Name:             "Ambiguous venue show",
-			VenueSlug:        "imagniary-hal-temp",
-			VenueText:        "Sidney & Matilda",
-			VenueLocationRaw: "The Leadmill, 6 Leadmill Road, Sheffield City Centre, Sheffield S1 4SE",
-			StartAt:          "2026-05-10T18:30:00Z",
-			EndAt:            "2026-05-10T22:00:00Z",
-			Status:           "Listed",
-			Description:      "Ambiguous venue evidence",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if promoted {
-		t.Fatal("promoted = true, want false")
-	}
-	if eventSlug != "" {
-		t.Fatalf("event slug = %q, want empty", eventSlug)
-	}
-	if got := mustCount(t, db, "venues"); got != beforeVenueCount {
-		t.Fatalf("venues rows = %d, want unchanged %d", got, beforeVenueCount)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-	if _, ok := st.VenueBySlug("imaginary-hall"); ok {
-		t.Fatal("unexpected provisional venue created for ambiguous evidence")
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingAllowsUnknownEndWhenCanonicalFieldsOtherwiseComplete(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Incomplete singleton",
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:fixture.ics",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "singleton-missing-end",
-			Name:        "Incomplete singleton",
-			VenueSlug:   "sidney-and-matilda",
-			StartAt:     "2026-05-10T18:30:00Z",
-			Status:      "Listed",
-			Description: "Missing end time",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if eventSlug == "" {
-		t.Fatal("event slug = empty, want published slug")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	if !event.End.IsZero() {
-		t.Fatalf("end = %v, want zero time for unknown end", event.End)
-	}
-	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
-		t.Fatalf("publication state = %q, want %q", got, want)
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingAllowsOwnedVenueBlankEndTime(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Cafe No. 9 singleton",
-		SourceName: "Cafe No. 9 manual ingest",
-		SourceURL:  "https://www.wegottickets.com/Cafe9",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "cafe-no-9-1",
-			Name:        "Cafe No. 9 Late Show",
-			VenueSlug:   "cafe-no-9",
-			StartAt:     "2026-05-10T18:30:00Z",
-			Status:      "Listed",
-			Description: "Missing end time from source page",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if eventSlug == "" {
-		t.Fatal("event slug = empty, want published slug")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	wantStart := time.Date(2026, time.May, 10, 18, 30, 0, 0, time.UTC)
-	if !event.Start.Equal(wantStart) {
-		t.Fatalf("start = %s, want %s", event.Start.Format(time.RFC3339), wantStart.Format(time.RFC3339))
-	}
-	if !event.End.IsZero() {
-		t.Fatalf("end = %v, want zero time for unknown end", event.End)
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingPublishesNonAuthoritativeSingletonWhenSlugAbsent(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path, testSupportingSourceMetadata{})
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Fixture supporting singleton",
-		SourceName: testSupportingSourceName,
-		SourceURL:  testSupportingSourceURL,
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "supporting-1",
-			Name:        "Roots Night",
-			VenueSlug:   "leadmill",
-			StartAt:     "2026-05-16T19:30:00Z",
-			EndAt:       "2026-05-16T22:00:00Z",
-			Status:      "Listed",
-			Description: "Initial supporting listing",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if eventSlug == "" {
-		t.Fatal("event slug = empty, want published slug")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 0 {
-		t.Fatalf("event_source_links rows = %d, want 0", got)
-	}
-	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
-		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
-	}
-
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	if got, want := event.VenueSlug, "leadmill"; got != want {
-		t.Fatalf("venue slug = %q, want %q", got, want)
-	}
-	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
-		t.Fatalf("publication state = %q, want %q", got, want)
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingIgnoresInferredGenreSummaryConflict(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path, testSupportingSourceMetadata{})
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	sourceID := mustEnsureReviewTestSource(t, db)
-	var venueID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM venues
-		WHERE slug = ?
-	`, "leadmill").Scan(&venueID); err != nil {
-		t.Fatalf("lookup leadmill venue: %v", err)
-	}
-	if _, err := db.Exec(`
-		INSERT INTO events (
-			slug,
-			venue_id,
-			source_id,
-			name,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-		last_checked_at,
-		origin
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, "live-roots-night-leadmill-20260516193000", venueID, sourceID, "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z", "Jazz, Funk", "Listed", "Jazz and funk from the existing listing.", "2026-05-15T10:00:00Z", string(domain.OriginLive)); err != nil {
-		t.Fatalf("insert existing event: %v", err)
-	}
-	beforeEventCount := mustCount(t, db, "events")
-
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Fixture supporting singleton",
-		SourceName: testSupportingSourceName,
-		SourceURL:  testSupportingSourceURL,
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "supporting-genre-1",
-			Name:        "Roots Night",
-			VenueSlug:   "leadmill",
-			StartAt:     "2026-05-16T19:30:00Z",
-			EndAt:       "2026-05-16T22:00:00Z",
-			Genre:       "Jazz",
-			Status:      "Listed",
-			Description: "Jazz and funk from the existing listing.",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if got, want := eventSlug, "live-roots-night-leadmill-20260516193000"; got != want {
-		t.Fatalf("event slug = %q, want %q", got, want)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingFallsBackWhenNonAuthoritativeSlugExists(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path, testSupportingSourceMetadata{})
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-
-	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Fixture supporting singleton",
-		SourceName: testSupportingSourceName,
-		SourceURL:  testSupportingSourceURL,
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "supporting-existing-1",
-			Name:        "Roots Night",
-			VenueSlug:   "leadmill",
-			StartAt:     "2026-05-16T19:30:00Z",
-			EndAt:       "2026-05-16T22:00:00Z",
-			Status:      "Listed",
-			Description: "First description",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("first promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("first promoted = false, want true")
-	}
-	beforeEventCount := mustCount(t, db, "events")
-
-	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Fixture supporting singleton updated",
-		SourceName: testSupportingSourceName,
-		SourceURL:  testSupportingSourceURL,
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "supporting-existing-2",
-			Name:        "Roots Night",
-			VenueSlug:   "leadmill",
-			StartAt:     "2026-05-16T19:30:00Z",
-			EndAt:       "2026-05-16T22:00:00Z",
-			Status:      "Sold out",
-			Description: "Updated description",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("second promote singleton review group: %v", err)
-	}
-	if promoted {
-		t.Fatal("second promoted = true, want false")
-	}
-	if secondSlug != "" {
-		t.Fatalf("second slug = %q, want empty", secondSlug)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 0 {
-		t.Fatalf("event_source_links rows = %d, want 0", got)
-	}
-
-	event, ok := st.EventBySlug(firstSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", firstSlug)
-	}
-	if event.Status != "Listed" {
-		t.Fatalf("status = %q, want preserved %q", event.Status, "Listed")
-	}
-	if event.Description != "First description" {
-		t.Fatalf("description = %q, want preserved %q", event.Description, "First description")
-	}
-	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
-		t.Fatalf("publication state = %q, want %q", got, want)
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingPublishesJazzAtTheLescarSingletonAuthoritatively(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Jazz at The Lescar singleton",
-		SourceName: "Jazz at The Lescar manual ingest",
-		SourceURL:  "http://www.jazzatthelescar.com/index.html",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "jazz-lescar-1",
-			Name:        "Jazz at The Lescar Quartet",
-			VenueSlug:   "lescar",
-			StartAt:     "2026-05-14T19:30:00Z",
-			Status:      "Listed",
-			Description: "Missing published end time",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if eventSlug == "" {
-		t.Fatal("event slug = empty, want published slug")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 1 {
-		t.Fatalf("event_source_links rows = %d, want 1", got)
-	}
-
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	if !event.End.IsZero() {
-		t.Fatalf("end = %v, want zero time for unknown end", event.End)
-	}
-	if got, want := event.PublicationState, domain.PublicationStateReviewed; got != want {
-		t.Fatalf("publication state = %q, want %q", got, want)
-	}
-
-	var storedEnd sql.NullString
-	if err := db.QueryRow(`SELECT end_at FROM events WHERE slug = ?`, eventSlug).Scan(&storedEnd); err != nil {
-		t.Fatalf("load stored end_at: %v", err)
-	}
-	if storedEnd.Valid {
-		t.Fatalf("stored end_at = %q, want NULL", storedEnd.String)
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingCreatesNoNewStagedGroupForNonAuthoritativeSingleton(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path, testSupportingSourceMetadata{})
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-	beforeReviewGroupCount := mustCount(t, db, "review_groups")
-
-	groupInput := mustSupportingSingletonReviewGroupInput(99, "supporting-direct-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
-	if groupInput.StagingKey == "" {
-		t.Fatal("staging key = empty, want populated")
-	}
+type testSupportingSourceMetadata struct{}
 
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, groupInput)
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if eventSlug == "" {
-		t.Fatal("event slug = empty, want published slug")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "review_groups"); got != beforeReviewGroupCount {
-		t.Fatalf("review_groups rows = %d, want unchanged %d", got, beforeReviewGroupCount)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 0 {
-		t.Fatalf("event_source_links rows = %d, want 0", got)
-	}
+func (testSupportingSourceMetadata) OwnedVenueSlugForSource(string) string {
+	return ""
 }
-
-func TestPromoteSingletonReviewGroupIfMissingResolvesMatchingStaleNonAuthoritativeSingletonGroup(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
-	st, err := Open(path, testSupportingSourceMetadata{})
-	if err != nil {
-		t.Fatalf("open store: %v", err)
+func (testSupportingSourceMetadata) ReviewStageSourceNameForSource(source string) string {
+	if source == "fixture-supporting" {
+		return testSupportingSourceName
 	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	mustInsertImportRunFixture(t, st, 98)
-	mustInsertImportRunFixture(t, st, 99)
-
-	staleInput := mustSupportingSingletonReviewGroupInput(98, "supporting-stale-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
-	currentInput := mustSupportingSingletonReviewGroupInput(99, "supporting-stale-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
-	if staleInput.StagingKey != currentInput.StagingKey {
-		t.Fatalf("staging key mismatch: stale %q current %q", staleInput.StagingKey, currentInput.StagingKey)
-	}
-
-	stageResult, err := st.StageReviewGroup(ctx, staleInput)
-	if err != nil {
-		t.Fatalf("stage stale review group: %v", err)
-	}
-	groupID := stageResult.ID
-	if !stageResult.Created {
-		t.Fatal("created = false, want true")
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, currentInput)
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if eventSlug == "" {
-		t.Fatal("event slug = empty, want published slug")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "review_groups"); got != 1 {
-		t.Fatalf("review_groups rows = %d, want 1", got)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 0 {
-		t.Fatalf("event_source_links rows = %d, want 0", got)
-	}
-
-	staleGroup, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load stale review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("stale review group not found after promotion")
-	}
-	if staleGroup.Status != review.StatusResolved {
-		t.Fatalf("stale group status = %q, want %q", staleGroup.Status, review.StatusResolved)
-	}
+	return ""
 }
-
-func TestPromoteSingletonReviewGroupIfMissingLinksMatchingStaleNonAuthoritativeSingletonGroupToCurrentImportRun(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path, testSupportingSourceMetadata{})
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	mustInsertImportRunFixture(t, st, 98)
-	mustInsertImportRunFixture(t, st, 99)
-
-	staleInput := mustSupportingSingletonReviewGroupInput(98, "supporting-link-1", "Roots Night", "2026-05-18T19:30:00Z", "2026-05-18T22:00:00Z")
-	currentInput := mustSupportingSingletonReviewGroupInput(99, "supporting-link-1", "Roots Night", "2026-05-18T19:30:00Z", "2026-05-18T22:00:00Z")
-
-	stageResult, err := st.StageReviewGroup(ctx, staleInput)
-	if err != nil {
-		t.Fatalf("stage stale review group: %v", err)
-	}
-	groupID := stageResult.ID
-	if !stageResult.Created {
-		t.Fatal("created = false, want true")
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-
-	var beforeLinkCount int
-	if err := db.QueryRow(`
-		SELECT COUNT(*)
-		FROM import_run_review_groups
-		WHERE import_run_id = ? AND review_group_id = ?
-	`, 99, groupID).Scan(&beforeLinkCount); err != nil {
-		t.Fatalf("count import-run links before promotion: %v", err)
-	}
-	if beforeLinkCount != 0 {
-		t.Fatalf("pre-promotion import-run link count = %d, want 0", beforeLinkCount)
-	}
-
-	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, currentInput); err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	} else if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
 
-	var afterLinkCount int
-	if err := db.QueryRow(`
-		SELECT COUNT(*)
-		FROM import_run_review_groups
-		WHERE import_run_id = ? AND review_group_id = ?
-	`, 99, groupID).Scan(&afterLinkCount); err != nil {
-		t.Fatalf("count import-run links after promotion: %v", err)
-	}
-	if afterLinkCount != 1 {
-		t.Fatalf("post-promotion import-run link count = %d, want 1", afterLinkCount)
-	}
+func (testSupportingSourceMetadata) OwnedVenueSlugForReviewStageSourceName(string) string {
+	return ""
 }
-
-func TestPromoteSingletonReviewGroupIfMissingResolvesMatchingStaleStagedGroup(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	report := ingest.Report{
-		Source:      ingest.CafeNo9Source,
-		SourceURL:   "https://www.wegottickets.com/Cafe9",
-		ImportRunID: 99,
-		Status:      "succeeded",
-		Calendars: []ingest.CalendarReport{{
-			URL: "https://www.wegottickets.com/Cafe9",
-			Candidates: []ingest.EventCandidate{{
-				UID:      "cafe-no-9-stale-1",
-				Summary:  "Cafe No. 9 Late Show",
-				Location: "Cafe No. 9",
-				StartAt:  "2026-05-10T18:30:00Z",
-			}},
-		}},
-	}
-	groups := ingest.ReviewGroupsFromReport(report)
-	if got, want := len(groups), 1; got != want {
-		t.Fatalf("review groups = %d, want %d", got, want)
-	}
-	groupInput := groups[0]
-	if groupInput.StagingKey == "" {
-		t.Fatal("staging key = empty, want populated")
-	}
-	if groupInput.AuthoritativeSourceEventKey == "" {
-		t.Fatal("authoritative source event key = empty, want populated")
-	}
-
-	stageResult, err := st.StageReviewGroup(ctx, groupInput)
-	if err != nil {
-		t.Fatalf("stage review group: %v", err)
-	}
-	groupID := stageResult.ID
-	if !stageResult.Created {
-		t.Fatal("created = false, want true")
-	}
-
-	staleGroup, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load stale review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("stale review group not found")
-	}
-	if staleGroup.Status != review.StatusOpen {
-		t.Fatalf("stale group status = %q, want %q", staleGroup.Status, review.StatusOpen)
-	}
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, groupInput)
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if eventSlug == "" {
-		t.Fatal("event slug = empty, want published slug")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 1 {
-		t.Fatalf("event_source_links rows = %d, want 1", got)
-	}
 
-	staleGroup, ok, err = st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload stale review group: %v", err)
+func (testSupportingSourceMetadata) NonAuthoritativeSingletonVenueSlugForSource(source string) string {
+	if source == "fixture-supporting" {
+		return "leadmill"
 	}
-	if !ok {
-		t.Fatal("stale review group not found after promotion")
-	}
-	if staleGroup.Status != review.StatusResolved {
-		t.Fatalf("stale group status = %q, want %q", staleGroup.Status, review.StatusResolved)
-	}
+	return ""
 }
-
-func TestPromoteSingletonReviewGroupIfMissingLeavesDifferentNonAuthoritativeStagingKeyOpen(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path, testSupportingSourceMetadata{})
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	mustInsertImportRunFixture(t, st, 98)
-	mustInsertImportRunFixture(t, st, 99)
-
-	matchingStaleInput := mustSupportingSingletonReviewGroupInput(98, "supporting-match-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
-	matchingCurrentInput := mustSupportingSingletonReviewGroupInput(99, "supporting-match-1", "Roots Night", "2026-05-16T19:30:00Z", "2026-05-16T22:00:00Z")
-	otherInput := mustSupportingSingletonReviewGroupInput(98, "supporting-other-1", "Early Show", "2026-05-17T18:30:00Z", "2026-05-17T21:30:00Z")
-
-	if matchingStaleInput.StagingKey == otherInput.StagingKey {
-		t.Fatalf("staging key collision: matching and other both %q", otherInput.StagingKey)
-	}
-
-	matchingResult, err := st.StageReviewGroup(ctx, matchingStaleInput)
-	if err != nil {
-		t.Fatalf("stage matching review group: %v", err)
-	}
-	if !matchingResult.Created {
-		t.Fatal("matching created = false, want true")
-	}
-	otherResult, err := st.StageReviewGroup(ctx, otherInput)
-	if err != nil {
-		t.Fatalf("stage other review group: %v", err)
-	}
-	otherGroupID := otherResult.ID
-	if !otherResult.Created {
-		t.Fatal("other created = false, want true")
-	}
-
-	if _, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, matchingCurrentInput); err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	} else if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
 
-	otherGroup, ok, err := st.LoadReviewGroup(ctx, otherGroupID)
-	if err != nil {
-		t.Fatalf("load other review group: %v", err)
+func (testSupportingSourceMetadata) NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName string) string {
+	if sourceName == testSupportingSourceName {
+		return "leadmill"
 	}
-	if !ok {
-		t.Fatal("other review group not found")
-	}
-	if otherGroup.Status != review.StatusOpen {
-		t.Fatalf("other group status = %q, want %q", otherGroup.Status, review.StatusOpen)
-	}
+	return ""
 }
-
-func TestPromoteSingletonReviewGroupIfMissingFallsBackWithoutStableSourceKey(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	eventSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "No stable key",
-		SourceName: "Yellow Arch manual ingest",
-		SourceURL:  "https://www.yellowarch.com/events/",
-		Candidates: []review.CandidateInput{{
-			Name:        "No stable key",
-			VenueSlug:   "yellow-arch",
-			StartAt:     "2026-05-10T18:30:00Z",
-			EndAt:       "2026-05-10T22:00:00Z",
-			Status:      "Listed",
-			Description: "Missing external ID",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if eventSlug == "" {
-		t.Fatal("event slug = empty, want published slug")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 0 {
-		t.Fatalf("event_source_links rows = %d, want 0", got)
-	}
 
-	event, ok := st.EventBySlug(eventSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", eventSlug)
-	}
-	if got, want := event.PublicationState, domain.PublicationStateProvisional; got != want {
-		t.Fatalf("publication state = %q, want %q", got, want)
-	}
+func (testSupportingSourceMetadata) GuardedNearMatchDisabledForSource(string) bool {
+	return false
 }
 
-func TestAuthoritativeOwnedVenueSlugForSourceNameIncludesCafeNo9(t *testing.T) {
-	if got, want := ingest.OwnedVenueSlugForReviewStageSourceName("Cafe No. 9 manual ingest"), "cafe-no-9"; got != want {
-		t.Fatalf("owned venue slug = %q, want %q", got, want)
-	}
+func (testSupportingSourceMetadata) GuardedNearMatchWindowForSource(string) time.Duration {
+	return 0
 }
-
-func TestPromoteSingletonReviewGroupIfMissingUpdatesLinkedEventInPlace(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "First apply",
-		SourceName: "Yellow Arch manual ingest",
-		SourceURL:  "https://www.yellowarch.com/events/",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "yellow-arch-1",
-			Name:        "Late Junction",
-			VenueSlug:   "yellow-arch",
-			StartAt:     "2026-05-10T18:30:00Z",
-			EndAt:       "2026-05-10T22:00:00Z",
-			Genre:       "Electronic",
-			Status:      "Listed",
-			Description: "First description",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("first promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("first promoted = false, want true")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 1 {
-		t.Fatalf("event_source_links rows = %d, want 1", got)
-	}
 
-	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Second apply",
-		SourceName: "Yellow Arch manual ingest",
-		SourceURL:  "https://www.yellowarch.com/events/",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "yellow-arch-1",
-			Name:        "Late Junction Renamed",
-			VenueSlug:   "yellow-arch",
-			StartAt:     "2026-05-10T19:00:00Z",
-			EndAt:       "2026-05-10T23:00:00Z",
-			Genre:       "Ambient",
-			Status:      "Sold out",
-			Description: "Updated description",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("second promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("second promoted = false, want true")
-	}
-	if secondSlug != firstSlug {
-		t.Fatalf("second slug = %q, want %q", secondSlug, firstSlug)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 1 {
-		t.Fatalf("event_source_links rows = %d, want 1", got)
-	}
-
-	event, ok := st.EventBySlug(firstSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", firstSlug)
-	}
-	if event.Name != "Late Junction Renamed" {
-		t.Fatalf("name = %q, want %q", event.Name, "Late Junction Renamed")
-	}
-	if !event.Start.Equal(time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)) {
-		t.Fatalf("start = %s, want updated start", event.Start.Format(time.RFC3339))
-	}
-	if !event.End.Equal(time.Date(2026, time.May, 10, 23, 0, 0, 0, time.UTC)) {
-		t.Fatalf("end = %s, want updated end", event.End.Format(time.RFC3339))
-	}
-	if event.Status != "Sold out" {
-		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
-	}
-	if event.Genre != "" {
-		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
-	}
-	if event.Description != "Updated description" {
-		t.Fatalf("description = %q, want %q", event.Description, "Updated description")
-	}
-	if got := mustCount(t, db, "event_secondary_source_info"); got != 0 {
-		t.Fatalf("event_secondary_source_info rows = %d, want 0", got)
-	}
+func (testSupportingSourceMetadata) GuardedNearMatchDisabledForReviewStageSourceName(string) bool {
+	return false
 }
-
-func TestPromoteSingletonReviewGroupIfMissingLinksOwnedICSByAuthoritativeFeed(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	const (
-		feedURL       = "https://leadmill.co.uk/listings/?ical=1"
-		firstDetail   = "https://leadmill.co.uk/event/feed-detail/"
-		secondDetail  = "https://leadmill.co.uk/event/feed-detail-renamed/"
-		sourceName    = "The Leadmill manual ingest"
-		sourceEventID = "leadmill-feed-1"
-	)
-
-	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:                       "First feed apply",
-		SourceName:                  sourceName,
-		SourceURL:                   "https://leadmill.co.uk/live/",
-		AuthoritativeSourceName:     sourceName,
-		AuthoritativeSourceURL:      feedURL,
-		AuthoritativeSourceEventKey: sourceEventID,
-		Candidates: []review.CandidateInput{{
-			ExternalID:  sourceEventID,
-			Name:        "Feed Detail",
-			VenueSlug:   "leadmill",
-			StartAt:     "2026-05-10T18:30:00Z",
-			EndAt:       "2026-05-10T22:00:00Z",
-			Genre:       "Indie",
-			Status:      "Listed",
-			Description: "First description",
-			SourceName:  sourceName,
-			SourceURL:   firstDetail,
-			CalendarURL: feedURL,
-		}},
-	})
-	if err != nil {
-		t.Fatalf("first promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("first promoted = false, want true")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 1 {
-		t.Fatalf("event_source_links rows = %d, want 1", got)
-	}
-
-	event, ok := st.EventBySlug(firstSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", firstSlug)
-	}
-	if got, want := event.SourceURL, feedURL; got != want {
-		t.Fatalf("source url = %q, want %q", got, want)
-	}
-	if got, want := event.OfficialListingURL, firstDetail; got != want {
-		t.Fatalf("official listing url = %q, want %q", got, want)
-	}
-	if got, want := event.CalendarURL, feedURL; got != want {
-		t.Fatalf("calendar url = %q, want %q", got, want)
-	}
-
-	var linkedSourceName string
-	var linkedSourceURL string
-	var linkedSourceEventKey string
-	if err := db.QueryRow(`
-		SELECT s.name, s.url, l.source_event_key
-		FROM event_source_links l
-		JOIN sources s ON s.id = l.source_id
-		LIMIT 1
-	`).Scan(&linkedSourceName, &linkedSourceURL, &linkedSourceEventKey); err != nil {
-		t.Fatalf("scan event source link: %v", err)
-	}
-	if linkedSourceName != sourceName {
-		t.Fatalf("linked source name = %q, want %q", linkedSourceName, sourceName)
-	}
-	if linkedSourceURL != feedURL {
-		t.Fatalf("linked source url = %q, want %q", linkedSourceURL, feedURL)
-	}
-	if linkedSourceEventKey != sourceEventID {
-		t.Fatalf("linked source event key = %q, want %q", linkedSourceEventKey, sourceEventID)
-	}
-
-	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:                       "Second feed apply",
-		SourceName:                  sourceName,
-		SourceURL:                   "https://leadmill.co.uk/live/",
-		AuthoritativeSourceName:     sourceName,
-		AuthoritativeSourceURL:      feedURL,
-		AuthoritativeSourceEventKey: sourceEventID,
-		Candidates: []review.CandidateInput{{
-			ExternalID:  sourceEventID,
-			Name:        "Feed Detail Renamed",
-			VenueSlug:   "leadmill",
-			StartAt:     "2026-05-10T19:00:00Z",
-			EndAt:       "2026-05-10T23:00:00Z",
-			Genre:       "Indie",
-			Status:      "Sold out",
-			Description: "Updated description",
-			SourceName:  sourceName,
-			SourceURL:   secondDetail,
-			CalendarURL: feedURL,
-		}},
-	})
-	if err != nil {
-		t.Fatalf("second promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("second promoted = false, want true")
-	}
-	if secondSlug != firstSlug {
-		t.Fatalf("second slug = %q, want %q", secondSlug, firstSlug)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount+1)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 1 {
-		t.Fatalf("event_source_links rows = %d, want 1", got)
-	}
 
-	event, ok = st.EventBySlug(firstSlug)
-	if !ok {
-		t.Fatalf("missing updated event %q", firstSlug)
-	}
-	if got, want := event.Name, "Feed Detail Renamed"; got != want {
-		t.Fatalf("name = %q, want %q", got, want)
-	}
-	if !event.Start.Equal(time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)) {
-		t.Fatalf("start = %s, want updated start", event.Start.Format(time.RFC3339))
-	}
-	if got, want := event.SourceURL, feedURL; got != want {
-		t.Fatalf("source url = %q, want %q", got, want)
-	}
-	if got, want := event.OfficialListingURL, secondDetail; got != want {
-		t.Fatalf("official listing url = %q, want %q", got, want)
-	}
-	if got, want := event.CalendarURL, feedURL; got != want {
-		t.Fatalf("calendar url = %q, want %q", got, want)
-	}
+func (testSupportingSourceMetadata) GuardedNearMatchWindowForReviewStageSourceName(string) time.Duration {
+	return 0
 }
-
-func TestPromoteSingletonReviewGroupIfMissingPreservesCleanDescriptionWhenAuthoritativeUpdateHasWeakCTA(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-	beforeEventCount := mustCount(t, db, "events")
-
-	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "First apply",
-		SourceName: "Yellow Arch manual ingest",
-		SourceURL:  "https://www.yellowarch.com/events/",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "yellow-arch-cta",
-			Name:        "Late Junction",
-			VenueSlug:   "yellow-arch",
-			StartAt:     "2026-05-10T18:30:00Z",
-			EndAt:       "2026-05-10T22:00:00Z",
-			Genre:       "Electronic",
-			Status:      "Listed",
-			Description: "Existing clean description.",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("first promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("first promoted = false, want true")
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEventCount+1)
-	}
-
-	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Second apply",
-		SourceName: "Yellow Arch manual ingest",
-		SourceURL:  "https://www.yellowarch.com/events/",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "yellow-arch-cta",
-			Name:        "Late Junction Renamed",
-			VenueSlug:   "yellow-arch",
-			StartAt:     "2026-05-10T19:00:00Z",
-			EndAt:       "2026-05-10T23:00:00Z",
-			Genre:       "Ambient",
-			Status:      "Sold out",
-			Description: "Read more",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("second promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("second promoted = false, want true")
-	}
-	if secondSlug != firstSlug {
-		t.Fatalf("second slug = %q, want %q", secondSlug, firstSlug)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount+1 {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount+1)
-	}
 
-	event, ok := st.EventBySlug(firstSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", firstSlug)
-	}
-	if event.Name != "Late Junction Renamed" {
-		t.Fatalf("name = %q, want %q", event.Name, "Late Junction Renamed")
-	}
-	if !event.Start.Equal(time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)) {
-		t.Fatalf("start = %s, want updated start", event.Start.Format(time.RFC3339))
-	}
-	if !event.End.Equal(time.Date(2026, time.May, 10, 23, 0, 0, 0, time.UTC)) {
-		t.Fatalf("end = %s, want updated end", event.End.Format(time.RFC3339))
-	}
-	if event.Status != "Sold out" {
-		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
-	}
-	if event.Genre != "" {
-		t.Fatalf("genre = %q, want blank inferred genre", event.Genre)
-	}
-	if event.Description != "Existing clean description." {
-		t.Fatalf("description = %q, want %q", event.Description, "Existing clean description.")
+func (testSupportingSourceMetadata) ListingsURLForSourceName(sourceName string) string {
+	if sourceName == testSupportingSourceName {
+		return testSupportingSourceURL
 	}
+	return ""
 }
 
 func TestShouldReplaceDescriptionPolicy(t *testing.T) {
@@ -5795,8 +381,70 @@ func TestRepairEventTitlesFromReportDryRunDoesNotMutateAuthoritativeEvent(t *tes
 	if got, want := repair.Changes[0].Result, "would_repair"; got != want {
 		t.Fatalf("result = %q, want %q", got, want)
 	}
+	if got := mustCount(t, db, "event_review_clusters"); got != 0 {
+		t.Fatalf("event review clusters = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 0 {
+		t.Fatalf("repair runs = %d, want 0", got)
+	}
 	if _, ok := st.EventBySlug(cleanSlug); ok {
 		t.Fatalf("clean slug %q exists after dry run", cleanSlug)
+	}
+	event, ok := st.EventBySlug(dirtySlug)
+	if !ok {
+		t.Fatalf("missing dirty slug %q", dirtySlug)
+	}
+	if event.Name != dirty {
+		t.Fatalf("name = %q, want %q", event.Name, dirty)
+	}
+}
+
+func TestRepairEventTitlesFromReportDryRunDoesNotStageSupportingReview(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path, testSupportingSourceMetadata{})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAt = "2026-05-10T18:30:00Z"
+		dirty   = "Late Junction at The Leadmill"
+	)
+	sourceID := mustEnsureSourceID(t, st, testSupportingSourceName, testSupportingSourceURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "leadmill", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "leadmill", dirty, startAt, "Existing description.")
+
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReport(startAt, dirty), false)
+	if err != nil {
+		t.Fatalf("repair event titles: %v", err)
+	}
+	if !repair.DryRun || repair.Applied {
+		t.Fatalf("dry/apply flags = %v/%v, want true/false", repair.DryRun, repair.Applied)
+	}
+	if got, want := repair.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event review clusters created = %d, want %d", got, want)
+	}
+	if got, want := repair.Changes[0].Result, "would_create_event_review"; got != want {
+		t.Fatalf("result = %q, want %q", got, want)
+	}
+	if repair.RepairRunID != 0 {
+		t.Fatalf("repair run id = %d, want 0", repair.RepairRunID)
+	}
+	if got := mustCount(t, db, "event_review_clusters"); got != 0 {
+		t.Fatalf("event review clusters = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 0 {
+		t.Fatalf("repair runs = %d, want 0", got)
 	}
 	event, ok := st.EventBySlug(dirtySlug)
 	if !ok {
@@ -5850,6 +498,15 @@ func TestRepairEventTitlesFromReportAppliesAuthoritativeLegacyEvent(t *testing.T
 	if got, want := repair.Changes[0].Result, "repaired"; got != want {
 		t.Fatalf("result = %q, want %q", got, want)
 	}
+	if repair.RepairRunID != 0 {
+		t.Fatalf("repair run id = %d, want 0", repair.RepairRunID)
+	}
+	if got := mustCount(t, db, "event_review_clusters"); got != 0 {
+		t.Fatalf("event review clusters = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 0 {
+		t.Fatalf("repair runs = %d, want 0", got)
+	}
 	if _, ok := st.EventBySlug(dirtySlug); ok {
 		t.Fatalf("dirty slug %q still exists", dirtySlug)
 	}
@@ -5862,6 +519,62 @@ func TestRepairEventTitlesFromReportAppliesAuthoritativeLegacyEvent(t *testing.T
 	}
 	if got := mustCount(t, db, "event_source_links"); got != 1 {
 		t.Fatalf("event source links = %d, want 1", got)
+	}
+}
+
+func TestTitleRepairMatchersIgnoreWithheldRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAt   = "2026-05-10T18:30:00Z"
+		source    = "Yellow Arch manual ingest"
+		sourceURL = "https://www.yellowarch.com/events/"
+		title     = "Late Junction"
+	)
+	sourceID := mustEnsureSourceID(t, st, source, sourceURL)
+	slug := mustLiveEventSlug(t, title, "yellow-arch", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, slug, "yellow-arch", title, startAt, "Withheld duplicate.")
+	if _, err := db.Exec(`
+		UPDATE events
+		SET publication_state = ?, withheld_reason = ?
+		WHERE slug = ?
+	`, string(domain.PublicationStateWithheld), "duplicate listing", slug); err != nil {
+		t.Fatalf("withhold title repair target: %v", err)
+	}
+
+	incomingStart, err := time.Parse(time.RFC3339, startAt)
+	if err != nil {
+		t.Fatalf("parse start time: %v", err)
+	}
+	incoming := domain.Event{
+		Name:      title,
+		VenueSlug: "yellow-arch",
+		Start:     incomingStart,
+		Origin:    domain.OriginLive,
+	}
+	if records, err := matchingLiveEventRecordsByCleanTitleTx(ctx, db, incoming); err != nil {
+		t.Fatalf("clean-title matcher: %v", err)
+	} else if len(records) != 0 {
+		t.Fatalf("clean-title matcher returned withheld event: %+v", records)
+	}
+	if records, err := matchingLiveEventRecordsByCleanTitleAndSourceTx(ctx, db, sourceID, incoming); err != nil {
+		t.Fatalf("clean-title source matcher: %v", err)
+	} else if len(records) != 0 {
+		t.Fatalf("clean-title source matcher returned withheld event: %+v", records)
 	}
 }
 
@@ -5924,23 +637,152 @@ func TestRepairEventTitlesFromReportUsesAuthoritativeSourceForLinkedICS(t *testi
 	if event.Name != clean {
 		t.Fatalf("name = %q, want %q", event.Name, clean)
 	}
+	if got := mustCount(t, db, "event_source_links"); got != 3 {
+		t.Fatalf("event source links = %d, want 3", got)
+	}
 
-	var linkedSourceURL string
-	var linkedSourceEventKey string
-	if err := db.QueryRow(`
+	rows, err := db.Query(`
 		SELECT s.url, l.source_event_key
 		FROM events e
 		JOIN event_source_links l ON l.event_id = e.id
 		JOIN sources s ON s.id = l.source_id
 		WHERE e.slug = ?
-	`, cleanSlug).Scan(&linkedSourceURL, &linkedSourceEventKey); err != nil {
-		t.Fatalf("load repaired event source link: %v", err)
+	`, cleanSlug)
+	if err != nil {
+		t.Fatalf("load repaired event source links: %v", err)
 	}
-	if linkedSourceURL != feedURL {
-		t.Fatalf("linked source URL = %q, want %q", linkedSourceURL, feedURL)
+	defer rows.Close()
+
+	linkedKeys := make(map[string]bool)
+	for rows.Next() {
+		var linkedSourceURL string
+		var linkedSourceEventKey string
+		if err := rows.Scan(&linkedSourceURL, &linkedSourceEventKey); err != nil {
+			t.Fatalf("scan repaired event source link: %v", err)
+		}
+		if linkedSourceURL != feedURL {
+			t.Fatalf("linked source URL = %q, want %q", linkedSourceURL, feedURL)
+		}
+		linkedKeys[linkedSourceEventKey] = true
 	}
-	if linkedSourceEventKey != uid {
-		t.Fatalf("linked source event key = %q, want %q", linkedSourceEventKey, uid)
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate repaired event source links: %v", err)
+	}
+	canonicalKey, ok := ingest.SourceIdentityKey(uid)
+	if !ok {
+		t.Fatalf("canonical source identity key for %q not available", uid)
+	}
+	detailKey, ok := ingest.SourceIdentityKey(detailURL)
+	if !ok {
+		t.Fatalf("canonical source identity key for %q not available", detailURL)
+	}
+	for _, want := range []string{uid, canonicalKey, detailKey} {
+		if !linkedKeys[want] {
+			t.Fatalf("missing linked source event key %q in %#v", want, linkedKeys)
+		}
+	}
+}
+
+func TestRepairEventTitlesFromReportSkipsWhenAuthoritativeSourceLinkIsAmbiguous(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAt   = "2026-05-10T18:30:00Z"
+		source    = "The Leadmill manual ingest"
+		feedURL   = "https://leadmill.co.uk/listings/?ical=1"
+		detailURL = "https://leadmill.co.uk/event/feed-detail/"
+		uid       = "leadmill-feed-1"
+		dirty     = "Feed Detail - The Leadmill"
+	)
+	sourceID := mustEnsureSourceID(t, st, source, feedURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "leadmill", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "leadmill", dirty, startAt, "Existing description.")
+	var dirtyID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, dirtySlug).Scan(&dirtyID); err != nil {
+		t.Fatalf("lookup dirty event id: %v", err)
+	}
+	otherSlug := mustLiveEventSlug(t, "Linked Other Event", "leadmill", "2026-05-10T19:30:00Z")
+	mustInsertRepairLegacyEvent(t, db, sourceID, otherSlug, "leadmill", "Linked Other Event", "2026-05-10T19:30:00Z", "Other description.")
+	var otherID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, otherSlug).Scan(&otherID); err != nil {
+		t.Fatalf("lookup other event id: %v", err)
+	}
+
+	uidKey, ok := ingest.SourceIdentityKey(uid)
+	if !ok {
+		t.Fatalf("normalize uid %q", uid)
+	}
+	urlKey, ok := ingest.SourceIdentityKey(detailURL)
+	if !ok {
+		t.Fatalf("normalize detail url %q", detailURL)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, dirtyID, sourceID, uidKey, "2026-05-09T10:00:00Z", "2026-05-09T10:00:00Z"); err != nil {
+		t.Fatalf("insert uid source link: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, otherID, sourceID, urlKey, "2026-05-09T10:00:00Z", "2026-05-09T10:00:00Z"); err != nil {
+		t.Fatalf("insert url source link: %v", err)
+	}
+
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustReviewCatalog(t), leadmillTitleRepairReport(startAt, uid, dirty, detailURL), true)
+	if err != nil {
+		t.Fatalf("repair event titles: %v", err)
+	}
+	if got, want := repair.Skipped, 1; got != want {
+		t.Fatalf("skipped = %d, want %d", got, want)
+	}
+	if got, want := repair.Changes[0].Reason, "ambiguous authoritative match"; got != want {
+		t.Fatalf("reason = %q, want %q", got, want)
+	}
+	if event, ok := st.EventBySlug(dirtySlug); !ok {
+		t.Fatalf("missing dirty slug %q", dirtySlug)
+	} else if event.Name != dirty {
+		t.Fatalf("dirty event name = %q, want %q", event.Name, dirty)
+	}
+	var dirtyLinkEventID int64
+	if err := db.QueryRow(`SELECT event_id FROM event_source_links WHERE source_id = ? AND source_event_key = ?`, sourceID, uidKey).Scan(&dirtyLinkEventID); err != nil {
+		t.Fatalf("lookup uid source link: %v", err)
+	}
+	if got, want := dirtyLinkEventID, dirtyID; got != want {
+		t.Fatalf("uid source link event_id = %d, want %d", got, want)
+	}
+	var otherLinkEventID int64
+	if err := db.QueryRow(`SELECT event_id FROM event_source_links WHERE source_id = ? AND source_event_key = ?`, sourceID, urlKey).Scan(&otherLinkEventID); err != nil {
+		t.Fatalf("lookup url source link: %v", err)
+	}
+	if got, want := otherLinkEventID, otherID; got != want {
+		t.Fatalf("url source link event_id = %d, want %d", got, want)
 	}
 }
 
@@ -5973,17 +815,67 @@ func TestRepairEventTitlesFromReportStagesSupportingReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repair event titles: %v", err)
 	}
-	if got, want := repair.ReviewGroupsCreated, 1; got != want {
-		t.Fatalf("review groups created = %d, want %d", got, want)
+	if got, want := repair.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event review clusters created = %d, want %d", got, want)
 	}
-	if got, want := repair.Changes[0].Result, "review_created"; got != want {
+	if got, want := repair.Changes[0].Result, "event_review_created"; got != want {
 		t.Fatalf("result = %q, want %q", got, want)
 	}
-	if got := mustCount(t, db, "review_groups"); got != 1 {
-		t.Fatalf("review groups = %d, want 1", got)
+	if repair.RepairRunID <= 0 {
+		t.Fatal("missing repair run id")
 	}
-	if got := mustCount(t, db, "review_candidates"); got != 2 {
-		t.Fatalf("review candidates = %d, want 2", got)
+	if got := mustCount(t, db, "event_review_clusters"); got != 1 {
+		t.Fatalf("event review clusters = %d, want 1", got)
+	}
+	if got := mustCount(t, db, "review_groups"); got != 0 {
+		t.Fatalf("review groups = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 1 {
+		t.Fatalf("repair runs = %d, want 1", got)
+	}
+	clusterID := repair.Changes[0].EventReviewClusterID
+	cluster, ok, err := st.LoadEventReviewCluster(ctx, clusterID)
+	if err != nil {
+		t.Fatalf("load event review cluster: %v", err)
+	}
+	if !ok {
+		t.Fatal("event review cluster not found")
+	}
+	if cluster.Summary.CanonicalEventID == nil {
+		t.Fatal("missing canonical event id")
+	}
+	if got, want := cluster.Summary.StagingKeyVersion, eventTitleRepairStagingKeyVersion; got != want {
+		t.Fatalf("staging key version = %d, want %d", got, want)
+	}
+	if cluster.Summary.StagingKey == nil || !strings.HasPrefix(*cluster.Summary.StagingKey, "title-repair:") {
+		t.Fatalf("staging key = %v, want title-repair prefix", cluster.Summary.StagingKey)
+	}
+	if got, want := cluster.Summary.ConflictType, eventTitleRepairConflictType; got != want {
+		t.Fatalf("conflict type = %q, want %q", got, want)
+	}
+	if got, want := cluster.Summary.ConflictReason, eventTitleRepairConflictReasonSupportingCleanTitle; got != want {
+		t.Fatalf("conflict reason = %q, want %q", got, want)
+	}
+	if *cluster.Summary.CanonicalEventID != repair.Changes[0].EventID {
+		t.Fatalf("canonical event id = %v, want %d", cluster.Summary.CanonicalEventID, repair.Changes[0].EventID)
+	}
+	if cluster.Summary.LatestRepairRunID == nil || *cluster.Summary.LatestRepairRunID != repair.RepairRunID {
+		t.Fatalf("latest repair run id = %v, want %d", cluster.Summary.LatestRepairRunID, repair.RepairRunID)
+	}
+	if cluster.Summary.Status != seedstore.EventReviewClusterStatusOpen {
+		t.Fatalf("cluster status = %q, want open", cluster.Summary.Status)
+	}
+	if got, want := len(cluster.Evidence), 2; got != want {
+		t.Fatalf("cluster evidence = %d, want %d", got, want)
+	}
+	if got, want := len(cluster.CanonicalChoices), 3; got != want {
+		t.Fatalf("canonical choices = %d, want %d", got, want)
+	}
+	if got, want := len(cluster.DraftChoices), 2; got != want {
+		t.Fatalf("draft choices = %d, want %d", got, want)
+	}
+	if got, want := len(cluster.LiveActions), 0; got != want {
+		t.Fatalf("live actions = %d, want %d", got, want)
 	}
 	event, ok := st.EventBySlug(dirtySlug)
 	if !ok {
@@ -5993,15 +885,103 @@ func TestRepairEventTitlesFromReportStagesSupportingReview(t *testing.T) {
 		t.Fatalf("name = %q, want unchanged %q", event.Name, dirty)
 	}
 
+	firstRepairRunID := repair.RepairRunID
 	repair, err = st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReport(startAt, dirty), true)
 	if err != nil {
 		t.Fatalf("repair event titles again: %v", err)
 	}
-	if got, want := repair.ReviewGroupsReused, 1; got != want {
-		t.Fatalf("review groups reused = %d, want %d", got, want)
+	if got, want := repair.EventReviewClustersReused, 1; got != want {
+		t.Fatalf("event review clusters reused = %d, want %d", got, want)
 	}
-	if got := mustCount(t, db, "review_groups"); got != 1 {
-		t.Fatalf("review groups after rerun = %d, want 1", got)
+	if got, want := repair.Changes[0].Result, "event_review_reused"; got != want {
+		t.Fatalf("rerun result = %q, want %q", got, want)
+	}
+	if repair.RepairRunID == 0 || repair.RepairRunID == firstRepairRunID {
+		t.Fatal("missing distinct rerun repair id")
+	}
+	if got := mustCount(t, db, "event_review_clusters"); got != 1 {
+		t.Fatalf("event review clusters after rerun = %d, want 1", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 2 {
+		t.Fatalf("repair runs after rerun = %d, want 2", got)
+	}
+}
+
+func TestRepairEventTitlesFromReportJSONUsesEventReviewClusterFields(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path, testSupportingSourceMetadata{})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAt = "2026-05-10T18:30:00Z"
+		dirty   = "Late Junction at The Leadmill"
+	)
+	sourceID := mustEnsureSourceID(t, st, testSupportingSourceName, testSupportingSourceURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "leadmill", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "leadmill", dirty, startAt, "Existing description.")
+
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReport(startAt, dirty), true)
+	if err != nil {
+		t.Fatalf("repair event titles: %v", err)
+	}
+	if repair.Changes[0].EventReviewClusterID == 0 {
+		t.Fatal("missing staged event-review cluster id")
+	}
+
+	raw, err := json.Marshal(repair)
+	if err != nil {
+		t.Fatalf("marshal title repair report: %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode title repair report: %v", err)
+	}
+	for _, key := range []string{"review_groups_created", "review_groups_reused", "review_group_id", "review_created", "review_reused"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("title repair report contains legacy key %q: %s", key, raw)
+		}
+	}
+	if got, want := string(payload["event_review_clusters_created"]), "1"; got != want {
+		t.Fatalf("event_review_clusters_created = %s, want %s", got, want)
+	}
+
+	var changes []map[string]json.RawMessage
+	if err := json.Unmarshal(payload["changes"], &changes); err != nil {
+		t.Fatalf("decode title repair changes: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("changes = %d, want 1", len(changes))
+	}
+	for _, key := range []string{"review_group_id", "review_created", "review_reused"} {
+		if _, ok := changes[0][key]; ok {
+			t.Fatalf("title repair change contains legacy key %q: %s", key, raw)
+		}
+	}
+	var clusterID int64
+	if err := json.Unmarshal(changes[0]["event_review_cluster_id"], &clusterID); err != nil {
+		t.Fatalf("decode event_review_cluster_id: %v", err)
+	}
+	if got, want := clusterID, repair.Changes[0].EventReviewClusterID; got != want {
+		t.Fatalf("event_review_cluster_id = %d, want %d", got, want)
+	}
+	var status string
+	if err := json.Unmarshal(changes[0]["event_review_cluster_status"], &status); err != nil {
+		t.Fatalf("decode event_review_cluster_status: %v", err)
+	}
+	if got, want := status, string(seedstore.EventReviewClusterStatusOpen); got != want {
+		t.Fatalf("event_review_cluster_status = %q, want %q", got, want)
 	}
 }
 
@@ -6037,43 +1017,130 @@ func TestRepairEventTitlesFromReportStagesSupportingReviewWhenCleanDuplicateExis
 	if err != nil {
 		t.Fatalf("repair event titles: %v", err)
 	}
-	if got, want := repair.ReviewGroupsCreated, 1; got != want {
-		t.Fatalf("review groups created = %d, want %d", got, want)
+	if got, want := repair.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event review clusters created = %d, want %d", got, want)
 	}
-	if got, want := repair.Changes[0].Result, "review_created"; got != want {
+	if got, want := repair.Changes[0].Result, "event_review_created"; got != want {
 		t.Fatalf("result = %q, want %q", got, want)
 	}
-	if got := mustCount(t, db, "events"); got != 2 {
-		t.Fatalf("events = %d, want dirty and clean duplicates", got)
+	if repair.RepairRunID <= 0 {
+		t.Fatal("missing repair run id")
 	}
-	if got := mustCount(t, db, "review_candidates"); got != 3 {
-		t.Fatalf("review candidates = %d, want cleaned candidate, existing clean event, and canonical snapshot", got)
+	if got := mustCount(t, db, "event_review_clusters"); got != 1 {
+		t.Fatalf("event review clusters = %d, want 1", got)
+	}
+	if got := mustCount(t, db, "review_groups"); got != 0 {
+		t.Fatalf("review groups = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 1 {
+		t.Fatalf("repair runs = %d, want 1", got)
 	}
 
-	var canonicalName string
-	if err := db.QueryRow(`
-		SELECT name
-		FROM review_candidates
-		WHERE canonical_event_id IS NOT NULL
-		LIMIT 1
-	`).Scan(&canonicalName); err != nil {
-		t.Fatalf("load canonical review candidate: %v", err)
+	cluster, ok, err := st.LoadEventReviewCluster(ctx, repair.Changes[0].EventReviewClusterID)
+	if err != nil {
+		t.Fatalf("load event review cluster: %v", err)
 	}
-	if canonicalName != dirty {
-		t.Fatalf("canonical snapshot name = %q, want dirty title %q", canonicalName, dirty)
+	if !ok {
+		t.Fatal("event review cluster not found")
 	}
-	var existingCleanCandidateCount int
-	if err := db.QueryRow(`
-		SELECT COUNT(*)
-		FROM review_candidates
-		WHERE canonical_event_id IS NULL
-		  AND provenance = ?
-		  AND name = ?
-	`, "Existing live event with cleaned title", clean).Scan(&existingCleanCandidateCount); err != nil {
-		t.Fatalf("count existing clean candidates: %v", err)
+	if cluster.Summary.CanonicalEventID == nil {
+		t.Fatal("missing canonical event id")
 	}
-	if existingCleanCandidateCount != 1 {
-		t.Fatalf("existing clean candidate count = %d, want 1", existingCleanCandidateCount)
+	if got, want := cluster.Summary.StagingKeyVersion, eventTitleRepairStagingKeyVersion; got != want {
+		t.Fatalf("staging key version = %d, want %d", got, want)
+	}
+	if cluster.Summary.StagingKey == nil || !strings.HasPrefix(*cluster.Summary.StagingKey, "title-repair:") {
+		t.Fatalf("staging key = %v, want title-repair prefix", cluster.Summary.StagingKey)
+	}
+	if got, want := cluster.Summary.ConflictType, eventTitleRepairConflictType; got != want {
+		t.Fatalf("conflict type = %q, want %q", got, want)
+	}
+	if got, want := cluster.Summary.ConflictReason, eventTitleRepairConflictReasonSupportingCleanTitle; got != want {
+		t.Fatalf("conflict reason = %q, want %q", got, want)
+	}
+	if *cluster.Summary.CanonicalEventID != repair.Changes[0].EventID {
+		t.Fatalf("canonical event id = %v, want %d", cluster.Summary.CanonicalEventID, repair.Changes[0].EventID)
+	}
+	if cluster.Summary.LatestRepairRunID == nil || *cluster.Summary.LatestRepairRunID != repair.RepairRunID {
+		t.Fatalf("latest repair run id = %v, want %d", cluster.Summary.LatestRepairRunID, repair.RepairRunID)
+	}
+	if got, want := len(cluster.Evidence), 3; got != want {
+		t.Fatalf("cluster evidence = %d, want %d", got, want)
+	}
+	if got, want := len(cluster.CanonicalChoices), 3; got != want {
+		t.Fatalf("canonical choices = %d, want %d", got, want)
+	}
+	if got, want := len(cluster.DraftChoices), 2; got != want {
+		t.Fatalf("draft choices = %d, want %d", got, want)
+	}
+
+	var duplicateEvidenceCount int
+	for _, evidence := range cluster.Evidence {
+		if evidence.EventSlug == cleanSlug {
+			duplicateEvidenceCount++
+		}
+	}
+	if duplicateEvidenceCount != 1 {
+		t.Fatalf("clean duplicate evidence count = %d, want 1", duplicateEvidenceCount)
+	}
+}
+
+func TestRepairEventTitlesFromReportSharesOneRepairRunAcrossMultipleStages(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path, testSupportingSourceMetadata{})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAtA = "2026-05-10T18:30:00Z"
+		startAtB = "2026-05-10T20:30:00Z"
+		dirtyA   = "Late Junction at The Leadmill"
+		dirtyB   = "Another Late Junction at The Leadmill"
+	)
+	sourceID := mustEnsureSourceID(t, st, testSupportingSourceName, testSupportingSourceURL)
+	dirtySlugA := mustLiveEventSlug(t, dirtyA, "leadmill", startAtA)
+	dirtySlugB := mustLiveEventSlug(t, dirtyB, "leadmill", startAtB)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlugA, "leadmill", dirtyA, startAtA, "Existing description A.")
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlugB, "leadmill", dirtyB, startAtB, "Existing description B.")
+
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReportPair(startAtA, dirtyA, startAtB, dirtyB), true)
+	if err != nil {
+		t.Fatalf("repair event titles: %v", err)
+	}
+	if repair.RepairRunID <= 0 {
+		t.Fatal("missing repair run id")
+	}
+	if got, want := repair.EventReviewClustersCreated, 2; got != want {
+		t.Fatalf("event review clusters created = %d, want %d", got, want)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 1 {
+		t.Fatalf("repair runs = %d, want 1", got)
+	}
+	if got := mustCount(t, db, "event_review_clusters"); got != 2 {
+		t.Fatalf("event review clusters = %d, want 2", got)
+	}
+	for _, change := range repair.Changes {
+		cluster, ok, err := st.LoadEventReviewCluster(ctx, change.EventReviewClusterID)
+		if err != nil {
+			t.Fatalf("load event review cluster %d: %v", change.EventReviewClusterID, err)
+		}
+		if !ok {
+			t.Fatalf("event review cluster %d not found", change.EventReviewClusterID)
+		}
+		if cluster.Summary.LatestRepairRunID == nil || *cluster.Summary.LatestRepairRunID != repair.RepairRunID {
+			t.Fatalf("cluster %d latest repair run id = %v, want %d", change.EventReviewClusterID, cluster.Summary.LatestRepairRunID, repair.RepairRunID)
+		}
 	}
 }
 
@@ -6111,63 +1178,153 @@ func TestRepairEventTitlesFromReportStagesAuthoritativeReviewWhenCleanDuplicateE
 	if err != nil {
 		t.Fatalf("repair event titles: %v", err)
 	}
-	if got, want := repair.ReviewGroupsCreated, 1; got != want {
-		t.Fatalf("review groups created = %d, want %d", got, want)
+	if got, want := repair.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event review clusters created = %d, want %d", got, want)
 	}
-	if got, want := repair.Changes[0].Result, "review_created"; got != want {
+	if got, want := repair.Changes[0].Result, "event_review_created"; got != want {
 		t.Fatalf("result = %q, want %q", got, want)
 	}
-
-	groupID := repair.Changes[0].ReviewGroupID
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
+	if repair.RepairRunID <= 0 {
+		t.Fatal("missing repair run id")
+	}
+	if got := mustCount(t, db, "event_review_clusters"); got != 1 {
+		t.Fatalf("event review clusters = %d, want 1", got)
+	}
+	if got := mustCount(t, db, "review_groups"); got != 0 {
+		t.Fatalf("review groups = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 1 {
+		t.Fatalf("repair runs = %d, want 1", got)
+	}
+	cluster, ok, err := st.LoadEventReviewCluster(ctx, repair.Changes[0].EventReviewClusterID)
 	if err != nil {
-		t.Fatalf("load title repair review group: %v", err)
+		t.Fatalf("load event review cluster: %v", err)
 	}
 	if !ok {
-		t.Fatal("title repair review group not found")
+		t.Fatal("event review cluster not found")
 	}
-	if got, want := len(group.Candidates), 3; got != want {
-		t.Fatalf("review candidates = %d, want %d", got, want)
+	if got, want := len(cluster.Evidence), 3; got != want {
+		t.Fatalf("cluster evidence = %d, want %d", got, want)
 	}
-	if got, want := group.Candidates[0].Provenance, eventTitleRepairAuthoritativeCleanedProvenance; got != want {
-		t.Fatalf("cleaned candidate provenance = %q, want %q", got, want)
+	if got, want := len(cluster.CanonicalChoices), 3; got != want {
+		t.Fatalf("canonical choices = %d, want %d", got, want)
 	}
-	if got, want := group.Candidates[0].ExternalID, sourceURL; got != want {
-		t.Fatalf("cleaned candidate external ID = %q, want %q", got, want)
+	if got, want := len(cluster.DraftChoices), 2; got != want {
+		t.Fatalf("draft choices = %d, want %d", got, want)
 	}
+	foundConflictEvidence := false
+	for _, evidence := range cluster.Evidence {
+		if evidence.EventSlug == cleanSlug {
+			foundConflictEvidence = true
+			break
+		}
+	}
+	if !foundConflictEvidence {
+		t.Fatal("missing clean conflict evidence in event review cluster")
+	}
+	if cluster.Summary.LatestRepairRunID == nil || *cluster.Summary.LatestRepairRunID != repair.RepairRunID {
+		t.Fatalf("latest repair run id = %v, want %d", cluster.Summary.LatestRepairRunID, repair.RepairRunID)
+	}
+}
 
-	beforeEventCount := mustCount(t, db, "events")
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve title repair group: %v", err)
+func TestRepairEventTitlesFromReportReusesTerminalEventReviewClusterWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path, testSupportingSourceMetadata{})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
 	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount-1 {
-		t.Fatalf("events rows = %d, want merged duplicate count %d", got, beforeEventCount-1)
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAt = "2026-05-10T18:30:00Z"
+		dirty   = "Late Junction at The Leadmill"
+	)
+	sourceID := mustEnsureSourceID(t, st, testSupportingSourceName, testSupportingSourceURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "leadmill", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "leadmill", dirty, startAt, "Existing description.")
+
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReport(startAt, dirty), true)
+	if err != nil {
+		t.Fatalf("initial repair event titles: %v", err)
 	}
-	if _, ok := st.EventBySlug(dirtySlug); ok {
-		t.Fatalf("dirty slug %q still exists", dirtySlug)
+	clusterID := repair.Changes[0].EventReviewClusterID
+	before, ok, err := st.LoadEventReviewCluster(ctx, clusterID)
+	if err != nil {
+		t.Fatalf("load initial event review cluster: %v", err)
 	}
-	event, ok := st.EventBySlug(cleanSlug)
 	if !ok {
-		t.Fatalf("missing clean slug %q", cleanSlug)
+		t.Fatal("initial event review cluster not found")
 	}
-	if event.Name != clean {
-		t.Fatalf("event name = %q, want %q", event.Name, clean)
+	if before.Summary.Status != seedstore.EventReviewClusterStatusOpen {
+		t.Fatalf("cluster status = %q, want open", before.Summary.Status)
 	}
+	beforeUpdatedAt := before.Summary.UpdatedAt
+	beforeEvidenceCount := len(before.Evidence)
+	beforeCanonicalChoices := len(before.CanonicalChoices)
+	beforeDraftChoices := len(before.DraftChoices)
+	beforeLiveActions := len(before.LiveActions)
 
-	var cleanEventID int64
-	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, cleanSlug).Scan(&cleanEventID); err != nil {
-		t.Fatalf("lookup clean event id: %v", err)
+	if _, err := db.Exec(`
+		UPDATE event_review_clusters
+		SET status = ?
+		WHERE id = ?
+	`, string(seedstore.EventReviewClusterStatusResolved), clusterID); err != nil {
+		t.Fatalf("close cluster: %v", err)
 	}
-	var linkedEventID int64
-	if err := db.QueryRow(`
-		SELECT event_id
-		FROM event_source_links
-		WHERE source_event_key = ?
-	`, sourceURL).Scan(&linkedEventID); err != nil {
-		t.Fatalf("lookup authoritative source link: %v", err)
+	insertEventReviewResolutionOK(t, db, clusterID, seedstore.EventReviewResolutionStatusResolved, `{"cluster":"resolved"}`, "")
+
+	repair, err = st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReport(startAt, dirty), true)
+	if err != nil {
+		t.Fatalf("rerun repair event titles: %v", err)
 	}
-	if linkedEventID != cleanEventID {
-		t.Fatalf("source link event_id = %d, want clean event %d", linkedEventID, cleanEventID)
+	if got, want := repair.Changes[0].Result, "event_review_terminal_reused"; got != want {
+		t.Fatalf("rerun result = %q, want %q", got, want)
+	}
+	if got, want := repair.Changes[0].EventReviewClusterStatus, string(seedstore.EventReviewClusterStatusResolved); got != want {
+		t.Fatalf("rerun cluster status = %q, want %q", got, want)
+	}
+	if got, want := repair.EventReviewClustersTerminalReused, 1; got != want {
+		t.Fatalf("terminal reused count = %d, want %d", got, want)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 2 {
+		t.Fatalf("repair runs after terminal reuse = %d, want 2", got)
+	}
+	after, ok, err := st.LoadEventReviewCluster(ctx, clusterID)
+	if err != nil {
+		t.Fatalf("reload terminal cluster: %v", err)
+	}
+	if !ok {
+		t.Fatal("terminal event review cluster not found")
+	}
+	if after.Summary.Status != seedstore.EventReviewClusterStatusResolved {
+		t.Fatalf("cluster status = %q, want resolved", after.Summary.Status)
+	}
+	if after.Summary.LatestRepairRunID == nil || *after.Summary.LatestRepairRunID != repair.RepairRunID {
+		t.Fatalf("latest repair run id = %v, want %d", after.Summary.LatestRepairRunID, repair.RepairRunID)
+	}
+	if !after.Summary.UpdatedAt.Equal(beforeUpdatedAt) {
+		t.Fatalf("updated_at = %s, want %s", after.Summary.UpdatedAt, beforeUpdatedAt)
+	}
+	if got, want := len(after.Evidence), beforeEvidenceCount; got != want {
+		t.Fatalf("evidence count = %d, want %d", got, want)
+	}
+	if got, want := len(after.CanonicalChoices), beforeCanonicalChoices; got != want {
+		t.Fatalf("canonical choices = %d, want %d", got, want)
+	}
+	if got, want := len(after.DraftChoices), beforeDraftChoices; got != want {
+		t.Fatalf("draft choices = %d, want %d", got, want)
+	}
+	if got, want := len(after.LiveActions), beforeLiveActions; got != want {
+		t.Fatalf("live actions = %d, want %d", got, want)
 	}
 }
 
@@ -6212,8 +1369,11 @@ func TestRepairEventTitlesFromReportSkipsAuthoritativeConflictWithDifferentIdent
 	if got, want := repair.Changes[0].Reason, "target slug already belongs to another event"; got != want {
 		t.Fatalf("reason = %q, want %q", got, want)
 	}
-	if got := mustCount(t, db, "review_groups"); got != 0 {
-		t.Fatalf("review groups = %d, want 0", got)
+	if got := mustCount(t, db, "event_review_clusters"); got != 0 {
+		t.Fatalf("event review clusters = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 0 {
+		t.Fatalf("repair runs = %d, want 0", got)
 	}
 	if _, ok := st.EventBySlug(dirtySlug); !ok {
 		t.Fatalf("dirty slug %q should remain", dirtySlug)
@@ -6260,382 +1420,15 @@ func TestRepairEventTitlesFromReportDoesNotStageSupportingReviewForAuthoritative
 	if got, want := repair.Changes[0].Reason, "matched event has authoritative source link"; got != want {
 		t.Fatalf("reason = %q, want %q", got, want)
 	}
-	if got := mustCount(t, db, "review_groups"); got != 0 {
-		t.Fatalf("review groups = %d, want 0", got)
+	if got := mustCount(t, db, "event_review_clusters"); got != 0 {
+		t.Fatalf("event review clusters = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 0 {
+		t.Fatalf("repair runs = %d, want 0", got)
 	}
 }
 
-func TestPromoteSingletonReviewGroupIfMissingClearsExistingEndWhenOwnedVenueImportOmitsEnd(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "First apply",
-		SourceName: "Cafe No. 9 manual ingest",
-		SourceURL:  "https://www.wegottickets.com/Cafe9",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "cafe-no-9-keep-end",
-			Name:        "Cafe No. 9 Late Show",
-			VenueSlug:   "cafe-no-9",
-			StartAt:     "2026-05-10T18:30:00Z",
-			EndAt:       "2026-05-10T21:00:00Z",
-			Status:      "Listed",
-			Description: "Original end time",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("first promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("first promoted = false, want true")
-	}
-
-	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Second apply",
-		SourceName: "Cafe No. 9 manual ingest",
-		SourceURL:  "https://www.wegottickets.com/Cafe9",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "cafe-no-9-keep-end",
-			Name:        "Cafe No. 9 Late Show Updated",
-			VenueSlug:   "cafe-no-9",
-			StartAt:     "2026-05-10T18:30:00Z",
-			Status:      "Sold out",
-			Description: "Updated without end time",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("second promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("second promoted = false, want true")
-	}
-	if secondSlug != firstSlug {
-		t.Fatalf("second slug = %q, want %q", secondSlug, firstSlug)
-	}
-
-	event, ok := st.EventBySlug(firstSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", firstSlug)
-	}
-	if event.Name != "Cafe No. 9 Late Show Updated" {
-		t.Fatalf("name = %q, want %q", event.Name, "Cafe No. 9 Late Show Updated")
-	}
-	if !event.End.IsZero() {
-		t.Fatalf("end = %v, want zero time after authoritative omission", event.End)
-	}
-	if event.Status != "Sold out" {
-		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingClearsEndWhenOwnedVenueImportMovesStartPastExistingEnd(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	firstSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "First apply",
-		SourceName: "Cafe No. 9 manual ingest",
-		SourceURL:  "https://www.wegottickets.com/Cafe9",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "cafe-no-9-moved-start",
-			Name:        "Cafe No. 9 Late Show",
-			VenueSlug:   "cafe-no-9",
-			StartAt:     "2026-05-10T18:30:00Z",
-			EndAt:       "2026-05-10T21:00:00Z",
-			Status:      "Listed",
-			Description: "Original end time",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("first promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("first promoted = false, want true")
-	}
-
-	secondSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "Second apply",
-		SourceName: "Cafe No. 9 manual ingest",
-		SourceURL:  "https://www.wegottickets.com/Cafe9",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "cafe-no-9-moved-start",
-			Name:        "Cafe No. 9 Late Show Updated",
-			VenueSlug:   "cafe-no-9",
-			StartAt:     "2026-05-10T22:30:00Z",
-			Status:      "Sold out",
-			Description: "Updated without end time",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("second promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("second promoted = false, want true")
-	}
-	if secondSlug != firstSlug {
-		t.Fatalf("second slug = %q, want %q", secondSlug, firstSlug)
-	}
-
-	event, ok := st.EventBySlug(firstSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", firstSlug)
-	}
-	wantStart := time.Date(2026, time.May, 10, 22, 30, 0, 0, time.UTC)
-	if !event.Start.Equal(wantStart) {
-		t.Fatalf("start = %s, want %s", event.Start.Format(time.RFC3339), wantStart.Format(time.RFC3339))
-	}
-	if !event.End.IsZero() {
-		t.Fatalf("end = %v, want zero time after authoritative omission", event.End)
-	}
-	if event.Name != "Cafe No. 9 Late Show Updated" {
-		t.Fatalf("name = %q, want %q", event.Name, "Cafe No. 9 Late Show Updated")
-	}
-	if event.Status != "Sold out" {
-		t.Fatalf("status = %q, want %q", event.Status, "Sold out")
-	}
-}
-
-func TestPromoteSingletonReviewGroupIfMissingAttachesLegacySlugMatch(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-
-	var venueID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM venues
-		WHERE slug = ?
-	`, "leadmill").Scan(&venueID); err != nil {
-		t.Fatalf("lookup venue id: %v", err)
-	}
-	sourceID := mustEnsureReviewTestSource(t, db)
-
-	slug := "live-utc-show-sidney-and-matilda-20260501190000"
-	if _, err := db.Exec(`
-		INSERT INTO events (
-			slug,
-			venue_id,
-			source_id,
-			name,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			last_checked_at,
-			origin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, slug, venueID, sourceID, "Existing conflict", "2026-05-10T10:00:00Z", "2026-05-10T12:00:00Z", "Other", "Listed", "Conflict row", "2026-05-09T09:00:00Z", string(domain.OriginTest)); err != nil {
-		t.Fatalf("insert conflicting event: %v", err)
-	}
-	beforeEventCount := mustCount(t, db, "events")
-
-	gotSlug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(ctx, review.GroupInput{
-		Title:      "New listing review: UTC Show",
-		SourceName: "Sidney & Matilda manual ingest",
-		SourceURL:  "https://calendar.example.test/live.ics",
-		Candidates: []review.CandidateInput{{
-			ExternalID:  "singleton-1",
-			Name:        "UTC Show",
-			VenueSlug:   "sidney-and-matilda",
-			StartAt:     "2026-05-01T19:00:00Z",
-			EndAt:       "2026-05-01T22:00:00Z",
-			Genre:       "Indie",
-			Status:      "Listed",
-			Description: "Auto-promoted candidate",
-			SourceName:  "Sidney & Matilda manual ingest",
-			SourceURL:   "https://calendar.example.test/live.ics",
-			Provenance:  "import run 99; UID singleton-1",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("promote singleton review group: %v", err)
-	}
-	if !promoted {
-		t.Fatal("promoted = false, want true")
-	}
-	if gotSlug != slug {
-		t.Fatalf("slug = %q, want %q", gotSlug, slug)
-	}
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-	if got := mustCount(t, db, "event_source_links"); got != 1 {
-		t.Fatalf("event_source_links rows = %d, want 1", got)
-	}
-
-	event, ok := st.EventBySlug(slug)
-	if !ok {
-		t.Fatalf("missing published event %q", slug)
-	}
-	if event.Name != "UTC Show" {
-		t.Fatalf("name = %q, want %q", event.Name, "UTC Show")
-	}
-	if !event.Start.Equal(time.Date(2026, time.May, 1, 19, 0, 0, 0, time.UTC)) {
-		t.Fatalf("start = %s, want attached authoritative start", event.Start.Format(time.RFC3339))
-	}
-	if event.Origin != domain.OriginLive {
-		t.Fatalf("origin = %q, want %q", event.Origin, domain.OriginLive)
-	}
-}
-
-func TestResolveReviewGroupUpsertsSlugConflict(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sheffield-live.db")
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() {
-		if err := st.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	}()
-
-	db := mustRawDB(t, path)
-	defer db.Close()
-
-	groupID := mustCreatePublishableReviewGroup(t, st, "Slug conflict")
-	group, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("load review group: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found")
-	}
-	candidateID := group.Candidates[0].ID
-	if _, err := db.Exec(`
-		UPDATE review_candidates
-		SET venue_slug = ?, venue_text = ?, venue_location_raw = ?
-		WHERE id = ?
-	`, "leadmill-temp", "Sidney & Matilda", "Rivelin Works, 46 Sidney Street, Sheffield", candidateID); err != nil {
-		t.Fatalf("rewrite duplicate review candidate venue evidence: %v", err)
-	}
-
-	var venueID int64
-	if err := db.QueryRow(`
-		SELECT id
-		FROM venues
-		WHERE slug = ?
-	`, "leadmill").Scan(&venueID); err != nil {
-		t.Fatalf("lookup venue id: %v", err)
-	}
-	sourceID := mustEnsureReviewTestSource(t, db)
-	conflictSlug := "live-utc-show-sidney-and-matilda-20260501190000"
-	if _, err := db.Exec(`
-		INSERT INTO events (
-			slug,
-			venue_id,
-			source_id,
-			name,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			last_checked_at,
-			origin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, conflictSlug, venueID, sourceID, "Existing conflict", "2026-05-10T10:00:00Z", "2026-05-10T12:00:00Z", "Other", "Listed", "Conflict row", "2026-05-09T09:00:00Z", string(domain.OriginTest)); err != nil {
-		t.Fatalf("insert conflicting event: %v", err)
-	}
-	beforeEventCount := mustCount(t, db, "events")
-
-	if err := st.ResolveReviewGroup(ctx, groupID, fullReviewChoices(t, group)); err != nil {
-		t.Fatalf("resolve review group: %v", err)
-	}
-
-	if got := mustCount(t, db, "events"); got != beforeEventCount {
-		t.Fatalf("events rows = %d, want unchanged %d", got, beforeEventCount)
-	}
-	event, ok := st.EventBySlug(conflictSlug)
-	if !ok {
-		t.Fatalf("missing published event %q", conflictSlug)
-	}
-	if event.Name != "UTC Show" {
-		t.Fatalf("name = %q, want %q", event.Name, "UTC Show")
-	}
-	if event.VenueSlug != "sidney-and-matilda" {
-		t.Fatalf("venue slug = %q, want %q", event.VenueSlug, "sidney-and-matilda")
-	}
-	if event.Origin != domain.OriginLive {
-		t.Fatalf("origin = %q, want %q", event.Origin, domain.OriginLive)
-	}
-	final, ok, err := st.LoadReviewGroup(ctx, groupID)
-	if err != nil {
-		t.Fatalf("reload review group after resolve: %v", err)
-	}
-	if !ok {
-		t.Fatal("review group not found after resolve")
-	}
-	assertDraftChoice(t, final, review.FieldVenueSlug, candidateID, "sidney-and-matilda")
-}
-
-func TestUpdateReviewGroupStatusRejectsInvalidStatus(t *testing.T) {
-	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "sheffield-live.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	groupID := mustCreateReviewGroup(t, st, "Invalid status", "Draft candidate")
-
-	if err := st.UpdateReviewGroupStatus(ctx, groupID, "published"); err == nil {
-		t.Fatal("expected invalid status to be rejected")
-	}
-	if err := st.UpdateReviewGroupStatus(ctx, groupID, review.StatusResolved); err == nil {
-		t.Fatal("expected resolved status to require ResolveReviewGroup")
-	}
-}
-
-func fullReviewChoices(t *testing.T, group review.Group) []review.DraftChoiceInput {
-	t.Helper()
-
-	choices := make([]review.DraftChoiceInput, 0, len(review.CanonicalFields))
-	for _, field := range review.CanonicalFields {
-		choices = append(choices, review.DraftChoiceInput{
-			Field:       field,
-			CandidateID: group.Candidates[0].ID,
-		})
-	}
-	return choices
-}
-
-func TestLoadEventAndReviewCandidatePreserveExplicitZeroZeroFocus(t *testing.T) {
+func TestLoadEventPreservesExplicitZeroZeroFocus(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 
@@ -6683,60 +1476,6 @@ func TestLoadEventAndReviewCandidatePreserveExplicitZeroZeroFocus(t *testing.T) 
 	}
 	if event.ImageFocusX != 0 || event.ImageFocusY != 0 {
 		t.Fatalf("event focus = %d,%d, want 0,0", event.ImageFocusX, event.ImageFocusY)
-	}
-
-	groupID := mustInsertReviewGroupRow(t, st.db, `
-		INSERT INTO review_groups (
-			title,
-			source_name,
-			source_url,
-			status,
-			notes,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, "Zero focus review", "Review test source", "https://example.test/review-test", review.StatusOpen, "", "2026-05-09T10:00:00Z", "2026-05-09T10:00:00Z")
-	candidateRes, err := st.db.Exec(`
-		INSERT INTO review_candidates (
-			group_id,
-			position,
-			external_id,
-			name,
-			venue_slug,
-			start_at,
-			end_at,
-			genre,
-			status,
-			description,
-			image_url,
-			image_source_url,
-			image_alt,
-			image_width,
-			image_height,
-			image_focus_x,
-			image_focus_y,
-			source_name,
-			source_url,
-			provenance
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, groupID, 1, "", "Zero Focus Candidate", "leadmill", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Zero focus description", "", "", "", 0, 0, 0, 0, "Review test source", "https://example.test/review-test", "")
-	if err != nil {
-		t.Fatalf("insert review candidate: %v", err)
-	}
-	candidateID, err := candidateRes.LastInsertId()
-	if err != nil {
-		t.Fatalf("review candidate id: %v", err)
-	}
-
-	candidate, ok, err := loadReviewCandidate(ctx, st.db, groupID, candidateID)
-	if err != nil {
-		t.Fatalf("load review candidate: %v", err)
-	}
-	if !ok {
-		t.Fatal("review candidate not found")
-	}
-	if candidate.ImageFocusX != 0 || candidate.ImageFocusY != 0 {
-		t.Fatalf("candidate focus = %d,%d, want 0,0", candidate.ImageFocusX, candidate.ImageFocusY)
 	}
 }
 
@@ -6807,7 +1546,7 @@ func TestUpsertEventTxPreservesExistingImageFieldsWhenImageURLBlank(t *testing.T
 		LastChecked:      time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
 		Origin:           domain.OriginLive,
 		PublicationState: domain.PublicationStateReviewed,
-	}); err != nil {
+	}, time.Date(2026, time.May, 9, 10, 5, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("upsert event: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -6884,7 +1623,7 @@ func TestUpsertEventTxReplacesImageFieldsWhenImageURLNonEmpty(t *testing.T) {
 		LastChecked:      time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
 		Origin:           domain.OriginLive,
 		PublicationState: domain.PublicationStateReviewed,
-	}); err != nil {
+	}, time.Date(2026, time.May, 9, 10, 5, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("upsert event: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -6892,42 +1631,6 @@ func TestUpsertEventTxReplacesImageFieldsWhenImageURLNonEmpty(t *testing.T) {
 	}
 
 	assertEventImageFields(t, st.db, slug, "/media/events/replaced.jpg", "https://example.test/replaced.jpg", "Replaced alt", 1200, 800, 0, 0)
-}
-
-func assertDraftChoice(t *testing.T, group review.Group, field review.Field, candidateID int64, value string) {
-	t.Helper()
-
-	choice, ok := group.DraftChoices[field]
-	if !ok {
-		t.Fatalf("missing draft choice for %s", field)
-	}
-	if choice.CandidateID != candidateID {
-		t.Fatalf("%s candidate ID = %d, want %d", field, choice.CandidateID, candidateID)
-	}
-	if choice.Value != value {
-		t.Fatalf("%s value = %q, want %q", field, choice.Value, value)
-	}
-	if choice.UpdatedAt.IsZero() {
-		t.Fatalf("%s updated_at is zero", field)
-	}
-}
-
-func assertDefaultChoice(t *testing.T, group review.Group, field review.Field, candidateID int64, value string) {
-	t.Helper()
-
-	choice, ok := group.DefaultChoices[field]
-	if !ok {
-		t.Fatalf("missing default choice for %s", field)
-	}
-	if choice.CandidateID != candidateID {
-		t.Fatalf("%s default candidate ID = %d, want %d", field, choice.CandidateID, candidateID)
-	}
-	if choice.Value != value {
-		t.Fatalf("%s default value = %q, want %q", field, choice.Value, value)
-	}
-	if choice.UpdatedAt.IsZero() {
-		t.Fatalf("%s default updated_at is zero", field)
-	}
 }
 
 func assertEventImageFields(t *testing.T, db *sql.DB, slug, wantURL, wantSourceURL, wantAlt string, wantWidth, wantHeight, wantFocusX, wantFocusY int) {
@@ -6988,10 +1691,11 @@ func mustPromoteCafeNo9Event(t *testing.T, st *Store, externalID, name, startAt,
 	t.Helper()
 
 	sourceURL := cafeNo9RepairSourceURL(externalID)
-	slug, promoted, err := st.PromoteSingletonReviewGroupIfMissing(context.Background(), review.GroupInput{
-		Title:      "Cafe No. 9 singleton",
-		SourceName: "Cafe No. 9 manual ingest",
-		SourceURL:  sourceURL,
+	slug, promoted, err := st.PromoteSingletonReviewClusterIfMissing(context.Background(), ingest.ReviewStageClusterInput{
+		Title:                  "Cafe No. 9 singleton",
+		SourceName:             "Cafe No. 9 manual ingest",
+		SourceURL:              sourceURL,
+		AuthoritativeSourceURL: sourceURL,
 		Candidates: []review.CandidateInput{{
 			ExternalID:  externalID,
 			Name:        name,
@@ -7063,6 +1767,45 @@ func leadmillTitleRepairReport(startAt, uid, summary, detailURL string) ingest.R
 	}
 }
 
+func assertEventSourceLinkKeySet(t *testing.T, db *sql.DB, eventSlug string, want []string) {
+	t.Helper()
+
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, eventSlug).Scan(&eventID); err != nil {
+		t.Fatalf("lookup event id for %q: %v", eventSlug, err)
+	}
+
+	rows, err := db.Query(`
+		SELECT source_event_key
+		FROM event_source_links
+		WHERE event_id = ?
+	`, eventID)
+	if err != nil {
+		t.Fatalf("load event source links for %q: %v", eventSlug, err)
+	}
+	defer rows.Close()
+
+	got := make(map[string]struct{})
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			t.Fatalf("scan event source link for %q: %v", eventSlug, err)
+		}
+		got[key] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate event source links for %q: %v", eventSlug, err)
+	}
+	if gotCount, wantCount := len(got), len(want); gotCount != wantCount {
+		t.Fatalf("event source link keys = %d, want %d (%#v)", gotCount, wantCount, got)
+	}
+	for _, wantKey := range want {
+		if _, ok := got[wantKey]; !ok {
+			t.Fatalf("missing event source link key %q in %#v", wantKey, got)
+		}
+	}
+}
+
 func supportingTitleRepairReport(startAt, summary string) ingest.Report {
 	return ingest.Report{
 		Source:      "fixture-supporting",
@@ -7079,6 +1822,37 @@ func supportingTitleRepairReport(startAt, summary string) ingest.Report {
 				Status:   "Listed",
 			}},
 		}},
+	}
+}
+
+func supportingTitleRepairReportPair(startAtA, summaryA, startAtB, summaryB string) ingest.Report {
+	return ingest.Report{
+		Source:      "fixture-supporting",
+		SourceURL:   testSupportingSourceURL,
+		ImportRunID: 45,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{
+			{
+				URL: testSupportingSourceURL,
+				Candidates: []ingest.EventCandidate{{
+					Summary:  summaryA,
+					Location: "The Leadmill",
+					URL:      testSupportingSourceURL + "#pair-a",
+					StartAt:  startAtA,
+					Status:   "Listed",
+				}},
+			},
+			{
+				URL: testSupportingSourceURL,
+				Candidates: []ingest.EventCandidate{{
+					Summary:  summaryB,
+					Location: "The Leadmill",
+					URL:      testSupportingSourceURL + "#pair-b",
+					StartAt:  startAtB,
+					Status:   "Listed",
+				}},
+			},
+		},
 	}
 }
 
@@ -7187,6 +1961,41 @@ func assertEventDescription(t *testing.T, st *Store, slug, want string) {
 	}
 }
 
+func mustLoadSlugAlias(t *testing.T, db *sql.DB, aliasSlug string) (int64, string, int64) {
+	t.Helper()
+
+	var targetEventID int64
+	var reason string
+	var repairRunID sql.NullInt64
+	if err := db.QueryRow(`
+		SELECT target_event_id, COALESCE(reason, ''), repair_run_id
+		FROM slug_aliases
+		WHERE alias_slug = ?
+			AND target_kind = ?
+	`, aliasSlug, string(seedstore.SlugAliasTargetKindEvent)).Scan(&targetEventID, &reason, &repairRunID); err != nil {
+		t.Fatalf("load slug alias %q: %v", aliasSlug, err)
+	}
+	if !repairRunID.Valid {
+		return targetEventID, reason, 0
+	}
+	return targetEventID, reason, repairRunID.Int64
+}
+
+func mustCountExactIdentityRows(t *testing.T, db *sql.DB, eventID int64) int {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM event_exact_identities
+		WHERE event_id = ?
+			AND active = 1
+	`, eventID).Scan(&count); err != nil {
+		t.Fatalf("count exact identity rows for event %d: %v", eventID, err)
+	}
+	return count
+}
+
 type secondarySourceInfoRow struct {
 	EventID   int64
 	SourceID  int64
@@ -7229,255 +2038,6 @@ func loadSecondarySourceInfoRows(t *testing.T, db *sql.DB) []secondarySourceInfo
 		t.Fatalf("iterate secondary source info rows: %v", err)
 	}
 	return result
-}
-
-func setReviewGroupUpdatedAt(db *sql.DB, groupID int64, updatedAt time.Time) error {
-	_, err := db.Exec(`
-		UPDATE review_groups
-		SET updated_at = ?
-		WHERE id = ?
-	`, formatRFC3339UTC(updatedAt), groupID)
-	return err
-}
-
-func mustCreateReviewGroup(t *testing.T, st *Store, title, candidateName string) int64 {
-	t.Helper()
-
-	id, err := st.CreateReviewGroup(context.Background(), review.GroupInput{
-		Title:      title,
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:test.ics",
-		Candidates: []review.CandidateInput{
-			{
-				Name:       candidateName,
-				StartAt:    "2026-05-01T19:00:00Z",
-				SourceName: "Fixture ICS",
-				SourceURL:  "file:test.ics",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-	return id
-}
-
-func mustCreateReviewGroupForImportRun(t *testing.T, st *Store, title, notes string) int64 {
-	t.Helper()
-	ensureImportRunForNotes(t, st, notes)
-
-	id, err := st.CreateReviewGroup(context.Background(), review.GroupInput{
-		Title:      title,
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:test.ics",
-		Notes:      notes,
-		Candidates: []review.CandidateInput{
-			{
-				Name:       title + " candidate",
-				StartAt:    "2026-05-01T19:00:00Z",
-				SourceName: "Fixture ICS",
-				SourceURL:  "file:test.ics",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-	return id
-}
-
-func mustCreatePublishableReviewGroup(t *testing.T, st *Store, title string) int64 {
-	t.Helper()
-
-	id, err := st.CreateReviewGroup(context.Background(), review.GroupInput{
-		Title:      title,
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:published.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "utc-1",
-				Name:        "UTC Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First line",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/utc-show",
-				Provenance:  "fixture UID utc-1",
-			},
-			{
-				ExternalID:  "london-1",
-				Name:        "London Show",
-				VenueSlug:   "leadmill",
-				StartAt:     "2026-05-02T18:30:00Z",
-				EndAt:       "2026-05-02T21:30:00Z",
-				Genre:       "Rock",
-				Status:      "Listed",
-				Description: "London description",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "file:published.ics",
-				Provenance:  "fixture UID london-1",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-	return id
-}
-
-func mustCreatePublishableReviewGroupForImportRun(t *testing.T, st *Store, title, notes string) int64 {
-	t.Helper()
-	ensureImportRunForNotes(t, st, notes)
-
-	id, err := st.CreateReviewGroup(context.Background(), review.GroupInput{
-		Title:      title,
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:published.ics",
-		Notes:      notes,
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "utc-1",
-				Name:        "UTC Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First line",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/utc-show",
-				Provenance:  "fixture UID utc-1",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create publishable review group: %v", err)
-	}
-	return id
-}
-
-func ensureImportRunForNotes(t *testing.T, st *Store, notes string) {
-	t.Helper()
-
-	importRunID, ok := review.ParseOriginImportRunID(notes)
-	if !ok {
-		return
-	}
-	if _, err := st.db.Exec(`
-		INSERT OR IGNORE INTO import_runs (id, started_at, finished_at, status, notes)
-		VALUES (?, ?, ?, ?, ?)
-	`, importRunID, "2026-04-20T10:00:00Z", "2026-04-20T10:05:00Z", "succeeded", "fixture import run"); err != nil {
-		t.Fatalf("insert import run fixture %d: %v", importRunID, err)
-	}
-}
-
-func mustInsertImportRunFixture(t *testing.T, st *Store, importRunID int64) {
-	t.Helper()
-
-	if _, err := st.db.Exec(`
-		INSERT OR IGNORE INTO import_runs (id, started_at, finished_at, status, notes)
-		VALUES (?, ?, ?, ?, ?)
-	`, importRunID, "2026-04-20T10:00:00Z", "2026-04-20T10:05:00Z", "succeeded", "fixture import run"); err != nil {
-		t.Fatalf("insert import run fixture %d: %v", importRunID, err)
-	}
-}
-
-const (
-	testSupportingSourceName = "Fixture supporting manual ingest"
-	testSupportingSourceURL  = "https://fixture.example.test/listings/"
-)
-
-type testSupportingSourceMetadata struct{}
-
-func (testSupportingSourceMetadata) OwnedVenueSlugForSource(string) string { return "" }
-
-func (testSupportingSourceMetadata) ReviewStageSourceNameForSource(source string) string {
-	return strings.TrimSpace(source)
-}
-
-func (testSupportingSourceMetadata) OwnedVenueSlugForReviewStageSourceName(string) string {
-	return ""
-}
-
-func (testSupportingSourceMetadata) NonAuthoritativeSingletonVenueSlugForSource(string) string {
-	return ""
-}
-
-func (testSupportingSourceMetadata) NonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName string) string {
-	if strings.TrimSpace(sourceName) == testSupportingSourceName {
-		return "leadmill"
-	}
-	return ""
-}
-
-func (testSupportingSourceMetadata) ListingsURLForSourceName(sourceName string) string {
-	if strings.TrimSpace(sourceName) == testSupportingSourceName {
-		return testSupportingSourceURL
-	}
-	return ""
-}
-
-func mustSupportingSingletonReviewGroupInput(importRunID int64, uid, summary, startAt, endAt string) review.GroupInput {
-	return review.GroupInput{
-		Title:       "Fixture supporting singleton: " + summary,
-		SourceName:  testSupportingSourceName,
-		SourceURL:   testSupportingSourceURL,
-		ImportRunID: importRunID,
-		StagingKey: strings.Join([]string{
-			"fixture-supporting",
-			uid,
-			normalizeTestStagingKeyPart(summary),
-			startAt,
-		}, "\x00"),
-		Candidates: []review.CandidateInput{{
-			ExternalID:  uid,
-			Name:        summary,
-			VenueSlug:   "leadmill",
-			StartAt:     startAt,
-			EndAt:       endAt,
-			Status:      "Listed",
-			Description: "Fixture supporting listing",
-			SourceName:  testSupportingSourceName,
-			SourceURL:   testSupportingSourceURL,
-			Provenance:  "fixture UID " + uid,
-		}},
-	}
-}
-
-func normalizeTestStagingKeyPart(value string) string {
-	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
-}
-
-func mustCreatePublishableSingletonReviewGroup(t *testing.T, st *Store, title string) int64 {
-	t.Helper()
-
-	id, err := st.CreateReviewGroup(context.Background(), review.GroupInput{
-		Title:      title,
-		SourceName: "Fixture ICS",
-		SourceURL:  "file:sidney.ics",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "solo-1",
-				Name:        "Solo Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-03T19:00:00Z",
-				EndAt:       "2026-05-03T22:00:00Z",
-				Genre:       "Folk",
-				Status:      "Listed",
-				Description: "One listing",
-				SourceName:  "Fixture ICS",
-				SourceURL:   "https://example.test/solo-show",
-				Provenance:  "fixture UID solo-1",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create review group: %v", err)
-	}
-	return id
 }
 
 func mustEnsureReviewTestSource(t *testing.T, db *sql.DB) int64 {
@@ -7534,36 +2094,4 @@ func mustInsertReviewTestEvent(t *testing.T, db *sql.DB, sourceID int64, slug, v
 		t.Fatalf("review test event id: %v", err)
 	}
 	return eventID
-}
-
-func mustCreateAuthoritativeReviewGroup(t *testing.T, st *Store, title string) int64 {
-	t.Helper()
-
-	id, err := st.CreateReviewGroup(context.Background(), review.GroupInput{
-		Title:                       title,
-		SourceName:                  "Fixture ICS",
-		SourceURL:                   "file:published.ics",
-		AuthoritativeSourceName:     "Sidney & Matilda manual ingest",
-		AuthoritativeSourceURL:      "https://calendar.example.test/live.ics",
-		AuthoritativeSourceEventKey: "shared-uid",
-		Candidates: []review.CandidateInput{
-			{
-				ExternalID:  "shared-uid",
-				Name:        "UTC Show",
-				VenueSlug:   "sidney-and-matilda",
-				StartAt:     "2026-05-01T19:00:00Z",
-				EndAt:       "2026-05-01T22:00:00Z",
-				Genre:       "Indie",
-				Status:      "Listed",
-				Description: "First line",
-				SourceName:  "Candidate source name",
-				SourceURL:   "https://example.test/utc-show",
-				Provenance:  "fixture UID shared-uid",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create authoritative review group: %v", err)
-	}
-	return id
 }
