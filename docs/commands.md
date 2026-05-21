@@ -75,7 +75,7 @@ Routes:
 - `GET /static/site.css` embedded stylesheet
 - `GET /media/{path}` copied event media when `MEDIA_ROOT` is configured
 
-The provisional venue queue lists provisional venue rows created from newly detected venue evidence during new-group staging, singleton auto-promotion, or manual review resolution. Detail pages show upcoming linked events. When venue writes are available, they also show editable venue fields and support two POST actions on the same route: save field edits in place or validate the venue and return to the queue. If venue writes are unavailable, provisional venue detail remains read-only and hides those controls.
+The provisional venue queue lists provisional venue rows created from newly detected venue evidence during new-cluster staging, singleton auto-promotion, or manual review resolution. Detail pages show upcoming linked events. When venue writes are available, they also show editable venue fields and support two POST actions on the same route: save field edits in place or validate the venue and return to the queue. If venue writes are unavailable, provisional venue detail remains read-only and hides those controls.
 
 The provisional room queue lists provisional room rows created from newly detected room evidence under an existing venue. Detail pages show upcoming linked events for that venue room. When room writes are available, they support the same save-or-validate workflow as provisional venues.
 
@@ -106,6 +106,7 @@ Review behavior:
 - open event-review clusters preselect those persisted defaults when no manual draft exists
 - event-review history and detail live under `/admin/event-review/...`
 - `/admin/legacy-review*` returns 404 after admin auth; legacy review groups are historical schema only
+- event-review detail pages link event context through `/admin/events/{slug}`, so admins can inspect withheld or duplicate records that public `/events/{slug}` may hide
 - event-review detail pages may include a `Live canonical snapshot` matrix column sourced from an existing live event
 - review summaries derive shared venue labels from deterministic matching over stored candidate venue slug, venue text, and raw location evidence
 - review candidates can carry optional room evidence; room selection is a canonical field, and published events keep both the selected venue and selected venue room links
@@ -115,10 +116,10 @@ Review behavior:
 - `action=supersede` marks an event-review cluster as superseded by another cluster
 - eligible resolve actions publish one canonical public event
 - manual review resolution canonicalizes the selected venue to an existing venue when the evidence yields one unique match
-- new-group staging and non-authoritative singleton auto-promotion can create provisional venue rows immediately when venue evidence is uniquely new
-- open-group restaging can backfill a provisional venue row only when a previously evidence-less candidate is refreshed with usable raw venue evidence
+- new-cluster staging and non-authoritative singleton auto-promotion can create provisional venue rows immediately when venue evidence is uniquely new
+- open-cluster restaging can backfill a provisional venue row only when a previously evidence-less candidate is refreshed with usable raw venue evidence
 - when no unique existing venue match exists at manual review resolution time, resolution creates a provisional venue row and publishes against it in the same transaction if one does not already exist
-- ambiguous venue evidence fails closed and leaves the group open
+- ambiguous venue evidence fails closed and leaves the cluster open
 - canonical-backed duplicate resolution can update the matched live event in place
 - when authoritative source identity and canonical slug match point at different live events, authoritative identity wins
 - resolved event-review clusters can persist secondary-source `genre` and `description` evidence for matching non-selected candidates
@@ -211,8 +212,10 @@ Stage event-review clusters:
 - reports `event_review_clusters_created` and `event_review_clusters_reused`
 - reports `auto_promoted_count` and `auto_promoted`
 - reports `event_review_clusters_auto_resolved_count` and `event_review_clusters_auto_resolved`
-- each staged cluster includes `result: created|reused`
+- each staged or reused cluster includes `cluster_id` and `result: created|reused`
+- when staged evidence mixes terminal and open matches, `event_review_clusters[].cluster_id` is the open/actionable cluster ID for follow-up review
 - each duplicate auto-resolved row includes `title`, `result`, `cluster_id`, `candidate_count`, and `canonical_event_slug` when applicable
+- `event_review_clusters_auto_resolved[].cluster_id` is the terminal auto-resolved cluster ID for that history row
 - each staged or reused cluster persists a link to the current import run
 - `-stage-event-reviews` can create provisional venue rows immediately for newly created staged clusters when venue evidence is uniquely new, even when no event is published yet
 - successful supporting singleton auto-promotion creates provisional events, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton clusters by `staging_key` while linking the current import run
