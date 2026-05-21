@@ -55,9 +55,10 @@ Routes:
 - `POST /admin/login` start an admin session
 - `POST /admin/logout` end an admin session
 - `GET /admin` admin landing page
-- `GET /admin/review` open review queue
-- `GET /admin/review/history` read-only resolved and rejected review history
-- `GET /admin/review/{groupID}` review detail
+- `GET /admin/review` open event-review cluster queue
+- `GET /admin/event-review/history` event-review history
+- `GET /admin/event-review/{clusterID}` event-review cluster detail
+- `GET /admin/legacy-review*` authenticated 404 for retired legacy review routes
 - `GET /admin/import-runs` read-only import history
 - `GET /admin/import-runs/{id}` read-only import run snapshot metadata
 - `GET /admin/venues` provisional venue queue
@@ -68,7 +69,7 @@ Routes:
 - `POST /admin/configuration` save, delete, or recompute genre inference rules
 - `POST /admin/venues/{slug}` save provisional venue field edits or validate the venue when venue writes are available
 - `POST /admin/rooms/{venueSlug}/{roomSlug}` save provisional room field edits or validate the room when room writes are available
-- `POST /admin/review/{groupID}` review actions
+- `POST /admin/event-review/{clusterID}` discard, save source identity choices, supersede, or resolve an eligible event-review cluster
 - `GET /healthz` plain-text health check
 - `GET /readyz` plain-text readiness check backed by a cheap store probe
 - `GET /static/site.css` embedded stylesheet
@@ -88,23 +89,31 @@ The provisional room queue lists provisional room rows created from newly detect
 - `area={venue-neighbourhood}`
 - `venue={venue-slug}`
 
-`/admin/review` and `/admin/review/{groupID}` flash query parameters:
+`/admin/review` flash query parameters:
 
-- `saved=1`
-- `resolved=1`
-- `accepted=1`
-- `rejected=1`
+- `event_review_discarded=1`
+- `event_review_resolved=1`
+- `event_review_superseded=1`
+
+`/admin/event-review/{clusterID}` flash query parameters:
+
+- `source_identity_choices_saved=1`
 
 Review behavior:
 
-- duplicate groups use field-by-field draft choices, a canonical draft summary, and persisted majority defaults
-- open duplicate reviews preselect those persisted defaults when no manual draft exists
-- duplicate reviews may include a `Live canonical snapshot` matrix column sourced from an existing live event
+- `/admin/review` is the open event-review cluster queue
+- event-review clusters use field-by-field source identity choices, a canonical draft summary, and persisted majority defaults
+- open event-review clusters preselect those persisted defaults when no manual draft exists
+- event-review history and detail live under `/admin/event-review/...`
+- `/admin/legacy-review*` returns 404 after admin auth; legacy review groups are historical schema only
+- event-review detail pages may include a `Live canonical snapshot` matrix column sourced from an existing live event
 - review summaries derive shared venue labels from deterministic matching over stored candidate venue slug, venue text, and raw location evidence
 - review candidates can carry optional room evidence; room selection is a canonical field, and published events keep both the selected venue and selected venue room links
-- the review queue shows a read-only link to the latest successful import when the store provides import history
-- `action=save` stores draft choices for duplicate groups
-- `action=resolved` confirms a duplicate and resolves it, publishing one canonical public event
+- the event-review queue shows a read-only link to the latest successful import when the store provides import history
+- `action=save_source_identity_choices` stores source identity choices for eligible event-review clusters
+- `action=discard` discards an event-review cluster
+- `action=supersede` marks an event-review cluster as superseded by another cluster
+- eligible resolve actions publish one canonical public event
 - manual review resolution canonicalizes the selected venue to an existing venue when the evidence yields one unique match
 - new-group staging and non-authoritative singleton auto-promotion can create provisional venue rows immediately when venue evidence is uniquely new
 - open-group restaging can backfill a provisional venue row only when a previously evidence-less candidate is refreshed with usable raw venue evidence
@@ -112,14 +121,11 @@ Review behavior:
 - ambiguous venue evidence fails closed and leaves the group open
 - canonical-backed duplicate resolution can update the matched live event in place
 - when authoritative source identity and canonical slug match point at different live events, authoritative identity wins
-- resolved review groups can persist secondary-source `genre` and `description` evidence for matching non-selected candidates
+- resolved event-review clusters can persist secondary-source `genre` and `description` evidence for matching non-selected candidates
 - non-authoritative secondary-source evidence is cumulative; matching candidates use the same venue slug and start time plus a title match after case and whitespace normalization
-- later accepted reviews overwrite matching source/event rows when they provide new non-empty values, but absence does not delete earlier rows
-- singleton groups use accept/reject actions when they were staged instead of auto-promoted
-- `action=accept` resolves a singleton group and publishes one canonical public event
-- `action=rejected` rejects a duplicate or singleton group without publishing
-- closed groups are read-only and disappear from the open queue
-- review history lists the 50 newest resolved and rejected groups
+- later resolved review records overwrite matching source/event rows when they provide new non-empty values, but absence does not delete earlier rows
+- resolved or discarded event-review clusters are read-only and disappear from the open queue
+- event-review history lists the 50 newest terminal clusters
 - import history and import run detail pages are read-only and available only when the store implements them
 - import run detail pages show summary fields and snapshot metadata only; stored snapshot payload bodies are not rendered
 
@@ -174,11 +180,11 @@ Live ingest:
 - writes `sources`, `import_runs`, and `snapshots`
 - prints a JSON report to stdout
 - batch mode continues after per-source failures but returns non-zero if any source run fails
-- `-all-sources` is mutually exclusive with `-source`, `-import-run-id`, and `-review-ics-fixture`
+- `-all-sources` is mutually exclusive with `-source` and `-import-run-id`
 
 Replay:
 
-- `-import-run-id <id> [-limit N] [-stage-review-groups]`
+- `-import-run-id <id> [-limit N] [-stage-event-reviews]`
 - network-free
 - only replays finished succeeded runs
 - validates the stored snapshot envelope version and body SHA-256
@@ -191,26 +197,25 @@ Replay:
 - Yellow Arch replays candidate parsing from the stored source page snapshot and replays stored detail-page snapshots for description enrichment without network access
 - Sidney & Matilda and Cafe No. 9 replay stored detail-page snapshots for description enrichment without network access
 
-Stage review groups:
+Stage event-review clusters:
 
-- primary flag: `-stage-review-groups`
-- alias: `-stage-review`
+- primary flag: `-stage-event-reviews`
 - wraps the ingest report with `review_stage`
-- creates duplicate review groups
-- creates singleton review groups only for singleton candidates that were not auto-promoted first
+- creates duplicate event-review clusters
+- creates singleton event-review clusters only for singleton candidates that were not auto-promoted first
 - persists review-candidate venue evidence as `venue_text` and `venue_location_raw`; for ICS sources `venue_text` stays cleaned for display while `venue_location_raw` preserves the unfolded raw `LOCATION` text for later decoded comma/newline venue parsing
 - persists optional review-candidate room evidence as `room_text` plus room slug/name rows
 - singleton candidates may auto-promote when they are the first matching live event seen; authoritative sources can also upgrade provisional events in place
 - singleton auto-promotion can create a provisional venue row immediately for a uniquely new venue
-- duplicate groups may also auto-resolve as `canonical_exact_match` or `unanimous_duplicate`
-- reports `groups_created` and `groups_reused`
+- duplicate event-review clusters may also auto-resolve as `canonical_exact_match` or `unanimous_duplicate`
+- reports `event_review_clusters_created` and `event_review_clusters_reused`
 - reports `auto_promoted_count` and `auto_promoted`
-- reports `duplicate_auto_resolved_count` and `duplicate_auto_resolved`
-- each staged group includes `result: created|reused`
-- each duplicate auto-resolved row includes `title`, `result`, `review_group_id`, `candidate_count`, and `canonical_event_slug` when applicable
-- each staged or reused group persists a link to the current import run
-- `-stage-review-groups` can create provisional venue rows immediately for newly created staged groups when venue evidence is uniquely new, even when no event is published yet
-- successful supporting singleton auto-promotion creates provisional events, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton groups by `staging_key` while linking the current import run
+- reports `event_review_clusters_auto_resolved_count` and `event_review_clusters_auto_resolved`
+- each staged cluster includes `result: created|reused`
+- each duplicate auto-resolved row includes `title`, `result`, `cluster_id`, `candidate_count`, and `canonical_event_slug` when applicable
+- each staged or reused cluster persists a link to the current import run
+- `-stage-event-reviews` can create provisional venue rows immediately for newly created staged clusters when venue evidence is uniquely new, even when no event is published yet
+- successful supporting singleton auto-promotion creates provisional events, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton clusters by `staging_key` while linking the current import run
 - only runs after a successful ingest
 
 Description repair:
@@ -220,21 +225,22 @@ Description repair:
 - replay mode supports `-import-run-id <id> -repair-descriptions`
 - reuses the normal live or replay parser output, including stored detail-page snapshots during replay
 - updates only eligible existing `events.description` values for owned authoritative sources
-- does not stage review groups, auto-promote events, create new events, or mutate non-description event fields
+- does not stage event-review clusters, auto-promote events, create new events, or mutate non-description event fields
 - emits `description_repair` with `description_repaired`, `description_unchanged`, `description_skipped`, and repaired event slugs
-- mutually exclusive with `-stage-review-groups`, `-all-sources`, and `-review-ics-fixture`
+- mutually exclusive with `-stage-event-reviews` and `-all-sources`
 
 Event title repair:
 
 - primary flag: `-repair-event-titles`
-- dry-run by default; add `-apply-title-repairs` to update rows or stage repair reviews
+- dry-run by default; add `-apply-title-repairs` to update rows or stage event-review clusters
 - live mode supports `-source <key>` and `-all-sources`
 - replay mode supports `-import-run-id <id> -repair-event-titles`
 - authoritative source matches may update existing `events.name` and derived `events.slug` directly
-- non-authoritative matches never overwrite events with authoritative source links; eligible supporting matches create or reuse an admin review group
+- non-authoritative matches never overwrite events with authoritative source links; eligible supporting matches create or reuse an event-review cluster
 - does not create new public events
-- emits `title_repair` with dry-run/apply state, counts, and per-event change rows
-- mutually exclusive with `-stage-review-groups`, `-repair-descriptions`, `-review-ics-fixture`, and `-backfill-image-focus`
+- emits `title_repair` with dry-run/apply state, event-review cluster counts, and per-event change rows
+- staged cases include `event_review_cluster_id` and `event_review_cluster_status`
+- mutually exclusive with `-stage-event-reviews`, `-repair-descriptions`, and `-backfill-image-focus`
 
 Image focus backfill:
 
@@ -242,18 +248,4 @@ Image focus backfill:
 - reads existing local copied image files from `MEDIA_ROOT`
 - recomputes image focus metadata on `image_assets`, `review_candidates`, and `events`
 - emits `updated`, `defaulted`, `missing_files`, `decode_failures`, and any per-asset errors
-- mutually exclusive with live ingest, replay, review fixture creation, review staging, and description repair
-
-Offline review fixture:
-
-- primary flag: `-review-ics-fixture`
-- alias: `-review-fixture`
-- mutually exclusive with replay
-- reads a local ICS file
-- does not use the network
-- parses candidates, skips, and errors
-- creates one offline review group
-- prints a JSON report with the fixture path, group ID, candidate count, skips, and errors
-
-`-review-title` sets the review-group title used with `-review-ics-fixture`.
-`-review-ics-fixture` remains non-idempotent.
+- mutually exclusive with live ingest, replay, review staging, and description repair

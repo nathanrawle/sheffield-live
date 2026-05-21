@@ -100,12 +100,13 @@ Expected in `/tmp/sheffield-live-web-json.log`:
 
 ## Ingest Stdout/Stderr Separation
 
-Run a network-free fixture ingest:
+Run a staged ingest:
 
 ```bash
 DB_PATH="$INGEST_DB" LOG_LEVEL=info LOG_FORMAT=text \
   go run ./cmd/ingest \
-  -review-ics-fixture internal/ingest/testdata/sidney.ics \
+  -source sidney-and-matilda \
+  -stage-event-reviews \
   >"$INGEST_JSON" 2>"$INGEST_LOG"
 ```
 
@@ -119,7 +120,7 @@ Expected logs in `$INGEST_LOG`:
 
 ```text
 msg="ingest starting"
-mode=review_fixture
+mode=live
 msg="ingest finished"
 status=succeeded
 ```
@@ -135,7 +136,7 @@ This should print nothing.
 ## Invalid Logging Config
 
 ```bash
-LOG_LEVEL=trace go run ./cmd/ingest -review-ics-fixture internal/ingest/testdata/sidney.ics >/tmp/ignored.json
+LOG_LEVEL=trace go run ./cmd/ingest -source sidney-and-matilda -stage-event-reviews >/tmp/ignored.json
 ```
 
 Expected:
