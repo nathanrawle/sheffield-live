@@ -747,13 +747,14 @@ func TestAdminReviewRendersTitleRepairReadiness(t *testing.T) {
 			},
 			wantContains: []string{
 				"target slug already belongs to another live event",
-				`href="/events/title-repair-slug-conflict"`,
+				`href="/admin/events/title-repair-slug-conflict"`,
 				"event #91",
 				"title-repair-slug-conflict",
 			},
 			wantNotContain: []string{
 				"Apply stored live actions",
 				`name="action" value="resolve_live_actions"`,
+				`href="/events/title-repair-slug-conflict"`,
 			},
 		},
 	}
@@ -1015,6 +1016,8 @@ func TestAdminEventReviewDetailShowsImportReviewReadiness(t *testing.T) {
 					SourceName:          "Fixture source",
 					SourceURL:           "https://source.example.test/events",
 					SourceAuthority:     store.SourceAuthoritySupporting,
+					EventID:             int64Ptr(72),
+					EventSlug:           "import-ready-existing-event",
 					ExternalID:          "external-ready",
 					Title:               "Import Ready Title",
 					VenueSlug:           "leadmill",
@@ -1037,6 +1040,8 @@ func TestAdminEventReviewDetailShowsImportReviewReadiness(t *testing.T) {
 	assertContains(t, body, "yes")
 	assertContains(t, body, "Fixture source")
 	assertContains(t, body, "import-ready-fingerprint")
+	assertContains(t, body, `href="/admin/events/import-ready-existing-event"`)
+	assertNotContains(t, body, `href="/events/import-ready-existing-event"`)
 	assertContains(t, body, "external-ready")
 	assertContains(t, body, "Import Ready Title")
 	assertContains(t, body, "leadmill")
@@ -1373,6 +1378,8 @@ func TestAdminEventReviewDetailShowsSourceIdentityLinks(t *testing.T) {
 	assertContains(t, body, "Source #42")
 	assertContains(t, body, "2 evidence rows")
 	assertContains(t, body, "event #88")
+	assertContains(t, body, `href="/admin/events/source-link-linked-event"`)
+	assertNotContains(t, body, `href="/events/source-link-linked-event"`)
 	assertContains(t, body, "Legacy Event")
 	assertContains(t, body, "authoritative")
 	assertContains(t, body, "unlinked")
@@ -1424,6 +1431,8 @@ func TestAdminEventReviewDetailShowsExactIdentityMatches(t *testing.T) {
 	assertContains(t, body, "exact-linked-key")
 	assertContains(t, body, "2 evidence rows")
 	assertContains(t, body, "event #177")
+	assertContains(t, body, `href="/admin/events/exact-linked-event"`)
+	assertNotContains(t, body, `href="/events/exact-linked-event"`)
 	assertContains(t, body, "Exact Linked Event")
 	assertContains(t, body, "exact-linked-venue")
 	assertContains(t, body, "13:05")
@@ -1645,10 +1654,14 @@ func TestAdminEventReviewDetailShowsCandidateIdentityStatuses(t *testing.T) {
 	assertContains(t, body, "Alpha Candidate")
 	assertContains(t, body, "Alpha Linked Event")
 	assertContains(t, body, "event #501")
+	assertContains(t, body, `href="/admin/events/alpha-linked-event"`)
+	assertNotContains(t, body, `href="/events/alpha-linked-event"`)
 	assertContains(t, body, "Source Linked Event")
 	assertContains(t, body, "event #601")
+	assertContains(t, body, `href="/admin/events/source-linked-event"`)
 	assertContains(t, body, "Source Supporting Event")
 	assertContains(t, body, "event #602")
+	assertContains(t, body, `href="/admin/events/source-supporting-event"`)
 	assertContains(t, body, "Linked to event #501")
 	assertContains(t, body, "Linked to event #601")
 	assertContains(t, body, "Linked to event #602")
@@ -2047,6 +2060,8 @@ func TestAdminEventReviewDetailShowsSourceIdentityChoiceSaveForm(t *testing.T) {
 	assertContains(t, body, "admin source identity choice cleared")
 	assertContains(t, body, "15 May 2026 10:55")
 	assertContains(t, body, "Alpha Source Event")
+	assertContains(t, body, `href="/admin/events/source-alpha-event"`)
+	assertNotContains(t, body, `href="/events/source-alpha-event"`)
 }
 
 func TestAdminEventReviewDetailHidesSourceIdentityChoiceSaveFormForTerminalOrNonImportClusters(t *testing.T) {

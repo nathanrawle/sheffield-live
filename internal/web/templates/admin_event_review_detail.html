@@ -114,7 +114,7 @@
           <th scope="row">evidence #{{.EvidenceID}}<br><small><code>{{.EvidenceFingerprint}}</code></small></th>
           <td>{{if .SourceName}}{{.SourceName}}<br>{{end}}{{if .SourceURL}}<code>{{.SourceURL}}</code>{{else}}&mdash;{{end}}</td>
           <td>{{if .SourceAuthority}}{{.SourceAuthority}}{{else}}&mdash;{{end}}</td>
-          <td>{{if .EventID}}{{if .EventSlug}}<a href="/events/{{.EventSlug}}">event #{{.EventID}}<br><small>{{.EventSlug}}</small></a>{{else}}event #{{.EventID}}{{end}}{{else}}&mdash;{{end}}</td>
+          <td>{{if .EventID}}{{if .EventSlug}}<a href="/admin/events/{{.EventSlug}}">event #{{.EventID}}<br><small>{{.EventSlug}}</small></a>{{else}}event #{{.EventID}}{{end}}{{else}}&mdash;{{end}}</td>
           <td>{{if .ExternalID}}<code>{{.ExternalID}}</code>{{else}}&mdash;{{end}}</td>
           <td>{{blankValue .Title}}</td>
           <td>{{if .VenueSlug}}<code>{{.VenueSlug}}</code>{{if .VenueText}}<br>{{.VenueText}}{{end}}{{else if .VenueText}}{{.VenueText}}{{else}}&mdash;{{end}}</td>
@@ -256,7 +256,7 @@
             </td>
             <td>
               {{if .LinkedEventID}}
-                {{if .LinkedEventSlug}}<a href="/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
                 {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
                 <br><small>{{if .Authoritative}}authoritative{{else}}supporting{{end}}</small>
               {{else}}
@@ -346,7 +346,7 @@
             </td>
             <td>
               {{if .LinkedEventID}}
-                {{if .LinkedEventSlug}}<a href="/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
                 {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
               {{else}}
                 No source link
@@ -380,7 +380,7 @@
             <td><code>{{.IdentityKeyHash}}</code></td>
             <td>
               {{if .LinkedEventID}}
-                {{if .LinkedEventSlug}}<a href="/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
                 {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
               {{else}}
                 No live match
@@ -414,7 +414,7 @@
             <td>{{if .SourceName}}{{.SourceName}}{{else}}Source #{{.SourceID}}{{end}}</td>
             <td>
               {{if .LinkedEventID}}
-                {{if .LinkedEventSlug}}<a href="/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
                 {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
                 <br><small>{{if .Authoritative}}authoritative{{else}}supporting{{end}}</small>
               {{else}}
@@ -468,7 +468,7 @@
                 <code>{{.NormalizedKey}}</code><br>
                 <small>hash <code>{{.IdentityKeyHash}}</code></small><br>
                 {{if .LinkedEventID}}
-                  {{if .LinkedEventSlug}}<a href="/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                  {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
                   {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
                 {{else}}
                   No live match
@@ -488,7 +488,7 @@
                 <code>{{.SourceIdentityKey}}</code><br>
                 <small>{{if .SourceName}}{{.SourceName}}{{else}}Source #{{.SourceID}}{{end}}</small><br>
                 {{if .LinkedEventID}}
-                  {{if .LinkedEventSlug}}<a href="/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
+                  {{if .LinkedEventSlug}}<a href="/admin/events/{{.LinkedEventSlug}}">Linked to event #{{.LinkedEventID}}</a>{{else}}Linked to event #{{.LinkedEventID}}{{end}}
                   {{with .LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
                   <br><small>{{if .Authoritative}}authoritative{{else}}supporting{{end}}</small>
                 {{else}}
@@ -567,7 +567,7 @@
     {{if .SlugConflictEventID}}
     <div class="review-summary-row">
       <div class="review-summary-label">Slug conflict</div>
-      <div class="review-summary-value">{{if .SlugConflictEventSlug}}<a href="/events/{{.SlugConflictEventSlug}}">event #{{.SlugConflictEventID}}</a>{{else}}event #{{.SlugConflictEventID}}{{end}}</div>
+      <div class="review-summary-value">{{if .SlugConflictEventSlug}}<a href="/admin/events/{{.SlugConflictEventSlug}}">event #{{.SlugConflictEventID}}</a>{{else}}event #{{.SlugConflictEventID}}{{end}}</div>
       <div class="review-summary-candidate">{{if .SlugConflictEventSlug}}{{.SlugConflictEventSlug}}{{else}}&mdash;{{end}}</div>
     </div>
     {{end}}
@@ -916,7 +916,7 @@
           <td>{{$match.EvidenceCount}} evidence row{{if ne $match.EvidenceCount 1}}s{{end}}</td>
           <td>
             {{with $match.LinkedEventID}}
-              {{if $match.LinkedEventSlug}}<a href="/events/{{$match.LinkedEventSlug}}">event #{{.}}</a>{{else}}event #{{.}}{{end}}
+              {{if $match.LinkedEventSlug}}<a href="/admin/events/{{$match.LinkedEventSlug}}">event #{{.}}</a>{{else}}event #{{.}}{{end}}
               {{with $match.LinkedEventTitle}}<br><small>{{.}}</small>{{end}}
               {{with $match.LinkedEventVenueSlug}}<br><small>venue {{.}}</small>{{end}}
               {{with $match.LinkedEventStartAt}}<br><small>{{dateShortPtr .}} {{timeShortPtr .}}</small>{{end}}
@@ -1017,7 +1017,7 @@
           <td>{{$link.EvidenceCount}} evidence row{{if ne $link.EvidenceCount 1}}s{{end}}</td>
           <td>
             {{with $link.LinkedEventID}}
-              {{if $link.LinkedEventSlug}}<a href="/events/{{$link.LinkedEventSlug}}">event #{{.}}{{with $link.LinkedEventTitle}}<br><small>{{.}}</small>{{end}}</a>{{else}}event #{{.}}{{end}}
+              {{if $link.LinkedEventSlug}}<a href="/admin/events/{{$link.LinkedEventSlug}}">event #{{.}}{{with $link.LinkedEventTitle}}<br><small>{{.}}</small>{{end}}</a>{{else}}event #{{.}}{{end}}
             {{else}}
               not linked
             {{end}}
