@@ -29,7 +29,7 @@ Add a new family only when the source cannot be expressed by an existing family 
 
 ## Compatibility Notes
 
-First-seen singleton auto-publish is now runtime behavior rather than catalog gating. Owned-source singletons publish as reviewed events with authoritative source identity; supporting-source singletons publish provisionally when they are the first matching live event seen. `owned_venue_slug` defines authoritative overwrite rights. `non_authoritative_singleton_venue_slug` remains as compatibility metadata and should not be used as the primary way to reason about singleton publication behavior.
+First-seen singleton auto-publish is now runtime behavior rather than catalog gating. Owned-source singletons publish as reviewed events with authoritative source identity; supporting-source singletons publish provisionally when they are the first matching live event seen and are not blocked by the supporting-only near-title guard. `owned_venue_slug` defines authoritative overwrite rights. `non_authoritative_singleton_venue_slug` remains as compatibility metadata and should not be used as the primary way to reason about singleton publication behavior.
 
 In v1, these fields are replay-sensitive and review-sensitive:
 

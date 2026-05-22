@@ -207,6 +207,7 @@ Stage event-review clusters:
 - persists review-candidate venue evidence as `venue_text` and `venue_location_raw`; for ICS sources `venue_text` stays cleaned for display while `venue_location_raw` preserves the unfolded raw `LOCATION` text for later decoded comma/newline venue parsing
 - persists optional review-candidate room evidence as `room_text` plus room slug/name rows
 - singleton candidates may auto-promote when they are the first matching live event seen; authoritative sources can also upgrade provisional events in place
+- supporting singleton candidates are not auto-promoted when a nearby same-venue live event matches by exact clean title, aggressively normalized title, or normalized headliner
 - singleton auto-promotion can create a provisional venue row immediately for a uniquely new venue
 - duplicate event-review clusters may also auto-resolve as `canonical_exact_match` or `unanimous_duplicate`
 - reports `event_review_clusters_created` and `event_review_clusters_reused`
@@ -218,7 +219,7 @@ Stage event-review clusters:
 - `event_review_clusters_auto_resolved[].cluster_id` is the terminal auto-resolved cluster ID for that history row
 - each staged or reused cluster persists a link to the current import run
 - `-stage-event-reviews` can create provisional venue rows immediately for newly created staged clusters when venue evidence is uniquely new, even when no event is published yet
-- successful supporting singleton auto-promotion creates provisional events, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton clusters by `staging_key` while linking the current import run
+- successful supporting singleton auto-promotion creates provisional events, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton clusters by `staging_key` while linking the current import run; supporting singleton candidates blocked by the near-title guard remain available as staged review evidence
 - only runs after a successful ingest
 
 Description repair:
