@@ -209,3 +209,56 @@ func TestGuardedNearLiveEventMatchDisabledReturnsNoRecords(t *testing.T) {
 		t.Fatalf("records = %d, want 0", len(records))
 	}
 }
+
+func TestGuardedNearLiveEventMatchDoesNotUseHeuristicTitleVariants(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path, testSupportingSourceMetadata{})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		existingTitle = "Joe Carnall Jnr – Celebrates 20 years of Milburns Well Well Well"
+		incomingTitle = "Joe Carnall Jnr - Celebrates 20 years of Milburns Well Well Well"
+		existingStart = "2026-06-06T18:30:00Z"
+		incomingStart = "2026-06-06T18:00:00Z"
+	)
+	sourceID := mustEnsureSourceID(t, st, "Yellow Arch manual ingest", "https://www.yellowarch.com/event/joe-carnall-jnr-celebrates-20-years-of-milburns-well-well-well/")
+	slug := mustLiveEventSlug(t, existingTitle, "yellow-arch", existingStart)
+	mustInsertRepairLegacyEvent(t, db, sourceID, slug, "yellow-arch", existingTitle, existingStart, "Existing authoritative description.")
+
+	start, err := time.Parse(time.RFC3339, incomingStart)
+	if err != nil {
+		t.Fatalf("parse incoming start: %v", err)
+	}
+	records, enabled, err := guardedNearLiveEventMatchForEventTx(ctx, st.db, domain.Event{
+		Name:             incomingTitle,
+		VenueSlug:        "yellow-arch",
+		Start:            start,
+		Origin:           domain.OriginLive,
+		PublicationState: domain.PublicationStateReviewed,
+		SourceName:       "Yellow Arch manual ingest",
+	}, testSupportingSourceMetadata{})
+	if err != nil {
+		t.Fatalf("guarded near match: %v", err)
+	}
+	if !enabled {
+		t.Fatal("enabled = false, want true")
+	}
+	if len(records) != 0 {
+		t.Fatalf("records = %d, want 0", len(records))
+	}
+	if tier := nearTitleMatchTier("yellow-arch", incomingTitle, existingTitle); tier != nearTitleMatchTierVariant {
+		t.Fatalf("near title tier = %q, want %q", tier, nearTitleMatchTierVariant)
+	}
+}
