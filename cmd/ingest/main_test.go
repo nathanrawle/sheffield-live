@@ -2168,6 +2168,88 @@ func TestRunWithArgsLiveRecordsRetentionAndRunsAutomaticSnapshotCleanup(t *testi
 	}
 }
 
+func TestRunWithArgsLiveRepairDescriptionsRunsAutomaticSnapshotCleanup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	seedCLIStaleSnapshotCleanupRun(t, path)
+	freezeCLINowUTC(t, time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC))
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: runID,
+			StartedAt:   startedAt,
+			FinishedAt:  finishedAt,
+			Status:      "succeeded",
+			Limit:       opts.Limit,
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "-http-user-agent", "agent", "-repair-descriptions"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("run live description repair: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got := countCLISnapshotsForRun(t, db, 10); got != 0 {
+		t.Fatalf("stale run snapshots = %d, want deleted", got)
+	}
+	assertCLIPruneReason(t, db, 10, sqlite.SnapshotPruneReasonBoundedStale)
+}
+
+func TestRunWithArgsLiveRepairEventTitlesRunsAutomaticSnapshotCleanup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	seedCLIStaleSnapshotCleanupRun(t, path)
+	freezeCLINowUTC(t, time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC))
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: runID,
+			StartedAt:   startedAt,
+			FinishedAt:  finishedAt,
+			Status:      "succeeded",
+			Limit:       opts.Limit,
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "-http-user-agent", "agent", "-repair-event-titles"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("run live title repair: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got := countCLISnapshotsForRun(t, db, 10); got != 0 {
+		t.Fatalf("stale run snapshots = %d, want deleted", got)
+	}
+	assertCLIPruneReason(t, db, 10, sqlite.SnapshotPruneReasonBoundedStale)
+}
+
 func TestRunWithArgsLiveStagingRunsAutomaticSnapshotCleanup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	st, err := sqlite.Open(path)
@@ -2322,6 +2404,47 @@ func TestRunWithArgsAllSourcesRunsAutomaticSnapshotCleanup(t *testing.T) {
 	if latestStartAt, _, _ := loadCLIRetention(t, db, firstRunID); latestStartAt != "2026-06-01T18:00:00Z" {
 		t.Fatalf("latest start at = %q, want recorded all-sources retention", latestStartAt)
 	}
+}
+
+func TestRunWithArgsAllSourcesTitleRepairRunsAutomaticSnapshotCleanup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	seedCLIStaleSnapshotCleanupRun(t, path)
+	freezeCLINowUTC(t, time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC))
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: runID,
+			StartedAt:   startedAt,
+			FinishedAt:  finishedAt,
+			Status:      "succeeded",
+			Limit:       opts.Limit,
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent", "-repair-event-titles"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("run all-sources title repair: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got := countCLISnapshotsForRun(t, db, 10); got != 0 {
+		t.Fatalf("stale run snapshots = %d, want deleted", got)
+	}
+	assertCLIPruneReason(t, db, 10, sqlite.SnapshotPruneReasonBoundedStale)
 }
 
 func TestRunWithArgsAllSourcesContinuesAfterRetentionMetadataFailure(t *testing.T) {
@@ -3304,6 +3427,36 @@ func insertCLIRetention(t *testing.T, db *sql.DB, importRunID int64, latestStart
 	`, importRunID, latestStartAt, candidateCount, parseableStartCount, recordedAt); err != nil {
 		t.Fatalf("insert CLI snapshot retention for run %d: %v", importRunID, err)
 	}
+}
+
+func seedCLIStaleSnapshotCleanupRun(t *testing.T, path string) {
+	t.Helper()
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	insertCLIImportRun(t, db, 10, "2026-05-14T08:00:00Z", "2026-05-14T08:05:00Z", "succeeded")
+	insertCLISnapshots(t, db, 10, "2026-05-14T08:01:00Z", 2)
+	insertCLIRetention(t, db, 10, "2026-05-22T20:00:00Z", 2, 2, "2026-05-14T08:05:00Z")
+}
+
+func freezeCLINowUTC(t *testing.T, now time.Time) {
+	t.Helper()
+
+	originalNow := nowUTC
+	nowUTC = func() time.Time {
+		return now
+	}
+	t.Cleanup(func() {
+		nowUTC = originalNow
+	})
 }
 
 func openRawDB(t *testing.T, path string) *sql.DB {

@@ -239,7 +239,9 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 				Limit:  cfg.limit,
 			})
 			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
-			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
+			repairErr := runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
+			runAutomaticSnapshotCleanup(context.Background(), st, logger)
+			return repairErr
 		}
 		if cfg.repairEventTitles {
 			report, runErr := runLiveManualImportWithRetention(context.Background(), st, fetcher, catalog, ingest.Options{
@@ -247,7 +249,9 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 				Limit:  cfg.limit,
 			})
 			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
-			return runEventTitleRepair(context.Background(), st, stdout, catalog, report, runErr, cfg.applyTitleRepairs)
+			repairErr := runEventTitleRepair(context.Background(), st, stdout, catalog, report, runErr, cfg.applyTitleRepairs)
+			runAutomaticSnapshotCleanup(context.Background(), st, logger)
+			return repairErr
 		}
 		if err := configureImageIngest(&cfg); err != nil {
 			return err
@@ -1019,6 +1023,8 @@ func runAllSourcesTitleRepair(ctx context.Context, st *sqlite.Store, fetcher ing
 			summary.Totals.Errors += result.Report.Totals.Errors
 		}
 	}
+
+	runAutomaticSnapshotCleanup(ctx, st, logger)
 
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
