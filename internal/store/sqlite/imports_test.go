@@ -277,6 +277,68 @@ func TestLatestSuccessfulImportReturnsNilWithoutSuccessfulRun(t *testing.T) {
 	}
 }
 
+func TestLatestFinishedImportRunReturnsHighestFinishedID(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	startedAt := time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC)
+	insertImportRunSummaryFixture(t, db, 10, startedAt, startedAt.Add(time.Minute), "succeeded", "older success")
+	insertImportRunSummaryFixture(t, db, 30, startedAt.Add(time.Hour), startedAt.Add(2*time.Hour), "failed", "latest finished failure")
+	insertImportRunSummaryFixture(t, db, 40, startedAt.Add(3*time.Hour), time.Time{}, "succeeded", "unfinished higher id")
+	insertSnapshotsFixture(t, db, 30, startedAt.Add(time.Hour), 2)
+
+	run, err := st.LatestFinishedImportRun(ctx)
+	if err != nil {
+		t.Fatalf("latest finished import run: %v", err)
+	}
+	if run == nil {
+		t.Fatal("latest finished import run = nil, want run")
+	}
+	if run.ID != 30 {
+		t.Fatalf("run ID = %d, want 30", run.ID)
+	}
+	if run.Status != "failed" {
+		t.Fatalf("status = %q, want failed", run.Status)
+	}
+	if got, want := run.SnapshotCount, 2; got != want {
+		t.Fatalf("snapshot count = %d, want %d", got, want)
+	}
+}
+
+func TestLatestFinishedImportRunReturnsNilWithoutFinishedRun(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	startedAt := time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC)
+	insertImportRunSummaryFixture(t, db, 10, startedAt, time.Time{}, "running", "running")
+
+	run, err := st.LatestFinishedImportRun(ctx)
+	if err != nil {
+		t.Fatalf("latest finished import run: %v", err)
+	}
+	if run != nil {
+		t.Fatalf("latest finished import run = %#v, want nil", run)
+	}
+}
+
 func TestLoadImportRunReturnsOrderedSnapshots(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")

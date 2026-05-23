@@ -234,6 +234,37 @@ func (s *Store) LatestSuccessfulImport(ctx context.Context) (*ingest.ImportRunSu
 	return &summary, nil
 }
 
+func (s *Store) LatestFinishedImportRun(ctx context.Context) (*ingest.ImportRunSummary, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite store is not open")
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			ir.id,
+			ir.started_at,
+			ir.finished_at,
+			ir.status,
+			ir.notes,
+			COUNT(sn.id) AS snapshot_count
+		FROM import_runs ir
+		LEFT JOIN snapshots sn ON sn.import_run_id = ir.id
+		WHERE ir.finished_at IS NOT NULL AND TRIM(ir.finished_at) <> ''
+		GROUP BY ir.id, ir.started_at, ir.finished_at, ir.status, ir.notes
+		ORDER BY ir.id DESC
+		LIMIT 1
+	`)
+
+	summary, err := scanImportRunSummary(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &summary, nil
+}
+
 func scanImportRunSummary(row interface {
 	Scan(dest ...any) error
 }) (ingest.ImportRunSummary, error) {

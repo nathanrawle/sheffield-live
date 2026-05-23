@@ -39,22 +39,43 @@ func run() error {
 }
 
 type ingestCommandConfig struct {
+	command                  ingestCommand
+	fixKind                  fixCommandKind
 	source                   string
+	sourceSet                bool
 	allSources               bool
 	limit                    int
 	timeout                  time.Duration
 	httpUserAgent            string
 	contact                  string
 	dbPath                   string
+	dryRun                   bool
 	stageEventReviewClusters bool
+	replayImportRunID        int64
+	replayUseLatest          bool
 	repairDescriptions       bool
 	repairEventTitles        bool
-	applyTitleRepairs        bool
-	backfillImageFocus       bool
-	importRunID              int64
+	mediaRoot                string
 	imageFetcher             ingest.Fetcher
 	imageStorage             ingest.ImageStorage
 }
+
+type ingestCommand string
+
+const (
+	ingestCommandLive   ingestCommand = "live"
+	ingestCommandReplay ingestCommand = "replay"
+	ingestCommandFix    ingestCommand = "fix"
+)
+
+type fixCommandKind string
+
+const (
+	fixCommandTitles               fixCommandKind = "titles"
+	fixCommandDescriptions         fixCommandKind = "descriptions"
+	fixCommandHistoricalDuplicates fixCommandKind = "historical-duplicates"
+	fixCommandImageFocus           fixCommandKind = "image-focus"
+)
 
 var (
 	openSQLiteStore = sqlite.Open
@@ -169,86 +190,128 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 		}
 	}()
 
-	if cfg.backfillImageFocus {
-		return runImageFocusBackfill(context.Background(), st, stdout, env("MEDIA_ROOT", "./data/media"))
-	}
+	return runConfiguredCommand(context.Background(), st, catalog, cfg, stdout, logger, &summary)
+}
 
-	if cfg.limit < 1 || cfg.limit > ingest.MaxLimit {
-		return fmt.Errorf("-limit must be between 1 and %d", ingest.MaxLimit)
+func runConfiguredCommand(ctx context.Context, st *sqlite.Store, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
+	switch cfg.command {
+	case ingestCommandLive:
+		return runLiveIngestCommand(ctx, st, catalog, cfg, stdout, logger, summary)
+	case ingestCommandReplay:
+		return runReplayCommand(ctx, st, catalog, cfg, stdout, summary)
+	case ingestCommandFix:
+		return runFixCommand(ctx, st, catalog, cfg, stdout, logger, summary)
+	default:
+		return fmt.Errorf("unsupported ingest command %q", cfg.command)
+	}
+}
+
+func runLiveIngestCommand(ctx context.Context, st *sqlite.Store, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
+	if err := validateFetchConfig(cfg); err != nil {
+		return err
+	}
+	cfg.httpUserAgent = effectiveHTTPUserAgent(ctx, cfg)
+	fetcher, err := newHTTPFetcher(cfg.timeout, cfg.httpUserAgent)
+	if err != nil {
+		return err
+	}
+	if err := configureImageIngest(&cfg); err != nil {
+		return err
 	}
 	if cfg.allSources {
-		cfg.httpUserAgent = effectiveHTTPUserAgent(context.Background(), cfg)
-		if cfg.timeout <= 0 {
-			return errors.New("-timeout must be positive")
-		}
+		return runAllSources(ctx, st, fetcher, catalog, cfg, stdout, logger, summary)
+	}
+	result := runSingleManualSource(ctx, st, fetcher, catalog, cfg, cfg.source)
+	if summary != nil {
+		summary.applyManualRun(result)
+	}
+	return encodeManualRunResult(stdout, result)
+}
 
-		fetcher, err := newHTTPFetcher(cfg.timeout, cfg.httpUserAgent)
+func runReplayCommand(ctx context.Context, st *sqlite.Store, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, summary *ingestLogSummary) error {
+	if err := validateLimit(cfg.limit); err != nil {
+		return err
+	}
+	importRunID := cfg.replayImportRunID
+	if cfg.replayUseLatest {
+		latest, err := st.LatestFinishedImportRun(ctx)
 		if err != nil {
 			return err
 		}
-		if cfg.repairEventTitles {
-			return runAllSourcesTitleRepair(context.Background(), st, fetcher, catalog, cfg, stdout, logger, &summary)
+		if latest == nil {
+			return errors.New("no finished import runs found")
 		}
-		if err := configureImageIngest(&cfg); err != nil {
-			return err
+		if strings.EqualFold(strings.TrimSpace(latest.Status), "failed") {
+			return fmt.Errorf("latest finished import run %d failed; replay requires a succeeded run", latest.ID)
 		}
-		return runAllSources(context.Background(), st, fetcher, catalog, cfg, stdout, logger, &summary)
+		importRunID = latest.ID
 	}
-
-	var result manualRunExecution
-	if cfg.importRunID > 0 {
-		report, runErr := replayImportRun(context.Background(), st, catalog, cfg.importRunID, ingest.ReplayOptions{
-			Limit: cfg.limit,
-		})
-		if cfg.repairDescriptions {
+	report, runErr := replayImportRun(ctx, st, catalog, importRunID, ingest.ReplayOptions{
+		Limit: cfg.limit,
+	})
+	if cfg.repairDescriptions {
+		if summary != nil {
 			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
-			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
 		}
-		if cfg.repairEventTitles {
+		return runDescriptionRepair(ctx, st, stdout, catalog, report, runErr, !cfg.dryRun)
+	}
+	if cfg.repairEventTitles {
+		if summary != nil {
 			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
-			return runEventTitleRepair(context.Background(), st, stdout, catalog, report, runErr, cfg.applyTitleRepairs)
 		}
-		result = manualRunExecution{Report: report, Err: runErr}
-		if cfg.stageEventReviewClusters && !(runErr != nil && report.ImportRunID == 0) {
-			stageReport, stageErr := eventReviewClustersForReport(context.Background(), st, catalog, report, runErr)
-			result.EventReviewClusters = &stageReport
-			if stageErr != nil {
-				result.Err = stageErr
-			}
+		return runEventTitleRepair(ctx, st, stdout, catalog, report, runErr, !cfg.dryRun)
+	}
+	result := manualRunExecution{Report: report, Err: runErr}
+	if cfg.stageEventReviewClusters && !(runErr != nil && report.ImportRunID == 0) {
+		stageReport, stageErr := eventReviewClustersForReport(ctx, st, catalog, report, runErr)
+		result.EventReviewClusters = &stageReport
+		if stageErr != nil {
+			result.Err = stageErr
 		}
 	} else {
-		cfg.httpUserAgent = effectiveHTTPUserAgent(context.Background(), cfg)
-		if cfg.timeout <= 0 {
-			return errors.New("-timeout must be positive")
-		}
-
-		fetcher, err := newHTTPFetcher(cfg.timeout, cfg.httpUserAgent)
-		if err != nil {
-			return err
-		}
-		if cfg.repairDescriptions {
-			report, runErr := runManualImport(context.Background(), st, fetcher, catalog, ingest.Options{
-				Source: cfg.source,
-				Limit:  cfg.limit,
-			})
-			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
-			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
-		}
-		if cfg.repairEventTitles {
-			report, runErr := runManualImport(context.Background(), st, fetcher, catalog, ingest.Options{
-				Source: cfg.source,
-				Limit:  cfg.limit,
-			})
-			summary.applyManualRun(manualRunExecution{Report: report, Err: runErr})
-			return runEventTitleRepair(context.Background(), st, stdout, catalog, report, runErr, cfg.applyTitleRepairs)
-		}
-		if err := configureImageIngest(&cfg); err != nil {
-			return err
-		}
-		result = runSingleManualSource(context.Background(), st, fetcher, catalog, cfg, cfg.source)
+		stageReport := disabledEventReviewClusterReport()
+		result.EventReviewClusters = &stageReport
 	}
-	summary.applyManualRun(result)
-	return encodeManualRunResult(stdout, cfg.stageEventReviewClusters, result)
+	if summary != nil {
+		summary.applyManualRun(result)
+	}
+	return encodeManualRunResult(stdout, result)
+}
+
+func runFixCommand(ctx context.Context, st *sqlite.Store, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
+	switch cfg.fixKind {
+	case fixCommandTitles:
+		return runLiveSourceRepairs(ctx, st, catalog, cfg, repairKindTitles, stdout, logger, summary)
+	case fixCommandDescriptions:
+		return runLiveSourceRepairs(ctx, st, catalog, cfg, repairKindDescriptions, stdout, logger, summary)
+	case fixCommandHistoricalDuplicates:
+		return runHistoricalDuplicateRepair(ctx, st, stdout, !cfg.dryRun)
+	case fixCommandImageFocus:
+		mediaRoot := strings.TrimSpace(cfg.mediaRoot)
+		if mediaRoot == "" {
+			mediaRoot = env("MEDIA_ROOT", "./data/media")
+		}
+		return runImageFocusBackfill(ctx, st, stdout, mediaRoot, !cfg.dryRun)
+	default:
+		return fmt.Errorf("unsupported fix command %q", cfg.fixKind)
+	}
+}
+
+func validateFetchConfig(cfg ingestCommandConfig) error {
+	if err := validateLimit(cfg.limit); err != nil {
+		return err
+	}
+	if cfg.timeout <= 0 {
+		return errors.New("-timeout must be positive")
+	}
+	return nil
+}
+
+func validateLimit(limit int) error {
+	if limit < 1 || limit > ingest.MaxLimit {
+		return fmt.Errorf("-limit must be between 1 and %d", ingest.MaxLimit)
+	}
+	return nil
 }
 
 func configureImageIngest(cfg *ingestCommandConfig) error {
@@ -269,101 +332,269 @@ func configureImageIngest(cfg *ingestCommandConfig) error {
 }
 
 func parseIngestArgs(args []string) (ingestCommandConfig, error) {
-	var cfg ingestCommandConfig
-	var (
-		sourceFlag             trackedStringFlag
-		canonicalHTTPUserAgent trackedStringFlag
-		aliasHTTPUserAgent     trackedStringFlag
-		canonicalStage         trackedBoolFlag
-	)
-	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
+	if globalDB, rest, ok, err := leadingGlobalDBForSubcommand(args); err != nil {
+		return ingestCommandConfig{}, err
+	} else if ok {
+		return parseSubcommandArgs(rest, globalDB)
+	}
+	if len(args) > 0 {
+		switch args[0] {
+		case string(ingestCommandReplay), string(ingestCommandFix):
+			return parseSubcommandArgs(args, trackedStringFlag{})
+		}
+	}
+	return parseLiveIngestArgs(args, trackedStringFlag{})
+}
 
-	fs.Var(&sourceFlag, "source", "source to ingest (sidney-and-matilda, yellow-arch, cafe-no-9, jazz-at-the-lescar, the-greystones, leadmill, or corporation)")
-	fs.BoolVar(&cfg.allSources, "all-sources", false, "run all registered manual sources sequentially")
+func parseSubcommandArgs(args []string, globalDB trackedStringFlag) (ingestCommandConfig, error) {
+	if len(args) == 0 {
+		return ingestCommandConfig{}, errors.New("subcommand is required")
+	}
+	switch args[0] {
+	case string(ingestCommandReplay):
+		return parseReplayArgs(args[1:], globalDB)
+	case string(ingestCommandFix):
+		return parseFixArgs(args[1:], globalDB)
+	default:
+		return ingestCommandConfig{}, fmt.Errorf("unknown subcommand %q", args[0])
+	}
+}
+
+func parseLiveIngestArgs(args []string, globalDB trackedStringFlag) (ingestCommandConfig, error) {
+	cfg := defaultCommandConfig(ingestCommandLive)
+	var sourceFlag, userAgentFlag, dbFlag trackedStringFlag
+	fs := newIngestFlagSet("ingest")
+	fs.Var(&sourceFlag, "source", "source to ingest")
 	fs.IntVar(&cfg.limit, "limit", ingest.DefaultLimit, "maximum linked pages to fetch from a source page")
 	fs.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "HTTP timeout")
-	fs.Var(&canonicalHTTPUserAgent, "http-user-agent", "HTTP User-Agent header")
-	fs.Var(&aliasHTTPUserAgent, "user-agent", "HTTP User-Agent header")
+	fs.Var(&userAgentFlag, "user-agent", "HTTP User-Agent header")
 	fs.StringVar(&cfg.contact, "contact", "", "contact detail for the default HTTP User-Agent header; use none|null|false to suppress contact info")
-	fs.StringVar(&cfg.dbPath, "db", "", "SQLite database path")
-	fs.Var(&canonicalStage, "stage-event-reviews", "stage ingest candidates into admin event-review clusters")
-	fs.BoolVar(&cfg.repairDescriptions, "repair-descriptions", false, "repair existing event descriptions from ingest candidates without staging or promotion")
-	fs.BoolVar(&cfg.repairEventTitles, "repair-event-titles", false, "repair existing event titles from ingest candidates; dry-run unless -apply-title-repairs is set")
-	fs.BoolVar(&cfg.applyTitleRepairs, "apply-title-repairs", false, "apply event title repairs instead of reporting a dry-run")
-	fs.BoolVar(&cfg.backfillImageFocus, "backfill-image-focus", false, "recompute focus points for copied local images and update stored image metadata")
-	fs.Int64Var(&cfg.importRunID, "import-run-id", 0, "replay an existing import run from stored snapshots")
-
+	fs.Var(&dbFlag, "db", "SQLite database path")
+	fs.BoolVar(&cfg.dryRun, "dry-run", false, "skip event-review staging; import snapshots are still written")
 	if err := fs.Parse(args); err != nil {
 		return ingestCommandConfig{}, err
 	}
+	if fs.NArg() > 0 {
+		return ingestCommandConfig{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	dbPath, err := mergeDBPath(globalDB, dbFlag)
+	if err != nil {
+		return ingestCommandConfig{}, err
+	}
+	cfg.dbPath = dbPath
+	cfg.httpUserAgent = userAgentFlag.value
+	cfg.sourceSet = sourceFlag.set
+	cfg.allSources = !sourceFlag.set
 	if sourceFlag.set {
 		cfg.source = sourceFlag.value
-	} else {
-		cfg.source = ingest.DefaultSource
 	}
-	if conflictOnTrackedValues(canonicalHTTPUserAgent.values, aliasHTTPUserAgent.values) {
-		return ingestCommandConfig{}, errors.New("-http-user-agent and -user-agent must match")
+	cfg.stageEventReviewClusters = !cfg.dryRun
+	return cfg, nil
+}
+
+func parseReplayArgs(args []string, globalDB trackedStringFlag) (ingestCommandConfig, error) {
+	cfg := defaultCommandConfig(ingestCommandReplay)
+	cfg.replayUseLatest = true
+	var dbFlag trackedStringFlag
+	fs := newIngestFlagSet("ingest replay")
+	fs.Var(&dbFlag, "db", "SQLite database path")
+	fs.IntVar(&cfg.limit, "limit", ingest.DefaultLimit, "maximum linked pages to replay from a source page")
+	fs.BoolVar(&cfg.dryRun, "dry-run", false, "skip event-review staging or repair writes")
+	fs.BoolVar(&cfg.repairEventTitles, "titles", false, "repair event titles from the replayed report")
+	fs.BoolVar(&cfg.repairDescriptions, "descriptions", false, "repair event descriptions from the replayed report")
+	if err := fs.Parse(args); err != nil {
+		return ingestCommandConfig{}, err
 	}
-	if canonicalHTTPUserAgent.set {
-		cfg.httpUserAgent = canonicalHTTPUserAgent.value
-	} else {
-		cfg.httpUserAgent = aliasHTTPUserAgent.value
-	}
-	if canonicalStage.set {
-		cfg.stageEventReviewClusters = canonicalStage.value
-	}
-	if cfg.importRunID < 0 {
-		return ingestCommandConfig{}, errors.New("-import-run-id must be positive")
-	}
-	if cfg.allSources && sourceFlag.set {
-		return ingestCommandConfig{}, errors.New("-all-sources and -source are mutually exclusive")
-	}
-	if cfg.allSources && cfg.importRunID > 0 {
-		return ingestCommandConfig{}, errors.New("-all-sources and -import-run-id are mutually exclusive")
-	}
-	if cfg.repairDescriptions && cfg.stageEventReviewClusters {
-		return ingestCommandConfig{}, errors.New("-repair-descriptions and -stage-event-reviews are mutually exclusive")
-	}
-	if cfg.repairEventTitles && cfg.stageEventReviewClusters {
-		return ingestCommandConfig{}, errors.New("-repair-event-titles and -stage-event-reviews are mutually exclusive")
-	}
-	if cfg.repairDescriptions && cfg.allSources {
-		return ingestCommandConfig{}, errors.New("-repair-descriptions and -all-sources are mutually exclusive")
+	if fs.NArg() > 1 {
+		return ingestCommandConfig{}, errors.New("replay accepts at most one import run ID; flags must precede the ID")
 	}
 	if cfg.repairEventTitles && cfg.repairDescriptions {
-		return ingestCommandConfig{}, errors.New("-repair-event-titles and -repair-descriptions are mutually exclusive")
+		return ingestCommandConfig{}, errors.New("replay -titles and -descriptions are mutually exclusive")
 	}
-	if cfg.applyTitleRepairs && !cfg.repairEventTitles {
-		return ingestCommandConfig{}, errors.New("-apply-title-repairs requires -repair-event-titles")
+	if fs.NArg() == 1 {
+		id, err := strconv.ParseInt(strings.TrimSpace(fs.Arg(0)), 10, 64)
+		if err != nil {
+			return ingestCommandConfig{}, fmt.Errorf("parse replay import run ID: %w", err)
+		}
+		if id <= 0 {
+			return ingestCommandConfig{}, errors.New("replay import run ID must be positive")
+		}
+		cfg.replayImportRunID = id
+		cfg.replayUseLatest = false
 	}
-	if cfg.repairDescriptions && cfg.importRunID == 0 {
-		source := strings.TrimSpace(cfg.source)
-		if source != ingest.DefaultSource && source != ingest.CafeNo9Source {
-			return ingestCommandConfig{}, errors.New("-repair-descriptions supports only -source sidney-and-matilda or -source cafe-no-9")
-		}
+	dbPath, err := mergeDBPath(globalDB, dbFlag)
+	if err != nil {
+		return ingestCommandConfig{}, err
 	}
-	if cfg.backfillImageFocus {
-		if cfg.allSources {
-			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -all-sources are mutually exclusive")
-		}
-		if sourceFlag.set {
-			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -source are mutually exclusive")
-		}
-		if cfg.importRunID > 0 {
-			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -import-run-id are mutually exclusive")
-		}
-		if cfg.stageEventReviewClusters {
-			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -stage-event-reviews are mutually exclusive")
-		}
-		if cfg.repairDescriptions {
-			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -repair-descriptions are mutually exclusive")
-		}
-		if cfg.repairEventTitles {
-			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -repair-event-titles are mutually exclusive")
-		}
+	cfg.dbPath = dbPath
+	cfg.stageEventReviewClusters = !cfg.dryRun && !cfg.repairEventTitles && !cfg.repairDescriptions
+	return cfg, nil
+}
+
+func parseFixArgs(args []string, globalDB trackedStringFlag) (ingestCommandConfig, error) {
+	if len(args) == 0 {
+		return ingestCommandConfig{}, errors.New("fix subcommand is required")
+	}
+	kind := fixCommandKind(args[0])
+	switch kind {
+	case fixCommandTitles, fixCommandDescriptions:
+		return parseLiveFixArgs(kind, args[1:], globalDB)
+	case fixCommandHistoricalDuplicates:
+		return parseHistoricalDuplicateFixArgs(args[1:], globalDB)
+	case fixCommandImageFocus:
+		return parseImageFocusFixArgs(args[1:], globalDB)
+	default:
+		return ingestCommandConfig{}, fmt.Errorf("unknown fix subcommand %q", args[0])
+	}
+}
+
+func parseLiveFixArgs(kind fixCommandKind, args []string, globalDB trackedStringFlag) (ingestCommandConfig, error) {
+	cfg := defaultCommandConfig(ingestCommandFix)
+	cfg.fixKind = kind
+	cfg.repairEventTitles = kind == fixCommandTitles
+	cfg.repairDescriptions = kind == fixCommandDescriptions
+	var sourceFlag, userAgentFlag, dbFlag trackedStringFlag
+	fs := newIngestFlagSet("ingest fix " + string(kind))
+	fs.Var(&sourceFlag, "source", "source to repair")
+	fs.IntVar(&cfg.limit, "limit", ingest.DefaultLimit, "maximum linked pages to fetch from a source page")
+	fs.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "HTTP timeout")
+	fs.Var(&userAgentFlag, "user-agent", "HTTP User-Agent header")
+	fs.StringVar(&cfg.contact, "contact", "", "contact detail for the default HTTP User-Agent header; use none|null|false to suppress contact info")
+	fs.Var(&dbFlag, "db", "SQLite database path")
+	fs.BoolVar(&cfg.dryRun, "dry-run", false, "skip repair writes; import snapshots are still written")
+	if err := fs.Parse(args); err != nil {
+		return ingestCommandConfig{}, err
+	}
+	if fs.NArg() > 0 {
+		return ingestCommandConfig{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	dbPath, err := mergeDBPath(globalDB, dbFlag)
+	if err != nil {
+		return ingestCommandConfig{}, err
+	}
+	cfg.dbPath = dbPath
+	cfg.httpUserAgent = userAgentFlag.value
+	cfg.sourceSet = sourceFlag.set
+	cfg.allSources = !sourceFlag.set
+	if sourceFlag.set {
+		cfg.source = sourceFlag.value
+	}
+	if kind == fixCommandDescriptions && sourceFlag.set && !descriptionRepairSourceSupported(sourceFlag.value) {
+		return ingestCommandConfig{}, fmt.Errorf("fix descriptions does not support -source %s", sourceFlag.value)
 	}
 	return cfg, nil
+}
+
+func parseHistoricalDuplicateFixArgs(args []string, globalDB trackedStringFlag) (ingestCommandConfig, error) {
+	cfg := defaultCommandConfig(ingestCommandFix)
+	cfg.fixKind = fixCommandHistoricalDuplicates
+	var dbFlag trackedStringFlag
+	fs := newIngestFlagSet("ingest fix historical-duplicates")
+	fs.Var(&dbFlag, "db", "SQLite database path")
+	fs.BoolVar(&cfg.dryRun, "dry-run", false, "report historical duplicate repairs without writing")
+	if err := fs.Parse(args); err != nil {
+		return ingestCommandConfig{}, err
+	}
+	if fs.NArg() > 0 {
+		return ingestCommandConfig{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	dbPath, err := mergeDBPath(globalDB, dbFlag)
+	if err != nil {
+		return ingestCommandConfig{}, err
+	}
+	cfg.dbPath = dbPath
+	return cfg, nil
+}
+
+func parseImageFocusFixArgs(args []string, globalDB trackedStringFlag) (ingestCommandConfig, error) {
+	cfg := defaultCommandConfig(ingestCommandFix)
+	cfg.fixKind = fixCommandImageFocus
+	var dbFlag trackedStringFlag
+	fs := newIngestFlagSet("ingest fix image-focus")
+	fs.Var(&dbFlag, "db", "SQLite database path")
+	fs.StringVar(&cfg.mediaRoot, "media-root", "", "local media root")
+	fs.BoolVar(&cfg.dryRun, "dry-run", false, "report image focus repairs without writing")
+	if err := fs.Parse(args); err != nil {
+		return ingestCommandConfig{}, err
+	}
+	if fs.NArg() > 0 {
+		return ingestCommandConfig{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	dbPath, err := mergeDBPath(globalDB, dbFlag)
+	if err != nil {
+		return ingestCommandConfig{}, err
+	}
+	cfg.dbPath = dbPath
+	return cfg, nil
+}
+
+func defaultCommandConfig(command ingestCommand) ingestCommandConfig {
+	return ingestCommandConfig{
+		command: command,
+		limit:   ingest.DefaultLimit,
+		timeout: 10 * time.Second,
+	}
+}
+
+func newIngestFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}
+
+func leadingGlobalDBForSubcommand(args []string) (trackedStringFlag, []string, bool, error) {
+	var db trackedStringFlag
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		switch {
+		case arg == "-db" || arg == "--db":
+			if i+1 >= len(args) {
+				return trackedStringFlag{}, nil, false, errors.New("-db/--db requires a value")
+			}
+			if err := db.Set(args[i+1]); err != nil {
+				return trackedStringFlag{}, nil, false, err
+			}
+			i += 2
+		case strings.HasPrefix(arg, "-db="):
+			if err := db.Set(strings.TrimPrefix(arg, "-db=")); err != nil {
+				return trackedStringFlag{}, nil, false, err
+			}
+			i++
+		case strings.HasPrefix(arg, "--db="):
+			if err := db.Set(strings.TrimPrefix(arg, "--db=")); err != nil {
+				return trackedStringFlag{}, nil, false, err
+			}
+			i++
+		default:
+			if db.set && (arg == string(ingestCommandReplay) || arg == string(ingestCommandFix)) {
+				if conflictOnTrackedValues(db.values) {
+					return trackedStringFlag{}, nil, false, errors.New("global -db values must match")
+				}
+				return db, args[i:], true, nil
+			}
+			return trackedStringFlag{}, nil, false, nil
+		}
+	}
+	return trackedStringFlag{}, nil, false, nil
+}
+
+func mergeDBPath(global, local trackedStringFlag) (string, error) {
+	if conflictOnTrackedValues(global.values, local.values) {
+		return "", errors.New("global -db and command -db values must match")
+	}
+	if local.set {
+		return local.value, nil
+	}
+	if global.set {
+		return global.value, nil
+	}
+	return "", nil
+}
+
+func descriptionRepairSourceSupported(source string) bool {
+	source = strings.TrimSpace(source)
+	return source == ingest.DefaultSource || source == ingest.CafeNo9Source
 }
 
 func effectiveHTTPUserAgent(ctx context.Context, cfg ingestCommandConfig) string {
@@ -410,31 +641,6 @@ func (f *trackedStringFlag) Set(value string) error {
 	return nil
 }
 
-type trackedBoolFlag struct {
-	value  bool
-	set    bool
-	values []bool
-}
-
-func (f *trackedBoolFlag) String() string {
-	return strconv.FormatBool(f.value)
-}
-
-func (f *trackedBoolFlag) IsBoolFlag() bool {
-	return true
-}
-
-func (f *trackedBoolFlag) Set(value string) error {
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return err
-	}
-	f.value = parsed
-	f.set = true
-	f.values = append(f.values, parsed)
-	return nil
-}
-
 func conflictOnTrackedValues[T comparable](valueSets ...[]T) bool {
 	total := 0
 	for _, values := range valueSets {
@@ -475,11 +681,17 @@ type titleRepairRunReport struct {
 }
 
 type imageFocusBackfillReport struct {
+	DryRun         bool     `json:"dry_run"`
+	Applied        bool     `json:"applied"`
 	Updated        int      `json:"updated"`
 	Defaulted      int      `json:"defaulted"`
 	MissingFiles   int      `json:"missing_files"`
 	DecodeFailures int      `json:"decode_failures"`
 	Errors         []string `json:"errors,omitempty"`
+}
+
+type imageFocusRepairRunReport struct {
+	ImageFocus imageFocusBackfillReport `json:"image_focus"`
 }
 
 type manualRunExecution struct {
@@ -510,15 +722,23 @@ type batchManualIngestReport struct {
 }
 
 type batchManualIngestResult struct {
-	Source              string                         `json:"source"`
-	Report              ingest.Report                  `json:"report"`
-	EventReviewClusters *eventReviewClusterReport      `json:"review_stage,omitempty"`
-	TitleRepair         *sqlite.EventTitleRepairReport `json:"title_repair,omitempty"`
-	Error               string                         `json:"error,omitempty"`
+	Source              string                          `json:"source"`
+	Report              ingest.Report                   `json:"report"`
+	EventReviewClusters *eventReviewClusterReport       `json:"review_stage,omitempty"`
+	TitleRepair         *sqlite.EventTitleRepairReport  `json:"title_repair,omitempty"`
+	DescriptionRepair   *sqlite.DescriptionRepairReport `json:"description_repair,omitempty"`
+	Error               string                          `json:"error,omitempty"`
+}
+
+type batchSourceResult struct {
+	Result    batchManualIngestResult
+	LogResult manualRunExecution
+	Err       error
 }
 
 type eventReviewClusterReport struct {
 	Enabled                              bool                                   `json:"enabled"`
+	Applied                              bool                                   `json:"applied"`
 	EventReviewClustersCreated           int                                    `json:"event_review_clusters_created"`
 	EventReviewClustersReused            int                                    `json:"event_review_clusters_reused"`
 	CandidateCount                       int                                    `json:"candidate_count"`
@@ -563,30 +783,41 @@ func newIngestLogSummary(cfg ingestCommandConfig, dbPath string) ingestLogSummar
 		Source:                   cfg.source,
 		AllSources:               cfg.allSources,
 		StageEventReviewClusters: cfg.stageEventReviewClusters,
-		ImportRunID:              cfg.importRunID,
+		ImportRunID:              cfg.replayImportRunID,
 	}
 }
 
 func ingestMode(cfg ingestCommandConfig) string {
-	switch {
-	case cfg.backfillImageFocus:
-		return "image_focus_backfill"
-	case cfg.repairEventTitles && cfg.allSources:
-		return "title_repair_all_sources"
-	case cfg.allSources:
-		return "all_sources"
-	case cfg.repairDescriptions && cfg.importRunID > 0:
-		return "description_repair_replay"
-	case cfg.repairDescriptions:
-		return "description_repair_live"
-	case cfg.repairEventTitles && cfg.importRunID > 0:
-		return "title_repair_replay"
-	case cfg.repairEventTitles:
-		return "title_repair_live"
-	case cfg.importRunID > 0:
-		return "replay"
-	default:
+	switch cfg.command {
+	case ingestCommandReplay:
+		switch {
+		case cfg.repairDescriptions:
+			return "description_repair_replay"
+		case cfg.repairEventTitles:
+			return "title_repair_replay"
+		default:
+			return "replay"
+		}
+	case ingestCommandFix:
+		switch cfg.fixKind {
+		case fixCommandTitles:
+			return "title_repair_live"
+		case fixCommandDescriptions:
+			return "description_repair_live"
+		case fixCommandHistoricalDuplicates:
+			return "historical_duplicate_repair"
+		case fixCommandImageFocus:
+			return "image_focus_backfill"
+		default:
+			return "fix"
+		}
+	case ingestCommandLive:
+		if cfg.allSources {
+			return "all_sources"
+		}
 		return "live"
+	default:
+		return "unknown"
 	}
 }
 
@@ -650,7 +881,7 @@ func (s *ingestLogSummary) applyManualRun(result manualRunExecution) {
 
 func eventReviewClustersForReport(ctx context.Context, st eventReviewClusterStore, catalog *ingest.Catalog, report ingest.Report, runErr error) (eventReviewClusterReport, error) {
 	if runErr != nil {
-		return emptyEventReviewClusterReport(), nil
+		return skippedEventReviewClusterReport("skipped event review staging because the ingest run failed"), nil
 	}
 	return createEventReviewClustersFromReport(ctx, st, catalog, report)
 }
@@ -666,7 +897,8 @@ func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest
 		return manualRunExecution{Report: report, Err: runErr}
 	}
 	if !cfg.stageEventReviewClusters {
-		return manualRunExecution{Report: report, Err: runErr}
+		stageReport := disabledEventReviewClusterReport()
+		return manualRunExecution{Report: report, EventReviewClusters: &stageReport, Err: runErr}
 	}
 	stageReport, stageErr := eventReviewClustersForReport(ctx, st, catalog, report, runErr)
 	if stageErr != nil {
@@ -675,43 +907,39 @@ func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest
 	return manualRunExecution{Report: report, EventReviewClusters: &stageReport, Err: runErr}
 }
 
-func encodeManualRunResult(stdout io.Writer, stageEnabled bool, result manualRunExecution) error {
+func encodeManualRunResult(stdout io.Writer, result manualRunExecution) error {
 	if result.Err != nil && result.Report.ImportRunID == 0 {
 		return result.Err
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
-	if stageEnabled {
-		stage := emptyEventReviewClusterReport()
-		if result.EventReviewClusters != nil {
-			stage = *result.EventReviewClusters
-		}
-		if err := encoder.Encode(manualIngestReport{
-			Report:              result.Report,
-			EventReviewClusters: stage,
-		}); err != nil {
-			return err
-		}
-		return result.Err
+	stage := disabledEventReviewClusterReport()
+	if result.EventReviewClusters != nil {
+		stage = *result.EventReviewClusters
 	}
-	if err := encoder.Encode(result.Report); err != nil {
+	if err := encoder.Encode(manualIngestReport{
+		Report:              result.Report,
+		EventReviewClusters: stage,
+	}); err != nil {
 		return err
 	}
 	return result.Err
 }
 
-func runDescriptionRepair(ctx context.Context, st *sqlite.Store, stdout io.Writer, catalog *ingest.Catalog, report ingest.Report, runErr error) error {
+func runDescriptionRepair(ctx context.Context, st *sqlite.Store, stdout io.Writer, catalog *ingest.Catalog, report ingest.Report, runErr error, apply bool) error {
 	if runErr != nil && report.ImportRunID == 0 {
 		return runErr
 	}
 	repair := sqlite.DescriptionRepairReport{
+		DryRun:         !apply,
+		Applied:        apply,
 		RepairedSlugs:  []string{},
 		UnchangedSlugs: []string{},
 		SkippedTitles:  []string{},
 	}
 	if runErr == nil {
 		var err error
-		repair, err = st.RepairEventDescriptionsFromReport(ctx, catalog, report)
+		repair, err = st.RepairEventDescriptionsFromReportWithApply(ctx, catalog, report, apply)
 		if err != nil {
 			return err
 		}
@@ -754,12 +982,31 @@ func runEventTitleRepair(ctx context.Context, st *sqlite.Store, stdout io.Writer
 	return runErr
 }
 
-func runImageFocusBackfill(ctx context.Context, st *sqlite.Store, stdout io.Writer, mediaRoot string) error {
+type historicalDuplicateRepairRunReport struct {
+	HistoricalDuplicateRepair sqlite.HistoricalDuplicateRepairReport `json:"historical_duplicate_repair"`
+}
+
+func runHistoricalDuplicateRepair(ctx context.Context, st *sqlite.Store, stdout io.Writer, apply bool) error {
+	repair, err := st.RepairHistoricalDuplicateEvents(ctx, sqlite.HistoricalDuplicateRepairOptions{
+		Apply: apply,
+	})
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(historicalDuplicateRepairRunReport{HistoricalDuplicateRepair: repair})
+}
+
+func runImageFocusBackfill(ctx context.Context, st *sqlite.Store, stdout io.Writer, mediaRoot string, apply bool) error {
 	assets, err := st.ListImageAssets(ctx)
 	if err != nil {
 		return err
 	}
-	report := imageFocusBackfillReport{}
+	report := imageFocusBackfillReport{
+		DryRun:  !apply,
+		Applied: apply,
+	}
 	for _, asset := range assets {
 		assetPath, err := localMediaAssetPath(mediaRoot, asset.StoragePath)
 		if err != nil {
@@ -782,15 +1029,23 @@ func runImageFocusBackfill(ctx context.Context, st *sqlite.Store, stdout io.Writ
 				report.DecodeFailures++
 			}
 		}
-		if err := st.UpdateImageAssetFocus(ctx, asset.SourceURL, focus); err != nil {
-			report.Errors = append(report.Errors, fmt.Sprintf("%s: update focus: %v", asset.SourceURL, err))
-			continue
+		if apply {
+			if err := st.UpdateImageAssetFocus(ctx, asset.SourceURL, focus); err != nil {
+				report.Errors = append(report.Errors, fmt.Sprintf("%s: update focus: %v", asset.SourceURL, err))
+				continue
+			}
 		}
 		report.Updated++
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
-	return encoder.Encode(report)
+	if err := encoder.Encode(imageFocusRepairRunReport{ImageFocus: report}); err != nil {
+		return err
+	}
+	if len(report.Errors) > 0 {
+		return errors.New("one or more image focus repairs failed")
+	}
+	return nil
 }
 
 func localMediaAssetPath(mediaRoot, storagePath string) (string, error) {
@@ -809,28 +1064,30 @@ func localMediaAssetPath(mediaRoot, storagePath string) (string, error) {
 	return filepath.Join(mediaRoot, clean), nil
 }
 
-func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
+func runSourceBatch(sources []string, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary, failureErr error, runSource func(source string) batchSourceResult) error {
 	logger = logging.EnsureLogger(logger)
-	results := make([]batchManualIngestResult, 0, len(catalog.Keys()))
+	results := make([]batchManualIngestResult, 0, len(sources))
 	var failed bool
 	failedSources := 0
-	for _, source := range catalog.Keys() {
-		result := runSingleManualSource(ctx, st, fetcher, catalog, cfg, source)
-		batchResult := batchManualIngestResult{
-			Source: source,
-			Report: result.Report,
-		}
-		if result.EventReviewClusters != nil {
-			stageCopy := *result.EventReviewClusters
-			batchResult.EventReviewClusters = &stageCopy
-		}
-		if result.Err != nil {
-			batchResult.Error = result.Err.Error()
+	for _, source := range sources {
+		sourceResult := runSource(source)
+		batchResult := sourceResult.Result
+		batchResult.Source = source
+		if sourceResult.Err != nil {
+			batchResult.Error = sourceResult.Err.Error()
 			failed = true
 			failedSources++
 		}
 		results = append(results, batchResult)
-		logIngestSourceFinished(logger, source, result)
+
+		logResult := sourceResult.LogResult
+		if logResult.Report.Source == "" && logResult.Report.ImportRunID == 0 {
+			logResult.Report = batchResult.Report
+		}
+		if logResult.Err == nil {
+			logResult.Err = sourceResult.Err
+		}
+		logIngestSourceFinished(logger, source, logResult)
 	}
 	if summary != nil {
 		summary.Source = ""
@@ -861,67 +1118,90 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 		return err
 	}
 	if failed {
-		return errors.New("one or more source ingests failed")
+		return failureErr
 	}
 	return nil
 }
 
-func runAllSourcesTitleRepair(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
-	logger = logging.EnsureLogger(logger)
-	results := make([]batchManualIngestResult, 0, len(catalog.Keys()))
-	var failed bool
-	failedSources := 0
-	for _, source := range catalog.Keys() {
+func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
+	return runSourceBatch(catalog.Keys(), stdout, logger, summary, errors.New("one or more source ingests failed"), func(source string) batchSourceResult {
+		result := runSingleManualSource(ctx, st, fetcher, catalog, cfg, source)
+		batchResult := batchManualIngestResult{
+			Report: result.Report,
+		}
+		if result.EventReviewClusters != nil {
+			stageCopy := *result.EventReviewClusters
+			batchResult.EventReviewClusters = &stageCopy
+		}
+		return batchSourceResult{
+			Result:    batchResult,
+			LogResult: result,
+			Err:       result.Err,
+		}
+	})
+}
+
+type sourceRepairKind string
+
+const (
+	repairKindTitles       sourceRepairKind = "titles"
+	repairKindDescriptions sourceRepairKind = "descriptions"
+)
+
+func runLiveSourceRepairs(ctx context.Context, st *sqlite.Store, catalog *ingest.Catalog, cfg ingestCommandConfig, kind sourceRepairKind, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
+	if err := validateFetchConfig(cfg); err != nil {
+		return err
+	}
+	cfg.httpUserAgent = effectiveHTTPUserAgent(ctx, cfg)
+	fetcher, err := newHTTPFetcher(cfg.timeout, cfg.httpUserAgent)
+	if err != nil {
+		return err
+	}
+	sources := repairSourcesForConfig(catalog, cfg, kind)
+	return runSourceBatch(sources, stdout, logger, summary, fmt.Errorf("one or more source %s repairs failed", kind), func(source string) batchSourceResult {
 		report, runErr := runManualImport(ctx, st, fetcher, catalog, ingest.Options{
 			Source: source,
 			Limit:  cfg.limit,
 		})
 		batchResult := batchManualIngestResult{
-			Source: source,
 			Report: report,
 		}
 		if runErr == nil {
-			repair, err := st.RepairEventTitlesFromReport(ctx, catalog, report, cfg.applyTitleRepairs)
-			if err != nil {
-				runErr = err
-			} else {
-				batchResult.TitleRepair = &repair
+			switch kind {
+			case repairKindTitles:
+				repair, err := st.RepairEventTitlesFromReport(ctx, catalog, report, !cfg.dryRun)
+				if err != nil {
+					runErr = err
+				} else {
+					batchResult.TitleRepair = &repair
+				}
+			case repairKindDescriptions:
+				repair, err := st.RepairEventDescriptionsFromReportWithApply(ctx, catalog, report, !cfg.dryRun)
+				if err != nil {
+					runErr = err
+				} else {
+					batchResult.DescriptionRepair = &repair
+				}
+			default:
+				runErr = fmt.Errorf("unsupported source repair kind %q", kind)
 			}
 		}
-		if runErr != nil {
-			batchResult.Error = runErr.Error()
-			failed = true
-			failedSources++
+		return batchSourceResult{
+			Result:    batchResult,
+			LogResult: manualRunExecution{Report: report, Err: runErr},
+			Err:       runErr,
 		}
-		results = append(results, batchResult)
-		logIngestSourceFinished(logger, source, manualRunExecution{Report: report, Err: runErr})
-	}
-	if summary != nil {
-		summary.Source = ""
-		summary.Status = "succeeded"
-		summary.SourceCount = len(results)
-		summary.FailedSourceCount = failedSources
-		if failed {
-			summary.Status = "failed"
-		}
-		for _, result := range results {
-			summary.Totals.Links += result.Report.Totals.Links
-			summary.Totals.Snapshots += result.Report.Totals.Snapshots
-			summary.Totals.Candidates += result.Report.Totals.Candidates
-			summary.Totals.Skips += result.Report.Totals.Skips
-			summary.Totals.Errors += result.Report.Totals.Errors
-		}
-	}
+	})
+}
 
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(batchManualIngestReport{Results: results}); err != nil {
-		return err
+func repairSourcesForConfig(catalog *ingest.Catalog, cfg ingestCommandConfig, kind sourceRepairKind) []string {
+	if cfg.sourceSet {
+		return []string{cfg.source}
 	}
-	if failed {
-		return errors.New("one or more source title repairs failed")
+	if kind == repairKindDescriptions {
+		return []string{ingest.DefaultSource, ingest.CafeNo9Source}
 	}
-	return nil
+	return catalog.Keys()
 }
 
 func logIngestSourceFinished(logger *slog.Logger, source string, result manualRunExecution) {
@@ -1141,11 +1421,34 @@ func resolveEventReviewClusterSourceID(ctx context.Context, st eventReviewCluste
 func emptyEventReviewClusterReport() eventReviewClusterReport {
 	return eventReviewClusterReport{
 		Enabled:                         true,
+		Applied:                         true,
 		EventReviewClusters:             []eventReviewClusterReportItem{},
 		AutoPromoted:                    []eventReviewClusterAutoPromotedReport{},
 		EventReviewClustersAutoResolved: []eventReviewClusterAutoResolvedReport{},
 		Errors:                          []string{},
 	}
+}
+
+func disabledEventReviewClusterReport() eventReviewClusterReport {
+	return eventReviewClusterReport{
+		Enabled:                         false,
+		Applied:                         false,
+		EventReviewClusters:             []eventReviewClusterReportItem{},
+		AutoPromoted:                    []eventReviewClusterAutoPromotedReport{},
+		EventReviewClustersAutoResolved: []eventReviewClusterAutoResolvedReport{},
+		Errors:                          []string{},
+	}
+}
+
+func skippedEventReviewClusterReport(reason string) eventReviewClusterReport {
+	report := emptyEventReviewClusterReport()
+	report.Applied = false
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "skipped event review staging"
+	}
+	report.Errors = []string{reason}
+	return report
 }
 
 func env(key, fallback string) string {

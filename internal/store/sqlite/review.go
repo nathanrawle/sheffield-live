@@ -559,16 +559,25 @@ func updateSupportingMatchedEventTx(ctx context.Context, tx interface {
 }
 
 type DescriptionRepairReport struct {
+	DryRun         bool     `json:"dry_run"`
+	Applied        bool     `json:"applied"`
 	Repaired       int      `json:"description_repaired"`
 	Unchanged      int      `json:"description_unchanged"`
 	Skipped        int      `json:"description_skipped"`
+	RepairRunID    int64    `json:"repair_run_id,omitempty"`
 	RepairedSlugs  []string `json:"repaired_event_slugs"`
 	UnchangedSlugs []string `json:"unchanged_event_slugs"`
 	SkippedTitles  []string `json:"skipped_titles"`
 }
 
 func (s *Store) RepairEventDescriptionsFromReport(ctx context.Context, catalog *ingest.Catalog, report ingest.Report) (DescriptionRepairReport, error) {
-	repair := DescriptionRepairReport{
+	return s.RepairEventDescriptionsFromReportWithApply(ctx, catalog, report, true)
+}
+
+func (s *Store) RepairEventDescriptionsFromReportWithApply(ctx context.Context, catalog *ingest.Catalog, report ingest.Report, apply bool) (repair DescriptionRepairReport, err error) {
+	repair = DescriptionRepairReport{
+		DryRun:         !apply,
+		Applied:        apply,
 		RepairedSlugs:  []string{},
 		UnchangedSlugs: []string{},
 		SkippedTitles:  []string{},
@@ -582,6 +591,36 @@ func (s *Store) RepairEventDescriptionsFromReport(ctx context.Context, catalog *
 	if !strings.EqualFold(strings.TrimSpace(report.Status), "succeeded") {
 		return repair, nil
 	}
+
+	var repairRunID int64
+	ensureRepairRun := func() (int64, error) {
+		if !apply {
+			return 0, nil
+		}
+		if repairRunID > 0 {
+			return repairRunID, nil
+		}
+		startedAt := time.Now().UTC()
+		runID, createErr := s.createHistoricalDuplicateRepairRun(ctx, startedAt, descriptionRepairRunStartNotes())
+		if createErr != nil {
+			return 0, createErr
+		}
+		repairRunID = runID
+		repair.RepairRunID = repairRunID
+		return repairRunID, nil
+	}
+	defer func() {
+		if repairRunID <= 0 {
+			return
+		}
+		status := eventTitleRepairRunStatusSucceeded
+		if err != nil {
+			status = eventTitleRepairRunStatusCompletedWithErrors
+		}
+		if finishErr := s.finishHistoricalDuplicateRepairRun(ctx, repairRunID, status, descriptionRepairRunFinishNotes(status)); finishErr != nil && err == nil {
+			err = finishErr
+		}
+	}()
 
 	clusters := ingest.ReviewClustersFromReportWithCatalog(catalog, report)
 	for _, cluster := range clusters {
@@ -600,7 +639,7 @@ func (s *Store) RepairEventDescriptionsFromReport(ctx context.Context, catalog *
 			repair.SkippedTitles = append(repair.SkippedTitles, strings.TrimSpace(cluster.Title))
 			continue
 		}
-		result, err := s.repairAuthoritativeEventDescription(ctx, event, cluster.AuthoritativeSourceEventKey)
+		result, err := s.repairAuthoritativeEventDescription(ctx, event, cluster.AuthoritativeSourceEventKey, apply, ensureRepairRun)
 		if err != nil {
 			return repair, err
 		}
@@ -619,6 +658,14 @@ func (s *Store) RepairEventDescriptionsFromReport(ctx context.Context, catalog *
 	return repair, nil
 }
 
+func descriptionRepairRunStartNotes() string {
+	return "description repair"
+}
+
+func descriptionRepairRunFinishNotes(status string) string {
+	return "description repair " + strings.TrimSpace(status)
+}
+
 type descriptionRepairStatus string
 
 const (
@@ -632,7 +679,7 @@ type descriptionRepairResult struct {
 	EventSlug string
 }
 
-func (s *Store) repairAuthoritativeEventDescription(ctx context.Context, incoming domain.Event, sourceEventKey string) (descriptionRepairResult, error) {
+func (s *Store) repairAuthoritativeEventDescription(ctx context.Context, incoming domain.Event, sourceEventKey string, apply bool, ensureRepairRun titleRepairRunEnsurer) (descriptionRepairResult, error) {
 	incoming.Description = strings.TrimSpace(incoming.Description)
 	if !shouldReplaceDescription("", incoming.Description) {
 		return descriptionRepairResult{Status: descriptionRepairSkipped}, nil
@@ -655,6 +702,19 @@ func (s *Store) repairAuthoritativeEventDescription(ctx context.Context, incomin
 	}
 	if !shouldReplaceDescription(record.Event.Description, incoming.Description) {
 		return descriptionRepairResult{Status: descriptionRepairUnchanged, EventSlug: record.Event.Slug}, nil
+	}
+	if !apply {
+		return descriptionRepairResult{Status: descriptionRepairRepaired, EventSlug: record.Event.Slug}, nil
+	}
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return descriptionRepairResult{}, err
+	}
+	if _, err := ensureRepairRun(); err != nil {
+		return descriptionRepairResult{}, err
+	}
+	tx, err = s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return descriptionRepairResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE events
