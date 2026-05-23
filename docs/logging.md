@@ -34,7 +34,7 @@ ADMIN_AUTH_DISABLED=1 LOG_LEVEL=debug LOG_FORMAT=json go run ./cmd/web
 ```
 
 ```bash
-LOG_FORMAT=json go run ./cmd/ingest -source sidney-and-matilda -stage-event-reviews >report.json
+LOG_FORMAT=json go run ./cmd/ingest -source sidney-and-matilda >report.json
 ```
 
 If `LOG_LEVEL` or `LOG_FORMAT` is invalid, the command exits before starting and writes the configuration error to stderr.
@@ -83,7 +83,7 @@ Example JSON log:
 - ingest start
 - ingest finish
 - SQLite close failures
-- per-source summaries for `-all-sources`
+- per-source summaries for batch source commands
 - fatal command errors before exit
 
 Ingest start logs include:
@@ -109,12 +109,12 @@ Ingest finish logs include:
 - `skips`
 - `errors`
 
-When `-all-sources` is used, the finish log also includes:
+When a batch source command is used, the finish log also includes:
 
 - `sources`
 - `failed_sources`
 
-When `-stage-event-reviews` is used, the finish log also includes:
+When event-review staging is enabled, the finish log also includes:
 
 - `event_review_clusters_created`
 - `event_review_clusters_reused`
@@ -130,13 +130,13 @@ Ingest modes:
 - `description_repair_replay`
 - `title_repair_live`
 - `title_repair_replay`
-- `title_repair_all_sources`
+- `historical_duplicate_repair`
 - `image_focus_backfill`
 
 Example:
 
 ```bash
-go run ./cmd/ingest -source leadmill -http-user-agent "sheffield-live ingest (contact: you@example.com)" >report.json 2>ingest.log
+go run ./cmd/ingest -source leadmill -user-agent "sheffield-live ingest (contact: you@example.com)" >report.json 2>ingest.log
 ```
 
 `report.json` contains only the JSON report. `ingest.log` contains the structured operational logs.

@@ -961,37 +961,44 @@ func TestCreateEventReviewClustersFromReportPersistsAuthoritativeGroupMetadata(t
 	}
 }
 
-func TestParseIngestArgsFlagCompatibility(t *testing.T) {
+func TestParseIngestArgsCommandDispatch(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name         string
-		args         []string
-		wantUA       string
-		wantContact  string
-		wantStage    bool
-		wantTitle    bool
-		wantApply    bool
-		wantImportID int64
-		wantAll      bool
-		wantCleanup  bool
-		wantErr      bool
+		name       string
+		args       []string
+		wantCmd    ingestCommand
+		wantFix    fixCommandKind
+		wantSource string
+		wantSet    bool
+		wantAll    bool
+		wantUA     string
+		wantDB     string
+		wantDryRun bool
+		wantStage  bool
+		wantTitle  bool
+		wantDesc   bool
+		wantReplay int64
+		wantLatest bool
+		wantErr    bool
 	}{
-		{name: "canonical user agent", args: []string{"-http-user-agent", "agent"}, wantUA: "agent"},
-		{name: "alias user agent", args: []string{"-user-agent", "agent"}, wantUA: "agent"},
-		{name: "canonical+alias user agent same", args: []string{"-http-user-agent", "agent", "-user-agent", "agent"}, wantUA: "agent"},
-		{name: "canonical+alias user agent different", args: []string{"-http-user-agent", "agent-a", "-user-agent", "agent-b"}, wantErr: true},
-		{name: "reordered user agent mismatch", args: []string{"-http-user-agent", "agent-a", "-user-agent", "agent-b", "-http-user-agent", "agent-a"}, wantErr: true},
-		{name: "contact override", args: []string{"-contact", "ops@example.com"}, wantContact: "ops@example.com"},
-		{name: "contact suppression", args: []string{"-contact", "none"}, wantContact: "none"},
-		{name: "canonical stage event reviews", args: []string{"-stage-event-reviews"}, wantStage: true},
-		{name: "removed stage review groups alias", args: []string{"-stage-review-groups"}, wantErr: true},
-		{name: "removed stage review alias", args: []string{"-stage-review"}, wantErr: true},
-		{name: "event title repair dry run", args: []string{"-repair-event-titles"}, wantTitle: true},
-		{name: "event title repair apply", args: []string{"-repair-event-titles", "-apply-title-repairs"}, wantTitle: true, wantApply: true},
-		{name: "replay mode", args: []string{"-import-run-id", "42"}, wantImportID: 42},
-		{name: "all sources mode", args: []string{"-all-sources"}, wantAll: true},
-		{name: "cleanup stale snapshots", args: []string{"-cleanup-stale-snapshots"}, wantCleanup: true},
+		{name: "bare live all sources", args: nil, wantCmd: ingestCommandLive, wantAll: true, wantStage: true},
+		{name: "single source live", args: []string{"-source", ingest.LeadmillSource}, wantCmd: ingestCommandLive, wantSource: ingest.LeadmillSource, wantSet: true, wantStage: true},
+		{name: "live dry run", args: []string{"-dry-run"}, wantCmd: ingestCommandLive, wantAll: true, wantDryRun: true},
+		{name: "user agent", args: []string{"-user-agent", "agent"}, wantCmd: ingestCommandLive, wantAll: true, wantUA: "agent", wantStage: true},
+		{name: "replay latest", args: []string{"replay"}, wantCmd: ingestCommandReplay, wantLatest: true, wantStage: true},
+		{name: "replay absolute", args: []string{"replay", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantStage: true},
+		{name: "replay title repair", args: []string{"replay", "-titles", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantTitle: true},
+		{name: "replay description repair dry run", args: []string{"replay", "-descriptions", "-dry-run", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDesc: true, wantDryRun: true},
+		{name: "global db replay", args: []string{"-db", "global.db", "replay", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDB: "global.db", wantStage: true},
+		{name: "global long db replay", args: []string{"--db", "global.db", "replay", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDB: "global.db", wantStage: true},
+		{name: "global long db equals fix", args: []string{"--db=global.db", "fix", "titles"}, wantCmd: ingestCommandFix, wantFix: fixCommandTitles, wantAll: true, wantDB: "global.db", wantTitle: true},
+		{name: "matching global and local db", args: []string{"-db", "global.db", "replay", "-db", "global.db", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDB: "global.db", wantStage: true},
+		{name: "fix titles", args: []string{"fix", "titles"}, wantCmd: ingestCommandFix, wantFix: fixCommandTitles, wantAll: true, wantTitle: true},
+		{name: "fix descriptions source", args: []string{"fix", "descriptions", "-source", ingest.CafeNo9Source}, wantCmd: ingestCommandFix, wantFix: fixCommandDescriptions, wantSource: ingest.CafeNo9Source, wantSet: true, wantDesc: true},
+		{name: "fix historical duplicates", args: []string{"fix", "historical-duplicates", "-dry-run"}, wantCmd: ingestCommandFix, wantFix: fixCommandHistoricalDuplicates, wantDryRun: true},
+		{name: "fix image focus", args: []string{"fix", "image-focus"}, wantCmd: ingestCommandFix, wantFix: fixCommandImageFocus},
+		{name: "fix snapshots", args: []string{"fix", "snapshots"}, wantCmd: ingestCommandFix, wantFix: fixCommandSnapshots},
 	}
 
 	for _, tc := range cases {
@@ -1007,11 +1014,26 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse args: %v", err)
 			}
+			if got := cfg.command; got != tc.wantCmd {
+				t.Fatalf("command = %q, want %q", got, tc.wantCmd)
+			}
+			if got := cfg.fixKind; got != tc.wantFix {
+				t.Fatalf("fix kind = %q, want %q", got, tc.wantFix)
+			}
+			if got := cfg.source; got != tc.wantSource {
+				t.Fatalf("source = %q, want %q", got, tc.wantSource)
+			}
+			if got := cfg.sourceSet; got != tc.wantSet {
+				t.Fatalf("source set = %v, want %v", got, tc.wantSet)
+			}
 			if got := cfg.httpUserAgent; got != tc.wantUA {
 				t.Fatalf("user agent = %q, want %q", got, tc.wantUA)
 			}
-			if got := cfg.contact; got != tc.wantContact {
-				t.Fatalf("contact = %q, want %q", got, tc.wantContact)
+			if got := cfg.dbPath; got != tc.wantDB {
+				t.Fatalf("db path = %q, want %q", got, tc.wantDB)
+			}
+			if got := cfg.dryRun; got != tc.wantDryRun {
+				t.Fatalf("dry run = %v, want %v", got, tc.wantDryRun)
 			}
 			if got := cfg.stageEventReviewClusters; got != tc.wantStage {
 				t.Fatalf("stage event reviews = %v, want %v", got, tc.wantStage)
@@ -1019,51 +1041,60 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 			if got := cfg.repairEventTitles; got != tc.wantTitle {
 				t.Fatalf("repair event titles = %v, want %v", got, tc.wantTitle)
 			}
-			if got := cfg.applyTitleRepairs; got != tc.wantApply {
-				t.Fatalf("apply title repairs = %v, want %v", got, tc.wantApply)
+			if got := cfg.repairDescriptions; got != tc.wantDesc {
+				t.Fatalf("repair descriptions = %v, want %v", got, tc.wantDesc)
 			}
-			if got := cfg.importRunID; got != tc.wantImportID {
-				t.Fatalf("import run id = %d, want %d", got, tc.wantImportID)
+			if got := cfg.replayImportRunID; got != tc.wantReplay {
+				t.Fatalf("replay import run id = %d, want %d", got, tc.wantReplay)
+			}
+			if got := cfg.replayUseLatest; got != tc.wantLatest {
+				t.Fatalf("replay latest = %v, want %v", got, tc.wantLatest)
 			}
 			if got := cfg.allSources; got != tc.wantAll {
 				t.Fatalf("all sources = %v, want %v", got, tc.wantAll)
 			}
-			if got := cfg.cleanupStaleSnapshots; got != tc.wantCleanup {
-				t.Fatalf("cleanup stale snapshots = %v, want %v", got, tc.wantCleanup)
-			}
 		})
 	}
 }
 
-func TestParseIngestArgsRejectsCleanupSnapshotConflicts(t *testing.T) {
+func TestParseIngestArgsRejectsRemovedAndMalformedCommands(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		args []string
 	}{
-		{name: "source", args: []string{"-cleanup-stale-snapshots", "-source", ingest.LeadmillSource}},
-		{name: "all sources", args: []string{"-cleanup-stale-snapshots", "-all-sources"}},
-		{name: "replay", args: []string{"-cleanup-stale-snapshots", "-import-run-id", "1"}},
-		{name: "stage", args: []string{"-cleanup-stale-snapshots", "-stage-event-reviews"}},
-		{name: "descriptions", args: []string{"-cleanup-stale-snapshots", "-repair-descriptions"}},
-		{name: "title repair", args: []string{"-cleanup-stale-snapshots", "-repair-event-titles"}},
-		{name: "image focus", args: []string{"-cleanup-stale-snapshots", "-backfill-image-focus"}},
+		{name: "removed http user agent", args: []string{"-http-user-agent", "agent"}},
+		{name: "removed all sources", args: []string{"-all-sources"}},
+		{name: "removed stage event reviews", args: []string{"-stage-event-reviews"}},
+		{name: "removed repair descriptions", args: []string{"-repair-descriptions"}},
+		{name: "removed repair event titles", args: []string{"-repair-event-titles"}},
+		{name: "removed backfill image focus", args: []string{"-backfill-image-focus"}},
+		{name: "removed cleanup stale snapshots", args: []string{"-cleanup-stale-snapshots"}},
+		{name: "fix missing subcommand", args: []string{"fix"}},
+		{name: "fix unknown subcommand", args: []string{"fix", "nope"}},
+		{name: "replay flags after id", args: []string{"replay", "42", "-db", "path"}},
+		{name: "replay negative id", args: []string{"replay", "-1"}},
+		{name: "replay extra args", args: []string{"replay", "42", "43"}},
+		{name: "replay repair conflict", args: []string{"replay", "-titles", "-descriptions"}},
+		{name: "unsupported description source", args: []string{"fix", "descriptions", "-source", ingest.LeadmillSource}},
+		{name: "conflicting global db", args: []string{"-db", "global.db", "replay", "-db", "local.db"}},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parseIngestArgs(tc.args); err == nil {
-				t.Fatal("expected cleanup snapshot flag conflict")
+				t.Fatal("expected parse error")
 			}
 		})
 	}
 }
 
-func TestIngestModeReportsAllSourcesTitleRepair(t *testing.T) {
+func TestIngestModeReportsFixTitleRepair(t *testing.T) {
 	cfg := ingestCommandConfig{
-		allSources:        true,
+		command:           ingestCommandFix,
+		fixKind:           fixCommandTitles,
 		repairEventTitles: true,
 	}
-	if got, want := ingestMode(cfg), "title_repair_all_sources"; got != want {
+	if got, want := ingestMode(cfg), "title_repair_live"; got != want {
 		t.Fatalf("ingest mode = %q, want %q", got, want)
 	}
 }
@@ -1109,97 +1140,6 @@ func TestEffectiveHTTPUserAgentRespectsExplicitValue(t *testing.T) {
 	}
 }
 
-func TestParseIngestArgsRejectsFixtureReplayCombination(t *testing.T) {
-	_, err := parseIngestArgs([]string{"-review-ics-fixture", "fixture.ics", "-import-run-id", "1"})
-	if err == nil {
-		t.Fatal("expected fixture/replay conflict")
-	}
-}
-
-func TestParseIngestArgsRejectsAllSourcesSourceCombination(t *testing.T) {
-	_, err := parseIngestArgs([]string{"-all-sources", "-source", ingest.LeadmillSource})
-	if err == nil {
-		t.Fatal("expected all-sources/source conflict")
-	}
-}
-
-func TestParseIngestArgsRejectsAllSourcesReplayCombination(t *testing.T) {
-	_, err := parseIngestArgs([]string{"-all-sources", "-import-run-id", "1"})
-	if err == nil {
-		t.Fatal("expected all-sources/replay conflict")
-	}
-}
-
-func TestParseIngestArgsRejectsAllSourcesFixtureCombination(t *testing.T) {
-	_, err := parseIngestArgs([]string{"-all-sources", "-review-ics-fixture", "fixture.ics"})
-	if err == nil {
-		t.Fatal("expected all-sources/fixture conflict")
-	}
-}
-
-func TestParseIngestArgsRejectsRepairDescriptionConflicts(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{name: "stage event reviews", args: []string{"-repair-descriptions", "-stage-event-reviews"}},
-		{name: "all sources", args: []string{"-repair-descriptions", "-all-sources"}},
-		{name: "fixture", args: []string{"-repair-descriptions", "-review-ics-fixture", "fixture.ics"}},
-		{name: "unsupported source", args: []string{"-repair-descriptions", "-source", ingest.LeadmillSource}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := parseIngestArgs(tc.args); err == nil {
-				t.Fatal("expected repair description flag conflict")
-			}
-		})
-	}
-}
-
-func TestParseIngestArgsRejectsRepairEventTitleConflicts(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{name: "stage event reviews", args: []string{"-repair-event-titles", "-stage-event-reviews"}},
-		{name: "descriptions", args: []string{"-repair-event-titles", "-repair-descriptions"}},
-		{name: "fixture", args: []string{"-repair-event-titles", "-review-ics-fixture", "fixture.ics"}},
-		{name: "apply without repair", args: []string{"-apply-title-repairs"}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := parseIngestArgs(tc.args); err == nil {
-				t.Fatal("expected repair event title flag conflict")
-			}
-		})
-	}
-}
-
-func TestParseIngestArgsRejectsHistoricalDuplicateConflicts(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{name: "apply without repair", args: []string{"-apply-historical-duplicate-repairs"}},
-		{name: "stage event reviews", args: []string{"-repair-historical-duplicates", "-stage-event-reviews"}},
-		{name: "descriptions", args: []string{"-repair-historical-duplicates", "-repair-descriptions"}},
-		{name: "title repair", args: []string{"-repair-historical-duplicates", "-repair-event-titles"}},
-		{name: "all sources", args: []string{"-repair-historical-duplicates", "-all-sources"}},
-		{name: "source", args: []string{"-repair-historical-duplicates", "-source", ingest.LeadmillSource}},
-		{name: "replay", args: []string{"-repair-historical-duplicates", "-import-run-id", "1"}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := parseIngestArgs(tc.args); err == nil {
-				t.Fatal("expected historical duplicate repair flag conflict")
-			}
-		})
-	}
-}
-
 func TestRunWithArgsRepairEventTitlesDryRunDoesNotMutate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	st, err := sqlite.Open(path)
@@ -1233,7 +1173,7 @@ func TestRunWithArgsRepairEventTitlesDryRunDoesNotMutate(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-import-run-id", "42", "-repair-event-titles"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "replay", "-titles", "-dry-run", "42"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("run repair event titles: %v", err)
 	}
 	var got titleRepairRunReport
@@ -1279,8 +1219,9 @@ func TestRunWithArgsRepairDescriptionsUpdatesOnlyDescriptions(t *testing.T) {
 	var stdout bytes.Buffer
 	if err := runWithArgs([]string{
 		"-db", path,
-		"-import-run-id", strconv.FormatInt(runID, 10),
-		"-repair-descriptions",
+		"replay",
+		"-descriptions",
+		strconv.FormatInt(runID, 10),
 	}, &stdout, io.Discard); err != nil {
 		t.Fatalf("repair descriptions run: %v", err)
 	}
@@ -1356,6 +1297,230 @@ func TestRunWithArgsRepairDescriptionsUpdatesOnlyDescriptions(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsFixTitlesContinuesAfterSourceFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	seedCLIStaleSnapshotCleanupRun(t, path)
+	freezeCLINowUTC(t, time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC))
+	var stdout bytes.Buffer
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	var order []string
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		order = append(order, opts.Source)
+		status := "succeeded"
+		if opts.Source == ingest.YellowArchSource {
+			status = "failed"
+		}
+		runID, _, _ := createFinishedImportRunForCLITest(t, ctx, st, status)
+		report := cliEmptySucceededReport(opts.Source, runID, opts.Limit)
+		if opts.Source == ingest.YellowArchSource {
+			report.Status = "failed"
+			report.Errors = []string{"yellow arch title repair failed"}
+			return report, ingest.ErrRunFailed
+		}
+		return report, nil
+	}
+
+	err := runWithArgs([]string{"fix", "titles", "-db", path, "-user-agent", "agent"}, &stdout, io.Discard)
+	if err == nil {
+		t.Fatal("expected fix titles batch failure")
+	}
+	if !strings.Contains(err.Error(), "one or more source titles repairs failed") {
+		t.Fatalf("error = %v, want original title repair batch failure", err)
+	}
+	if got, want := order, ingest.RegisteredSourceKeys(); !equalStrings(got, want) {
+		t.Fatalf("run order = %#v, want %#v", got, want)
+	}
+	if strings.Contains(stdout.String(), "review_stage") {
+		t.Fatalf("fix title output contains review_stage: %s", stdout.String())
+	}
+
+	var got batchManualIngestReport
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
+		t.Fatalf("decode fix title output: %v", decodeErr)
+	}
+	if gotCount, wantCount := len(got.Results), len(ingest.RegisteredSourceKeys()); gotCount != wantCount {
+		t.Fatalf("results = %d, want %d", gotCount, wantCount)
+	}
+	var sawFailure bool
+	for i, result := range got.Results {
+		if result.Source != ingest.RegisteredSourceKeys()[i] {
+			t.Fatalf("result %d source = %q, want %q", i, result.Source, ingest.RegisteredSourceKeys()[i])
+		}
+		if result.Source == ingest.YellowArchSource {
+			sawFailure = true
+			if result.Error == "" {
+				t.Fatal("failed title result error = empty, want error")
+			}
+			if result.TitleRepair != nil {
+				t.Fatalf("failed title result repair = %#v, want nil", result.TitleRepair)
+			}
+			continue
+		}
+		if result.TitleRepair == nil {
+			t.Fatalf("successful title result for %q missing title_repair", result.Source)
+		}
+	}
+	if !sawFailure {
+		t.Fatalf("fix title results missing failed source %q", ingest.YellowArchSource)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got := countCLISnapshotsForRun(t, db, 10); got != 0 {
+		t.Fatalf("stale run snapshots = %d, want deleted", got)
+	}
+	assertCLIPruneReason(t, db, 10, sqlite.SnapshotPruneReasonBoundedStale)
+}
+
+func TestRunWithArgsFixDescriptionsContinuesAfterSourceFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	seedCLIStaleSnapshotCleanupRun(t, path)
+	freezeCLINowUTC(t, time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC))
+	var stdout bytes.Buffer
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	var order []string
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		order = append(order, opts.Source)
+		status := "succeeded"
+		if opts.Source == ingest.CafeNo9Source {
+			status = "failed"
+		}
+		runID, _, _ := createFinishedImportRunForCLITest(t, ctx, st, status)
+		report := cliEmptySucceededReport(opts.Source, runID, opts.Limit)
+		if opts.Source == ingest.CafeNo9Source {
+			report.Status = "failed"
+			report.Errors = []string{"cafe no. 9 description repair failed"}
+			return report, ingest.ErrRunFailed
+		}
+		return report, nil
+	}
+
+	err := runWithArgs([]string{"fix", "descriptions", "-db", path, "-user-agent", "agent"}, &stdout, io.Discard)
+	if err == nil {
+		t.Fatal("expected fix descriptions batch failure")
+	}
+	if !strings.Contains(err.Error(), "one or more source descriptions repairs failed") {
+		t.Fatalf("error = %v, want original description repair batch failure", err)
+	}
+	if got, want := order, []string{ingest.DefaultSource, ingest.CafeNo9Source}; !equalStrings(got, want) {
+		t.Fatalf("run order = %#v, want %#v", got, want)
+	}
+	if strings.Contains(stdout.String(), "review_stage") {
+		t.Fatalf("fix description output contains review_stage: %s", stdout.String())
+	}
+
+	var got batchManualIngestReport
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
+		t.Fatalf("decode fix description output: %v", decodeErr)
+	}
+	if gotCount, wantCount := len(got.Results), 2; gotCount != wantCount {
+		t.Fatalf("results = %d, want %d", gotCount, wantCount)
+	}
+	if got.Results[0].Source != ingest.DefaultSource || got.Results[0].DescriptionRepair == nil || got.Results[0].Error != "" {
+		t.Fatalf("first description result = %#v, want successful default source repair", got.Results[0])
+	}
+	if got.Results[1].Source != ingest.CafeNo9Source || got.Results[1].Error == "" || got.Results[1].DescriptionRepair != nil {
+		t.Fatalf("second description result = %#v, want failed Cafe No. 9 result", got.Results[1])
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got := countCLISnapshotsForRun(t, db, 10); got != 0 {
+		t.Fatalf("stale run snapshots = %d, want deleted", got)
+	}
+	assertCLIPruneReason(t, db, 10, sqlite.SnapshotPruneReasonBoundedStale)
+}
+
+func TestRunWithArgsRepairHistoricalDuplicatesDryRunDoesNotMutate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	_, loserID, loserSlug := seedHistoricalDuplicateCLIRepairPair(t, path)
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "historical-duplicates", "-dry-run"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("dry-run historical duplicate repair: %v", err)
+	}
+
+	var got historicalDuplicateRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode historical duplicate dry-run output: %v", err)
+	}
+	repair := got.HistoricalDuplicateRepair
+	if !repair.DryRun || repair.Applied {
+		t.Fatalf("dry/apply = %v/%v, want true/false", repair.DryRun, repair.Applied)
+	}
+	if repair.WouldWithhold != 1 || repair.AutoWithheld != 0 {
+		t.Fatalf("repair counts = %#v, want one would-withhold and no auto-withhold", repair)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	state, canonicalID, withheldReason, repairRunID := loadHistoricalDuplicateCLIState(t, db, loserSlug)
+	if state != string(domain.PublicationStateProvisional) {
+		t.Fatalf("publication state = %q, want provisional", state)
+	}
+	if canonicalID.Valid || strings.TrimSpace(withheldReason) != "" || repairRunID.Valid {
+		t.Fatalf("dry-run mutated loser %d state: canonical=%v reason=%q repair_run=%v", loserID, canonicalID, withheldReason, repairRunID)
+	}
+}
+
+func TestRunWithArgsRepairHistoricalDuplicatesAppliesByDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	targetID, _, loserSlug := seedHistoricalDuplicateCLIRepairPair(t, path)
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "historical-duplicates"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("historical duplicate repair: %v", err)
+	}
+
+	var got historicalDuplicateRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode historical duplicate output: %v", err)
+	}
+	repair := got.HistoricalDuplicateRepair
+	if repair.DryRun || !repair.Applied {
+		t.Fatalf("dry/apply = %v/%v, want false/true", repair.DryRun, repair.Applied)
+	}
+	if repair.AutoWithheld != 1 || repair.WouldWithhold != 0 || repair.RepairRunID == 0 {
+		t.Fatalf("repair counts = %#v, want one applied auto-withhold with repair run", repair)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	state, canonicalID, withheldReason, repairRunID := loadHistoricalDuplicateCLIState(t, db, loserSlug)
+	if state != string(domain.PublicationStateWithheld) {
+		t.Fatalf("publication state = %q, want withheld", state)
+	}
+	if !canonicalID.Valid || canonicalID.Int64 != targetID {
+		t.Fatalf("canonical id = %v, want %d", canonicalID, targetID)
+	}
+	if withheldReason != "historical duplicate listing" {
+		t.Fatalf("withheld reason = %q, want historical duplicate listing", withheldReason)
+	}
+	if !repairRunID.Valid || repairRunID.Int64 != repair.RepairRunID {
+		t.Fatalf("withheld repair run id = %v, want %d", repairRunID, repair.RepairRunID)
+	}
+}
+
 func TestRunWithArgsReplayDoesNotRequireUserAgent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	runID := seedReplayRunForCLI(t, path)
@@ -1363,7 +1528,7 @@ func TestRunWithArgsReplayDoesNotRequireUserAgent(t *testing.T) {
 	runReplay := func() (manualIngestReport, []byte) {
 		t.Helper()
 		var stdout bytes.Buffer
-		if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+		if err := runWithArgs([]string{"-db", path, "replay", "-limit", "1", strconv.FormatInt(runID, 10)}, &stdout, io.Discard); err != nil {
 			t.Fatalf("replay run: %v", err)
 		}
 		var got manualIngestReport
@@ -1472,12 +1637,39 @@ func TestRunWithArgsReplayDoesNotRequireUserAgent(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsReplayLatestFinishedFailedRunErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	runID, _, err := st.CreateImportRun(context.Background(), "running", "failed latest")
+	if err != nil {
+		t.Fatalf("create import run: %v", err)
+	}
+	if _, err := st.FinishImportRun(context.Background(), runID, "failed", "failed latest"); err != nil {
+		t.Fatalf("finish import run: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err = runWithArgs([]string{"-db", path, "replay"}, &stdout, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("error = %v, want failed latest replay error", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}
+
 func TestRunWithArgsReplayYellowArchUsesStoredSourcePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	runID := seedReplayRunForCLIYellowArch(t, path)
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "replay", "-limit", "1", strconv.FormatInt(runID, 10)}, &stdout, io.Discard); err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
 
@@ -1538,7 +1730,7 @@ func TestRunWithArgsReplayYellowArchReappliesLinkedAuthoritativeEvent(t *testing
 	runReplay := func() manualIngestReport {
 		t.Helper()
 		var stdout bytes.Buffer
-		if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+		if err := runWithArgs([]string{"-db", path, "replay", "-limit", "1", strconv.FormatInt(runID, 10)}, &stdout, io.Discard); err != nil {
 			t.Fatalf("replay run: %v", err)
 		}
 		var got manualIngestReport
@@ -1588,7 +1780,7 @@ func TestRunWithArgsReplayLeadmillUsesStoredSourcePath(t *testing.T) {
 	runID := seedReplayRunForCLILeadmill(t, path)
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "20", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "replay", "-limit", "20", strconv.FormatInt(runID, 10)}, &stdout, io.Discard); err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
 
@@ -1681,14 +1873,15 @@ func TestRunWithArgsBackfillsImageFocus(t *testing.T) {
 
 	t.Setenv("MEDIA_ROOT", mediaRoot)
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-backfill-image-focus"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "fix", "image-focus"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("backfill image focus: %v", err)
 	}
 
-	var report imageFocusBackfillReport
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+	var payload imageFocusRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatalf("decode backfill output: %v", err)
 	}
+	report := payload.ImageFocus
 	if report.Updated != 1 || report.Defaulted != 0 || report.MissingFiles != 0 || report.DecodeFailures != 0 {
 		t.Fatalf("backfill report = %#v, want one clean update", report)
 	}
@@ -1707,6 +1900,72 @@ func TestRunWithArgsBackfillsImageFocus(t *testing.T) {
 	}
 	if asset.FocusX <= 55 || asset.FocusY <= 55 {
 		t.Fatalf("focus = %d,%d, want lower-right quadrant", asset.FocusX, asset.FocusY)
+	}
+}
+
+func TestRunWithArgsBackfillsImageFocusDryRunDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	mediaRoot := filepath.Join(t.TempDir(), "media")
+	imagePath := filepath.Join(mediaRoot, "events", "poster.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("make media dir: %v", err)
+	}
+	if err := os.WriteFile(imagePath, focusFixturePNG(t), 0o644); err != nil {
+		t.Fatalf("write fixture image: %v", err)
+	}
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/poster.png",
+		PublicURL:   "/media/events/poster.png",
+		StoragePath: "events/poster.png",
+		ContentType: "image/png",
+		FocusX:      50,
+		FocusY:      50,
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	t.Setenv("MEDIA_ROOT", mediaRoot)
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "image-focus", "-dry-run"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("dry-run backfill image focus: %v", err)
+	}
+
+	var payload imageFocusRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode backfill output: %v", err)
+	}
+	report := payload.ImageFocus
+	if !report.DryRun || report.Applied {
+		t.Fatalf("dry/apply = %v/%v, want true/false", report.DryRun, report.Applied)
+	}
+	if report.Updated != 1 || report.Defaulted != 0 || report.MissingFiles != 0 || report.DecodeFailures != 0 {
+		t.Fatalf("backfill report = %#v, want one clean dry-run update", report)
+	}
+
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+	asset, ok, err := st.LoadImageAsset(ctx, "https://example.test/poster.png")
+	if err != nil {
+		t.Fatalf("load image asset: %v", err)
+	}
+	if !ok {
+		t.Fatal("image asset not found")
+	}
+	if asset.FocusX != 50 || asset.FocusY != 50 {
+		t.Fatalf("focus = %d,%d, want unchanged 50,50", asset.FocusX, asset.FocusY)
 	}
 }
 
@@ -1743,14 +2002,15 @@ func TestRunWithArgsBackfillsImageFocusDefaultsOversizedImages(t *testing.T) {
 
 	t.Setenv("MEDIA_ROOT", mediaRoot)
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-backfill-image-focus"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "fix", "image-focus"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("backfill image focus: %v", err)
 	}
 
-	var report imageFocusBackfillReport
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+	var payload imageFocusRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatalf("decode backfill output: %v", err)
 	}
+	report := payload.ImageFocus
 	if report.Updated != 1 || report.Defaulted != 1 || report.MissingFiles != 0 || report.DecodeFailures != 0 {
 		t.Fatalf("backfill report = %#v, want one defaulted oversized update", report)
 	}
@@ -1806,7 +2066,7 @@ func TestRunWithArgsCleanupStaleSnapshotsDeletesAndVacuums(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-cleanup-stale-snapshots"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "fix", "snapshots"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("cleanup stale snapshots: %v", err)
 	}
 
@@ -1850,9 +2110,9 @@ func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.
 	var stdout bytes.Buffer
 	err := runWithArgs([]string{
 		"-db", path,
-		"-import-run-id", strconv.FormatInt(runID, 10),
+		"replay",
 		"-limit", "1",
-		"-stage-event-reviews",
+		strconv.FormatInt(runID, 10),
 	}, &stdout, io.Discard)
 	if !errors.Is(err, ingest.ErrRunFailed) {
 		t.Fatalf("error = %v, want ErrRunFailed", err)
@@ -1874,8 +2134,85 @@ func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.
 	if !got.EventReviewClusters.Enabled {
 		t.Fatal("event-review clusters enabled = false, want true")
 	}
+	if got.EventReviewClusters.Applied {
+		t.Fatal("event-review clusters applied = true, want false")
+	}
+	if len(got.EventReviewClusters.Errors) != 1 || !strings.Contains(got.EventReviewClusters.Errors[0], "skipped event review staging") {
+		t.Fatalf("event-review cluster errors = %#v, want skipped staging reason", got.EventReviewClusters.Errors)
+	}
 	if got.EventReviewClusters.EventReviewClustersCreated != 0 {
 		t.Fatalf("event-review clusters created = %d, want 0", got.EventReviewClusters.EventReviewClustersCreated)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got := countRows(t, db, "review_groups"); got != 0 {
+		t.Fatalf("event-review clusters = %d, want 0", got)
+	}
+}
+
+func TestRunWithArgsLiveFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	t.Setenv("MEDIA_ROOT", filepath.Join(t.TempDir(), "media"))
+	var stdout bytes.Buffer
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: 17,
+			StartedAt:   "2026-04-24T10:00:00Z",
+			FinishedAt:  "2026-04-24T10:01:00Z",
+			Status:      "failed",
+			Limit:       opts.Limit,
+			Errors:      []string{"manual ingest failed"},
+			Calendars: []ingest.CalendarReport{{
+				URL: "https://" + opts.Source + ".example.test/calendar.ics",
+				Candidates: []ingest.EventCandidate{{
+					UID:      "failed-live-show",
+					Summary:  "Failed Live Show",
+					Location: "External Room",
+					StartAt:  "2026-05-01T19:00:00Z",
+				}},
+			}},
+			Links:  []string{"https://" + opts.Source + ".example.test/calendar.ics"},
+			Totals: ingest.ReportTotals{Links: 1, Candidates: 1, Errors: 1},
+		}, ingest.ErrRunFailed
+	}
+
+	err := runWithArgs([]string{"-db", path, "-source", ingest.DefaultSource, "-user-agent", "agent"}, &stdout, io.Discard)
+	if !errors.Is(err, ingest.ErrRunFailed) {
+		t.Fatalf("error = %v, want ErrRunFailed", err)
+	}
+
+	var got manualIngestReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode live output: %v", err)
+	}
+	if got.Report.ImportRunID != 17 {
+		t.Fatalf("import run id = %d, want 17", got.Report.ImportRunID)
+	}
+	if got.Report.Status != "failed" {
+		t.Fatalf("report status = %q, want failed", got.Report.Status)
+	}
+	if !got.EventReviewClusters.Enabled {
+		t.Fatal("event-review clusters enabled = false, want true")
+	}
+	if got.EventReviewClusters.Applied {
+		t.Fatal("event-review clusters applied = true, want false")
+	}
+	if len(got.EventReviewClusters.Errors) != 1 || !strings.Contains(got.EventReviewClusters.Errors[0], "skipped event review staging") {
+		t.Fatalf("event-review cluster errors = %#v, want skipped staging reason", got.EventReviewClusters.Errors)
 	}
 
 	db := openRawDB(t, path)
@@ -1917,7 +2254,7 @@ func TestRunWithArgsAllSourcesRunsInRegistryOrder(t *testing.T) {
 		}, nil
 	}
 
-	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-user-agent", "agent"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("all-sources run: %v", err)
 	}
 
@@ -1975,16 +2312,16 @@ func TestRunWithArgsLogsToStderrAndKeepsStdoutJSON(t *testing.T) {
 		}, nil
 	}
 
-	if err := runWithArgs([]string{"-db", path, "-http-user-agent", "agent"}, &stdout, &stderr); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-source", ingest.DefaultSource, "-user-agent", "agent"}, &stdout, &stderr); err != nil {
 		t.Fatalf("runWithArgs: %v", err)
 	}
 
-	var got ingest.Report
+	var got manualIngestReport
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("stdout is not JSON report: %v; output %q", err, stdout.String())
 	}
-	if got.ImportRunID != wantRunID {
-		t.Fatalf("import run id = %d, want %d", got.ImportRunID, wantRunID)
+	if got.Report.ImportRunID != wantRunID {
+		t.Fatalf("import run id = %d, want %d", got.Report.ImportRunID, wantRunID)
 	}
 	if strings.Contains(stdout.String(), "ingest starting") || strings.Contains(stdout.String(), "ingest finished") {
 		t.Fatalf("stdout contains logs: %q", stdout.String())
@@ -2148,7 +2485,7 @@ func TestRunWithArgsLiveRecordsRetentionAndRunsAutomaticSnapshotCleanup(t *testi
 	}
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-http-user-agent", "agent"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-user-agent", "agent"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("run live ingest: %v", err)
 	}
 
@@ -2197,7 +2534,7 @@ func TestRunWithArgsLiveRepairDescriptionsRunsAutomaticSnapshotCleanup(t *testin
 	}
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-http-user-agent", "agent", "-repair-descriptions"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "fix", "descriptions", "-user-agent", "agent"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("run live description repair: %v", err)
 	}
 
@@ -2238,7 +2575,7 @@ func TestRunWithArgsLiveRepairEventTitlesRunsAutomaticSnapshotCleanup(t *testing
 	}
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-http-user-agent", "agent", "-repair-event-titles"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "fix", "titles", "-user-agent", "agent"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("run live title repair: %v", err)
 	}
 
@@ -2309,7 +2646,7 @@ func TestRunWithArgsLiveStagingRunsAutomaticSnapshotCleanup(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-http-user-agent", "agent", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-source", ingest.DefaultSource, "-user-agent", "agent"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("run staged live ingest: %v", err)
 	}
 	var got manualIngestReport
@@ -2391,7 +2728,7 @@ func TestRunWithArgsAllSourcesRunsAutomaticSnapshotCleanup(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-user-agent", "agent"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("run all-sources ingest: %v", err)
 	}
 
@@ -2435,7 +2772,7 @@ func TestRunWithArgsAllSourcesTitleRepairRunsAutomaticSnapshotCleanup(t *testing
 	}
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent", "-repair-event-titles"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "fix", "titles", "-user-agent", "agent"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("run all-sources title repair: %v", err)
 	}
 
@@ -2479,7 +2816,7 @@ func TestRunWithArgsAllSourcesContinuesAfterRetentionMetadataFailure(t *testing.
 		}, nil
 	}
 
-	err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent"}, &stdout, io.Discard)
+	err := runWithArgs([]string{"-db", path, "-user-agent", "agent"}, &stdout, io.Discard)
 	if err == nil {
 		t.Fatal("expected batch failure from retention metadata upsert")
 	}
@@ -2504,6 +2841,8 @@ func TestRunWithArgsAllSourcesContinuesAfterRetentionMetadataFailure(t *testing.
 
 func TestRunWithArgsAllSourcesContinuesAfterFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	seedCLIStaleSnapshotCleanupRun(t, path)
+	freezeCLINowUTC(t, time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC))
 	var stdout bytes.Buffer
 
 	originalFetcher := newHTTPFetcher
@@ -2544,9 +2883,12 @@ func TestRunWithArgsAllSourcesContinuesAfterFailure(t *testing.T) {
 		return report, nil
 	}
 
-	err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent"}, &stdout, io.Discard)
+	err := runWithArgs([]string{"-db", path, "-user-agent", "agent"}, &stdout, io.Discard)
 	if err == nil {
 		t.Fatal("expected batch failure")
+	}
+	if !strings.Contains(err.Error(), "one or more source ingests failed") {
+		t.Fatalf("error = %v, want original ingest batch failure", err)
 	}
 	if got, want := order, ingest.RegisteredSourceKeys(); !equalStrings(got, want) {
 		t.Fatalf("run order = %#v, want %#v", got, want)
@@ -2556,15 +2898,35 @@ func TestRunWithArgsAllSourcesContinuesAfterFailure(t *testing.T) {
 	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
 		t.Fatalf("decode batch output: %v", decodeErr)
 	}
-	if got.Results[1].Source != ingest.YellowArchSource {
-		t.Fatalf("failed result source = %q, want %q", got.Results[1].Source, ingest.YellowArchSource)
+	failedResult := got.Results[1]
+	if failedResult.Source != ingest.YellowArchSource {
+		t.Fatalf("failed result source = %q, want %q", failedResult.Source, ingest.YellowArchSource)
 	}
-	if got.Results[1].Error == "" {
+	if failedResult.Error == "" {
 		t.Fatal("failed result error = empty, want error")
+	}
+	if failedResult.EventReviewClusters == nil {
+		t.Fatal("failed result review stage = nil, want skipped review stage")
+	}
+	if !failedResult.EventReviewClusters.Enabled {
+		t.Fatal("failed result review stage enabled = false, want true")
+	}
+	if failedResult.EventReviewClusters.Applied {
+		t.Fatal("failed result review stage applied = true, want false")
+	}
+	if len(failedResult.EventReviewClusters.Errors) != 1 || !strings.Contains(failedResult.EventReviewClusters.Errors[0], "skipped event review staging") {
+		t.Fatalf("failed result review stage errors = %#v, want skipped staging reason", failedResult.EventReviewClusters.Errors)
 	}
 	if got.Results[len(got.Results)-1].Source != ingest.RegisteredSourceKeys()[len(ingest.RegisteredSourceKeys())-1] {
 		t.Fatalf("last result source = %q, want %q", got.Results[len(got.Results)-1].Source, ingest.RegisteredSourceKeys()[len(ingest.RegisteredSourceKeys())-1])
 	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got := countCLISnapshotsForRun(t, db, 10); got != 0 {
+		t.Fatalf("stale run snapshots = %d, want deleted", got)
+	}
+	assertCLIPruneReason(t, db, 10, sqlite.SnapshotPruneReasonBoundedStale)
 }
 
 func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
@@ -2606,7 +2968,7 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 		}, nil
 	}
 
-	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-user-agent", "agent"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("all-sources staged run: %v", err)
 	}
 
@@ -2620,6 +2982,9 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 	for _, result := range got.Results {
 		if result.EventReviewClusters == nil {
 			t.Fatalf("review stage missing for source %q", result.Source)
+		}
+		if !result.EventReviewClusters.Applied {
+			t.Fatalf("review stage applied for source %q = false, want true", result.Source)
 		}
 		if result.EventReviewClusters.AutoPromotedCount != 1 {
 			t.Fatalf("auto promoted count for %q = %d, want 1", result.Source, result.EventReviewClusters.AutoPromotedCount)
@@ -2657,6 +3022,12 @@ func TestEventReviewClustersForReportSkipsFailedManualRun(t *testing.T) {
 	}
 	if !stage.Enabled {
 		t.Fatal("stage enabled = false, want true")
+	}
+	if stage.Applied {
+		t.Fatal("stage applied = true, want false")
+	}
+	if len(stage.Errors) != 1 || !strings.Contains(stage.Errors[0], "skipped event review staging") {
+		t.Fatalf("stage errors = %#v, want skipped staging reason", stage.Errors)
 	}
 	if stage.EventReviewClustersCreated != 0 || stage.CandidateCount != 0 {
 		t.Fatalf("stage counts = groups %d candidates %d, want zero", stage.EventReviewClustersCreated, stage.CandidateCount)
@@ -3264,6 +3635,21 @@ type eventRow struct {
 	PublicationState string
 }
 
+func cliEmptySucceededReport(source string, importRunID int64, limit int) ingest.Report {
+	return ingest.Report{
+		Source:      source,
+		SourceURL:   "https://" + source + ".example.test/",
+		ImportRunID: importRunID,
+		StartedAt:   "2026-04-24T10:00:00Z",
+		FinishedAt:  "2026-04-24T10:01:00Z",
+		Status:      "succeeded",
+		Limit:       limit,
+		Links:       []string{},
+		Calendars:   []ingest.CalendarReport{},
+		Totals:      ingest.ReportTotals{},
+	}
+}
+
 func cliYellowArchTitleRepairReport(startAt, summary string) ingest.Report {
 	return ingest.Report{
 		Source:      ingest.YellowArchSource,
@@ -3373,6 +3759,55 @@ func insertHistoricalDuplicateCLIEvent(t *testing.T, db *sql.DB, sourceID int64,
 		t.Fatalf("historical duplicate CLI event id: %v", err)
 	}
 	return id
+}
+
+func seedHistoricalDuplicateCLIRepairPair(t *testing.T, path string) (int64, int64, string) {
+	t.Helper()
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	sourceID, err := st.EnsureSource(context.Background(), "CLI historical duplicate source", "https://example.test/historical-duplicates")
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	var venueID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+	`, "leadmill").Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue: %v", err)
+	}
+	startAt := "2026-05-12T19:00:00Z"
+	targetID := insertHistoricalDuplicateCLIEvent(t, db, sourceID, "cli-historical-duplicate-target", venueID, "CLI Historical Duplicate", startAt, string(domain.PublicationStateReviewed))
+	loserSlug := "cli-historical-duplicate-loser"
+	loserID := insertHistoricalDuplicateCLIEvent(t, db, sourceID, loserSlug, venueID, "CLI Historical Duplicate", startAt, string(domain.PublicationStateProvisional))
+	return targetID, loserID, loserSlug
+}
+
+func loadHistoricalDuplicateCLIState(t *testing.T, db *sql.DB, slug string) (string, sql.NullInt64, string, sql.NullInt64) {
+	t.Helper()
+
+	var publicationState string
+	var canonicalID sql.NullInt64
+	var withheldReason string
+	var repairRunID sql.NullInt64
+	if err := db.QueryRow(`
+		SELECT publication_state, canonical_event_id, COALESCE(withheld_reason, ''), withheld_repair_run_id
+		FROM events
+		WHERE slug = ?
+	`, slug).Scan(&publicationState, &canonicalID, &withheldReason, &repairRunID); err != nil {
+		t.Fatalf("load historical duplicate state %q: %v", slug, err)
+	}
+	return publicationState, canonicalID, withheldReason, repairRunID
 }
 
 func loadEventRow(t *testing.T, db *sql.DB, slug string) eventRow {

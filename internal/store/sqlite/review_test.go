@@ -152,6 +152,7 @@ func TestRepairEventDescriptionsFromReportUpdatesOnlyEligibleDescriptions(t *tes
 	cleanSlug := mustPromoteCafeNo9Event(t, st, "clean-preserved", "Clean Preserved", "2026-05-12T18:30:00Z", "Existing clean description.")
 	beforeGroups := mustCount(t, db, "review_groups")
 	beforeEvents := mustCount(t, db, "events")
+	beforeRepairRuns := mustCount(t, db, "repair_runs")
 
 	repair, err := st.RepairEventDescriptionsFromReport(ctx, mustReviewCatalog(t), ingest.Report{
 		Source:    ingest.CafeNo9Source,
@@ -180,6 +181,12 @@ func TestRepairEventDescriptionsFromReportUpdatesOnlyEligibleDescriptions(t *tes
 	if repair.Skipped != 1 {
 		t.Fatalf("skipped = %d, want 1", repair.Skipped)
 	}
+	if repair.RepairRunID == 0 {
+		t.Fatalf("repair run id = 0, want created repair run")
+	}
+	if got := mustCount(t, db, "repair_runs"); got != beforeRepairRuns+1 {
+		t.Fatalf("repair runs = %d, want %d", got, beforeRepairRuns+1)
+	}
 	if got := mustCount(t, db, "review_groups"); got != beforeGroups {
 		t.Fatalf("review groups = %d, want unchanged %d", got, beforeGroups)
 	}
@@ -190,6 +197,52 @@ func TestRepairEventDescriptionsFromReportUpdatesOnlyEligibleDescriptions(t *tes
 	assertEventDescription(t, st, blankSlug, "Replacement description for the blank event.")
 	assertEventDescription(t, st, generatedSlug, "Replacement description for generated markup.")
 	assertEventDescription(t, st, cleanSlug, "Existing clean description.")
+}
+
+func TestRepairEventDescriptionsFromReportDryRunDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	slug := mustPromoteCafeNo9Event(t, st, "dry-run-eligible", "Dry Run Eligible", "2026-05-10T18:30:00Z", "")
+	beforeRepairRuns := mustCount(t, db, "repair_runs")
+
+	repair, err := st.RepairEventDescriptionsFromReportWithApply(ctx, mustReviewCatalog(t), ingest.Report{
+		Source:    ingest.CafeNo9Source,
+		SourceURL: "https://www.wegottickets.com/Cafe9",
+		Status:    "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.wegottickets.com/Cafe9",
+			Candidates: []ingest.EventCandidate{
+				cafeNo9RepairCandidate("dry-run-eligible", "Dry Run Eligible", "2026-05-10T18:30:00Z", "Dry-run replacement description."),
+			},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("dry-run repair descriptions: %v", err)
+	}
+	if !repair.DryRun || repair.Applied {
+		t.Fatalf("dry/apply = %v/%v, want true/false", repair.DryRun, repair.Applied)
+	}
+	if repair.Repaired != 1 || repair.RepairRunID != 0 {
+		t.Fatalf("repair = %#v, want one reported repair without repair run", repair)
+	}
+	assertEventDescription(t, st, slug, "")
+	if got := mustCount(t, db, "repair_runs"); got != beforeRepairRuns {
+		t.Fatalf("repair runs = %d, want unchanged %d", got, beforeRepairRuns)
+	}
 }
 
 func TestRepairEventDescriptionsFromReportSkipsSameSlugUnderDifferentSource(t *testing.T) {

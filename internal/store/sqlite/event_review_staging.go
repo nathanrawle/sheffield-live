@@ -697,7 +697,7 @@ func (s *Store) promoteNonAuthoritativeSingletonReviewClusterIfMissing(ctx conte
 		return record.Event.Slug, true, nil
 	}
 
-	if near, _, err := guardedNearLiveEventMatchForEventTx(ctx, tx, event, s.sourceMetadata); err != nil {
+	if near, _, err := supportingNearTitleGuardMatchesTx(ctx, tx, event, s.sourceMetadata); err != nil {
 		return "", false, err
 	} else if len(near) > 0 {
 		if err := tx.Rollback(); err != nil {
@@ -705,7 +705,7 @@ func (s *Store) promoteNonAuthoritativeSingletonReviewClusterIfMissing(ctx conte
 		}
 		committed = true
 		if len(near) == 1 {
-			if err := s.recordStagedConflictEventObservationsAfterRollbackTx(ctx, scope, sourceCtx, near[0], event); err != nil {
+			if err := s.recordStagedConflictEventObservationsAfterRollbackTx(ctx, scope, sourceCtx, near[0].record, event); err != nil {
 				return "", false, err
 			}
 		}

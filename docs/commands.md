@@ -135,7 +135,7 @@ Review behavior:
 Run:
 
 ```bash
-go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
+go run ./cmd/ingest -user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
 Or let the command derive a default user agent from git config:
@@ -146,27 +146,29 @@ go run ./cmd/ingest
 
 Defaults:
 
-- `-source` defaults to `sidney-and-matilda`
+- no `-source` runs every registered source in registry order
+- `-source {key}` runs one source
 - `-limit` defaults to `20`
 - `-timeout` defaults to `10s`
 - `-db` overrides `DB_PATH`
+- event reviews are staged by default
 - logs are written to stderr; stdout remains the JSON report stream
 
 Validation:
 
 - `-limit` applies to live ingest and replay, and must be between `1` and `50`
 - `-timeout` must be positive
+- command flags for `replay` must appear before the optional import run ID, e.g. `replay -limit 20 42`
 - replay does not require a user agent
 
 Live ingest:
 
-- primary flag: `-http-user-agent`
-- alias: `-user-agent`
+- user-agent flag: `-user-agent`
 - `-contact` overrides the contact detail used in the default user agent
 - `-contact none|null|false` suppresses contact info in the default user agent even when git `user.email` is set
-- when `-http-user-agent` is omitted, the command uses `sheffield-live ingest/1.0` and appends `(contact: <email>)` when it can derive an email from local or global git `user.email`
+- when `-user-agent` is omitted, the command uses `sheffield-live ingest/1.0` and appends `(contact: <email>)` when it can derive an email from local or global git `user.email`
 - supports `sidney-and-matilda`, `yellow-arch`, `cafe-no-9`, `jazz-at-the-lescar`, `the-greystones`, `leadmill`, and `corporation`
-- `-all-sources` runs every registered source sequentially in registry order and emits one aggregated JSON report
+- no `-source` emits one aggregated JSON report under `results`
 - fetches the selected source page
 - Sidney & Matilda snapshots the source page, fetched ICS payloads, and linked event detail pages. ICS remains authoritative for event identity/times; detail pages enrich blank descriptions from clean schema.org `Event` JSON-LD or bounded event content only. The source page also supplies room evidence for known room labels such as Factory, Basement, and Gallery.
 - Cafe No. 9 snapshots the WeGotTickets organiser page, follows pagination, snapshots event detail pages, and enriches descriptions from the detail page `Event information` section.
@@ -180,25 +182,26 @@ Live ingest:
 - stores a best-effort image focus point for copied event images so card crops can prefer the most visually interesting area
 - writes `sources`, `import_runs`, `snapshots`, and per-import-run snapshot retention metadata
 - records the latest parseable candidate start time from the live ingest report for later snapshot cleanup; replay-derived reports do not update this metadata
-- automatically runs stale snapshot cleanup after live modes that create snapshots, including live repairs and `-all-sources`; cleanup and vacuum errors are logged but do not fail the ingest
+- automatically runs stale snapshot cleanup after live modes that create snapshots, including default all-source ingest, single-source ingest, live repairs, and live repair `-dry-run`; cleanup and vacuum errors are logged but do not fail the ingest
 - prints a JSON report to stdout
 - batch mode continues after per-source failures but returns non-zero if any source run fails
-- `-all-sources` is mutually exclusive with `-source` and `-import-run-id`
+- `-dry-run` skips event-review staging but still writes import runs, snapshots, and media metadata
 
 Snapshot cleanup:
 
-- primary flag: `-cleanup-stale-snapshots`
+- command: `fix snapshots [-db path]`
 - network-free
 - deletes all snapshots for finished import runs whose recorded latest candidate start time is before today in `Europe/London`
 - deletes finished import runs with no retention row or no parseable candidate start once their `finished_at` is at least 7 days old
 - leaves `import_runs` rows in place and records a prune reason in `import_run_snapshot_retention`
 - runs `VACUUM` after deleting snapshots and reports whether vacuum succeeded
 - pruned import runs are no longer replayable because replay requires the stored snapshots
-- mutually exclusive with live source selection, `-all-sources`, replay, staging, repairs, and image focus backfill
 
 Replay:
 
-- `-import-run-id <id> [-limit N] [-stage-event-reviews]`
+- `replay [-db path] [-limit N] [-dry-run] [id]`
+- no ID selects the latest finished import run by highest ID
+- failed selected runs return a clear error; replay does not fall back to the latest successful run
 - network-free
 - only replays finished succeeded runs
 - validates the stored snapshot envelope version and body SHA-256
@@ -211,15 +214,17 @@ Replay:
 - Yellow Arch replays candidate parsing from the stored source page snapshot and replays stored detail-page snapshots for description enrichment without network access
 - Sidney & Matilda and Cafe No. 9 replay stored detail-page snapshots for description enrichment without network access
 
-Stage event-review clusters:
+Event-review staging:
 
-- primary flag: `-stage-event-reviews`
+- runs by default for live ingest and normal replay
+- `-dry-run` emits an explicit disabled `review_stage` object and skips staging
 - wraps the ingest report with `review_stage`
 - creates duplicate event-review clusters
 - creates singleton event-review clusters only for singleton candidates that were not auto-promoted first
 - persists review-candidate venue evidence as `venue_text` and `venue_location_raw`; for ICS sources `venue_text` stays cleaned for display while `venue_location_raw` preserves the unfolded raw `LOCATION` text for later decoded comma/newline venue parsing
 - persists optional review-candidate room evidence as `room_text` plus room slug/name rows
 - singleton candidates may auto-promote when they are the first matching live event seen; authoritative sources can also upgrade provisional events in place
+- supporting singleton candidates are not auto-promoted when a nearby same-venue live event matches by exact clean title, aggressively normalized title, or normalized headliner
 - singleton auto-promotion can create a provisional venue row immediately for a uniquely new venue
 - duplicate event-review clusters may also auto-resolve as `canonical_exact_match` or `unanimous_duplicate`
 - reports `event_review_clusters_created` and `event_review_clusters_reused`
@@ -230,38 +235,44 @@ Stage event-review clusters:
 - each duplicate auto-resolved row includes `title`, `result`, `cluster_id`, `candidate_count`, and `canonical_event_slug` when applicable
 - `event_review_clusters_auto_resolved[].cluster_id` is the terminal auto-resolved cluster ID for that history row
 - each staged or reused cluster persists a link to the current import run
-- `-stage-event-reviews` can create provisional venue rows immediately for newly created staged clusters when venue evidence is uniquely new, even when no event is published yet
+- staging can create provisional venue rows immediately for newly created staged clusters when venue evidence is uniquely new, even when no event is published yet
 - successful supporting singleton auto-promotion creates provisional events, does not create authoritative source links, does not create secondary-source info rows, and resolves matching stale open singleton clusters by `staging_key` while linking the current import run
+- supporting singleton candidates blocked by the near-title guard remain available as staged review evidence
 - only runs after a successful ingest
 
 Description repair:
 
-- primary flag: `-repair-descriptions`
-- live mode supports `-source sidney-and-matilda` and `-source cafe-no-9`
-- replay mode supports `-import-run-id <id> -repair-descriptions`
+- live mode: `fix descriptions [-source sidney-and-matilda|cafe-no-9]`
+- replay mode: `replay -descriptions [id]`
+- applies by default; `-dry-run` skips repair writes
 - reuses the normal live or replay parser output, including stored detail-page snapshots during replay
 - updates only eligible existing `events.description` values for owned authoritative sources
 - does not stage event-review clusters, auto-promote events, create new events, or mutate non-description event fields
-- emits `description_repair` with `description_repaired`, `description_unchanged`, `description_skipped`, and repaired event slugs
-- mutually exclusive with `-stage-event-reviews` and `-all-sources`
+- emits `description_repair` with dry-run/apply state, `description_repaired`, `description_unchanged`, `description_skipped`, and repaired event slugs
 
 Event title repair:
 
-- primary flag: `-repair-event-titles`
-- dry-run by default; add `-apply-title-repairs` to update rows or stage event-review clusters
-- live mode supports `-source <key>` and `-all-sources`
-- replay mode supports `-import-run-id <id> -repair-event-titles`
+- live mode: `fix titles [-source <key>]`
+- replay mode: `replay -titles [id]`
+- applies by default; `-dry-run` skips repair writes
 - authoritative source matches may update existing `events.name` and derived `events.slug` directly
 - non-authoritative matches never overwrite events with authoritative source links; eligible supporting matches create or reuse an event-review cluster
 - does not create new public events
 - emits `title_repair` with dry-run/apply state, event-review cluster counts, and per-event change rows
 - staged cases include `event_review_cluster_id` and `event_review_cluster_status`
-- mutually exclusive with `-stage-event-reviews`, `-repair-descriptions`, and `-backfill-image-focus`
 
-Image focus backfill:
+Historical duplicate repair:
 
-- primary flag: `-backfill-image-focus`
-- reads existing local copied image files from `MEDIA_ROOT`
+- command: `fix historical-duplicates`
+- applies by default; `-dry-run` skips repair writes
+- uses the store default historical duplicate window
+- emits `historical_duplicate_repair`
+
+Image focus repair:
+
+- command: `fix image-focus [-media-root path]`
+- applies by default; `-dry-run` skips focus writes
+- reads existing local copied image files from `-media-root`, `MEDIA_ROOT`, or `./data/media`
 - recomputes image focus metadata on `image_assets`, `review_candidates`, and `events`
-- emits `updated`, `defaulted`, `missing_files`, `decode_failures`, and any per-asset errors
-- mutually exclusive with live ingest, replay, review staging, and description repair
+- emits `image_focus` with dry-run/apply state, `updated`, `defaulted`, `missing_files`, `decode_failures`, and any per-asset errors
+- returns non-zero only when the report's `errors` list is non-empty

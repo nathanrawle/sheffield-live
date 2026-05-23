@@ -33,7 +33,7 @@ Admin review exists for curated publication control. Event-review clusters are t
 
 Resolving an event-review cluster publishes or updates exactly one canonical public event when publication is appropriate. Discarding a cluster does not publish anything. Superseding a cluster records that newer active evidence has replaced the older open review path.
 
-Eligible singleton imports may still auto-publish before review when they are the first matching live event seen. Supporting-source first-seen publishes are stored internally as provisional until a review or authoritative update confirms them. Duplicate staging has two closed-history auto-resolution paths: exact canonical duplicate auto-resolution against an existing live event, and unanimous staged-duplicate auto-resolution when every staged candidate agrees on the canonical fields.
+Eligible singleton imports may still auto-publish before review when they are the first matching live event seen. Supporting-source first-seen publishes are stored internally as provisional until a review or authoritative update confirms them, unless a supporting-only near-title guard keeps the candidate in review. Duplicate staging has two closed-history auto-resolution paths: exact canonical duplicate auto-resolution against an existing live event, and unanimous staged-duplicate auto-resolution when every staged candidate agrees on the canonical fields.
 
 The canonical event policy is:
 
@@ -53,6 +53,7 @@ Supporting singleton auto-promotion is intentionally narrower than authoritative
 - it does not create authoritative source links
 - it does not create secondary-source info rows
 - it can create provisional venue rows immediately when the venue evidence is uniquely new
+- before inserting a provisional event, it blocks on nearby same-venue live events whose title matches by exact clean title, aggressively normalized title, or normalized headliner
 - it may fill blank live fields on later exact matches, but conflicting populated fields stay in review
 
 Canonical-backed duplicate and cluster resolution follow these precedence rules:

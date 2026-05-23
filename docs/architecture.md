@@ -114,6 +114,7 @@ Raw source snapshots feed event-review clusters, and review resolution publishes
 - duplicate clusters may stay in review or auto-resolve into closed history when they are exact canonical matches or unanimous staged duplicates
 - singleton new listings may either auto-promote or stay in review
 - any singleton may be attempted for auto-promotion when it is the first matching live record seen
+- supporting-source singleton auto-promotion blocks provisional insertion when a nearby same-venue live event matches by exact clean title, aggressively normalized title, or normalized headliner; authoritative near matching remains exact-clean-title based
 - provisional venue creation derives address and neighbourhood from source-derived venue evidence, dropping duplicate venue-name address lines and recognizing Sheffield district names in the address
 - room evidence is venue-scoped; known Sidney & Matilda rooms are bootstrapped as validated rows, and new detected room labels create provisional room rows under the matched venue
 - exact staged `venue_slug` matches take precedence over conflicting venue-text or raw-location heuristics during canonical venue resolution
@@ -134,6 +135,7 @@ Raw source snapshots feed event-review clusters, and review resolution publishes
 - event-review clusters may also persist secondary-source `genre` and `description` rows keyed by secondary source plus candidate venue, name, and start time
 - non-authoritative secondary-source rows are cumulative: repeated rows from the same source/event identity overwrite non-empty values, but an absent source in a later resolved review record does not delete earlier evidence
 - supporting singleton auto-promotion creates `provisional` live events, does not create authoritative `event_source_links`, and does not create `event_secondary_source_info` rows
+- supporting singleton candidates blocked by the near-title guard do not create provisional events or source links; staged evidence remains available for review
 - successful supporting singleton auto-promotion resolves the matching event-review cluster by deterministic `staging_key` and links the current import run to that cluster
 - later supporting matches can fill blank live fields but conflicting populated fields stay in review
 - discarding a review does not publish
