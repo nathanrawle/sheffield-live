@@ -1279,6 +1279,196 @@ func TestRunWithArgsRepairDescriptionsUpdatesOnlyDescriptions(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsFixTitlesContinuesAfterSourceFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	var stdout bytes.Buffer
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	var order []string
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		order = append(order, opts.Source)
+		report := cliEmptySucceededReport(opts.Source, int64(len(order)), opts.Limit)
+		if opts.Source == ingest.YellowArchSource {
+			report.Status = "failed"
+			report.Errors = []string{"yellow arch title repair failed"}
+			return report, ingest.ErrRunFailed
+		}
+		return report, nil
+	}
+
+	err := runWithArgs([]string{"fix", "titles", "-db", path, "-user-agent", "agent"}, &stdout, io.Discard)
+	if err == nil {
+		t.Fatal("expected fix titles batch failure")
+	}
+	if got, want := order, ingest.RegisteredSourceKeys(); !equalStrings(got, want) {
+		t.Fatalf("run order = %#v, want %#v", got, want)
+	}
+	if strings.Contains(stdout.String(), "review_stage") {
+		t.Fatalf("fix title output contains review_stage: %s", stdout.String())
+	}
+
+	var got batchManualIngestReport
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
+		t.Fatalf("decode fix title output: %v", decodeErr)
+	}
+	if gotCount, wantCount := len(got.Results), len(ingest.RegisteredSourceKeys()); gotCount != wantCount {
+		t.Fatalf("results = %d, want %d", gotCount, wantCount)
+	}
+	var sawFailure bool
+	for i, result := range got.Results {
+		if result.Source != ingest.RegisteredSourceKeys()[i] {
+			t.Fatalf("result %d source = %q, want %q", i, result.Source, ingest.RegisteredSourceKeys()[i])
+		}
+		if result.Source == ingest.YellowArchSource {
+			sawFailure = true
+			if result.Error == "" {
+				t.Fatal("failed title result error = empty, want error")
+			}
+			if result.TitleRepair != nil {
+				t.Fatalf("failed title result repair = %#v, want nil", result.TitleRepair)
+			}
+			continue
+		}
+		if result.TitleRepair == nil {
+			t.Fatalf("successful title result for %q missing title_repair", result.Source)
+		}
+	}
+	if !sawFailure {
+		t.Fatalf("fix title results missing failed source %q", ingest.YellowArchSource)
+	}
+}
+
+func TestRunWithArgsFixDescriptionsContinuesAfterSourceFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	var stdout bytes.Buffer
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	var order []string
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		order = append(order, opts.Source)
+		report := cliEmptySucceededReport(opts.Source, int64(len(order)), opts.Limit)
+		if opts.Source == ingest.CafeNo9Source {
+			report.Status = "failed"
+			report.Errors = []string{"cafe no. 9 description repair failed"}
+			return report, ingest.ErrRunFailed
+		}
+		return report, nil
+	}
+
+	err := runWithArgs([]string{"fix", "descriptions", "-db", path, "-user-agent", "agent"}, &stdout, io.Discard)
+	if err == nil {
+		t.Fatal("expected fix descriptions batch failure")
+	}
+	if got, want := order, []string{ingest.DefaultSource, ingest.CafeNo9Source}; !equalStrings(got, want) {
+		t.Fatalf("run order = %#v, want %#v", got, want)
+	}
+	if strings.Contains(stdout.String(), "review_stage") {
+		t.Fatalf("fix description output contains review_stage: %s", stdout.String())
+	}
+
+	var got batchManualIngestReport
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
+		t.Fatalf("decode fix description output: %v", decodeErr)
+	}
+	if gotCount, wantCount := len(got.Results), 2; gotCount != wantCount {
+		t.Fatalf("results = %d, want %d", gotCount, wantCount)
+	}
+	if got.Results[0].Source != ingest.DefaultSource || got.Results[0].DescriptionRepair == nil || got.Results[0].Error != "" {
+		t.Fatalf("first description result = %#v, want successful default source repair", got.Results[0])
+	}
+	if got.Results[1].Source != ingest.CafeNo9Source || got.Results[1].Error == "" || got.Results[1].DescriptionRepair != nil {
+		t.Fatalf("second description result = %#v, want failed Cafe No. 9 result", got.Results[1])
+	}
+}
+
+func TestRunWithArgsRepairHistoricalDuplicatesDryRunDoesNotMutate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	_, loserID, loserSlug := seedHistoricalDuplicateCLIRepairPair(t, path)
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "historical-duplicates", "-dry-run"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("dry-run historical duplicate repair: %v", err)
+	}
+
+	var got historicalDuplicateRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode historical duplicate dry-run output: %v", err)
+	}
+	repair := got.HistoricalDuplicateRepair
+	if !repair.DryRun || repair.Applied {
+		t.Fatalf("dry/apply = %v/%v, want true/false", repair.DryRun, repair.Applied)
+	}
+	if repair.WouldWithhold != 1 || repair.AutoWithheld != 0 {
+		t.Fatalf("repair counts = %#v, want one would-withhold and no auto-withhold", repair)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	state, canonicalID, withheldReason, repairRunID := loadHistoricalDuplicateCLIState(t, db, loserSlug)
+	if state != string(domain.PublicationStateProvisional) {
+		t.Fatalf("publication state = %q, want provisional", state)
+	}
+	if canonicalID.Valid || strings.TrimSpace(withheldReason) != "" || repairRunID.Valid {
+		t.Fatalf("dry-run mutated loser %d state: canonical=%v reason=%q repair_run=%v", loserID, canonicalID, withheldReason, repairRunID)
+	}
+}
+
+func TestRunWithArgsRepairHistoricalDuplicatesAppliesByDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	targetID, _, loserSlug := seedHistoricalDuplicateCLIRepairPair(t, path)
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "historical-duplicates"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("historical duplicate repair: %v", err)
+	}
+
+	var got historicalDuplicateRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode historical duplicate output: %v", err)
+	}
+	repair := got.HistoricalDuplicateRepair
+	if repair.DryRun || !repair.Applied {
+		t.Fatalf("dry/apply = %v/%v, want false/true", repair.DryRun, repair.Applied)
+	}
+	if repair.AutoWithheld != 1 || repair.WouldWithhold != 0 || repair.RepairRunID == 0 {
+		t.Fatalf("repair counts = %#v, want one applied auto-withhold with repair run", repair)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	state, canonicalID, withheldReason, repairRunID := loadHistoricalDuplicateCLIState(t, db, loserSlug)
+	if state != string(domain.PublicationStateWithheld) {
+		t.Fatalf("publication state = %q, want withheld", state)
+	}
+	if !canonicalID.Valid || canonicalID.Int64 != targetID {
+		t.Fatalf("canonical id = %v, want %d", canonicalID, targetID)
+	}
+	if withheldReason != "historical duplicate listing" {
+		t.Fatalf("withheld reason = %q, want historical duplicate listing", withheldReason)
+	}
+	if !repairRunID.Valid || repairRunID.Int64 != repair.RepairRunID {
+		t.Fatalf("withheld repair run id = %v, want %d", repairRunID, repair.RepairRunID)
+	}
+}
+
 func TestRunWithArgsReplayDoesNotRequireUserAgent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	runID := seedReplayRunForCLI(t, path)
@@ -1658,6 +1848,72 @@ func TestRunWithArgsBackfillsImageFocus(t *testing.T) {
 	}
 	if asset.FocusX <= 55 || asset.FocusY <= 55 {
 		t.Fatalf("focus = %d,%d, want lower-right quadrant", asset.FocusX, asset.FocusY)
+	}
+}
+
+func TestRunWithArgsBackfillsImageFocusDryRunDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	mediaRoot := filepath.Join(t.TempDir(), "media")
+	imagePath := filepath.Join(mediaRoot, "events", "poster.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("make media dir: %v", err)
+	}
+	if err := os.WriteFile(imagePath, focusFixturePNG(t), 0o644); err != nil {
+		t.Fatalf("write fixture image: %v", err)
+	}
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/poster.png",
+		PublicURL:   "/media/events/poster.png",
+		StoragePath: "events/poster.png",
+		ContentType: "image/png",
+		FocusX:      50,
+		FocusY:      50,
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	t.Setenv("MEDIA_ROOT", mediaRoot)
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "image-focus", "-dry-run"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("dry-run backfill image focus: %v", err)
+	}
+
+	var payload imageFocusRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode backfill output: %v", err)
+	}
+	report := payload.ImageFocus
+	if !report.DryRun || report.Applied {
+		t.Fatalf("dry/apply = %v/%v, want true/false", report.DryRun, report.Applied)
+	}
+	if report.Updated != 1 || report.Defaulted != 0 || report.MissingFiles != 0 || report.DecodeFailures != 0 {
+		t.Fatalf("backfill report = %#v, want one clean dry-run update", report)
+	}
+
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+	asset, ok, err := st.LoadImageAsset(ctx, "https://example.test/poster.png")
+	if err != nil {
+		t.Fatalf("load image asset: %v", err)
+	}
+	if !ok {
+		t.Fatal("image asset not found")
+	}
+	if asset.FocusX != 50 || asset.FocusY != 50 {
+		t.Fatalf("focus = %d,%d, want unchanged 50,50", asset.FocusX, asset.FocusY)
 	}
 }
 
@@ -2721,6 +2977,21 @@ type eventRow struct {
 	PublicationState string
 }
 
+func cliEmptySucceededReport(source string, importRunID int64, limit int) ingest.Report {
+	return ingest.Report{
+		Source:      source,
+		SourceURL:   "https://" + source + ".example.test/",
+		ImportRunID: importRunID,
+		StartedAt:   "2026-04-24T10:00:00Z",
+		FinishedAt:  "2026-04-24T10:01:00Z",
+		Status:      "succeeded",
+		Limit:       limit,
+		Links:       []string{},
+		Calendars:   []ingest.CalendarReport{},
+		Totals:      ingest.ReportTotals{},
+	}
+}
+
 func cliYellowArchTitleRepairReport(startAt, summary string) ingest.Report {
 	return ingest.Report{
 		Source:      ingest.YellowArchSource,
@@ -2830,6 +3101,55 @@ func insertHistoricalDuplicateCLIEvent(t *testing.T, db *sql.DB, sourceID int64,
 		t.Fatalf("historical duplicate CLI event id: %v", err)
 	}
 	return id
+}
+
+func seedHistoricalDuplicateCLIRepairPair(t *testing.T, path string) (int64, int64, string) {
+	t.Helper()
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	sourceID, err := st.EnsureSource(context.Background(), "CLI historical duplicate source", "https://example.test/historical-duplicates")
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	var venueID int64
+	if err := db.QueryRow(`
+		SELECT id
+		FROM venues
+		WHERE slug = ?
+	`, "leadmill").Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue: %v", err)
+	}
+	startAt := "2026-05-12T19:00:00Z"
+	targetID := insertHistoricalDuplicateCLIEvent(t, db, sourceID, "cli-historical-duplicate-target", venueID, "CLI Historical Duplicate", startAt, string(domain.PublicationStateReviewed))
+	loserSlug := "cli-historical-duplicate-loser"
+	loserID := insertHistoricalDuplicateCLIEvent(t, db, sourceID, loserSlug, venueID, "CLI Historical Duplicate", startAt, string(domain.PublicationStateProvisional))
+	return targetID, loserID, loserSlug
+}
+
+func loadHistoricalDuplicateCLIState(t *testing.T, db *sql.DB, slug string) (string, sql.NullInt64, string, sql.NullInt64) {
+	t.Helper()
+
+	var publicationState string
+	var canonicalID sql.NullInt64
+	var withheldReason string
+	var repairRunID sql.NullInt64
+	if err := db.QueryRow(`
+		SELECT publication_state, canonical_event_id, COALESCE(withheld_reason, ''), withheld_repair_run_id
+		FROM events
+		WHERE slug = ?
+	`, slug).Scan(&publicationState, &canonicalID, &withheldReason, &repairRunID); err != nil {
+		t.Fatalf("load historical duplicate state %q: %v", slug, err)
+	}
+	return publicationState, canonicalID, withheldReason, repairRunID
 }
 
 func loadEventRow(t *testing.T, db *sql.DB, slug string) eventRow {

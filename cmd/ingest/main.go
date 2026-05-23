@@ -725,6 +725,12 @@ type batchManualIngestResult struct {
 	Error               string                          `json:"error,omitempty"`
 }
 
+type batchSourceResult struct {
+	Result    batchManualIngestResult
+	LogResult manualRunExecution
+	Err       error
+}
+
 type eventReviewClusterReport struct {
 	Enabled                              bool                                   `json:"enabled"`
 	Applied                              bool                                   `json:"applied"`
@@ -1053,28 +1059,30 @@ func localMediaAssetPath(mediaRoot, storagePath string) (string, error) {
 	return filepath.Join(mediaRoot, clean), nil
 }
 
-func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
+func runSourceBatch(sources []string, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary, failureErr error, runSource func(source string) batchSourceResult) error {
 	logger = logging.EnsureLogger(logger)
-	results := make([]batchManualIngestResult, 0, len(catalog.Keys()))
+	results := make([]batchManualIngestResult, 0, len(sources))
 	var failed bool
 	failedSources := 0
-	for _, source := range catalog.Keys() {
-		result := runSingleManualSource(ctx, st, fetcher, catalog, cfg, source)
-		batchResult := batchManualIngestResult{
-			Source: source,
-			Report: result.Report,
-		}
-		if result.EventReviewClusters != nil {
-			stageCopy := *result.EventReviewClusters
-			batchResult.EventReviewClusters = &stageCopy
-		}
-		if result.Err != nil {
-			batchResult.Error = result.Err.Error()
+	for _, source := range sources {
+		sourceResult := runSource(source)
+		batchResult := sourceResult.Result
+		batchResult.Source = source
+		if sourceResult.Err != nil {
+			batchResult.Error = sourceResult.Err.Error()
 			failed = true
 			failedSources++
 		}
 		results = append(results, batchResult)
-		logIngestSourceFinished(logger, source, result)
+
+		logResult := sourceResult.LogResult
+		if logResult.Report.Source == "" && logResult.Report.ImportRunID == 0 {
+			logResult.Report = batchResult.Report
+		}
+		if logResult.Err == nil {
+			logResult.Err = sourceResult.Err
+		}
+		logIngestSourceFinished(logger, source, logResult)
 	}
 	if summary != nil {
 		summary.Source = ""
@@ -1105,9 +1113,27 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 		return err
 	}
 	if failed {
-		return errors.New("one or more source ingests failed")
+		return failureErr
 	}
 	return nil
+}
+
+func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
+	return runSourceBatch(catalog.Keys(), stdout, logger, summary, errors.New("one or more source ingests failed"), func(source string) batchSourceResult {
+		result := runSingleManualSource(ctx, st, fetcher, catalog, cfg, source)
+		batchResult := batchManualIngestResult{
+			Report: result.Report,
+		}
+		if result.EventReviewClusters != nil {
+			stageCopy := *result.EventReviewClusters
+			batchResult.EventReviewClusters = &stageCopy
+		}
+		return batchSourceResult{
+			Result:    batchResult,
+			LogResult: result,
+			Err:       result.Err,
+		}
+	})
 }
 
 type sourceRepairKind string
@@ -1127,16 +1153,12 @@ func runLiveSourceRepairs(ctx context.Context, st *sqlite.Store, catalog *ingest
 		return err
 	}
 	sources := repairSourcesForConfig(catalog, cfg, kind)
-	results := make([]batchManualIngestResult, 0, len(sources))
-	var failed bool
-	failedSources := 0
-	for _, source := range sources {
+	return runSourceBatch(sources, stdout, logger, summary, fmt.Errorf("one or more source %s repairs failed", kind), func(source string) batchSourceResult {
 		report, runErr := runManualImport(ctx, st, fetcher, catalog, ingest.Options{
 			Source: source,
 			Limit:  cfg.limit,
 		})
 		batchResult := batchManualIngestResult{
-			Source: source,
 			Report: report,
 		}
 		if runErr == nil {
@@ -1159,40 +1181,12 @@ func runLiveSourceRepairs(ctx context.Context, st *sqlite.Store, catalog *ingest
 				runErr = fmt.Errorf("unsupported source repair kind %q", kind)
 			}
 		}
-		if runErr != nil {
-			batchResult.Error = runErr.Error()
-			failed = true
-			failedSources++
+		return batchSourceResult{
+			Result:    batchResult,
+			LogResult: manualRunExecution{Report: report, Err: runErr},
+			Err:       runErr,
 		}
-		results = append(results, batchResult)
-		logIngestSourceFinished(logger, source, manualRunExecution{Report: report, Err: runErr})
-	}
-	if summary != nil {
-		summary.Source = ""
-		summary.Status = "succeeded"
-		summary.SourceCount = len(results)
-		summary.FailedSourceCount = failedSources
-		if failed {
-			summary.Status = "failed"
-		}
-		for _, result := range results {
-			summary.Totals.Links += result.Report.Totals.Links
-			summary.Totals.Snapshots += result.Report.Totals.Snapshots
-			summary.Totals.Candidates += result.Report.Totals.Candidates
-			summary.Totals.Skips += result.Report.Totals.Skips
-			summary.Totals.Errors += result.Report.Totals.Errors
-		}
-	}
-
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(batchManualIngestReport{Results: results}); err != nil {
-		return err
-	}
-	if failed {
-		return fmt.Errorf("one or more source %s repairs failed", kind)
-	}
-	return nil
+	})
 }
 
 func repairSourcesForConfig(catalog *ingest.Catalog, cfg ingestCommandConfig, kind sourceRepairKind) []string {
