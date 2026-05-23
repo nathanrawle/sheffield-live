@@ -2011,8 +2011,85 @@ func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.
 	if !got.EventReviewClusters.Enabled {
 		t.Fatal("event-review clusters enabled = false, want true")
 	}
+	if got.EventReviewClusters.Applied {
+		t.Fatal("event-review clusters applied = true, want false")
+	}
+	if len(got.EventReviewClusters.Errors) != 1 || !strings.Contains(got.EventReviewClusters.Errors[0], "skipped event review staging") {
+		t.Fatalf("event-review cluster errors = %#v, want skipped staging reason", got.EventReviewClusters.Errors)
+	}
 	if got.EventReviewClusters.EventReviewClustersCreated != 0 {
 		t.Fatalf("event-review clusters created = %d, want 0", got.EventReviewClusters.EventReviewClustersCreated)
+	}
+
+	db := openRawDB(t, path)
+	defer db.Close()
+	if got := countRows(t, db, "review_groups"); got != 0 {
+		t.Fatalf("event-review clusters = %d, want 0", got)
+	}
+}
+
+func TestRunWithArgsLiveFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	t.Setenv("MEDIA_ROOT", filepath.Join(t.TempDir(), "media"))
+	var stdout bytes.Buffer
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+	}()
+
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: 17,
+			StartedAt:   "2026-04-24T10:00:00Z",
+			FinishedAt:  "2026-04-24T10:01:00Z",
+			Status:      "failed",
+			Limit:       opts.Limit,
+			Errors:      []string{"manual ingest failed"},
+			Calendars: []ingest.CalendarReport{{
+				URL: "https://" + opts.Source + ".example.test/calendar.ics",
+				Candidates: []ingest.EventCandidate{{
+					UID:      "failed-live-show",
+					Summary:  "Failed Live Show",
+					Location: "External Room",
+					StartAt:  "2026-05-01T19:00:00Z",
+				}},
+			}},
+			Links:  []string{"https://" + opts.Source + ".example.test/calendar.ics"},
+			Totals: ingest.ReportTotals{Links: 1, Candidates: 1, Errors: 1},
+		}, ingest.ErrRunFailed
+	}
+
+	err := runWithArgs([]string{"-db", path, "-source", ingest.DefaultSource, "-user-agent", "agent"}, &stdout, io.Discard)
+	if !errors.Is(err, ingest.ErrRunFailed) {
+		t.Fatalf("error = %v, want ErrRunFailed", err)
+	}
+
+	var got manualIngestReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode live output: %v", err)
+	}
+	if got.Report.ImportRunID != 17 {
+		t.Fatalf("import run id = %d, want 17", got.Report.ImportRunID)
+	}
+	if got.Report.Status != "failed" {
+		t.Fatalf("report status = %q, want failed", got.Report.Status)
+	}
+	if !got.EventReviewClusters.Enabled {
+		t.Fatal("event-review clusters enabled = false, want true")
+	}
+	if got.EventReviewClusters.Applied {
+		t.Fatal("event-review clusters applied = true, want false")
+	}
+	if len(got.EventReviewClusters.Errors) != 1 || !strings.Contains(got.EventReviewClusters.Errors[0], "skipped event review staging") {
+		t.Fatalf("event-review cluster errors = %#v, want skipped staging reason", got.EventReviewClusters.Errors)
 	}
 
 	db := openRawDB(t, path)
@@ -2334,6 +2411,9 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 		if result.EventReviewClusters == nil {
 			t.Fatalf("review stage missing for source %q", result.Source)
 		}
+		if !result.EventReviewClusters.Applied {
+			t.Fatalf("review stage applied for source %q = false, want true", result.Source)
+		}
 		if result.EventReviewClusters.AutoPromotedCount != 1 {
 			t.Fatalf("auto promoted count for %q = %d, want 1", result.Source, result.EventReviewClusters.AutoPromotedCount)
 		}
@@ -2370,6 +2450,12 @@ func TestEventReviewClustersForReportSkipsFailedManualRun(t *testing.T) {
 	}
 	if !stage.Enabled {
 		t.Fatal("stage enabled = false, want true")
+	}
+	if stage.Applied {
+		t.Fatal("stage applied = true, want false")
+	}
+	if len(stage.Errors) != 1 || !strings.Contains(stage.Errors[0], "skipped event review staging") {
+		t.Fatalf("stage errors = %#v, want skipped staging reason", stage.Errors)
 	}
 	if stage.EventReviewClustersCreated != 0 || stage.CandidateCount != 0 {
 		t.Fatalf("stage counts = groups %d candidates %d, want zero", stage.EventReviewClustersCreated, stage.CandidateCount)

@@ -876,7 +876,7 @@ func (s *ingestLogSummary) applyManualRun(result manualRunExecution) {
 
 func eventReviewClustersForReport(ctx context.Context, st eventReviewClusterStore, catalog *ingest.Catalog, report ingest.Report, runErr error) (eventReviewClusterReport, error) {
 	if runErr != nil {
-		return emptyEventReviewClusterReport(), nil
+		return skippedEventReviewClusterReport("skipped event review staging because the ingest run failed"), nil
 	}
 	return createEventReviewClustersFromReport(ctx, st, catalog, report)
 }
@@ -1433,6 +1433,17 @@ func disabledEventReviewClusterReport() eventReviewClusterReport {
 		EventReviewClustersAutoResolved: []eventReviewClusterAutoResolvedReport{},
 		Errors:                          []string{},
 	}
+}
+
+func skippedEventReviewClusterReport(reason string) eventReviewClusterReport {
+	report := emptyEventReviewClusterReport()
+	report.Applied = false
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "skipped event review staging"
+	}
+	report.Errors = []string{reason}
+	return report
 }
 
 func env(key, fallback string) string {
