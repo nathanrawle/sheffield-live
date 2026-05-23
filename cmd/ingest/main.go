@@ -548,9 +548,9 @@ func leadingGlobalDBForSubcommand(args []string) (trackedStringFlag, []string, b
 	for i < len(args) {
 		arg := args[i]
 		switch {
-		case arg == "-db":
+		case arg == "-db" || arg == "--db":
 			if i+1 >= len(args) {
-				return trackedStringFlag{}, nil, false, errors.New("-db requires a value")
+				return trackedStringFlag{}, nil, false, errors.New("-db/--db requires a value")
 			}
 			if err := db.Set(args[i+1]); err != nil {
 				return trackedStringFlag{}, nil, false, err
@@ -558,6 +558,11 @@ func leadingGlobalDBForSubcommand(args []string) (trackedStringFlag, []string, b
 			i += 2
 		case strings.HasPrefix(arg, "-db="):
 			if err := db.Set(strings.TrimPrefix(arg, "-db=")); err != nil {
+				return trackedStringFlag{}, nil, false, err
+			}
+			i++
+		case strings.HasPrefix(arg, "--db="):
+			if err := db.Set(strings.TrimPrefix(arg, "--db=")); err != nil {
 				return trackedStringFlag{}, nil, false, err
 			}
 			i++

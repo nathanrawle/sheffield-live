@@ -977,6 +977,8 @@ func TestParseIngestArgsCommandDispatch(t *testing.T) {
 		{name: "replay title repair", args: []string{"replay", "-titles", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantTitle: true},
 		{name: "replay description repair dry run", args: []string{"replay", "-descriptions", "-dry-run", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDesc: true, wantDryRun: true},
 		{name: "global db replay", args: []string{"-db", "global.db", "replay", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDB: "global.db", wantStage: true},
+		{name: "global long db replay", args: []string{"--db", "global.db", "replay", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDB: "global.db", wantStage: true},
+		{name: "global long db equals fix", args: []string{"--db=global.db", "fix", "titles"}, wantCmd: ingestCommandFix, wantFix: fixCommandTitles, wantAll: true, wantDB: "global.db", wantTitle: true},
 		{name: "matching global and local db", args: []string{"-db", "global.db", "replay", "-db", "global.db", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDB: "global.db", wantStage: true},
 		{name: "fix titles", args: []string{"fix", "titles"}, wantCmd: ingestCommandFix, wantFix: fixCommandTitles, wantAll: true, wantTitle: true},
 		{name: "fix descriptions source", args: []string{"fix", "descriptions", "-source", ingest.CafeNo9Source}, wantCmd: ingestCommandFix, wantFix: fixCommandDescriptions, wantSource: ingest.CafeNo9Source, wantSet: true, wantDesc: true},
