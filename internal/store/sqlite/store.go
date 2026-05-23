@@ -47,7 +47,8 @@ const (
 	schemaVersionV25     = 25
 	schemaVersionV26     = 26
 	schemaVersionV27     = 27
-	schemaVersionCurrent = schemaVersionV27
+	schemaVersionV28     = 28
+	schemaVersionCurrent = schemaVersionV28
 	rfc3339Timestamp     = time.RFC3339
 	foreignKeysPragma    = "PRAGMA foreign_keys = ON"
 )
@@ -83,6 +84,7 @@ var migrations = []struct {
 	{version: schemaVersionV25, path: "migrations/0025_event_source_attribute_observations_source_id_identity.sql"},
 	{version: schemaVersionV26, path: "migrations/0026_event_review_schema_foundation.sql"},
 	{version: schemaVersionV27, path: "migrations/0027_event_review_cluster_staging_key.sql"},
+	{version: schemaVersionV28, path: "migrations/0028_import_run_snapshot_retention.sql"},
 }
 
 //go:embed migrations/*.sql

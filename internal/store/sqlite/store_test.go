@@ -98,6 +98,7 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 		"repair_run_event_review_clusters",
 		"import_run_event_review_evidence",
 		"repair_run_event_review_evidence",
+		"import_run_snapshot_retention",
 	} {
 		ok, err := tableExists(context.Background(), db, table)
 		if err != nil {
@@ -142,6 +143,9 @@ func TestOpenBootstrapsFreshDatabase(t *testing.T) {
 	}
 	if got := mustCount(t, db, "repair_runs"); got != 0 {
 		t.Fatalf("repair_runs rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "import_run_snapshot_retention"); got != 0 {
+		t.Fatalf("import_run_snapshot_retention rows = %d, want 0", got)
 	}
 }
 

@@ -75,6 +75,7 @@ const (
 	fixCommandDescriptions         fixCommandKind = "descriptions"
 	fixCommandHistoricalDuplicates fixCommandKind = "historical-duplicates"
 	fixCommandImageFocus           fixCommandKind = "image-focus"
+	fixCommandSnapshots            fixCommandKind = "snapshots"
 )
 
 var (
@@ -110,6 +111,9 @@ var (
 			}
 		}
 		return ""
+	}
+	nowUTC = func() time.Time {
+		return time.Now().UTC()
 	}
 )
 
@@ -225,7 +229,9 @@ func runLiveIngestCommand(ctx context.Context, st *sqlite.Store, catalog *ingest
 	if summary != nil {
 		summary.applyManualRun(result)
 	}
-	return encodeManualRunResult(stdout, result)
+	err = encodeManualRunResult(stdout, result)
+	runAutomaticSnapshotCleanup(ctx, st, logger)
+	return err
 }
 
 func runReplayCommand(ctx context.Context, st *sqlite.Store, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, summary *ingestLogSummary) error {
@@ -292,6 +298,8 @@ func runFixCommand(ctx context.Context, st *sqlite.Store, catalog *ingest.Catalo
 			mediaRoot = env("MEDIA_ROOT", "./data/media")
 		}
 		return runImageFocusBackfill(ctx, st, stdout, mediaRoot, !cfg.dryRun)
+	case fixCommandSnapshots:
+		return runSnapshotCleanup(ctx, st, stdout)
 	default:
 		return fmt.Errorf("unsupported fix command %q", cfg.fixKind)
 	}
@@ -329,6 +337,75 @@ func configureImageIngest(cfg *ingestCommandConfig) error {
 	cfg.imageFetcher = imageFetcher
 	cfg.imageStorage = imageStorage
 	return nil
+}
+
+func runLiveManualImportWithRetention(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+	report, runErr := runManualImport(ctx, st, fetcher, catalog, opts)
+	if report.ImportRunID <= 0 {
+		return report, runErr
+	}
+	if err := recordImportRunSnapshotRetention(ctx, st, report); err != nil {
+		retentionErr := fmt.Errorf("record snapshot retention metadata: %w", err)
+		if runErr != nil {
+			return report, errors.Join(runErr, retentionErr)
+		}
+		return report, retentionErr
+	}
+	return report, runErr
+}
+
+func recordImportRunSnapshotRetention(ctx context.Context, st *sqlite.Store, report ingest.Report) error {
+	retention := ingest.SnapshotRetentionForReport(report)
+	return st.UpsertImportRunSnapshotRetention(ctx, sqlite.ImportRunSnapshotRetentionInput{
+		ImportRunID:         retention.ImportRunID,
+		LatestStartAt:       retention.LatestStartAt,
+		CandidateCount:      retention.CandidateCount,
+		ParseableStartCount: retention.ParseableStartCount,
+		RecordedAt:          nowUTC(),
+	})
+}
+
+func runSnapshotCleanup(ctx context.Context, st *sqlite.Store, stdout io.Writer) error {
+	report, err := st.DeleteStaleImportRunSnapshots(ctx, sqlite.SnapshotCleanupOptions{Now: nowUTC()})
+	if err != nil {
+		return err
+	}
+	var vacuumErr error
+	if report.DeletedSnapshots > 0 {
+		if err := st.Vacuum(ctx); err != nil {
+			report.VacuumError = err.Error()
+			vacuumErr = err
+		} else {
+			report.Vacuumed = true
+		}
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(report); err != nil {
+		return err
+	}
+	return vacuumErr
+}
+
+func runAutomaticSnapshotCleanup(ctx context.Context, st *sqlite.Store, logger *slog.Logger) {
+	logger = logging.EnsureLogger(logger)
+	report, err := st.DeleteStaleImportRunSnapshots(ctx, sqlite.SnapshotCleanupOptions{Now: nowUTC()})
+	if err != nil {
+		logger.Warn("snapshot cleanup failed", "error", err)
+		return
+	}
+	if report.DeletedSnapshots == 0 {
+		return
+	}
+	attrs := []any{
+		"deleted_runs", report.DeletedRuns,
+		"deleted_snapshots", report.DeletedSnapshots,
+	}
+	if err := st.Vacuum(ctx); err != nil {
+		logger.Warn("snapshot cleanup vacuum failed", append(attrs, "error", err)...)
+		return
+	}
+	logger.Info("snapshot cleanup finished", append(attrs, "vacuumed", true)...)
 }
 
 func parseIngestArgs(args []string) (ingestCommandConfig, error) {
@@ -443,6 +520,8 @@ func parseFixArgs(args []string, globalDB trackedStringFlag) (ingestCommandConfi
 		return parseHistoricalDuplicateFixArgs(args[1:], globalDB)
 	case fixCommandImageFocus:
 		return parseImageFocusFixArgs(args[1:], globalDB)
+	case fixCommandSnapshots:
+		return parseSnapshotFixArgs(args[1:], globalDB)
 	default:
 		return ingestCommandConfig{}, fmt.Errorf("unknown fix subcommand %q", args[0])
 	}
@@ -514,6 +593,26 @@ func parseImageFocusFixArgs(args []string, globalDB trackedStringFlag) (ingestCo
 	fs.Var(&dbFlag, "db", "SQLite database path")
 	fs.StringVar(&cfg.mediaRoot, "media-root", "", "local media root")
 	fs.BoolVar(&cfg.dryRun, "dry-run", false, "report image focus repairs without writing")
+	if err := fs.Parse(args); err != nil {
+		return ingestCommandConfig{}, err
+	}
+	if fs.NArg() > 0 {
+		return ingestCommandConfig{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	dbPath, err := mergeDBPath(globalDB, dbFlag)
+	if err != nil {
+		return ingestCommandConfig{}, err
+	}
+	cfg.dbPath = dbPath
+	return cfg, nil
+}
+
+func parseSnapshotFixArgs(args []string, globalDB trackedStringFlag) (ingestCommandConfig, error) {
+	cfg := defaultCommandConfig(ingestCommandFix)
+	cfg.fixKind = fixCommandSnapshots
+	var dbFlag trackedStringFlag
+	fs := newIngestFlagSet("ingest fix snapshots")
+	fs.Var(&dbFlag, "db", "SQLite database path")
 	if err := fs.Parse(args); err != nil {
 		return ingestCommandConfig{}, err
 	}
@@ -808,6 +907,8 @@ func ingestMode(cfg ingestCommandConfig) string {
 			return "historical_duplicate_repair"
 		case fixCommandImageFocus:
 			return "image_focus_backfill"
+		case fixCommandSnapshots:
+			return "snapshot_cleanup"
 		default:
 			return "fix"
 		}
@@ -887,7 +988,7 @@ func eventReviewClustersForReport(ctx context.Context, st eventReviewClusterStor
 }
 
 func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, source string) manualRunExecution {
-	report, runErr := runManualImport(ctx, st, fetcher, catalog, ingest.Options{
+	report, runErr := runLiveManualImportWithRetention(ctx, st, fetcher, catalog, ingest.Options{
 		Source:       source,
 		Limit:        cfg.limit,
 		ImageFetcher: cfg.imageFetcher,
@@ -1124,7 +1225,7 @@ func runSourceBatch(sources []string, stdout io.Writer, logger *slog.Logger, sum
 }
 
 func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, stdout io.Writer, logger *slog.Logger, summary *ingestLogSummary) error {
-	return runSourceBatch(catalog.Keys(), stdout, logger, summary, errors.New("one or more source ingests failed"), func(source string) batchSourceResult {
+	err := runSourceBatch(catalog.Keys(), stdout, logger, summary, errors.New("one or more source ingests failed"), func(source string) batchSourceResult {
 		result := runSingleManualSource(ctx, st, fetcher, catalog, cfg, source)
 		batchResult := batchManualIngestResult{
 			Report: result.Report,
@@ -1139,6 +1240,8 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 			Err:       result.Err,
 		}
 	})
+	runAutomaticSnapshotCleanup(ctx, st, logger)
+	return err
 }
 
 type sourceRepairKind string
@@ -1158,8 +1261,8 @@ func runLiveSourceRepairs(ctx context.Context, st *sqlite.Store, catalog *ingest
 		return err
 	}
 	sources := repairSourcesForConfig(catalog, cfg, kind)
-	return runSourceBatch(sources, stdout, logger, summary, fmt.Errorf("one or more source %s repairs failed", kind), func(source string) batchSourceResult {
-		report, runErr := runManualImport(ctx, st, fetcher, catalog, ingest.Options{
+	err = runSourceBatch(sources, stdout, logger, summary, fmt.Errorf("one or more source %s repairs failed", kind), func(source string) batchSourceResult {
+		report, runErr := runLiveManualImportWithRetention(ctx, st, fetcher, catalog, ingest.Options{
 			Source: source,
 			Limit:  cfg.limit,
 		})
@@ -1192,6 +1295,8 @@ func runLiveSourceRepairs(ctx context.Context, st *sqlite.Store, catalog *ingest
 			Err:       runErr,
 		}
 	})
+	runAutomaticSnapshotCleanup(ctx, st, logger)
+	return err
 }
 
 func repairSourcesForConfig(catalog *ingest.Catalog, cfg ingestCommandConfig, kind sourceRepairKind) []string {
