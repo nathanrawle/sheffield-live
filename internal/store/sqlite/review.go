@@ -408,11 +408,14 @@ func uniqueLiveEventMatchForEventTx(ctx context.Context, q queryer, event domain
 }
 
 func guardedNearLiveEventMatchForEventTx(ctx context.Context, q queryer, event domain.Event, sourceMetadata ingest.SourceMetadataLookup) ([]eventRecord, bool, error) {
+	if !guardedNearMatchEnabledForEventSource(sourceMetadata, event.SourceName) {
+		return nil, false, nil
+	}
 	records, ok, err := matchLiveEventsByGuardedNearIdentityTx(ctx, q, event, guardedNearMatchWindowForEventSource(sourceMetadata, event.SourceName))
 	if err != nil || !ok {
 		return nil, false, err
 	}
-	return records, guardedNearMatchEnabledForEventSource(sourceMetadata, event.SourceName), nil
+	return records, true, nil
 }
 
 func guardedNearMatchEnabledForEventSource(sourceMetadata ingest.SourceMetadataLookup, sourceName string) bool {
