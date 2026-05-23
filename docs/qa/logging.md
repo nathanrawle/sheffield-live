@@ -106,7 +106,6 @@ Run a staged ingest:
 DB_PATH="$INGEST_DB" LOG_LEVEL=info LOG_FORMAT=text \
   go run ./cmd/ingest \
   -source sidney-and-matilda \
-  -stage-event-reviews \
   >"$INGEST_JSON" 2>"$INGEST_LOG"
 ```
 
@@ -136,7 +135,7 @@ This should print nothing.
 ## Invalid Logging Config
 
 ```bash
-LOG_LEVEL=trace go run ./cmd/ingest -source sidney-and-matilda -stage-event-reviews >/tmp/ignored.json
+LOG_LEVEL=trace go run ./cmd/ingest -source sidney-and-matilda >/tmp/ignored.json
 ```
 
 Expected:

@@ -34,12 +34,12 @@ sqlite3 ./data/sheffield-live.db
 
 Use the SQLite CLI only if you already have it installed. Any read-only query tool you prefer is fine.
 
-## Run a manual ingest
+## Run manual ingest
 
-Sidney & Matilda is the default source:
+By default, ingest runs every registered source and stages event reviews:
 
 ```bash
-go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
+go run ./cmd/ingest -user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
 If local or global git config already has `user.email`, you can omit the flag and let the command derive a default user agent:
@@ -48,56 +48,52 @@ If local or global git config already has `user.email`, you can omit the flag an
 go run ./cmd/ingest
 ```
 
-Yellow Arch uses the same command with an explicit source:
+Use `-source` to run one source:
 
 ```bash
-go run ./cmd/ingest -source yellow-arch -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
+go run ./cmd/ingest -source yellow-arch -user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
-Leadmill uses the same pattern:
+Other source keys use the same pattern:
 
 ```bash
-go run ./cmd/ingest -source leadmill -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
-```
-
-Jazz at The Lescar also uses the same pattern:
-
-```bash
-go run ./cmd/ingest -source jazz-at-the-lescar -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
-```
-
-The Greystones also uses the same pattern:
-
-```bash
-go run ./cmd/ingest -source the-greystones -http-user-agent "sheffield-live manual ingest (contact: you@example.com)"
+go run ./cmd/ingest -source leadmill -user-agent "sheffield-live manual ingest (contact: you@example.com)"
+go run ./cmd/ingest -source jazz-at-the-lescar -user-agent "sheffield-live manual ingest (contact: you@example.com)"
+go run ./cmd/ingest -source the-greystones -user-agent "sheffield-live manual ingest (contact: you@example.com)"
 ```
 
 Sidney & Matilda snapshots the source page, linked ICS payloads, and linked event detail pages; ICS remains authoritative for identity and times, while detail pages enrich blank descriptions. Cafe No. 9 snapshots the WeGotTickets organiser pages plus event detail pages and enriches descriptions from detail-page event information. Yellow Arch snapshots the source page plus candidate detail pages, and uses detail-page event content to enrich descriptions without adding those detail URLs to report links. Leadmill snapshots the source page plus linked ICS payloads. Jazz at The Lescar snapshots only the source page and parses candidates directly from that page. The Greystones and Corporation snapshot the source page plus linked detail pages. Ingest also copies supported source images into local media storage when an event image URL is available and stores a best-effort focus point for card crops; set `MEDIA_ROOT` and `MEDIA_URL_PREFIX` to change the local storage path or public URL prefix. `-limit` caps linked ICS or linked detail-page fetches and parsed source-page candidates for direct source-page parsers. All commands print a JSON report.
 Use `-contact you@example.com` to override the contact detail in the derived default user agent, or `-contact none` to suppress contact info entirely.
 
-## Stage event-review clusters after ingest
+Use `-dry-run` to skip event-review staging while still writing import runs and snapshots:
 
 ```bash
-go run ./cmd/ingest -http-user-agent "sheffield-live manual ingest (contact: you@example.com)" -stage-event-reviews
+go run ./cmd/ingest -dry-run
 ```
 
 This stages duplicate event-review clusters and any singleton clusters that were not auto-promoted after a successful ingest. Any singleton may auto-publish first when it is the first matching live event seen; authoritative sources can also upgrade existing provisional events in place, while supporting-source conflicts stay in review. Duplicate staging can also auto-resolve an exact canonical match or a unanimous staged duplicate and records those outcomes separately in `review_stage.event_review_clusters_auto_resolved`. Use `review_stage.event_review_clusters[].cluster_id` for open review follow-up; auto-resolved rows are terminal history/reporting rows. Reruns reuse existing staging keys when the staged content matches, refresh open-cluster canonical snapshot/default state, preserve manual draft choices, and record the new import-run link in the persisted provenance table.
-`-stage-event-reviews` can also create provisional venue rows immediately from uniquely new venue evidence, even when no event is published yet, so `/admin/venues` may show rows with `0` upcoming events.
+Event-review staging can also create provisional venue rows immediately from uniquely new venue evidence, even when no event is published yet, so `/admin/venues` may show rows with `0` upcoming events.
 
 ## Replay a stored ingest run
 
 ```bash
-go run ./cmd/ingest -import-run-id 42 -limit 20 -stage-event-reviews
+go run ./cmd/ingest replay -limit 20 42
 ```
 
-This rebuilds the report from stored snapshots without using the network. Reruns are safe and reuse existing clusters when the staged content matches, eligible singletons may auto-promote instead of creating an event-review cluster, and eligible duplicate clusters may auto-resolve into closed review history. Omit `-stage-event-reviews` if you only want the replay report.
+Omit the ID to replay the latest finished import run by ID:
+
+```bash
+go run ./cmd/ingest replay
+```
+
+This rebuilds the report from stored snapshots without using the network. Reruns are safe and reuse existing clusters when the staged content matches, eligible singletons may auto-promote instead of creating an event-review cluster, and eligible duplicate clusters may auto-resolve into closed review history. Add `-dry-run` if you only want the replay report and no event-review staging.
 Replay auto-detects whether the stored run used linked ICS extraction or direct source-page parsing.
 Replay reuses existing copied image-asset metadata by source URL and does not fetch remote image bytes.
 
-## Backfill image focus metadata
+## Repair image focus metadata
 
 ```bash
-go run ./cmd/ingest -backfill-image-focus
+go run ./cmd/ingest fix image-focus
 ```
 
 This reads existing copied image files from `MEDIA_ROOT`, recomputes focus metadata, and updates copied asset, review candidate, and event rows. Use it after migrating an existing local development database that already has copied images.
@@ -105,9 +101,9 @@ This reads existing copied image files from `MEDIA_ROOT`, recomputes focus metad
 ## Repair existing descriptions only
 
 ```bash
-go run ./cmd/ingest -source cafe-no-9 -repair-descriptions
-go run ./cmd/ingest -source sidney-and-matilda -repair-descriptions
-go run ./cmd/ingest -import-run-id 42 -repair-descriptions
+go run ./cmd/ingest fix descriptions
+go run ./cmd/ingest fix descriptions -source cafe-no-9
+go run ./cmd/ingest replay -descriptions 42
 ```
 
 This updates only eligible existing event descriptions from live ingest or replayed snapshots. It does not stage event-review clusters, auto-promote events, create new events, or mutate non-description event fields. Use this for owned authoritative sources when an earlier ingest left descriptions blank or filled with generated markup/CSS.
@@ -115,12 +111,12 @@ This updates only eligible existing event descriptions from live ingest or repla
 ## Repair existing event titles
 
 ```bash
-go run ./cmd/ingest -source yellow-arch -repair-event-titles
-go run ./cmd/ingest -all-sources -repair-event-titles
-go run ./cmd/ingest -import-run-id 42 -repair-event-titles
+go run ./cmd/ingest fix titles
+go run ./cmd/ingest fix titles -source yellow-arch
+go run ./cmd/ingest replay -titles 42
 ```
 
-Title repair is a dry run unless `-apply-title-repairs` is also passed. Authoritative matches can update event names and slugs directly; non-authoritative matches do not overwrite authoritative event names and instead create or reuse an event-review cluster when there is one safe target.
+Title repair applies by default; add `-dry-run` to report changes without repair writes. Authoritative matches can update event names and slugs directly; non-authoritative matches do not overwrite authoritative event names and instead create or reuse an event-review cluster when there is one safe target.
 
 ## Reset a disposable local database
 

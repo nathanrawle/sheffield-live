@@ -947,35 +947,41 @@ func TestCreateEventReviewClustersFromReportPersistsAuthoritativeGroupMetadata(t
 	}
 }
 
-func TestParseIngestArgsFlagCompatibility(t *testing.T) {
+func TestParseIngestArgsCommandDispatch(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name         string
-		args         []string
-		wantUA       string
-		wantContact  string
-		wantStage    bool
-		wantTitle    bool
-		wantApply    bool
-		wantImportID int64
-		wantAll      bool
-		wantErr      bool
+		name       string
+		args       []string
+		wantCmd    ingestCommand
+		wantFix    fixCommandKind
+		wantSource string
+		wantSet    bool
+		wantAll    bool
+		wantUA     string
+		wantDB     string
+		wantDryRun bool
+		wantStage  bool
+		wantTitle  bool
+		wantDesc   bool
+		wantReplay int64
+		wantLatest bool
+		wantErr    bool
 	}{
-		{name: "canonical user agent", args: []string{"-http-user-agent", "agent"}, wantUA: "agent"},
-		{name: "alias user agent", args: []string{"-user-agent", "agent"}, wantUA: "agent"},
-		{name: "canonical+alias user agent same", args: []string{"-http-user-agent", "agent", "-user-agent", "agent"}, wantUA: "agent"},
-		{name: "canonical+alias user agent different", args: []string{"-http-user-agent", "agent-a", "-user-agent", "agent-b"}, wantErr: true},
-		{name: "reordered user agent mismatch", args: []string{"-http-user-agent", "agent-a", "-user-agent", "agent-b", "-http-user-agent", "agent-a"}, wantErr: true},
-		{name: "contact override", args: []string{"-contact", "ops@example.com"}, wantContact: "ops@example.com"},
-		{name: "contact suppression", args: []string{"-contact", "none"}, wantContact: "none"},
-		{name: "canonical stage event reviews", args: []string{"-stage-event-reviews"}, wantStage: true},
-		{name: "removed stage review groups alias", args: []string{"-stage-review-groups"}, wantErr: true},
-		{name: "removed stage review alias", args: []string{"-stage-review"}, wantErr: true},
-		{name: "event title repair dry run", args: []string{"-repair-event-titles"}, wantTitle: true},
-		{name: "event title repair apply", args: []string{"-repair-event-titles", "-apply-title-repairs"}, wantTitle: true, wantApply: true},
-		{name: "replay mode", args: []string{"-import-run-id", "42"}, wantImportID: 42},
-		{name: "all sources mode", args: []string{"-all-sources"}, wantAll: true},
+		{name: "bare live all sources", args: nil, wantCmd: ingestCommandLive, wantAll: true, wantStage: true},
+		{name: "single source live", args: []string{"-source", ingest.LeadmillSource}, wantCmd: ingestCommandLive, wantSource: ingest.LeadmillSource, wantSet: true, wantStage: true},
+		{name: "live dry run", args: []string{"-dry-run"}, wantCmd: ingestCommandLive, wantAll: true, wantDryRun: true},
+		{name: "user agent", args: []string{"-user-agent", "agent"}, wantCmd: ingestCommandLive, wantAll: true, wantUA: "agent", wantStage: true},
+		{name: "replay latest", args: []string{"replay"}, wantCmd: ingestCommandReplay, wantLatest: true, wantStage: true},
+		{name: "replay absolute", args: []string{"replay", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantStage: true},
+		{name: "replay title repair", args: []string{"replay", "-titles", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantTitle: true},
+		{name: "replay description repair dry run", args: []string{"replay", "-descriptions", "-dry-run", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDesc: true, wantDryRun: true},
+		{name: "global db replay", args: []string{"-db", "global.db", "replay", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDB: "global.db", wantStage: true},
+		{name: "matching global and local db", args: []string{"-db", "global.db", "replay", "-db", "global.db", "42"}, wantCmd: ingestCommandReplay, wantReplay: 42, wantDB: "global.db", wantStage: true},
+		{name: "fix titles", args: []string{"fix", "titles"}, wantCmd: ingestCommandFix, wantFix: fixCommandTitles, wantAll: true, wantTitle: true},
+		{name: "fix descriptions source", args: []string{"fix", "descriptions", "-source", ingest.CafeNo9Source}, wantCmd: ingestCommandFix, wantFix: fixCommandDescriptions, wantSource: ingest.CafeNo9Source, wantSet: true, wantDesc: true},
+		{name: "fix historical duplicates", args: []string{"fix", "historical-duplicates", "-dry-run"}, wantCmd: ingestCommandFix, wantFix: fixCommandHistoricalDuplicates, wantDryRun: true},
+		{name: "fix image focus", args: []string{"fix", "image-focus"}, wantCmd: ingestCommandFix, wantFix: fixCommandImageFocus},
 	}
 
 	for _, tc := range cases {
@@ -991,11 +997,26 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse args: %v", err)
 			}
+			if got := cfg.command; got != tc.wantCmd {
+				t.Fatalf("command = %q, want %q", got, tc.wantCmd)
+			}
+			if got := cfg.fixKind; got != tc.wantFix {
+				t.Fatalf("fix kind = %q, want %q", got, tc.wantFix)
+			}
+			if got := cfg.source; got != tc.wantSource {
+				t.Fatalf("source = %q, want %q", got, tc.wantSource)
+			}
+			if got := cfg.sourceSet; got != tc.wantSet {
+				t.Fatalf("source set = %v, want %v", got, tc.wantSet)
+			}
 			if got := cfg.httpUserAgent; got != tc.wantUA {
 				t.Fatalf("user agent = %q, want %q", got, tc.wantUA)
 			}
-			if got := cfg.contact; got != tc.wantContact {
-				t.Fatalf("contact = %q, want %q", got, tc.wantContact)
+			if got := cfg.dbPath; got != tc.wantDB {
+				t.Fatalf("db path = %q, want %q", got, tc.wantDB)
+			}
+			if got := cfg.dryRun; got != tc.wantDryRun {
+				t.Fatalf("dry run = %v, want %v", got, tc.wantDryRun)
 			}
 			if got := cfg.stageEventReviewClusters; got != tc.wantStage {
 				t.Fatalf("stage event reviews = %v, want %v", got, tc.wantStage)
@@ -1003,11 +1024,14 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 			if got := cfg.repairEventTitles; got != tc.wantTitle {
 				t.Fatalf("repair event titles = %v, want %v", got, tc.wantTitle)
 			}
-			if got := cfg.applyTitleRepairs; got != tc.wantApply {
-				t.Fatalf("apply title repairs = %v, want %v", got, tc.wantApply)
+			if got := cfg.repairDescriptions; got != tc.wantDesc {
+				t.Fatalf("repair descriptions = %v, want %v", got, tc.wantDesc)
 			}
-			if got := cfg.importRunID; got != tc.wantImportID {
-				t.Fatalf("import run id = %d, want %d", got, tc.wantImportID)
+			if got := cfg.replayImportRunID; got != tc.wantReplay {
+				t.Fatalf("replay import run id = %d, want %d", got, tc.wantReplay)
+			}
+			if got := cfg.replayUseLatest; got != tc.wantLatest {
+				t.Fatalf("replay latest = %v, want %v", got, tc.wantLatest)
 			}
 			if got := cfg.allSources; got != tc.wantAll {
 				t.Fatalf("all sources = %v, want %v", got, tc.wantAll)
@@ -1016,12 +1040,43 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 	}
 }
 
-func TestIngestModeReportsAllSourcesTitleRepair(t *testing.T) {
+func TestParseIngestArgsRejectsRemovedAndMalformedCommands(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "removed http user agent", args: []string{"-http-user-agent", "agent"}},
+		{name: "removed all sources", args: []string{"-all-sources"}},
+		{name: "removed stage event reviews", args: []string{"-stage-event-reviews"}},
+		{name: "removed repair descriptions", args: []string{"-repair-descriptions"}},
+		{name: "removed repair event titles", args: []string{"-repair-event-titles"}},
+		{name: "removed backfill image focus", args: []string{"-backfill-image-focus"}},
+		{name: "fix missing subcommand", args: []string{"fix"}},
+		{name: "fix unknown subcommand", args: []string{"fix", "nope"}},
+		{name: "replay flags after id", args: []string{"replay", "42", "-db", "path"}},
+		{name: "replay negative id", args: []string{"replay", "-1"}},
+		{name: "replay extra args", args: []string{"replay", "42", "43"}},
+		{name: "replay repair conflict", args: []string{"replay", "-titles", "-descriptions"}},
+		{name: "unsupported description source", args: []string{"fix", "descriptions", "-source", ingest.LeadmillSource}},
+		{name: "conflicting global db", args: []string{"-db", "global.db", "replay", "-db", "local.db"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseIngestArgs(tc.args); err == nil {
+				t.Fatal("expected parse error")
+			}
+		})
+	}
+}
+
+func TestIngestModeReportsFixTitleRepair(t *testing.T) {
 	cfg := ingestCommandConfig{
-		allSources:        true,
+		command:           ingestCommandFix,
+		fixKind:           fixCommandTitles,
 		repairEventTitles: true,
 	}
-	if got, want := ingestMode(cfg), "title_repair_all_sources"; got != want {
+	if got, want := ingestMode(cfg), "title_repair_live"; got != want {
 		t.Fatalf("ingest mode = %q, want %q", got, want)
 	}
 }
@@ -1067,97 +1122,6 @@ func TestEffectiveHTTPUserAgentRespectsExplicitValue(t *testing.T) {
 	}
 }
 
-func TestParseIngestArgsRejectsFixtureReplayCombination(t *testing.T) {
-	_, err := parseIngestArgs([]string{"-review-ics-fixture", "fixture.ics", "-import-run-id", "1"})
-	if err == nil {
-		t.Fatal("expected fixture/replay conflict")
-	}
-}
-
-func TestParseIngestArgsRejectsAllSourcesSourceCombination(t *testing.T) {
-	_, err := parseIngestArgs([]string{"-all-sources", "-source", ingest.LeadmillSource})
-	if err == nil {
-		t.Fatal("expected all-sources/source conflict")
-	}
-}
-
-func TestParseIngestArgsRejectsAllSourcesReplayCombination(t *testing.T) {
-	_, err := parseIngestArgs([]string{"-all-sources", "-import-run-id", "1"})
-	if err == nil {
-		t.Fatal("expected all-sources/replay conflict")
-	}
-}
-
-func TestParseIngestArgsRejectsAllSourcesFixtureCombination(t *testing.T) {
-	_, err := parseIngestArgs([]string{"-all-sources", "-review-ics-fixture", "fixture.ics"})
-	if err == nil {
-		t.Fatal("expected all-sources/fixture conflict")
-	}
-}
-
-func TestParseIngestArgsRejectsRepairDescriptionConflicts(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{name: "stage event reviews", args: []string{"-repair-descriptions", "-stage-event-reviews"}},
-		{name: "all sources", args: []string{"-repair-descriptions", "-all-sources"}},
-		{name: "fixture", args: []string{"-repair-descriptions", "-review-ics-fixture", "fixture.ics"}},
-		{name: "unsupported source", args: []string{"-repair-descriptions", "-source", ingest.LeadmillSource}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := parseIngestArgs(tc.args); err == nil {
-				t.Fatal("expected repair description flag conflict")
-			}
-		})
-	}
-}
-
-func TestParseIngestArgsRejectsRepairEventTitleConflicts(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{name: "stage event reviews", args: []string{"-repair-event-titles", "-stage-event-reviews"}},
-		{name: "descriptions", args: []string{"-repair-event-titles", "-repair-descriptions"}},
-		{name: "fixture", args: []string{"-repair-event-titles", "-review-ics-fixture", "fixture.ics"}},
-		{name: "apply without repair", args: []string{"-apply-title-repairs"}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := parseIngestArgs(tc.args); err == nil {
-				t.Fatal("expected repair event title flag conflict")
-			}
-		})
-	}
-}
-
-func TestParseIngestArgsRejectsHistoricalDuplicateConflicts(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{name: "apply without repair", args: []string{"-apply-historical-duplicate-repairs"}},
-		{name: "stage event reviews", args: []string{"-repair-historical-duplicates", "-stage-event-reviews"}},
-		{name: "descriptions", args: []string{"-repair-historical-duplicates", "-repair-descriptions"}},
-		{name: "title repair", args: []string{"-repair-historical-duplicates", "-repair-event-titles"}},
-		{name: "all sources", args: []string{"-repair-historical-duplicates", "-all-sources"}},
-		{name: "source", args: []string{"-repair-historical-duplicates", "-source", ingest.LeadmillSource}},
-		{name: "replay", args: []string{"-repair-historical-duplicates", "-import-run-id", "1"}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := parseIngestArgs(tc.args); err == nil {
-				t.Fatal("expected historical duplicate repair flag conflict")
-			}
-		})
-	}
-}
-
 func TestRunWithArgsRepairEventTitlesDryRunDoesNotMutate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	st, err := sqlite.Open(path)
@@ -1191,7 +1155,7 @@ func TestRunWithArgsRepairEventTitlesDryRunDoesNotMutate(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-import-run-id", "42", "-repair-event-titles"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "replay", "-titles", "-dry-run", "42"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("run repair event titles: %v", err)
 	}
 	var got titleRepairRunReport
@@ -1237,8 +1201,9 @@ func TestRunWithArgsRepairDescriptionsUpdatesOnlyDescriptions(t *testing.T) {
 	var stdout bytes.Buffer
 	if err := runWithArgs([]string{
 		"-db", path,
-		"-import-run-id", strconv.FormatInt(runID, 10),
-		"-repair-descriptions",
+		"replay",
+		"-descriptions",
+		strconv.FormatInt(runID, 10),
 	}, &stdout, io.Discard); err != nil {
 		t.Fatalf("repair descriptions run: %v", err)
 	}
@@ -1321,7 +1286,7 @@ func TestRunWithArgsReplayDoesNotRequireUserAgent(t *testing.T) {
 	runReplay := func() (manualIngestReport, []byte) {
 		t.Helper()
 		var stdout bytes.Buffer
-		if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+		if err := runWithArgs([]string{"-db", path, "replay", "-limit", "1", strconv.FormatInt(runID, 10)}, &stdout, io.Discard); err != nil {
 			t.Fatalf("replay run: %v", err)
 		}
 		var got manualIngestReport
@@ -1430,12 +1395,39 @@ func TestRunWithArgsReplayDoesNotRequireUserAgent(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsReplayLatestFinishedFailedRunErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	runID, _, err := st.CreateImportRun(context.Background(), "running", "failed latest")
+	if err != nil {
+		t.Fatalf("create import run: %v", err)
+	}
+	if _, err := st.FinishImportRun(context.Background(), runID, "failed", "failed latest"); err != nil {
+		t.Fatalf("finish import run: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err = runWithArgs([]string{"-db", path, "replay"}, &stdout, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("error = %v, want failed latest replay error", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}
+
 func TestRunWithArgsReplayYellowArchUsesStoredSourcePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	runID := seedReplayRunForCLIYellowArch(t, path)
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "replay", "-limit", "1", strconv.FormatInt(runID, 10)}, &stdout, io.Discard); err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
 
@@ -1496,7 +1488,7 @@ func TestRunWithArgsReplayYellowArchReappliesLinkedAuthoritativeEvent(t *testing
 	runReplay := func() manualIngestReport {
 		t.Helper()
 		var stdout bytes.Buffer
-		if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "1", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+		if err := runWithArgs([]string{"-db", path, "replay", "-limit", "1", strconv.FormatInt(runID, 10)}, &stdout, io.Discard); err != nil {
 			t.Fatalf("replay run: %v", err)
 		}
 		var got manualIngestReport
@@ -1546,7 +1538,7 @@ func TestRunWithArgsReplayLeadmillUsesStoredSourcePath(t *testing.T) {
 	runID := seedReplayRunForCLILeadmill(t, path)
 
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-import-run-id", strconv.FormatInt(runID, 10), "-limit", "20", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "replay", "-limit", "20", strconv.FormatInt(runID, 10)}, &stdout, io.Discard); err != nil {
 		t.Fatalf("replay run: %v", err)
 	}
 
@@ -1639,14 +1631,15 @@ func TestRunWithArgsBackfillsImageFocus(t *testing.T) {
 
 	t.Setenv("MEDIA_ROOT", mediaRoot)
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-backfill-image-focus"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "fix", "image-focus"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("backfill image focus: %v", err)
 	}
 
-	var report imageFocusBackfillReport
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+	var payload imageFocusRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatalf("decode backfill output: %v", err)
 	}
+	report := payload.ImageFocus
 	if report.Updated != 1 || report.Defaulted != 0 || report.MissingFiles != 0 || report.DecodeFailures != 0 {
 		t.Fatalf("backfill report = %#v, want one clean update", report)
 	}
@@ -1701,14 +1694,15 @@ func TestRunWithArgsBackfillsImageFocusDefaultsOversizedImages(t *testing.T) {
 
 	t.Setenv("MEDIA_ROOT", mediaRoot)
 	var stdout bytes.Buffer
-	if err := runWithArgs([]string{"-db", path, "-backfill-image-focus"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "fix", "image-focus"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("backfill image focus: %v", err)
 	}
 
-	var report imageFocusBackfillReport
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+	var payload imageFocusRepairRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatalf("decode backfill output: %v", err)
 	}
+	report := payload.ImageFocus
 	if report.Updated != 1 || report.Defaulted != 1 || report.MissingFiles != 0 || report.DecodeFailures != 0 {
 		t.Fatalf("backfill report = %#v, want one defaulted oversized update", report)
 	}
@@ -1737,9 +1731,9 @@ func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.
 	var stdout bytes.Buffer
 	err := runWithArgs([]string{
 		"-db", path,
-		"-import-run-id", strconv.FormatInt(runID, 10),
+		"replay",
 		"-limit", "1",
-		"-stage-event-reviews",
+		strconv.FormatInt(runID, 10),
 	}, &stdout, io.Discard)
 	if !errors.Is(err, ingest.ErrRunFailed) {
 		t.Fatalf("error = %v, want ErrRunFailed", err)
@@ -1803,7 +1797,7 @@ func TestRunWithArgsAllSourcesRunsInRegistryOrder(t *testing.T) {
 		}, nil
 	}
 
-	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-user-agent", "agent"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("all-sources run: %v", err)
 	}
 
@@ -1858,16 +1852,16 @@ func TestRunWithArgsLogsToStderrAndKeepsStdoutJSON(t *testing.T) {
 		}, nil
 	}
 
-	if err := runWithArgs([]string{"-db", path, "-http-user-agent", "agent"}, &stdout, &stderr); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-source", ingest.DefaultSource, "-user-agent", "agent"}, &stdout, &stderr); err != nil {
 		t.Fatalf("runWithArgs: %v", err)
 	}
 
-	var got ingest.Report
+	var got manualIngestReport
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("stdout is not JSON report: %v; output %q", err, stdout.String())
 	}
-	if got.ImportRunID != 7 {
-		t.Fatalf("import run id = %d, want 7", got.ImportRunID)
+	if got.Report.ImportRunID != 7 {
+		t.Fatalf("import run id = %d, want 7", got.Report.ImportRunID)
 	}
 	if strings.Contains(stdout.String(), "ingest starting") || strings.Contains(stdout.String(), "ingest finished") {
 		t.Fatalf("stdout contains logs: %q", stdout.String())
@@ -2008,7 +2002,7 @@ func TestRunWithArgsAllSourcesContinuesAfterFailure(t *testing.T) {
 		return report, nil
 	}
 
-	err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent"}, &stdout, io.Discard)
+	err := runWithArgs([]string{"-db", path, "-user-agent", "agent"}, &stdout, io.Discard)
 	if err == nil {
 		t.Fatal("expected batch failure")
 	}
@@ -2069,7 +2063,7 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 		}, nil
 	}
 
-	if err := runWithArgs([]string{"-db", path, "-all-sources", "-http-user-agent", "agent", "-stage-event-reviews"}, &stdout, io.Discard); err != nil {
+	if err := runWithArgs([]string{"-db", path, "-user-agent", "agent"}, &stdout, io.Discard); err != nil {
 		t.Fatalf("all-sources staged run: %v", err)
 	}
 
