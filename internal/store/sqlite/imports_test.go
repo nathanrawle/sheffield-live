@@ -406,6 +406,193 @@ func TestLoadImportRunReturnsOrderedSnapshots(t *testing.T) {
 	}
 }
 
+func TestUpsertImportRunSnapshotRetention(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	startedAt := time.Date(2026, time.May, 10, 10, 0, 0, 0, time.UTC)
+	insertImportRunSummaryFixture(t, db, 10, startedAt, startedAt.Add(time.Minute), "succeeded", "retention")
+
+	latest := time.Date(2026, time.May, 12, 18, 30, 0, 0, time.UTC)
+	recordedAt := time.Date(2026, time.May, 10, 10, 2, 0, 0, time.UTC)
+	if err := st.UpsertImportRunSnapshotRetention(ctx, ImportRunSnapshotRetentionInput{
+		ImportRunID:         10,
+		LatestStartAt:       &latest,
+		CandidateCount:      3,
+		ParseableStartCount: 2,
+		RecordedAt:          recordedAt,
+	}); err != nil {
+		t.Fatalf("upsert retention: %v", err)
+	}
+
+	var latestText string
+	var candidateCount int
+	var parseableCount int
+	var recordedText string
+	if err := db.QueryRow(`
+		SELECT latest_start_at, candidate_count, parseable_start_count, recorded_at
+		FROM import_run_snapshot_retention
+		WHERE import_run_id = 10
+	`).Scan(&latestText, &candidateCount, &parseableCount, &recordedText); err != nil {
+		t.Fatalf("scan retention: %v", err)
+	}
+	if latestText != "2026-05-12T18:30:00Z" || recordedText != "2026-05-10T10:02:00Z" {
+		t.Fatalf("timestamps = %q/%q, want latest/recorded UTC", latestText, recordedText)
+	}
+	if candidateCount != 3 || parseableCount != 2 {
+		t.Fatalf("counts = %d/%d, want 3/2", candidateCount, parseableCount)
+	}
+
+	if err := st.UpsertImportRunSnapshotRetention(ctx, ImportRunSnapshotRetentionInput{
+		ImportRunID:         10,
+		CandidateCount:      4,
+		ParseableStartCount: 0,
+		RecordedAt:          recordedAt.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("upsert retention without parseable starts: %v", err)
+	}
+	var nullLatest sql.NullString
+	if err := db.QueryRow(`
+		SELECT latest_start_at, candidate_count, parseable_start_count
+		FROM import_run_snapshot_retention
+		WHERE import_run_id = 10
+	`).Scan(&nullLatest, &candidateCount, &parseableCount); err != nil {
+		t.Fatalf("scan updated retention: %v", err)
+	}
+	if nullLatest.Valid {
+		t.Fatalf("latest_start_at = %q, want NULL", nullLatest.String)
+	}
+	if candidateCount != 4 || parseableCount != 0 {
+		t.Fatalf("updated counts = %d/%d, want 4/0", candidateCount, parseableCount)
+	}
+}
+
+func TestImportRunSnapshotRetentionRejectsInvalidCounts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if err := st.UpsertImportRunSnapshotRetention(context.Background(), ImportRunSnapshotRetentionInput{
+		ImportRunID:         1,
+		CandidateCount:      1,
+		ParseableStartCount: 2,
+	}); err == nil {
+		t.Fatal("upsert invalid counts error = nil, want error")
+	}
+}
+
+func TestDeleteStaleImportRunSnapshots(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	now := time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC)
+	london, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		t.Fatalf("load London location: %v", err)
+	}
+
+	insertImportRunSummaryFixture(t, db, 10, now.Add(-48*time.Hour), now.Add(-47*time.Hour), "succeeded", "stale bounded")
+	insertSnapshotsFixture(t, db, 10, now.Add(-47*time.Hour), 2)
+	staleLatest := time.Date(2026, time.May, 22, 21, 0, 0, 0, time.UTC)
+	if err := st.UpsertImportRunSnapshotRetention(ctx, ImportRunSnapshotRetentionInput{
+		ImportRunID:         10,
+		LatestStartAt:       &staleLatest,
+		CandidateCount:      2,
+		ParseableStartCount: 2,
+		RecordedAt:          now.Add(-47 * time.Hour),
+	}); err != nil {
+		t.Fatalf("upsert stale retention: %v", err)
+	}
+
+	insertImportRunSummaryFixture(t, db, 20, now.Add(-48*time.Hour), now.Add(-47*time.Hour), "succeeded", "today bounded")
+	insertSnapshotsFixture(t, db, 20, now.Add(-47*time.Hour), 1)
+	todayLatest := time.Date(2026, time.May, 22, 23, 30, 0, 0, time.UTC) // 2026-05-23 in Europe/London.
+	if err := st.UpsertImportRunSnapshotRetention(ctx, ImportRunSnapshotRetentionInput{
+		ImportRunID:         20,
+		LatestStartAt:       &todayLatest,
+		CandidateCount:      1,
+		ParseableStartCount: 1,
+		RecordedAt:          now.Add(-47 * time.Hour),
+	}); err != nil {
+		t.Fatalf("upsert today retention: %v", err)
+	}
+
+	insertImportRunSummaryFixture(t, db, 30, now.Add(-10*24*time.Hour), now.Add(-9*24*time.Hour), "failed", "old unknown no bounds")
+	insertSnapshotsFixture(t, db, 30, now.Add(-9*24*time.Hour), 3)
+
+	insertImportRunSummaryFixture(t, db, 40, now.Add(-10*24*time.Hour), now.Add(-9*24*time.Hour), "succeeded", "old unknown no starts")
+	insertSnapshotsFixture(t, db, 40, now.Add(-9*24*time.Hour), 4)
+	if err := st.UpsertImportRunSnapshotRetention(ctx, ImportRunSnapshotRetentionInput{
+		ImportRunID:         40,
+		CandidateCount:      3,
+		ParseableStartCount: 0,
+		RecordedAt:          now.Add(-9 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("upsert unknown retention: %v", err)
+	}
+
+	insertImportRunSummaryFixture(t, db, 50, now.Add(-24*time.Hour), now.Add(-23*time.Hour), "succeeded", "young unknown")
+	insertSnapshotsFixture(t, db, 50, now.Add(-23*time.Hour), 5)
+
+	insertImportRunSummaryFixture(t, db, 60, now.Add(-10*24*time.Hour), time.Time{}, "running", "unfinished")
+	insertSnapshotsFixture(t, db, 60, now.Add(-9*24*time.Hour), 6)
+
+	report, err := st.DeleteStaleImportRunSnapshots(ctx, SnapshotCleanupOptions{
+		Now:          now,
+		Location:     london,
+		UnknownGrace: DefaultSnapshotUnknownRetentionGrace,
+	})
+	if err != nil {
+		t.Fatalf("delete stale snapshots: %v", err)
+	}
+	if got, want := report.ScannedRuns, 5; got != want {
+		t.Fatalf("scanned runs = %d, want %d", got, want)
+	}
+	if got, want := report.DeletedRuns, 3; got != want {
+		t.Fatalf("deleted runs = %d, want %d", got, want)
+	}
+	if got, want := report.DeletedSnapshots, int64(9); got != want {
+		t.Fatalf("deleted snapshots = %d, want %d", got, want)
+	}
+	for _, runID := range []int64{10, 30, 40} {
+		if got := countSnapshotsForRun(t, db, runID); got != 0 {
+			t.Fatalf("snapshots for pruned run %d = %d, want 0", runID, got)
+		}
+	}
+	for _, runID := range []int64{20, 50, 60} {
+		if got := countSnapshotsForRun(t, db, runID); got == 0 {
+			t.Fatalf("snapshots for retained run %d = 0, want retained", runID)
+		}
+	}
+	assertPruneReason(t, db, 10, SnapshotPruneReasonBoundedStale, 2)
+	assertPruneReason(t, db, 30, SnapshotPruneReasonUnknownNoBounds, 3)
+	assertPruneReason(t, db, 40, SnapshotPruneReasonUnknownNoParseableStart, 4)
+	if got := mustCount(t, db, "import_runs"); got < 6 {
+		t.Fatalf("import_runs rows = %d, want retained rows", got)
+	}
+}
+
 func insertImportRunSummaryFixture(t *testing.T, db *sql.DB, id int64, startedAt, finishedAt time.Time, status, notes string) {
 	t.Helper()
 
@@ -431,6 +618,44 @@ func insertSnapshotsFixture(t *testing.T, db *sql.DB, importRunID int64, capture
 		`, importRunID, formatRFC3339UTC(capturedAt.Add(time.Duration(i)*time.Second)), "{}"); err != nil {
 			t.Fatalf("insert snapshot %d for import run %d: %v", i+1, importRunID, err)
 		}
+	}
+}
+
+func countSnapshotsForRun(t *testing.T, db *sql.DB, importRunID int64) int {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM snapshots
+		WHERE import_run_id = ?
+	`, importRunID).Scan(&count); err != nil {
+		t.Fatalf("count snapshots for run %d: %v", importRunID, err)
+	}
+	return count
+}
+
+func assertPruneReason(t *testing.T, db *sql.DB, importRunID int64, wantReason string, wantCount int64) {
+	t.Helper()
+
+	var reason string
+	var count int64
+	var prunedAt sql.NullString
+	if err := db.QueryRow(`
+		SELECT prune_reason, snapshots_pruned_count, snapshots_pruned_at
+		FROM import_run_snapshot_retention
+		WHERE import_run_id = ?
+	`, importRunID).Scan(&reason, &count, &prunedAt); err != nil {
+		t.Fatalf("scan prune metadata for run %d: %v", importRunID, err)
+	}
+	if reason != wantReason {
+		t.Fatalf("prune reason for run %d = %q, want %q", importRunID, reason, wantReason)
+	}
+	if count != wantCount {
+		t.Fatalf("pruned count for run %d = %d, want %d", importRunID, count, wantCount)
+	}
+	if !prunedAt.Valid || prunedAt.String == "" {
+		t.Fatalf("snapshots_pruned_at for run %d is empty", importRunID)
 	}
 }
 

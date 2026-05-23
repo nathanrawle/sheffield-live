@@ -51,6 +51,7 @@ type ingestCommandConfig struct {
 	repairEventTitles        bool
 	applyTitleRepairs        bool
 	backfillImageFocus       bool
+	cleanupStaleSnapshots    bool
 	importRunID              int64
 	imageFetcher             ingest.Fetcher
 	imageStorage             ingest.ImageStorage
@@ -89,6 +90,9 @@ var (
 			}
 		}
 		return ""
+	}
+	nowUTC = func() time.Time {
+		return time.Now().UTC()
 	}
 )
 
@@ -172,6 +176,9 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 	if cfg.backfillImageFocus {
 		return runImageFocusBackfill(context.Background(), st, stdout, env("MEDIA_ROOT", "./data/media"))
 	}
+	if cfg.cleanupStaleSnapshots {
+		return runSnapshotCleanup(context.Background(), st, stdout)
+	}
 
 	if cfg.limit < 1 || cfg.limit > ingest.MaxLimit {
 		return fmt.Errorf("-limit must be between 1 and %d", ingest.MaxLimit)
@@ -227,7 +234,7 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 			return err
 		}
 		if cfg.repairDescriptions {
-			report, runErr := runManualImport(context.Background(), st, fetcher, catalog, ingest.Options{
+			report, runErr := runLiveManualImportWithRetention(context.Background(), st, fetcher, catalog, ingest.Options{
 				Source: cfg.source,
 				Limit:  cfg.limit,
 			})
@@ -235,7 +242,7 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 			return runDescriptionRepair(context.Background(), st, stdout, catalog, report, runErr)
 		}
 		if cfg.repairEventTitles {
-			report, runErr := runManualImport(context.Background(), st, fetcher, catalog, ingest.Options{
+			report, runErr := runLiveManualImportWithRetention(context.Background(), st, fetcher, catalog, ingest.Options{
 				Source: cfg.source,
 				Limit:  cfg.limit,
 			})
@@ -248,6 +255,9 @@ func runWithArgsAndLogger(args []string, stdout, stderr io.Writer, logger *slog.
 		result = runSingleManualSource(context.Background(), st, fetcher, catalog, cfg, cfg.source)
 	}
 	summary.applyManualRun(result)
+	if cfg.importRunID == 0 {
+		runAutomaticSnapshotCleanup(context.Background(), st, logger)
+	}
 	return encodeManualRunResult(stdout, cfg.stageEventReviewClusters, result)
 }
 
@@ -266,6 +276,75 @@ func configureImageIngest(cfg *ingestCommandConfig) error {
 	cfg.imageFetcher = imageFetcher
 	cfg.imageStorage = imageStorage
 	return nil
+}
+
+func runLiveManualImportWithRetention(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+	report, runErr := runManualImport(ctx, st, fetcher, catalog, opts)
+	if report.ImportRunID <= 0 {
+		return report, runErr
+	}
+	if err := recordImportRunSnapshotRetention(ctx, st, report); err != nil {
+		retentionErr := fmt.Errorf("record snapshot retention metadata: %w", err)
+		if runErr != nil {
+			return report, errors.Join(runErr, retentionErr)
+		}
+		return report, retentionErr
+	}
+	return report, runErr
+}
+
+func recordImportRunSnapshotRetention(ctx context.Context, st *sqlite.Store, report ingest.Report) error {
+	retention := ingest.SnapshotRetentionForReport(report)
+	return st.UpsertImportRunSnapshotRetention(ctx, sqlite.ImportRunSnapshotRetentionInput{
+		ImportRunID:         retention.ImportRunID,
+		LatestStartAt:       retention.LatestStartAt,
+		CandidateCount:      retention.CandidateCount,
+		ParseableStartCount: retention.ParseableStartCount,
+		RecordedAt:          nowUTC(),
+	})
+}
+
+func runSnapshotCleanup(ctx context.Context, st *sqlite.Store, stdout io.Writer) error {
+	report, err := st.DeleteStaleImportRunSnapshots(ctx, sqlite.SnapshotCleanupOptions{Now: nowUTC()})
+	if err != nil {
+		return err
+	}
+	var vacuumErr error
+	if report.DeletedSnapshots > 0 {
+		if err := st.Vacuum(ctx); err != nil {
+			report.VacuumError = err.Error()
+			vacuumErr = err
+		} else {
+			report.Vacuumed = true
+		}
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(report); err != nil {
+		return err
+	}
+	return vacuumErr
+}
+
+func runAutomaticSnapshotCleanup(ctx context.Context, st *sqlite.Store, logger *slog.Logger) {
+	logger = logging.EnsureLogger(logger)
+	report, err := st.DeleteStaleImportRunSnapshots(ctx, sqlite.SnapshotCleanupOptions{Now: nowUTC()})
+	if err != nil {
+		logger.Warn("snapshot cleanup failed", "error", err)
+		return
+	}
+	if report.DeletedSnapshots == 0 {
+		return
+	}
+	attrs := []any{
+		"deleted_runs", report.DeletedRuns,
+		"deleted_snapshots", report.DeletedSnapshots,
+	}
+	if err := st.Vacuum(ctx); err != nil {
+		logger.Warn("snapshot cleanup vacuum failed", append(attrs, "error", err)...)
+		return
+	}
+	logger.Info("snapshot cleanup finished", append(attrs, "vacuumed", true)...)
 }
 
 func parseIngestArgs(args []string) (ingestCommandConfig, error) {
@@ -292,6 +371,7 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 	fs.BoolVar(&cfg.repairEventTitles, "repair-event-titles", false, "repair existing event titles from ingest candidates; dry-run unless -apply-title-repairs is set")
 	fs.BoolVar(&cfg.applyTitleRepairs, "apply-title-repairs", false, "apply event title repairs instead of reporting a dry-run")
 	fs.BoolVar(&cfg.backfillImageFocus, "backfill-image-focus", false, "recompute focus points for copied local images and update stored image metadata")
+	fs.BoolVar(&cfg.cleanupStaleSnapshots, "cleanup-stale-snapshots", false, "delete stale import-run snapshots and vacuum the SQLite database")
 	fs.Int64Var(&cfg.importRunID, "import-run-id", 0, "replay an existing import run from stored snapshots")
 
 	if err := fs.Parse(args); err != nil {
@@ -361,6 +441,29 @@ func parseIngestArgs(args []string) (ingestCommandConfig, error) {
 		}
 		if cfg.repairEventTitles {
 			return ingestCommandConfig{}, errors.New("-backfill-image-focus and -repair-event-titles are mutually exclusive")
+		}
+	}
+	if cfg.cleanupStaleSnapshots {
+		if cfg.allSources {
+			return ingestCommandConfig{}, errors.New("-cleanup-stale-snapshots and -all-sources are mutually exclusive")
+		}
+		if sourceFlag.set {
+			return ingestCommandConfig{}, errors.New("-cleanup-stale-snapshots and -source are mutually exclusive")
+		}
+		if cfg.importRunID > 0 {
+			return ingestCommandConfig{}, errors.New("-cleanup-stale-snapshots and -import-run-id are mutually exclusive")
+		}
+		if cfg.stageEventReviewClusters {
+			return ingestCommandConfig{}, errors.New("-cleanup-stale-snapshots and -stage-event-reviews are mutually exclusive")
+		}
+		if cfg.repairDescriptions {
+			return ingestCommandConfig{}, errors.New("-cleanup-stale-snapshots and -repair-descriptions are mutually exclusive")
+		}
+		if cfg.repairEventTitles {
+			return ingestCommandConfig{}, errors.New("-cleanup-stale-snapshots and -repair-event-titles are mutually exclusive")
+		}
+		if cfg.backfillImageFocus {
+			return ingestCommandConfig{}, errors.New("-cleanup-stale-snapshots and -backfill-image-focus are mutually exclusive")
 		}
 	}
 	return cfg, nil
@@ -571,6 +674,8 @@ func ingestMode(cfg ingestCommandConfig) string {
 	switch {
 	case cfg.backfillImageFocus:
 		return "image_focus_backfill"
+	case cfg.cleanupStaleSnapshots:
+		return "snapshot_cleanup"
 	case cfg.repairEventTitles && cfg.allSources:
 		return "title_repair_all_sources"
 	case cfg.allSources:
@@ -656,7 +761,7 @@ func eventReviewClustersForReport(ctx context.Context, st eventReviewClusterStor
 }
 
 func runSingleManualSource(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher, catalog *ingest.Catalog, cfg ingestCommandConfig, source string) manualRunExecution {
-	report, runErr := runManualImport(ctx, st, fetcher, catalog, ingest.Options{
+	report, runErr := runLiveManualImportWithRetention(ctx, st, fetcher, catalog, ingest.Options{
 		Source:       source,
 		Limit:        cfg.limit,
 		ImageFetcher: cfg.imageFetcher,
@@ -855,6 +960,8 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 		}
 	}
 
+	runAutomaticSnapshotCleanup(ctx, st, logger)
+
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(batchManualIngestReport{Results: results}); err != nil {
@@ -872,7 +979,7 @@ func runAllSourcesTitleRepair(ctx context.Context, st *sqlite.Store, fetcher ing
 	var failed bool
 	failedSources := 0
 	for _, source := range catalog.Keys() {
-		report, runErr := runManualImport(ctx, st, fetcher, catalog, ingest.Options{
+		report, runErr := runLiveManualImportWithRetention(ctx, st, fetcher, catalog, ingest.Options{
 			Source: source,
 			Limit:  cfg.limit,
 		})

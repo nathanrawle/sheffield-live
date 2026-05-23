@@ -35,6 +35,20 @@ func testSourceCatalog(t *testing.T) *ingest.Catalog {
 	return catalog
 }
 
+func createFinishedImportRunForCLITest(t *testing.T, ctx context.Context, st *sqlite.Store, status string) (int64, string, string) {
+	t.Helper()
+
+	runID, startedAt, err := st.CreateImportRun(ctx, "running", "cli test")
+	if err != nil {
+		t.Fatalf("create import run: %v", err)
+	}
+	finishedAt, err := st.FinishImportRun(ctx, runID, status, "links=0 candidates=0 skips=0 errors=0")
+	if err != nil {
+		t.Fatalf("finish import run: %v", err)
+	}
+	return runID, startedAt.Format(time.RFC3339), finishedAt.Format(time.RFC3339)
+}
+
 func TestCreateEventReviewClustersFromReportStagesEventReviewClusters(t *testing.T) {
 	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{
 		{id: 101, created: true},
@@ -960,6 +974,7 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 		wantApply    bool
 		wantImportID int64
 		wantAll      bool
+		wantCleanup  bool
 		wantErr      bool
 	}{
 		{name: "canonical user agent", args: []string{"-http-user-agent", "agent"}, wantUA: "agent"},
@@ -976,6 +991,7 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 		{name: "event title repair apply", args: []string{"-repair-event-titles", "-apply-title-repairs"}, wantTitle: true, wantApply: true},
 		{name: "replay mode", args: []string{"-import-run-id", "42"}, wantImportID: 42},
 		{name: "all sources mode", args: []string{"-all-sources"}, wantAll: true},
+		{name: "cleanup stale snapshots", args: []string{"-cleanup-stale-snapshots"}, wantCleanup: true},
 	}
 
 	for _, tc := range cases {
@@ -1011,6 +1027,32 @@ func TestParseIngestArgsFlagCompatibility(t *testing.T) {
 			}
 			if got := cfg.allSources; got != tc.wantAll {
 				t.Fatalf("all sources = %v, want %v", got, tc.wantAll)
+			}
+			if got := cfg.cleanupStaleSnapshots; got != tc.wantCleanup {
+				t.Fatalf("cleanup stale snapshots = %v, want %v", got, tc.wantCleanup)
+			}
+		})
+	}
+}
+
+func TestParseIngestArgsRejectsCleanupSnapshotConflicts(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "source", args: []string{"-cleanup-stale-snapshots", "-source", ingest.LeadmillSource}},
+		{name: "all sources", args: []string{"-cleanup-stale-snapshots", "-all-sources"}},
+		{name: "replay", args: []string{"-cleanup-stale-snapshots", "-import-run-id", "1"}},
+		{name: "stage", args: []string{"-cleanup-stale-snapshots", "-stage-event-reviews"}},
+		{name: "descriptions", args: []string{"-cleanup-stale-snapshots", "-repair-descriptions"}},
+		{name: "title repair", args: []string{"-cleanup-stale-snapshots", "-repair-event-titles"}},
+		{name: "image focus", args: []string{"-cleanup-stale-snapshots", "-backfill-image-focus"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseIngestArgs(tc.args); err == nil {
+				t.Fatal("expected cleanup snapshot flag conflict")
 			}
 		})
 	}
@@ -1730,6 +1772,77 @@ func TestRunWithArgsBackfillsImageFocusDefaultsOversizedImages(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsCleanupStaleSnapshotsDeletesAndVacuums(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	insertCLIImportRun(t, db, 10, "2026-05-14T08:00:00Z", "2026-05-14T08:05:00Z", "succeeded")
+	insertCLISnapshots(t, db, 10, "2026-05-14T08:01:00Z", 2)
+	insertCLIRetention(t, db, 10, "2026-05-22T20:00:00Z", 2, 2, "2026-05-14T08:05:00Z")
+
+	insertCLIImportRun(t, db, 20, "2026-05-14T09:00:00Z", "2026-05-14T09:05:00Z", "succeeded")
+	insertCLISnapshots(t, db, 20, "2026-05-14T09:01:00Z", 3)
+
+	insertCLIImportRun(t, db, 30, "2026-05-14T10:00:00Z", "2026-05-14T10:05:00Z", "succeeded")
+	insertCLISnapshots(t, db, 30, "2026-05-14T10:01:00Z", 4)
+	insertCLIRetention(t, db, 30, "2026-05-23T00:30:00Z", 4, 4, "2026-05-14T10:05:00Z")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	originalNow := nowUTC
+	defer func() {
+		nowUTC = originalNow
+	}()
+	nowUTC = func() time.Time {
+		return time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC)
+	}
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "-cleanup-stale-snapshots"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("cleanup stale snapshots: %v", err)
+	}
+
+	var report sqlite.SnapshotCleanupReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode cleanup report: %v", err)
+	}
+	if got, want := report.ScannedRuns, 3; got != want {
+		t.Fatalf("scanned runs = %d, want %d", got, want)
+	}
+	if got, want := report.DeletedRuns, 2; got != want {
+		t.Fatalf("deleted runs = %d, want %d", got, want)
+	}
+	if got, want := report.DeletedSnapshots, int64(5); got != want {
+		t.Fatalf("deleted snapshots = %d, want %d", got, want)
+	}
+	if !report.Vacuumed || report.VacuumError != "" {
+		t.Fatalf("vacuum result = %v error %q, want clean vacuum", report.Vacuumed, report.VacuumError)
+	}
+
+	db = openRawDB(t, path)
+	defer db.Close()
+	if got := countCLISnapshotsForRun(t, db, 10); got != 0 {
+		t.Fatalf("run 10 snapshots = %d, want deleted", got)
+	}
+	if got := countCLISnapshotsForRun(t, db, 20); got != 0 {
+		t.Fatalf("run 20 snapshots = %d, want deleted", got)
+	}
+	if got := countCLISnapshotsForRun(t, db, 30); got != 4 {
+		t.Fatalf("run 30 snapshots = %d, want retained", got)
+	}
+	assertCLIPruneReason(t, db, 10, sqlite.SnapshotPruneReasonBoundedStale)
+	assertCLIPruneReason(t, db, 20, sqlite.SnapshotPruneReasonUnknownNoBounds)
+	assertCLIPruneReason(t, db, 30, "")
+}
+
 func TestRunWithArgsReplayFailureStillEmitsJSONAndSkipsReviewStaging(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	runID := seedReplayRunForCLIWithNoLinks(t, path)
@@ -1787,14 +1900,15 @@ func TestRunWithArgsAllSourcesRunsInRegistryOrder(t *testing.T) {
 		return fakeFetcher{}, nil
 	}
 	var order []string
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
 		order = append(order, opts.Source)
+		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
 		return ingest.Report{
 			Source:      opts.Source,
 			SourceURL:   "https://" + opts.Source + ".example.test/",
-			ImportRunID: int64(len(order)),
-			StartedAt:   "2026-04-24T10:00:00Z",
-			FinishedAt:  "2026-04-24T10:01:00Z",
+			ImportRunID: runID,
+			StartedAt:   startedAt,
+			FinishedAt:  finishedAt,
 			Status:      "succeeded",
 			Limit:       opts.Limit,
 			Links:       []string{},
@@ -1840,13 +1954,16 @@ func TestRunWithArgsLogsToStderrAndKeepsStdoutJSON(t *testing.T) {
 	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
 		return fakeFetcher{}, nil
 	}
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+	var wantRunID int64
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+		wantRunID = runID
 		return ingest.Report{
 			Source:      opts.Source,
 			SourceURL:   "https://" + opts.Source + ".example.test/",
-			ImportRunID: 7,
-			StartedAt:   "2026-04-24T10:00:00Z",
-			FinishedAt:  "2026-04-24T10:01:00Z",
+			ImportRunID: runID,
+			StartedAt:   startedAt,
+			FinishedAt:  finishedAt,
 			Status:      "succeeded",
 			Limit:       opts.Limit,
 			Totals: ingest.ReportTotals{
@@ -1866,8 +1983,8 @@ func TestRunWithArgsLogsToStderrAndKeepsStdoutJSON(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("stdout is not JSON report: %v; output %q", err, stdout.String())
 	}
-	if got.ImportRunID != 7 {
-		t.Fatalf("import run id = %d, want 7", got.ImportRunID)
+	if got.ImportRunID != wantRunID {
+		t.Fatalf("import run id = %d, want %d", got.ImportRunID, wantRunID)
 	}
 	if strings.Contains(stdout.String(), "ingest starting") || strings.Contains(stdout.String(), "ingest finished") {
 		t.Fatalf("stdout contains logs: %q", stdout.String())
@@ -1879,7 +1996,7 @@ func TestRunWithArgsLogsToStderrAndKeepsStdoutJSON(t *testing.T) {
 		`msg="ingest finished"`,
 		`mode=live`,
 		`source=sidney-and-matilda`,
-		`import_run_id=7`,
+		`import_run_id=` + strconv.FormatInt(wantRunID, 10),
 		`status=succeeded`,
 		`candidates=4`,
 	} {
@@ -1910,13 +2027,14 @@ func TestRunWithArgsUsesDerivedDefaultUserAgent(t *testing.T) {
 		gotUA = userAgent
 		return fakeFetcher{}, nil
 	}
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
 		return ingest.Report{
 			Source:      opts.Source,
 			SourceURL:   "https://" + opts.Source + ".example.test/",
-			ImportRunID: 1,
-			StartedAt:   "2026-04-24T10:00:00Z",
-			FinishedAt:  "2026-04-24T10:01:00Z",
+			ImportRunID: runID,
+			StartedAt:   startedAt,
+			FinishedAt:  finishedAt,
 			Status:      "succeeded",
 			Limit:       opts.Limit,
 		}, nil
@@ -1951,13 +2069,14 @@ func TestRunWithArgsContactSuppressionRemovesContactFromDefaultUserAgent(t *test
 		gotUA = userAgent
 		return fakeFetcher{}, nil
 	}
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
 		return ingest.Report{
 			Source:      opts.Source,
 			SourceURL:   "https://" + opts.Source + ".example.test/",
-			ImportRunID: 1,
-			StartedAt:   "2026-04-24T10:00:00Z",
-			FinishedAt:  "2026-04-24T10:01:00Z",
+			ImportRunID: runID,
+			StartedAt:   startedAt,
+			FinishedAt:  finishedAt,
 			Status:      "succeeded",
 			Limit:       opts.Limit,
 		}, nil
@@ -1968,6 +2087,84 @@ func TestRunWithArgsContactSuppressionRemovesContactFromDefaultUserAgent(t *test
 	}
 	if got, want := gotUA, "sheffield-live ingest/1.0"; got != want {
 		t.Fatalf("user agent = %q, want %q", got, want)
+	}
+}
+
+func TestRunWithArgsLiveRecordsRetentionAndRunsAutomaticSnapshotCleanup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	insertCLIImportRun(t, db, 10, "2026-05-14T08:00:00Z", "2026-05-14T08:05:00Z", "succeeded")
+	insertCLISnapshots(t, db, 10, "2026-05-14T08:01:00Z", 2)
+	insertCLIRetention(t, db, 10, "2026-05-22T20:00:00Z", 2, 2, "2026-05-14T08:05:00Z")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	originalFetcher := newHTTPFetcher
+	originalRunManual := runManualImport
+	originalNow := nowUTC
+	defer func() {
+		newHTTPFetcher = originalFetcher
+		runManualImport = originalRunManual
+		nowUTC = originalNow
+	}()
+
+	nowUTC = func() time.Time {
+		return time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC)
+	}
+	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+		return fakeFetcher{}, nil
+	}
+	var newRunID int64
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+		newRunID = runID
+		return ingest.Report{
+			Source:      opts.Source,
+			SourceURL:   "https://" + opts.Source + ".example.test/",
+			ImportRunID: runID,
+			StartedAt:   startedAt,
+			FinishedAt:  finishedAt,
+			Status:      "succeeded",
+			Limit:       opts.Limit,
+			Calendars: []ingest.CalendarReport{{
+				URL: "https://" + opts.Source + ".example.test/calendar.ics",
+				Candidates: []ingest.EventCandidate{{
+					UID:     "future-show",
+					Summary: "Future Show",
+					StartAt: "2026-06-01T19:00:00+01:00",
+				}},
+			}},
+			Totals: ingest.ReportTotals{Candidates: 1},
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "-http-user-agent", "agent"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("run live ingest: %v", err)
+	}
+
+	db = openRawDB(t, path)
+	defer db.Close()
+	if got := countCLISnapshotsForRun(t, db, 10); got != 0 {
+		t.Fatalf("stale run snapshots = %d, want deleted", got)
+	}
+	assertCLIPruneReason(t, db, 10, sqlite.SnapshotPruneReasonBoundedStale)
+
+	latestStartAt, candidateCount, parseableStartCount := loadCLIRetention(t, db, newRunID)
+	if got, want := latestStartAt, "2026-06-01T18:00:00Z"; got != want {
+		t.Fatalf("latest start at = %q, want %q", got, want)
+	}
+	if candidateCount != 1 || parseableStartCount != 1 {
+		t.Fatalf("retention counts = %d/%d, want 1/1", candidateCount, parseableStartCount)
 	}
 }
 
@@ -1986,15 +2183,20 @@ func TestRunWithArgsAllSourcesContinuesAfterFailure(t *testing.T) {
 		return fakeFetcher{}, nil
 	}
 	var order []string
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
 		order = append(order, opts.Source)
+		status := "succeeded"
+		if opts.Source == ingest.YellowArchSource {
+			status = "failed"
+		}
+		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, status)
 		report := ingest.Report{
 			Source:      opts.Source,
 			SourceURL:   "https://" + opts.Source + ".example.test/",
-			ImportRunID: int64(len(order)),
-			StartedAt:   "2026-04-24T10:00:00Z",
-			FinishedAt:  "2026-04-24T10:01:00Z",
-			Status:      "succeeded",
+			ImportRunID: runID,
+			StartedAt:   startedAt,
+			FinishedAt:  finishedAt,
+			Status:      status,
 			Limit:       opts.Limit,
 			Links:       []string{},
 			Calendars:   []ingest.CalendarReport{},
@@ -2045,13 +2247,14 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 	newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
 		return fakeFetcher{}, nil
 	}
-	runManualImport = func(_ context.Context, _ *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
 		return ingest.Report{
 			Source:      opts.Source,
 			SourceURL:   "https://" + opts.Source + ".example.test/",
-			ImportRunID: int64(len(opts.Source)),
-			StartedAt:   "2026-04-24T10:00:00Z",
-			FinishedAt:  "2026-04-24T10:01:00Z",
+			ImportRunID: runID,
+			StartedAt:   startedAt,
+			FinishedAt:  finishedAt,
 			Status:      "succeeded",
 			Limit:       opts.Limit,
 			Calendars: []ingest.CalendarReport{{
@@ -2852,6 +3055,46 @@ func loadEventRow(t *testing.T, db *sql.DB, slug string) eventRow {
 	return row
 }
 
+func insertCLIImportRun(t *testing.T, db *sql.DB, id int64, startedAt, finishedAt, status string) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+		INSERT INTO import_runs (id, started_at, finished_at, status, notes)
+		VALUES (?, ?, ?, ?, ?)
+	`, id, startedAt, finishedAt, status, "cli cleanup test"); err != nil {
+		t.Fatalf("insert CLI import run %d: %v", id, err)
+	}
+}
+
+func insertCLISnapshots(t *testing.T, db *sql.DB, importRunID int64, capturedAt string, count int) {
+	t.Helper()
+
+	for i := 0; i < count; i++ {
+		if _, err := db.Exec(`
+			INSERT INTO snapshots (import_run_id, captured_at, payload)
+			VALUES (?, ?, ?)
+		`, importRunID, capturedAt, `{"kind":"cleanup-test"}`); err != nil {
+			t.Fatalf("insert CLI snapshot %d for run %d: %v", i, importRunID, err)
+		}
+	}
+}
+
+func insertCLIRetention(t *testing.T, db *sql.DB, importRunID int64, latestStartAt string, candidateCount, parseableStartCount int, recordedAt string) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+		INSERT INTO import_run_snapshot_retention (
+			import_run_id,
+			latest_start_at,
+			candidate_count,
+			parseable_start_count,
+			recorded_at
+		) VALUES (?, ?, ?, ?, ?)
+	`, importRunID, latestStartAt, candidateCount, parseableStartCount, recordedAt); err != nil {
+		t.Fatalf("insert CLI snapshot retention for run %d: %v", importRunID, err)
+	}
+}
+
 func openRawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 
@@ -2874,6 +3117,52 @@ func countRows(t *testing.T, db *sql.DB, table string) int {
 		t.Fatalf("count %s: %v", table, err)
 	}
 	return count
+}
+
+func countCLISnapshotsForRun(t *testing.T, db *sql.DB, importRunID int64) int {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM snapshots
+		WHERE import_run_id = ?
+	`, importRunID).Scan(&count); err != nil {
+		t.Fatalf("count CLI snapshots for run %d: %v", importRunID, err)
+	}
+	return count
+}
+
+func assertCLIPruneReason(t *testing.T, db *sql.DB, importRunID int64, want string) {
+	t.Helper()
+
+	var got string
+	if err := db.QueryRow(`
+		SELECT prune_reason
+		FROM import_run_snapshot_retention
+		WHERE import_run_id = ?
+	`, importRunID).Scan(&got); err != nil {
+		t.Fatalf("load CLI prune reason for run %d: %v", importRunID, err)
+	}
+	if got != want {
+		t.Fatalf("run %d prune reason = %q, want %q", importRunID, got, want)
+	}
+}
+
+func loadCLIRetention(t *testing.T, db *sql.DB, importRunID int64) (string, int, int) {
+	t.Helper()
+
+	var latestStartAt string
+	var candidateCount int
+	var parseableStartCount int
+	if err := db.QueryRow(`
+		SELECT latest_start_at, candidate_count, parseable_start_count
+		FROM import_run_snapshot_retention
+		WHERE import_run_id = ?
+	`, importRunID).Scan(&latestStartAt, &candidateCount, &parseableStartCount); err != nil {
+		t.Fatalf("load CLI retention for run %d: %v", importRunID, err)
+	}
+	return latestStartAt, candidateCount, parseableStartCount
 }
 
 func focusFixturePNG(t *testing.T) []byte {

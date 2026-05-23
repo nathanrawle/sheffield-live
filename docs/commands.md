@@ -178,10 +178,23 @@ Live ingest:
 - parses candidates, skips, and errors
 - copies supported event images into local media storage when a source image URL is available; failures are reported as warnings and do not fail the ingest
 - stores a best-effort image focus point for copied event images so card crops can prefer the most visually interesting area
-- writes `sources`, `import_runs`, and `snapshots`
+- writes `sources`, `import_runs`, `snapshots`, and per-import-run snapshot retention metadata
+- records the latest parseable candidate start time from the live ingest report for later snapshot cleanup; replay-derived reports do not update this metadata
+- automatically runs stale snapshot cleanup after normal live ingest, live `-stage-event-reviews`, and `-all-sources`; cleanup and vacuum errors are logged but do not fail the ingest
 - prints a JSON report to stdout
 - batch mode continues after per-source failures but returns non-zero if any source run fails
 - `-all-sources` is mutually exclusive with `-source` and `-import-run-id`
+
+Snapshot cleanup:
+
+- primary flag: `-cleanup-stale-snapshots`
+- network-free
+- deletes all snapshots for finished import runs whose recorded latest candidate start time is before today in `Europe/London`
+- deletes finished import runs with no retention row or no parseable candidate start once their `finished_at` is at least 7 days old
+- leaves `import_runs` rows in place and records a prune reason in `import_run_snapshot_retention`
+- runs `VACUUM` after deleting snapshots and reports whether vacuum succeeded
+- pruned import runs are no longer replayable because replay requires the stored snapshots
+- mutually exclusive with live source selection, `-all-sources`, replay, staging, repairs, and image focus backfill
 
 Replay:
 
