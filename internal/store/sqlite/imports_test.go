@@ -493,6 +493,70 @@ func TestImportRunSnapshotRetentionRejectsInvalidCounts(t *testing.T) {
 	}
 }
 
+func TestImportRunSnapshotRetentionSchemaConstraintsAndIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	indexRows, err := db.Query(`PRAGMA index_list(import_run_snapshot_retention)`)
+	if err != nil {
+		t.Fatalf("index list: %v", err)
+	}
+	defer indexRows.Close()
+	foundLatestStartIndex := false
+	for indexRows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := indexRows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan index row: %v", err)
+		}
+		if name == "idx_import_run_snapshot_retention_latest_start" {
+			foundLatestStartIndex = true
+		}
+	}
+	if err := indexRows.Err(); err != nil {
+		t.Fatalf("iterate index list: %v", err)
+	}
+	if !foundLatestStartIndex {
+		t.Fatal("missing import_run_snapshot_retention latest_start_at index")
+	}
+
+	startedAt := time.Date(2026, time.May, 10, 10, 0, 0, 0, time.UTC)
+	insertImportRunSummaryFixture(t, db, 10, startedAt, startedAt.Add(time.Minute), "succeeded", "retention constraints")
+	expectInsertErr := func(name string, latestStartAt any, candidateCount, parseableStartCount int, pruneReason string) {
+		t.Helper()
+		_, err := db.Exec(`
+			INSERT INTO import_run_snapshot_retention (
+				import_run_id,
+				latest_start_at,
+				candidate_count,
+				parseable_start_count,
+				recorded_at,
+				prune_reason
+			) VALUES (?, ?, ?, ?, ?, ?)
+		`, 10, latestStartAt, candidateCount, parseableStartCount, "2026-05-10T10:01:00Z", pruneReason)
+		if err == nil {
+			t.Fatalf("%s insert succeeded, want CHECK constraint failure", name)
+		}
+	}
+
+	expectInsertErr("negative candidate count", nil, -1, 0, "")
+	expectInsertErr("parseable count above candidate count", nil, 1, 2, "")
+	expectInsertErr("latest start with zero parseable starts", "2026-05-10T10:01:00Z", 1, 0, "")
+	expectInsertErr("invalid prune reason", nil, 0, 0, "not-a-reason")
+}
+
 func TestDeleteStaleImportRunSnapshots(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
