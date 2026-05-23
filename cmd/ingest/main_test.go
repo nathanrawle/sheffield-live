@@ -2347,11 +2347,24 @@ func TestRunWithArgsAllSourcesContinuesAfterFailure(t *testing.T) {
 	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
 		t.Fatalf("decode batch output: %v", decodeErr)
 	}
-	if got.Results[1].Source != ingest.YellowArchSource {
-		t.Fatalf("failed result source = %q, want %q", got.Results[1].Source, ingest.YellowArchSource)
+	failedResult := got.Results[1]
+	if failedResult.Source != ingest.YellowArchSource {
+		t.Fatalf("failed result source = %q, want %q", failedResult.Source, ingest.YellowArchSource)
 	}
-	if got.Results[1].Error == "" {
+	if failedResult.Error == "" {
 		t.Fatal("failed result error = empty, want error")
+	}
+	if failedResult.EventReviewClusters == nil {
+		t.Fatal("failed result review stage = nil, want skipped review stage")
+	}
+	if !failedResult.EventReviewClusters.Enabled {
+		t.Fatal("failed result review stage enabled = false, want true")
+	}
+	if failedResult.EventReviewClusters.Applied {
+		t.Fatal("failed result review stage applied = true, want false")
+	}
+	if len(failedResult.EventReviewClusters.Errors) != 1 || !strings.Contains(failedResult.EventReviewClusters.Errors[0], "skipped event review staging") {
+		t.Fatalf("failed result review stage errors = %#v, want skipped staging reason", failedResult.EventReviewClusters.Errors)
 	}
 	if got.Results[len(got.Results)-1].Source != ingest.RegisteredSourceKeys()[len(ingest.RegisteredSourceKeys())-1] {
 		t.Fatalf("last result source = %q, want %q", got.Results[len(got.Results)-1].Source, ingest.RegisteredSourceKeys()[len(ingest.RegisteredSourceKeys())-1])
