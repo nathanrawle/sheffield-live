@@ -36,7 +36,7 @@ Common options:
   --repo-ref REF                  Branch, tag, or commit to deploy. Default: main.
   --admin-password-hash HASH      Existing bcrypt hash for the admin UI.
                                   If omitted, the script prompts for a passphrase.
-  --run-ingest-now                Run ingest once during bootstrap.
+  --run-ingest-now                Run ingest once after deploying the app.
 
 SSH hardening options:
   --harden-ssh                    Disable root/password SSH login after installing
@@ -248,15 +248,32 @@ validate_public_key_line() {
 	rm -f "${tmp}"
 }
 
+ensure_admin_user_can_authenticate_sudo() {
+	local status
+
+	status="$(passwd -S "${ADMIN_USER}" | awk '{print $2}')"
+	if [[ "${status}" == "P" ]]; then
+		return
+	fi
+	if [[ ! -t 0 ]]; then
+		die "${ADMIN_USER} does not have a usable password for sudo; set one before non-interactive SSH hardening"
+	fi
+
+	log "Setting password for ${ADMIN_USER} so sudo authentication works after SSH hardening"
+	passwd "${ADMIN_USER}"
+}
+
 ensure_admin_user_and_key() {
 	[[ "${HARDEN_SSH}" -eq 1 ]] || return
 
 	local public_key home_dir auth_file
 	log "Creating/updating admin user ${ADMIN_USER}"
 	if ! id -u "${ADMIN_USER}" >/dev/null 2>&1; then
-		adduser --disabled-password --gecos "" "${ADMIN_USER}"
+		[[ -t 0 ]] || die "cannot create ${ADMIN_USER} non-interactively because a sudo password is required"
+		adduser --gecos "" "${ADMIN_USER}"
 	fi
 	usermod -aG sudo "${ADMIN_USER}"
+	ensure_admin_user_can_authenticate_sudo
 
 	public_key="$(read_public_key | tr -d '\r')"
 	validate_public_key_line "${public_key}"
@@ -325,16 +342,12 @@ install_caddy() {
 	systemctl enable --now caddy
 }
 
-clone_and_build() {
-	log "Cloning ${REPO_URL} (${REPO_REF}) and building binaries"
+clone_source() {
+	log "Cloning ${REPO_URL} (${REPO_REF})"
 	BUILD_DIR="$(mktemp -d)"
 	git clone "${REPO_URL}" "${BUILD_DIR}"
 	pushd "${BUILD_DIR}" >/dev/null
 	git checkout "${REPO_REF}"
-	mkdir -p bin
-	/usr/local/go/bin/go build -o "bin/${APP_NAME}-web" ./cmd/web
-	/usr/local/go/bin/go build -o "bin/${APP_NAME}-ingest" ./cmd/ingest
-	/usr/local/go/bin/go build -o "bin/${APP_NAME}-admin-password-hash" ./cmd/admin-password-hash
 	popd >/dev/null
 }
 
@@ -353,22 +366,8 @@ ensure_admin_password_hash() {
 	printf '\n' >&2
 	[[ -n "${passphrase}" ]] || die "admin passphrase cannot be empty"
 	[[ "${passphrase}" == "${confirm}" ]] || die "admin passphrases did not match"
-	ADMIN_PASSWORD_HASH="$(printf '%s' "${passphrase}" | "${BUILD_DIR}/bin/${APP_NAME}-admin-password-hash")"
+	ADMIN_PASSWORD_HASH="$(printf '%s' "${passphrase}" | (cd "${BUILD_DIR}" && /usr/local/go/bin/go run ./cmd/admin-password-hash))"
 	unset passphrase confirm
-}
-
-install_app_files() {
-	log "Installing app files to ${APP_DIR}"
-	install -d -o root -g root -m 755 "${APP_DIR}" "${APP_DIR}/bin" "${APP_DIR}/config"
-	install -o root -g root -m 755 "${BUILD_DIR}/bin/${APP_NAME}-web" "${APP_DIR}/bin/${APP_NAME}-web"
-	install -o root -g root -m 755 "${BUILD_DIR}/bin/${APP_NAME}-ingest" "${APP_DIR}/bin/${APP_NAME}-ingest"
-
-	rm -rf "${APP_DIR}/config"
-	install -d -o root -g root -m 755 "${APP_DIR}/config"
-	cp -R "${BUILD_DIR}/config/." "${APP_DIR}/config/"
-	chown -R root:root "${APP_DIR}/config"
-	find "${APP_DIR}/config" -type d -exec chmod 755 {} \;
-	find "${APP_DIR}/config" -type f -exec chmod 644 {} \;
 }
 
 write_env_file() {
@@ -441,8 +440,16 @@ WantedBy=timers.target
 EOF
 
 	systemctl daemon-reload
-	systemctl enable --now ${APP_NAME}-web.service
+	systemctl enable ${APP_NAME}-web.service
 	systemctl enable --now ${APP_NAME}-ingest.timer
+}
+
+deploy_app_files() {
+	log "Deploying app binaries and config"
+	bash "${BUILD_DIR}/scripts/deploy-vps.sh" \
+		--source-dir "${BUILD_DIR}" \
+		--app-name "${APP_NAME}" \
+		--go-bin /usr/local/go/bin/go
 }
 
 write_caddyfile() {
@@ -465,13 +472,6 @@ EOF
 set_timezone() {
 	log "Setting timezone to ${TIMEZONE}"
 	timedatectl set-timezone "${TIMEZONE}"
-}
-
-verify_local_app() {
-	log "Verifying local app health"
-	sleep 2
-	curl -fsS http://127.0.0.1:8080/healthz >/dev/null
-	curl -fsS http://127.0.0.1:8080/readyz >/dev/null
 }
 
 maybe_run_initial_ingest() {
@@ -534,13 +534,12 @@ main() {
 	harden_ssh
 	configure_ufw
 	install_caddy
-	clone_and_build
+	clone_source
 	ensure_admin_password_hash
-	install_app_files
 	write_env_file
 	write_systemd_units
+	deploy_app_files
 	write_caddyfile
-	verify_local_app
 	maybe_run_initial_ingest
 	warn_if_dns_not_ready
 	print_summary
