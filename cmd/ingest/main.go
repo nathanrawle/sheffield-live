@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -56,6 +57,7 @@ type ingestCommandConfig struct {
 	repairDescriptions       bool
 	repairEventTitles        bool
 	mediaRoot                string
+	mediaURLPrefix           string
 	imageFetcher             ingest.Fetcher
 	imageStorage             ingest.ImageStorage
 }
@@ -75,6 +77,7 @@ const (
 	fixCommandDescriptions         fixCommandKind = "descriptions"
 	fixCommandHistoricalDuplicates fixCommandKind = "historical-duplicates"
 	fixCommandImageFocus           fixCommandKind = "image-focus"
+	fixCommandMedia                fixCommandKind = "media"
 	fixCommandSnapshots            fixCommandKind = "snapshots"
 )
 
@@ -230,6 +233,9 @@ func runLiveIngestCommand(ctx context.Context, st *sqlite.Store, catalog *ingest
 		summary.applyManualRun(result)
 	}
 	err = encodeManualRunResult(stdout, result)
+	if err == nil && !cfg.dryRun {
+		runAutomaticMediaCleanup(ctx, st, logger)
+	}
 	runAutomaticSnapshotCleanup(ctx, st, logger)
 	return err
 }
@@ -298,6 +304,16 @@ func runFixCommand(ctx context.Context, st *sqlite.Store, catalog *ingest.Catalo
 			mediaRoot = env("MEDIA_ROOT", "./data/media")
 		}
 		return runImageFocusBackfill(ctx, st, stdout, mediaRoot, !cfg.dryRun)
+	case fixCommandMedia:
+		mediaRoot := strings.TrimSpace(cfg.mediaRoot)
+		if mediaRoot == "" {
+			mediaRoot = env("MEDIA_ROOT", "./data/media")
+		}
+		mediaURLPrefix := strings.TrimSpace(cfg.mediaURLPrefix)
+		if mediaURLPrefix == "" {
+			mediaURLPrefix = env("MEDIA_URL_PREFIX", "/media")
+		}
+		return runMediaCleanup(ctx, st, stdout, mediaRoot, mediaURLPrefix, !cfg.dryRun)
 	case fixCommandSnapshots:
 		return runSnapshotCleanup(ctx, st, stdout)
 	default:
@@ -520,6 +536,8 @@ func parseFixArgs(args []string, globalDB trackedStringFlag) (ingestCommandConfi
 		return parseHistoricalDuplicateFixArgs(args[1:], globalDB)
 	case fixCommandImageFocus:
 		return parseImageFocusFixArgs(args[1:], globalDB)
+	case fixCommandMedia:
+		return parseMediaFixArgs(args[1:], globalDB)
 	case fixCommandSnapshots:
 		return parseSnapshotFixArgs(args[1:], globalDB)
 	default:
@@ -593,6 +611,29 @@ func parseImageFocusFixArgs(args []string, globalDB trackedStringFlag) (ingestCo
 	fs.Var(&dbFlag, "db", "SQLite database path")
 	fs.StringVar(&cfg.mediaRoot, "media-root", "", "local media root")
 	fs.BoolVar(&cfg.dryRun, "dry-run", false, "report image focus repairs without writing")
+	if err := fs.Parse(args); err != nil {
+		return ingestCommandConfig{}, err
+	}
+	if fs.NArg() > 0 {
+		return ingestCommandConfig{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	dbPath, err := mergeDBPath(globalDB, dbFlag)
+	if err != nil {
+		return ingestCommandConfig{}, err
+	}
+	cfg.dbPath = dbPath
+	return cfg, nil
+}
+
+func parseMediaFixArgs(args []string, globalDB trackedStringFlag) (ingestCommandConfig, error) {
+	cfg := defaultCommandConfig(ingestCommandFix)
+	cfg.fixKind = fixCommandMedia
+	var dbFlag trackedStringFlag
+	fs := newIngestFlagSet("ingest fix media")
+	fs.Var(&dbFlag, "db", "SQLite database path")
+	fs.StringVar(&cfg.mediaRoot, "media-root", "", "local media root")
+	fs.StringVar(&cfg.mediaURLPrefix, "media-url-prefix", "", "public media URL prefix")
+	fs.BoolVar(&cfg.dryRun, "dry-run", false, "report media cleanup without writing")
 	if err := fs.Parse(args); err != nil {
 		return ingestCommandConfig{}, err
 	}
@@ -793,6 +834,10 @@ type imageFocusRepairRunReport struct {
 	ImageFocus imageFocusBackfillReport `json:"image_focus"`
 }
 
+type mediaCleanupRunReport struct {
+	MediaCleanup sqlite.MediaCleanupReport `json:"media_cleanup"`
+}
+
 type manualRunExecution struct {
 	Report              ingest.Report
 	EventReviewClusters *eventReviewClusterReport
@@ -907,6 +952,8 @@ func ingestMode(cfg ingestCommandConfig) string {
 			return "historical_duplicate_repair"
 		case fixCommandImageFocus:
 			return "image_focus_backfill"
+		case fixCommandMedia:
+			return "media_cleanup"
 		case fixCommandSnapshots:
 			return "snapshot_cleanup"
 		default:
@@ -1149,6 +1196,236 @@ func runImageFocusBackfill(ctx context.Context, st *sqlite.Store, stdout io.Writ
 	return nil
 }
 
+func runMediaCleanup(ctx context.Context, st *sqlite.Store, stdout io.Writer, mediaRoot, mediaURLPrefix string, apply bool) error {
+	report, cleanupErr := cleanupLocalMedia(ctx, st, mediaRoot, mediaURLPrefix, apply)
+	if cleanupErr != nil {
+		return cleanupErr
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(mediaCleanupRunReport{MediaCleanup: report}); err != nil {
+		return err
+	}
+	if len(report.Errors) > 0 {
+		return errors.New("one or more media cleanup operations failed")
+	}
+	return nil
+}
+
+func runAutomaticMediaCleanup(ctx context.Context, st *sqlite.Store, logger *slog.Logger) {
+	logger = logging.EnsureLogger(logger)
+	report, err := cleanupLocalMedia(ctx, st, env("MEDIA_ROOT", "./data/media"), env("MEDIA_URL_PREFIX", "/media"), true)
+	attrs := []any{
+		"cleared_event_images", report.ClearedEventImages,
+		"deleted_asset_rows", report.DeletedAssetRows,
+		"deleted_files", report.DeletedFiles,
+		"missing_files", report.MissingFiles,
+		"warnings", len(report.Warnings),
+		"errors", len(report.Errors),
+	}
+	if err != nil || len(report.Errors) > 0 {
+		if err != nil {
+			attrs = append(attrs, "error", err)
+		}
+		logger.Warn("media cleanup failed", attrs...)
+		return
+	}
+	if report.ClearedEventImages == 0 && report.DeletedAssetRows == 0 && report.DeletedFiles == 0 && report.MissingFiles == 0 && len(report.Warnings) == 0 {
+		return
+	}
+	logger.Info("media cleanup finished", attrs...)
+}
+
+func cleanupLocalMedia(ctx context.Context, st *sqlite.Store, mediaRoot, mediaURLPrefix string, apply bool) (sqlite.MediaCleanupReport, error) {
+	existingFiles, err := localMediaEventFiles(mediaRoot)
+	if err != nil {
+		return sqlite.MediaCleanupReport{}, err
+	}
+	report, err := st.CleanupMedia(ctx, sqlite.MediaCleanupOptions{
+		Apply:          apply,
+		Now:            nowUTC(),
+		MediaURLPrefix: mediaURLPrefix,
+		ExistingFiles:  existingFiles,
+	})
+	if err != nil {
+		return report, err
+	}
+	completeLocalMediaCleanup(&report, mediaRoot, mediaURLPrefix, existingFiles, apply)
+	return report, nil
+}
+
+func completeLocalMediaCleanup(report *sqlite.MediaCleanupReport, mediaRoot, mediaURLPrefix string, existingFiles []string, apply bool) {
+	if report == nil {
+		return
+	}
+	knownStorage := stringSetFromSlice(report.KnownStoragePaths)
+	retainedStorage := stringSetFromSlice(report.RetainedStoragePaths)
+	retainedPublicURLs := stringSetFromSlice(report.RetainedPublicURLs)
+	deleteCandidates := stringSetFromSlice(report.FilesToDelete)
+
+	for _, storagePath := range report.FilesToDelete {
+		if _, ok := retainedStorage[storagePath]; ok {
+			report.RetainedFiles++
+			continue
+		}
+		publicURL := localMediaPublicURL(mediaURLPrefix, storagePath)
+		if _, ok := retainedPublicURLs[publicURL]; ok {
+			report.RetainedFiles++
+			continue
+		}
+		recordMediaFileDeletion(report, mediaRoot, mediaURLPrefix, storagePath, "unreferenced_asset_file", apply)
+	}
+
+	for _, storagePath := range existingFiles {
+		storagePath = filepath.ToSlash(strings.TrimSpace(storagePath))
+		if storagePath == "" {
+			continue
+		}
+		if _, ok := knownStorage[storagePath]; ok {
+			continue
+		}
+		report.ScannedOrphanFiles++
+		if _, ok := retainedStorage[storagePath]; ok {
+			report.RetainedFiles++
+			continue
+		}
+		publicURL := localMediaPublicURL(mediaURLPrefix, storagePath)
+		if _, ok := retainedPublicURLs[publicURL]; ok {
+			report.RetainedFiles++
+			continue
+		}
+		if _, ok := deleteCandidates[storagePath]; ok {
+			continue
+		}
+		recordMediaFileDeletion(report, mediaRoot, mediaURLPrefix, storagePath, "orphan_file", apply)
+	}
+}
+
+func recordMediaFileDeletion(report *sqlite.MediaCleanupReport, mediaRoot, mediaURLPrefix, storagePath, reason string, apply bool) {
+	storagePath = filepath.ToSlash(strings.TrimSpace(storagePath))
+	if storagePath == "" {
+		return
+	}
+	item := sqlite.MediaCleanupItem{
+		Action:      "delete_file",
+		Reason:      reason,
+		StoragePath: storagePath,
+		PublicURL:   localMediaPublicURL(mediaURLPrefix, storagePath),
+	}
+	if !apply {
+		report.DeletedFiles++
+		report.Items = append(report.Items, item)
+		return
+	}
+	if err := deleteLocalMediaFile(mediaRoot, storagePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			report.MissingFiles++
+			item.Action = "missing_file"
+			report.Items = append(report.Items, item)
+			return
+		}
+		message := fmt.Sprintf("%s: delete file: %v", storagePath, err)
+		report.Errors = append(report.Errors, message)
+		item.Action = "delete_file_failed"
+		item.Reason = message
+		report.Items = append(report.Items, item)
+		return
+	}
+	report.DeletedFiles++
+	report.Items = append(report.Items, item)
+}
+
+func localMediaEventFiles(mediaRoot string) ([]string, error) {
+	mediaRoot = strings.TrimSpace(mediaRoot)
+	if mediaRoot == "" {
+		return nil, errors.New("media root is required")
+	}
+	eventsRoot := filepath.Join(mediaRoot, "events")
+	resolvedEventsRoot, err := filepath.EvalSymlinks(eventsRoot)
+	if err != nil {
+		return nil, fmt.Errorf("media events directory %q: %w", eventsRoot, err)
+	}
+	info, err := os.Stat(resolvedEventsRoot)
+	if err != nil {
+		return nil, fmt.Errorf("media events directory %q: %w", eventsRoot, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("media events path %q is not a directory", eventsRoot)
+	}
+	var files []string
+	err = filepath.WalkDir(resolvedEventsRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(resolvedEventsRoot, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(filepath.Join("events", rel)))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+var deleteLocalMediaFile = func(mediaRoot, storagePath string) error {
+	path, err := localMediaAssetPath(mediaRoot, storagePath)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file")
+	}
+	return os.Remove(path)
+}
+
+func localMediaPublicURL(mediaURLPrefix, storagePath string) string {
+	storagePath = strings.TrimLeft(filepath.ToSlash(strings.TrimSpace(storagePath)), "/")
+	if storagePath == "" {
+		return ""
+	}
+	prefix := strings.TrimSpace(mediaURLPrefix)
+	if prefix == "" {
+		prefix = "/media"
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix == "" {
+		prefix = "/media"
+	}
+	return prefix + "/" + storagePath
+}
+
+func stringSetFromSlice(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out[value] = struct{}{}
+		}
+	}
+	return out
+}
+
 func localMediaAssetPath(mediaRoot, storagePath string) (string, error) {
 	mediaRoot = strings.TrimSpace(mediaRoot)
 	if mediaRoot == "" {
@@ -1240,6 +1517,9 @@ func runAllSources(ctx context.Context, st *sqlite.Store, fetcher ingest.Fetcher
 			Err:       result.Err,
 		}
 	})
+	if err == nil && !cfg.dryRun {
+		runAutomaticMediaCleanup(ctx, st, logger)
+	}
 	runAutomaticSnapshotCleanup(ctx, st, logger)
 	return err
 }

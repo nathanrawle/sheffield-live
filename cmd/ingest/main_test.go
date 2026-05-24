@@ -998,6 +998,7 @@ func TestParseIngestArgsCommandDispatch(t *testing.T) {
 		{name: "fix descriptions source", args: []string{"fix", "descriptions", "-source", ingest.CafeNo9Source}, wantCmd: ingestCommandFix, wantFix: fixCommandDescriptions, wantSource: ingest.CafeNo9Source, wantSet: true, wantDesc: true},
 		{name: "fix historical duplicates", args: []string{"fix", "historical-duplicates", "-dry-run"}, wantCmd: ingestCommandFix, wantFix: fixCommandHistoricalDuplicates, wantDryRun: true},
 		{name: "fix image focus", args: []string{"fix", "image-focus"}, wantCmd: ingestCommandFix, wantFix: fixCommandImageFocus},
+		{name: "fix media", args: []string{"fix", "media", "-dry-run"}, wantCmd: ingestCommandFix, wantFix: fixCommandMedia, wantDryRun: true},
 		{name: "fix snapshots", args: []string{"fix", "snapshots"}, wantCmd: ingestCommandFix, wantFix: fixCommandSnapshots},
 	}
 
@@ -2029,6 +2030,451 @@ func TestRunWithArgsBackfillsImageFocusDefaultsOversizedImages(t *testing.T) {
 	}
 	if asset.FocusX != ingest.DefaultImageFocusX || asset.FocusY != ingest.DefaultImageFocusY {
 		t.Fatalf("focus = %d,%d, want default", asset.FocusX, asset.FocusY)
+	}
+}
+
+func TestRunWithArgsCleanupMediaDeletesFilesAndPreservesDirectRefs(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	mediaRoot := filepath.Join(t.TempDir(), "media")
+	unusedPath := filepath.Join(mediaRoot, "events", "unused.jpg")
+	directPath := filepath.Join(mediaRoot, "events", "direct.jpg")
+	staleDirectPath := filepath.Join(mediaRoot, "events", "stale-direct.jpg")
+	writeCLIMediaFile(t, unusedPath)
+	writeCLIMediaFile(t, directPath)
+	writeCLIMediaFile(t, staleDirectPath)
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/unused.jpg",
+		PublicURL:   "/assets/events/unused.jpg",
+		StoragePath: "events/unused.jpg",
+		ContentType: "image/jpeg",
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/missing.jpg",
+		PublicURL:   "/assets/events/missing.jpg",
+		StoragePath: "events/missing.jpg",
+		ContentType: "image/jpeg",
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save missing image asset: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/stale-direct.jpg",
+		PublicURL:   "/legacy/events/stale-direct.jpg",
+		StoragePath: "events/stale-direct.jpg",
+		ContentType: "image/jpeg",
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save stale direct image asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	sourceID := insertCLIMediaSource(t, db)
+	insertCLIMediaEvent(t, db, sourceID, "future-direct-media", time.Date(2026, time.May, 25, 19, 0, 0, 0, time.UTC), "/assets/events/direct.jpg", "")
+	insertCLIMediaEvent(t, db, sourceID, "future-stale-direct-media", time.Date(2026, time.May, 25, 19, 0, 0, 0, time.UTC), "/assets/events/stale-direct.jpg", "")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	freezeCLINowUTC(t, time.Date(2026, time.May, 20, 12, 0, 0, 0, time.UTC))
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "media", "-media-root", mediaRoot, "-media-url-prefix", "assets"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("cleanup media: %v", err)
+	}
+
+	var payload mediaCleanupRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode media cleanup output: %v", err)
+	}
+	report := payload.MediaCleanup
+	if report.DeletedFiles != 1 || report.DeletedAssetRows != 3 || report.MissingFiles != 1 || report.ScannedOrphanFiles != 1 || report.RetainedFiles != 2 {
+		t.Fatalf("media cleanup report = %#v, want deleted asset file, missing stale row, retained direct orphan, and retained stale direct file", report)
+	}
+	if _, err := os.Stat(unusedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unused media file stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(directPath); err != nil {
+		t.Fatalf("direct media file should be retained: %v", err)
+	}
+	if _, err := os.Stat(staleDirectPath); err != nil {
+		t.Fatalf("stale direct media file should be retained: %v", err)
+	}
+
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+	if _, ok, err := st.LoadImageAsset(ctx, "https://example.test/unused.jpg"); err != nil {
+		t.Fatalf("load unused image asset: %v", err)
+	} else if ok {
+		t.Fatal("unused image asset still exists after cleanup")
+	}
+	if _, ok, err := st.LoadImageAsset(ctx, "https://example.test/missing.jpg"); err != nil {
+		t.Fatalf("load missing image asset: %v", err)
+	} else if ok {
+		t.Fatal("missing image asset still exists after cleanup")
+	}
+	if _, ok, err := st.LoadImageAsset(ctx, "https://example.test/stale-direct.jpg"); err != nil {
+		t.Fatalf("load stale direct image asset: %v", err)
+	} else if ok {
+		t.Fatal("stale direct image asset still exists after cleanup")
+	}
+}
+
+func TestRunWithArgsCleanupMediaDryRunDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	mediaRoot := filepath.Join(t.TempDir(), "media")
+	unusedPath := filepath.Join(mediaRoot, "events", "unused.jpg")
+	writeCLIMediaFile(t, unusedPath)
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/unused.jpg",
+		PublicURL:   "/media/events/unused.jpg",
+		StoragePath: "events/unused.jpg",
+		ContentType: "image/jpeg",
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	freezeCLINowUTC(t, time.Date(2026, time.May, 20, 12, 0, 0, 0, time.UTC))
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "media", "-media-root", mediaRoot, "-dry-run"}, &stdout, io.Discard); err != nil {
+		t.Fatalf("dry-run cleanup media: %v", err)
+	}
+
+	var payload mediaCleanupRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode media cleanup output: %v", err)
+	}
+	report := payload.MediaCleanup
+	if !report.DryRun || report.Applied || report.DeletedFiles != 1 || report.DeletedAssetRows != 1 {
+		t.Fatalf("media cleanup dry-run report = %#v, want reported deletion without apply", report)
+	}
+	if _, err := os.Stat(unusedPath); err != nil {
+		t.Fatalf("unused media file should remain after dry-run: %v", err)
+	}
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+	if _, ok, err := st.LoadImageAsset(ctx, "https://example.test/unused.jpg"); err != nil {
+		t.Fatalf("load unused image asset: %v", err)
+	} else if !ok {
+		t.Fatal("unused image asset was deleted during dry-run")
+	}
+}
+
+func TestRunWithArgsCleanupMediaMissingEventsDirDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	mediaRoot := filepath.Join(t.TempDir(), "media")
+	if err := os.MkdirAll(mediaRoot, 0o755); err != nil {
+		t.Fatalf("make media root: %v", err)
+	}
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/unused.jpg",
+		PublicURL:   "/media/events/unused.jpg",
+		StoragePath: "events/unused.jpg",
+		ContentType: "image/jpeg",
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err = runWithArgs([]string{"-db", path, "fix", "media", "-media-root", mediaRoot}, &stdout, io.Discard)
+	if err == nil {
+		t.Fatal("cleanup media succeeded with missing events directory")
+	}
+	if !strings.Contains(err.Error(), "media events directory") {
+		t.Fatalf("cleanup media error = %v, want media events directory error", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("cleanup media stdout = %q, want empty on preflight failure", stdout.String())
+	}
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+	if _, ok, err := st.LoadImageAsset(ctx, "https://example.test/unused.jpg"); err != nil {
+		t.Fatalf("load unused image asset: %v", err)
+	} else if !ok {
+		t.Fatal("unused image asset was deleted when media events directory was missing")
+	}
+}
+
+func TestRunWithArgsCleanupMediaFollowsEventsDirSymlink(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	mediaRoot := filepath.Join(t.TempDir(), "media")
+	actualEventsRoot := filepath.Join(t.TempDir(), "events-target")
+	if err := os.MkdirAll(mediaRoot, 0o755); err != nil {
+		t.Fatalf("make media root: %v", err)
+	}
+	unusedPath := filepath.Join(actualEventsRoot, "unused.jpg")
+	writeCLIMediaFile(t, unusedPath)
+	if err := os.Symlink(actualEventsRoot, filepath.Join(mediaRoot, "events")); err != nil {
+		t.Skipf("create events symlink: %v", err)
+	}
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/unused.jpg",
+		PublicURL:   "/media/events/unused.jpg",
+		StoragePath: "events/unused.jpg",
+		ContentType: "image/jpeg",
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "media", "-media-root", mediaRoot}, &stdout, io.Discard); err != nil {
+		t.Fatalf("cleanup media: %v", err)
+	}
+	var payload mediaCleanupRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode media cleanup output: %v", err)
+	}
+	if payload.MediaCleanup.DeletedFiles != 1 || payload.MediaCleanup.DeletedAssetRows != 1 {
+		t.Fatalf("media cleanup report = %#v, want symlinked file and asset row deleted", payload.MediaCleanup)
+	}
+	if _, err := os.Stat(unusedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unused symlink target file stat error = %v, want deleted", err)
+	}
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+	if _, ok, err := st.LoadImageAsset(ctx, "https://example.test/unused.jpg"); err != nil {
+		t.Fatalf("load unused image asset: %v", err)
+	} else if ok {
+		t.Fatal("unused image asset still exists after symlink cleanup")
+	}
+}
+
+func TestRunWithArgsCleanupMediaCanRetryAfterDeleteFailure(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	mediaRoot := filepath.Join(t.TempDir(), "media")
+	retryPath := filepath.Join(mediaRoot, "events", "retry.jpg")
+	writeCLIMediaFile(t, retryPath)
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/retry.jpg",
+		PublicURL:   "/media/events/retry.jpg",
+		StoragePath: "events/retry.jpg",
+		ContentType: "image/jpeg",
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	freezeCLINowUTC(t, time.Date(2026, time.May, 20, 12, 0, 0, 0, time.UTC))
+	originalDelete := deleteLocalMediaFile
+	defer func() {
+		deleteLocalMediaFile = originalDelete
+	}()
+	deleteLocalMediaFile = func(root, storagePath string) error {
+		if storagePath == "events/retry.jpg" {
+			return errors.New("delete blocked")
+		}
+		return originalDelete(root, storagePath)
+	}
+
+	var firstStdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "media", "-media-root", mediaRoot}, &firstStdout, io.Discard); err == nil {
+		t.Fatal("cleanup media succeeded despite delete failure")
+	}
+	if _, err := os.Stat(retryPath); err != nil {
+		t.Fatalf("retry media file should remain after delete failure: %v", err)
+	}
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	if _, ok, err := st.LoadImageAsset(ctx, "https://example.test/retry.jpg"); err != nil {
+		t.Fatalf("load retry image asset: %v", err)
+	} else if ok {
+		t.Fatal("retry image asset row should be deleted before file cleanup")
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close reopened sqlite store: %v", err)
+	}
+
+	deleteLocalMediaFile = originalDelete
+	var secondStdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "media", "-media-root", mediaRoot}, &secondStdout, io.Discard); err != nil {
+		t.Fatalf("retry cleanup media: %v", err)
+	}
+	var payload mediaCleanupRunReport
+	if err := json.Unmarshal(secondStdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode retry cleanup output: %v", err)
+	}
+	if payload.MediaCleanup.DeletedFiles != 1 || payload.MediaCleanup.ScannedOrphanFiles != 1 || payload.MediaCleanup.DeletedAssetRows != 0 {
+		t.Fatalf("retry cleanup report = %#v, want orphan file deletion only", payload.MediaCleanup)
+	}
+	if _, err := os.Stat(retryPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retry media file stat error = %v, want deleted", err)
+	}
+}
+
+func TestRunWithArgsLiveMediaCleanupRunsOnlyAfterSuccessfulNonDryRun(t *testing.T) {
+	tests := []struct {
+		name             string
+		args             []string
+		runErr           error
+		cleanupDeleteErr bool
+		wantErr          bool
+		wantDelete       bool
+	}{
+		{
+			name:       "success",
+			args:       []string{"-source", ingest.DefaultSource},
+			wantDelete: true,
+		},
+		{
+			name: "dry run",
+			args: []string{"-source", ingest.DefaultSource, "-dry-run"},
+		},
+		{
+			name:    "failed ingest",
+			args:    []string{"-source", ingest.DefaultSource},
+			runErr:  ingest.ErrRunFailed,
+			wantErr: true,
+		},
+		{
+			name:             "cleanup delete error",
+			args:             []string{"-source", ingest.DefaultSource},
+			cleanupDeleteErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "sheffield-live.db")
+			mediaRoot := filepath.Join(t.TempDir(), "media")
+			unusedPath := filepath.Join(mediaRoot, "events", "unused.jpg")
+			writeCLIMediaFile(t, unusedPath)
+			freezeCLINowUTC(t, time.Date(2026, time.May, 20, 12, 0, 0, 0, time.UTC))
+			t.Setenv("MEDIA_ROOT", mediaRoot)
+
+			st, err := sqlite.Open(path)
+			if err != nil {
+				t.Fatalf("open sqlite store: %v", err)
+			}
+			if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+				SourceURL:   "https://example.test/unused.jpg",
+				PublicURL:   "/media/events/unused.jpg",
+				StoragePath: "events/unused.jpg",
+				ContentType: "image/jpeg",
+				CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+			}); err != nil {
+				t.Fatalf("save image asset: %v", err)
+			}
+			if err := st.Close(); err != nil {
+				t.Fatalf("close sqlite store: %v", err)
+			}
+
+			originalFetcher := newHTTPFetcher
+			originalRunManual := runManualImport
+			originalImageFetcher := newHTTPImageFetcher
+			originalDelete := deleteLocalMediaFile
+			defer func() {
+				newHTTPFetcher = originalFetcher
+				runManualImport = originalRunManual
+				newHTTPImageFetcher = originalImageFetcher
+				deleteLocalMediaFile = originalDelete
+			}()
+			newHTTPFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+				return fakeFetcher{}, nil
+			}
+			newHTTPImageFetcher = func(timeout time.Duration, userAgent string) (ingest.Fetcher, error) {
+				return fakeFetcher{}, nil
+			}
+			if tc.cleanupDeleteErr {
+				deleteLocalMediaFile = func(root, storagePath string) error {
+					return errors.New("cleanup delete failed")
+				}
+			}
+			runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
+				runID, _, _ := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+				report := cliEmptySucceededReport(opts.Source, runID, opts.Limit)
+				if tc.runErr != nil {
+					report.Status = "failed"
+					report.Errors = []string{"failed ingest"}
+				}
+				return report, tc.runErr
+			}
+
+			var stdout bytes.Buffer
+			args := append([]string{"-db", path}, tc.args...)
+			err = runWithArgs(args, &stdout, io.Discard)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected ingest error")
+				}
+			} else if err != nil {
+				t.Fatalf("run ingest: %v", err)
+			}
+
+			_, statErr := os.Stat(unusedPath)
+			if tc.wantDelete {
+				if !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("unused media file stat error = %v, want deleted", statErr)
+				}
+				return
+			}
+			if statErr != nil {
+				t.Fatalf("unused media file should remain: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -3730,6 +4176,64 @@ func insertCLIEvent(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, n
 	`, slug, venueID, sourceID, name, startAt, "Test", "Listed", "Existing description.", "2026-05-01T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed)); err != nil {
 		t.Fatalf("insert CLI event: %v", err)
 	}
+}
+
+func writeCLIMediaFile(t *testing.T, path string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("make media dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("media"), 0o644); err != nil {
+		t.Fatalf("write media file: %v", err)
+	}
+}
+
+func insertCLIMediaSource(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+
+	res, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "CLI media source", "https://example.test/source")
+	if err != nil {
+		t.Fatalf("insert CLI media source: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("CLI media source id: %v", err)
+	}
+	return id
+}
+
+func insertCLIMediaEvent(t *testing.T, db *sql.DB, sourceID int64, slug string, start time.Time, imageURL, imageSourceURL string) {
+	t.Helper()
+
+	var venueID int64
+	if err := db.QueryRow(`SELECT id FROM venues WHERE slug = ?`, "leadmill").Scan(&venueID); err != nil {
+		t.Fatalf("lookup venue: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO events (
+			slug,
+			venue_id,
+			source_id,
+			name,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			image_url,
+			image_source_url,
+			last_checked_at,
+			origin,
+			publication_state
+		) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, slug, venueID, sourceID, "CLI Media Event", formatCLITime(start), "Test", "Listed", "Existing description.", imageURL, imageSourceURL, "2026-05-01T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed)); err != nil {
+		t.Fatalf("insert CLI media event: %v", err)
+	}
+}
+
+func formatCLITime(value time.Time) string {
+	return value.UTC().Format(time.RFC3339)
 }
 
 func insertHistoricalDuplicateCLIEvent(t *testing.T, db *sql.DB, sourceID int64, slug string, venueID int64, name, startAt string, publicationState string) int64 {
