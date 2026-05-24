@@ -165,6 +165,9 @@ install_packages() {
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update
 	apt-get install -y ca-certificates curl gnupg git sqlite3 tar
+	if [[ "${HARDEN_SSH}" -eq 1 ]]; then
+		apt-get install -y openssh-client
+	fi
 	if [[ "${CONFIGURE_UFW}" -eq 1 ]]; then
 		apt-get install -y ufw
 	fi
@@ -229,6 +232,22 @@ read_public_key() {
 	sed -n '1p' "${ADMIN_PUBLIC_KEY_FILE}"
 }
 
+validate_public_key_line() {
+	local public_key="$1"
+	local tmp
+
+	[[ -n "${public_key}" ]] || die "SSH public key cannot be empty"
+	command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to validate SSH public keys"
+
+	tmp="$(mktemp)"
+	printf '%s\n' "${public_key}" >"${tmp}"
+	if ! ssh-keygen -l -f "${tmp}" >/dev/null 2>&1; then
+		rm -f "${tmp}"
+		die "SSH public key is not parseable by ssh-keygen"
+	fi
+	rm -f "${tmp}"
+}
+
 ensure_admin_user_and_key() {
 	[[ "${HARDEN_SSH}" -eq 1 ]] || return
 
@@ -240,7 +259,7 @@ ensure_admin_user_and_key() {
 	usermod -aG sudo "${ADMIN_USER}"
 
 	public_key="$(read_public_key | tr -d '\r')"
-	[[ "${public_key}" == ssh-* ]] || die "SSH public key must start with ssh-"
+	validate_public_key_line "${public_key}"
 
 	home_dir="$(getent passwd "${ADMIN_USER}" | cut -d: -f6)"
 	[[ -n "${home_dir}" ]] || die "could not determine home directory for ${ADMIN_USER}"
