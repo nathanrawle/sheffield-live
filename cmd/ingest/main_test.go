@@ -2039,8 +2039,10 @@ func TestRunWithArgsCleanupMediaDeletesFilesAndPreservesDirectRefs(t *testing.T)
 	mediaRoot := filepath.Join(t.TempDir(), "media")
 	unusedPath := filepath.Join(mediaRoot, "events", "unused.jpg")
 	directPath := filepath.Join(mediaRoot, "events", "direct.jpg")
+	staleDirectPath := filepath.Join(mediaRoot, "events", "stale-direct.jpg")
 	writeCLIMediaFile(t, unusedPath)
 	writeCLIMediaFile(t, directPath)
+	writeCLIMediaFile(t, staleDirectPath)
 
 	st, err := sqlite.Open(path)
 	if err != nil {
@@ -2064,6 +2066,15 @@ func TestRunWithArgsCleanupMediaDeletesFilesAndPreservesDirectRefs(t *testing.T)
 	}); err != nil {
 		t.Fatalf("save missing image asset: %v", err)
 	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/stale-direct.jpg",
+		PublicURL:   "/legacy/events/stale-direct.jpg",
+		StoragePath: "events/stale-direct.jpg",
+		ContentType: "image/jpeg",
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save stale direct image asset: %v", err)
+	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("close sqlite store: %v", err)
 	}
@@ -2071,6 +2082,7 @@ func TestRunWithArgsCleanupMediaDeletesFilesAndPreservesDirectRefs(t *testing.T)
 	db := openRawDB(t, path)
 	sourceID := insertCLIMediaSource(t, db)
 	insertCLIMediaEvent(t, db, sourceID, "future-direct-media", time.Date(2026, time.May, 25, 19, 0, 0, 0, time.UTC), "/assets/events/direct.jpg", "")
+	insertCLIMediaEvent(t, db, sourceID, "future-stale-direct-media", time.Date(2026, time.May, 25, 19, 0, 0, 0, time.UTC), "/assets/events/stale-direct.jpg", "")
 	if err := db.Close(); err != nil {
 		t.Fatalf("close raw db: %v", err)
 	}
@@ -2086,14 +2098,17 @@ func TestRunWithArgsCleanupMediaDeletesFilesAndPreservesDirectRefs(t *testing.T)
 		t.Fatalf("decode media cleanup output: %v", err)
 	}
 	report := payload.MediaCleanup
-	if report.DeletedFiles != 1 || report.DeletedAssetRows != 2 || report.MissingFiles != 1 || report.ScannedOrphanFiles != 1 || report.RetainedFiles != 1 {
-		t.Fatalf("media cleanup report = %#v, want deleted asset file, missing stale row, and retained direct orphan", report)
+	if report.DeletedFiles != 1 || report.DeletedAssetRows != 3 || report.MissingFiles != 1 || report.ScannedOrphanFiles != 1 || report.RetainedFiles != 2 {
+		t.Fatalf("media cleanup report = %#v, want deleted asset file, missing stale row, retained direct orphan, and retained stale direct file", report)
 	}
 	if _, err := os.Stat(unusedPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unused media file stat error = %v, want not exist", err)
 	}
 	if _, err := os.Stat(directPath); err != nil {
 		t.Fatalf("direct media file should be retained: %v", err)
+	}
+	if _, err := os.Stat(staleDirectPath); err != nil {
+		t.Fatalf("stale direct media file should be retained: %v", err)
 	}
 
 	st, err = sqlite.Open(path)
@@ -2110,6 +2125,11 @@ func TestRunWithArgsCleanupMediaDeletesFilesAndPreservesDirectRefs(t *testing.T)
 		t.Fatalf("load missing image asset: %v", err)
 	} else if ok {
 		t.Fatal("missing image asset still exists after cleanup")
+	}
+	if _, ok, err := st.LoadImageAsset(ctx, "https://example.test/stale-direct.jpg"); err != nil {
+		t.Fatalf("load stale direct image asset: %v", err)
+	} else if ok {
+		t.Fatal("stale direct image asset still exists after cleanup")
 	}
 }
 

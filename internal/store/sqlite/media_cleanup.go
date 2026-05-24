@@ -534,7 +534,7 @@ func mediaCleanupDisplayEnd(start, end time.Time, loc *time.Location) (time.Time
 		return time.Time{}, false
 	}
 	if !end.IsZero() {
-		if !end.After(start) {
+		if end.Before(start) {
 			return time.Time{}, false
 		}
 		return end, true

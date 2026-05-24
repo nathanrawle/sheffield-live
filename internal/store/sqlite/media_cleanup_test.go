@@ -167,6 +167,42 @@ func TestCleanupMediaRetainsOpenReviewEvidenceWithInvalidPayloads(t *testing.T) 
 	}
 }
 
+func TestCleanupMediaAllowsEqualStartAndEndDisplayEnd(t *testing.T) {
+	ctx := context.Background()
+	st, db := openMediaCleanupFixture(t)
+
+	sourceID := insertMediaCleanupSource(t, db, "Media cleanup source", "https://example.test/source")
+	venueID := mediaCleanupVenueID(t, db, "leadmill")
+	start := time.Date(2026, time.May, 25, 19, 0, 0, 0, time.UTC)
+	copiedAt := time.Date(2026, time.May, 1, 10, 0, 0, 0, time.UTC)
+	saveMediaCleanupAsset(t, ctx, st, "https://images.example.test/equal-end.jpg", "/media/events/equal-end.jpg", "events/equal-end.jpg", copiedAt)
+	insertMediaCleanupEvent(t, db, mediaCleanupEventInput{
+		SourceID:         sourceID,
+		VenueID:          venueID,
+		Slug:             "equal-start-end",
+		Name:             "Equal Start End",
+		Start:            start,
+		End:              start,
+		ImageURL:         "/media/events/equal-end.jpg",
+		ImageSourceURL:   "https://images.example.test/equal-end.jpg",
+		PublicationState: domain.PublicationStateReviewed,
+	})
+
+	report, err := st.CleanupMedia(ctx, MediaCleanupOptions{
+		Apply:          true,
+		Now:            time.Date(2026, time.May, 20, 12, 0, 0, 0, time.UTC),
+		MediaURLPrefix: "/media",
+		ExistingFiles:  []string{"events/equal-end.jpg"},
+	})
+	if err != nil {
+		t.Fatalf("cleanup media: %v", err)
+	}
+	if report.DeletedAssetRows != 0 || report.RetainedFiles != 1 {
+		t.Fatalf("cleanup report = %#v, want equal start/end media retained", report)
+	}
+	assertMediaCleanupAssetExists(t, st, "https://images.example.test/equal-end.jpg", true)
+}
+
 func openMediaCleanupFixture(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
 

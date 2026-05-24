@@ -1264,6 +1264,15 @@ func completeLocalMediaCleanup(report *sqlite.MediaCleanupReport, mediaRoot, med
 	deleteCandidates := stringSetFromSlice(report.FilesToDelete)
 
 	for _, storagePath := range report.FilesToDelete {
+		if _, ok := retainedStorage[storagePath]; ok {
+			report.RetainedFiles++
+			continue
+		}
+		publicURL := localMediaPublicURL(mediaURLPrefix, storagePath)
+		if _, ok := retainedPublicURLs[publicURL]; ok {
+			report.RetainedFiles++
+			continue
+		}
 		recordMediaFileDeletion(report, mediaRoot, mediaURLPrefix, storagePath, "unreferenced_asset_file", apply)
 	}
 
