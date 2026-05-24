@@ -341,8 +341,8 @@ func (s *mediaCleanupState) classifyOpenEvidenceRow(row mediaCleanupOpenEvidence
 			s.retainImageRefs(payload.ImageSourceURL, payload.ImageURL)
 			return
 		}
-		if !end.After(start) {
-			s.warnOpenEvidence(row, "candidate end is not after start")
+		if end.Before(start) {
+			s.warnOpenEvidence(row, "candidate end is before start")
 			s.retainImageRefs(payload.ImageSourceURL, payload.ImageURL)
 			return
 		}

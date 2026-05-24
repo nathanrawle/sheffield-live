@@ -167,6 +167,38 @@ func TestCleanupMediaRetainsOpenReviewEvidenceWithInvalidPayloads(t *testing.T) 
 	}
 }
 
+func TestCleanupMediaOpenReviewEvidenceAllowsEqualStartAndEnd(t *testing.T) {
+	ctx := context.Background()
+	st, db := openMediaCleanupFixture(t)
+
+	sourceID := insertMediaCleanupSource(t, db, "Media cleanup source", "https://example.test/source")
+	copiedAt := time.Date(2026, time.May, 1, 10, 0, 0, 0, time.UTC)
+	saveMediaCleanupAsset(t, ctx, st, "https://images.example.test/equal-evidence.jpg", "/media/events/equal-evidence.jpg", "events/equal-evidence.jpg", copiedAt)
+
+	start := "2026-05-01T19:00:00Z"
+	payload := `{"candidate_start_at":"` + start + `","candidate_end_at":"` + start + `","candidate_image_url":"/media/events/equal-evidence.jpg","candidate_image_source_url":"https://images.example.test/equal-evidence.jpg"}`
+	clusterID := insertEventReviewClusterOK(t, db, string(seedstore.EventReviewClusterStatusOpen), nil, nil, nil)
+	evidenceID := insertEventReviewEvidenceOK(t, db, sourceID, nil, "media-cleanup-equal-evidence", payload)
+	insertEventReviewClusterEvidenceOK(t, db, clusterID, evidenceID, true, copiedAt, nil, "media cleanup test")
+
+	report, err := st.CleanupMedia(ctx, MediaCleanupOptions{
+		Apply:          true,
+		Now:            time.Date(2026, time.May, 20, 12, 0, 0, 0, time.UTC),
+		MediaURLPrefix: "/media",
+		ExistingFiles:  []string{"events/equal-evidence.jpg"},
+	})
+	if err != nil {
+		t.Fatalf("cleanup media: %v", err)
+	}
+	if len(report.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none for equal start/end evidence", report.Warnings)
+	}
+	if report.DeletedAssetRows != 1 {
+		t.Fatalf("deleted asset rows = %d, want 1", report.DeletedAssetRows)
+	}
+	assertMediaCleanupAssetExists(t, st, "https://images.example.test/equal-evidence.jpg", false)
+}
+
 func TestCleanupMediaAllowsEqualStartAndEndDisplayEnd(t *testing.T) {
 	ctx := context.Background()
 	st, db := openMediaCleanupFixture(t)
