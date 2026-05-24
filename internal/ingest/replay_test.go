@@ -265,6 +265,96 @@ func TestReplayImportRunEnrichesYellowArchDescriptionsFromDetailSnapshots(t *tes
 	}
 }
 
+func TestReplayImportRunRebuildsCrookesClubReportFromSourcePageAndLoungeSnapshots(t *testing.T) {
+	finishedAt := time.Date(2026, 5, 24, 12, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         277,
+			StartedAt:  time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=1 candidates=3 skips=3 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         401,
+					SourceName: "Crookes Club listings",
+					SourceURL:  "https://crookesclub.co.uk/",
+					CapturedAt: time.Date(2026, 5, 24, 12, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://crookesclub.co.uk/",
+						FinalURL:    "https://crookesclub.co.uk/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "crookes_club_home.html"),
+						CapturedAt:  time.Date(2026, 5, 24, 12, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         402,
+					SourceName: "Crookes Club listings",
+					SourceURL:  "https://crookesclub.co.uk/lounge-live-music",
+					CapturedAt: time.Date(2026, 5, 24, 12, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://crookesclub.co.uk/lounge-live-music",
+						FinalURL:    "https://crookesclub.co.uk/lounge-live-music",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "crookes_club_lounge.html"),
+						CapturedAt:  time.Date(2026, 5, 24, 12, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 277, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, CrookesClubSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, "https://crookesclub.co.uk/"; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := report.Links[0], "https://crookesclub.co.uk/lounge-live-music"; got != want {
+		t.Fatalf("link = %q, want %q", got, want)
+	}
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 1; got != want {
+		t.Fatalf("homepage candidates = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[1].Candidates), 2; got != want {
+		t.Fatalf("lounge candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Snapshots, 2; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 3; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 3; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].RoomText, crookesClubConcertRoomName; got != want {
+		t.Fatalf("homepage room text = %q, want %q", got, want)
+	}
+	if got, want := report.Calendars[1].Candidates[0].RoomText, crookesClubLoungeRoomName; got != want {
+		t.Fatalf("lounge room text = %q, want %q", got, want)
+	}
+}
+
 func TestReplayImportRunRebuildsCafeNo9ReportFromSourcePageSnapshot(t *testing.T) {
 	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{

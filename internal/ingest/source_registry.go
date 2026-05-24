@@ -24,10 +24,12 @@ var sourcePageParserFamilies = map[string]sourcePageParserFunc{
 	"yellow_arch_jsonld": ParseYellowArchSourcePage,
 	"cafe_no_9":          ParseCafeNo9SourcePage,
 	"jazz_at_the_lescar": ParseJazzAtTheLescarSourcePage,
+	"crookes_club":       ParseCrookesClubSourcePage,
 }
 
 var sourcePageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
-	"cafe_no_9_pagination": ExtractCafeNo9SourcePageLinks,
+	"cafe_no_9_pagination":         ExtractCafeNo9SourcePageLinks,
+	"crookes_club_secondary_pages": ExtractCrookesClubSecondaryPages,
 }
 
 var icsLinkExtractorFamilies = map[string]pageLinkExtractorFunc{

@@ -33,4 +33,7 @@ func TestOwnedVenueSourceRegistryConsistency(t *testing.T) {
 	if got, want := OwnedVenueSlugForReviewStageSourceName("Network Sheffield manual ingest"), "network-sheffield"; got != want {
 		t.Fatalf("network sheffield owned venue slug = %q, want %q", got, want)
 	}
+	if got, want := OwnedVenueSlugForReviewStageSourceName("Crookes Club manual ingest"), "crookes-club"; got != want {
+		t.Fatalf("crookes club owned venue slug = %q, want %q", got, want)
+	}
 }

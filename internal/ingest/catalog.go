@@ -23,6 +23,7 @@ const LeadmillSource = "leadmill"
 const CorporationSource = "corporation"
 const HallamshireHotelSource = "hallamshire-hotel"
 const NetworkSheffieldSource = "network-sheffield"
+const CrookesClubSource = "crookes-club"
 
 type pageProcessMode string
 
