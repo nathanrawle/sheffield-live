@@ -25,6 +25,7 @@ const HallamshireHotelSource = "hallamshire-hotel"
 const NetworkSheffieldSource = "network-sheffield"
 const CrookesClubSource = "crookes-club"
 const DeliciousClamSource = "delicious-clam"
+const HagglersCornerSource = "hagglers-corner"
 
 type pageProcessMode string
 

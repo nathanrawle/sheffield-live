@@ -1,0 +1,11 @@
+key: hagglers-corner
+name: Hagglers Corner events & gigs
+url: https://hagglerscorner.co.uk/category/events-gigs/
+review_stage_source_name: Hagglers Corner manual ingest
+import_run_notes: manual Hagglers Corner snapshot + detail-page parse report
+owned_venue_slug: hagglers-corner
+mode: linked_detail_pages
+linked_detail_pages:
+  secondary_source_name: Hagglers Corner event detail page
+  linked_page_link_extractor: hagglers_corner_detail_links
+  linked_page_parser: hagglers_corner_detail_page

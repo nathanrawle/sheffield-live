@@ -47,6 +47,7 @@ var icsParserFamilies = map[string]icsParserFunc{
 var linkedPageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
 	"corporation_detail_links":       ExtractCorporationDetailLinks,
 	"delicious_clam_ticket_links":    ExtractDeliciousClamTicketLinks,
+	"hagglers_corner_detail_links":   hagglers_corner_detail_links,
 	"greystones_month_links":         ExtractTheGreystonesMonthLinks,
 	"network_sheffield_detail_links": network_sheffield_detail_links,
 }
@@ -54,6 +55,7 @@ var linkedPageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
 var linkedPageParserFamilies = map[string]func(pageURL string, body []byte) ParseResult{
 	"corporation_detail_page":       ParseCorporationDetailPage,
 	"delicious_clam_ticket_page":    ParseDeliciousClamTicketPage,
+	"hagglers_corner_detail_page":   ParseHagglersCornerDetailPage,
 	"greystones_month_page":         ParseTheGreystonesMonthPage,
 	"network_sheffield_detail_page": ParseNetworkSheffieldDetailPage,
 }

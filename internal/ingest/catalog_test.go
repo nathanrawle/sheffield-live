@@ -28,6 +28,7 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 		NetworkSheffieldSource,
 		CrookesClubSource,
 		DeliciousClamSource,
+		HagglersCornerSource,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("catalog keys = %v, want %v", got, want)
@@ -78,6 +79,20 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	}
 	if got, want := cfg.OwnedVenueSlug, DeliciousClamSource; got != want {
 		t.Fatalf("delicious clam owned venue slug = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(HagglersCornerSource)
+	if err != nil {
+		t.Fatalf("config for hagglers corner: %v", err)
+	}
+	if got, want := cfg.LinkedPageLinkExtractorFamily, "hagglers_corner_detail_links"; got != want {
+		t.Fatalf("hagglers corner linked page link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "hagglers_corner_detail_page"; got != want {
+		t.Fatalf("hagglers corner linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlug, HagglersCornerSource; got != want {
+		t.Fatalf("hagglers corner owned venue slug = %q, want %q", got, want)
 	}
 }
 
