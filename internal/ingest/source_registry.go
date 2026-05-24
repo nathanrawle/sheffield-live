@@ -43,18 +43,21 @@ var icsParserFamilies = map[string]icsParserFunc{
 }
 
 var linkedPageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
-	"corporation_detail_links": ExtractCorporationDetailLinks,
-	"greystones_month_links":   ExtractTheGreystonesMonthLinks,
+	"corporation_detail_links":       ExtractCorporationDetailLinks,
+	"greystones_month_links":         ExtractTheGreystonesMonthLinks,
+	"network_sheffield_detail_links": network_sheffield_detail_links,
 }
 
 var linkedPageParserFamilies = map[string]func(pageURL string, body []byte) ParseResult{
-	"corporation_detail_page": ParseCorporationDetailPage,
-	"greystones_month_page":   ParseTheGreystonesMonthPage,
+	"corporation_detail_page":       ParseCorporationDetailPage,
+	"greystones_month_page":         ParseTheGreystonesMonthPage,
+	"network_sheffield_detail_page": ParseNetworkSheffieldDetailPage,
 }
 
 var venueNormalizerFamilies = map[string]venueNormalizerFunc{
-	"default":  VenueSlugFromText,
-	"leadmill": func(value string) string { return VenueSlugFromText(leadmillVenueText(value)) },
+	"default":           VenueSlugFromText,
+	"leadmill":          func(value string) string { return VenueSlugFromText(leadmillVenueText(value)) },
+	"network_sheffield": func(value string) string { return networkSheffieldVenueSlugFromText(value) },
 }
 
 func hasSourcePageParserFamily(name string) bool {

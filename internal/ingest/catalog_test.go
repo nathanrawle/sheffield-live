@@ -25,6 +25,7 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 		LeadmillSource,
 		CorporationSource,
 		HallamshireHotelSource,
+		NetworkSheffieldSource,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("catalog keys = %v, want %v", got, want)
@@ -36,6 +37,17 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	}
 	if got, want := cfg.ICSParserFamily, "leadmill"; got != want {
 		t.Fatalf("leadmill ics parser family = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(NetworkSheffieldSource)
+	if err != nil {
+		t.Fatalf("config for network sheffield: %v", err)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "network_sheffield_detail_page"; got != want {
+		t.Fatalf("network sheffield linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.VenueNormalizerFamily, "network_sheffield"; got != want {
+		t.Fatalf("network sheffield venue normalizer family = %q, want %q", got, want)
 	}
 }
 

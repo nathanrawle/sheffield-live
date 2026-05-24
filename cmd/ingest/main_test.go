@@ -2945,6 +2945,10 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 	}
 	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
 		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+		location := "External Room"
+		if opts.Source == ingest.NetworkSheffieldSource {
+			location = "Network 1"
+		}
 		return ingest.Report{
 			Source:      opts.Source,
 			SourceURL:   "https://" + opts.Source + ".example.test/",
@@ -2958,7 +2962,7 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 				Candidates: []ingest.EventCandidate{{
 					UID:      opts.Source + "-uid",
 					Summary:  strings.ToUpper(opts.Source) + " Show",
-					Location: "External Room",
+					Location: location,
 					StartAt:  "2026-05-01T19:00:00Z",
 					EndAt:    "2026-05-01T22:00:00Z",
 				}},
@@ -2986,14 +2990,22 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 		if !result.EventReviewClusters.Applied {
 			t.Fatalf("review stage applied for source %q = false, want true", result.Source)
 		}
-		if result.EventReviewClusters.AutoPromotedCount != 1 {
-			t.Fatalf("auto promoted count for %q = %d, want 1", result.Source, result.EventReviewClusters.AutoPromotedCount)
+		wantAutoPromoted := 1
+		wantCreated := 0
+		wantReviewCandidates := 0
+		if result.Source == ingest.NetworkSheffieldSource {
+			wantAutoPromoted = 0
+			wantCreated = 1
+			wantReviewCandidates = 1
 		}
-		if result.EventReviewClusters.EventReviewClustersCreated != 0 {
-			t.Fatalf("event-review clusters created for %q = %d, want 0", result.Source, result.EventReviewClusters.EventReviewClustersCreated)
+		if result.EventReviewClusters.AutoPromotedCount != wantAutoPromoted {
+			t.Fatalf("auto promoted count for %q = %d, want %d", result.Source, result.EventReviewClusters.AutoPromotedCount, wantAutoPromoted)
 		}
-		if result.EventReviewClusters.ReviewCandidateCount != 0 {
-			t.Fatalf("review candidate count for %q = %d, want 0", result.Source, result.EventReviewClusters.ReviewCandidateCount)
+		if result.EventReviewClusters.EventReviewClustersCreated != wantCreated {
+			t.Fatalf("event-review clusters created for %q = %d, want %d", result.Source, result.EventReviewClusters.EventReviewClustersCreated, wantCreated)
+		}
+		if result.EventReviewClusters.ReviewCandidateCount != wantReviewCandidates {
+			t.Fatalf("review candidate count for %q = %d, want %d", result.Source, result.EventReviewClusters.ReviewCandidateCount, wantReviewCandidates)
 		}
 		if result.EventReviewClusters.EventReviewClustersAutoResolvedCount != 0 {
 			t.Fatalf("auto-resolved count for %q = %d, want 0", result.Source, result.EventReviewClusters.EventReviewClustersAutoResolvedCount)

@@ -12,6 +12,7 @@ var eventTitleVenueAliases = map[string][]string{
 	"corporation":        {"Corporation", "Corporation Sheffield"},
 	"leadmill":           {"The Leadmill", "Leadmill"},
 	"lescar":             {"The Lescar", "Lescar"},
+	"network-sheffield":  {"Network", "Network Sheffield", "Network 1", "Network 2", "Network 3"},
 	"greystones":         {"The Greystones", "Greystones"},
 	"sidney-and-matilda": {"Sidney & Matilda", "Sidney and Matilda"},
 	"yellow-arch":        {"Yellow Arch", "Yellow Arch Studios"},
