@@ -145,6 +145,17 @@ Treat this section as a decision backlog, not as implementation truth. Before ad
 - Likely ingest shape: `mode: linked_ics`, generic ICS parser, new small ICS link extractor for the Hallamshire page. Reuse the generic venue handling if ICS `LOCATION` data is usable; otherwise add a venue normalizer.
 - Authority note: this can be an owned-venue authoritative source if the feed only lists Hallamshire events.
 
+#### The Washington
+
+- Suggested source key: `the-washington`
+- Suggested venue slug: `the-washington`
+- Primary pages: `https://thewashington.pub/` and `https://thewashington.pub/events`
+- Venue evidence: official site lists The Washington at 79 Fitzwilliam Street, Sheffield S1 4JP, with booking contact `bookings@thewashington.pub`.
+- Event evidence observed: the official site has an `EVENTS` page, but the 2026-05-24 text crawl exposed only venue/contact/opening-time content and image placeholders, not parseable event rows. Third-party Sheffield Gigs had a current Washington schedule, which confirms active live music but is not a primary source.
+- Why it matters: longstanding city-centre live music pub with regular grassroots gigs and DJ nights. Treat as high priority despite source-shape uncertainty.
+- Likely ingest shape: high priority discovery task before parser implementation. Inspect the rendered page, image metadata, scripts, social links, and any network/API calls to find the venue-owned event source behind the official `EVENTS` page. If no venue-owned structured source exists, document whether a venue-managed social/ticket source is acceptable before adding YAML.
+- Authority note: do not use Sheffield Gigs, DesignMyNight, Gigseekr, or venue directories as the authoritative source. They are useful cross-checks only.
+
 #### Network Sheffield
 
 - Suggested source key: `network-sheffield`
@@ -156,6 +167,17 @@ Treat this section as a decision backlog, not as implementation truth. Before ad
 - Why it matters: large active city-centre live music and club venue with many listings.
 - Likely ingest shape: `mode: linked_detail_pages`, custom archive/detail link extractor, and custom detail-page parser. The site looks WordPress-like and detail pages expose title, start/end time, venue, description, image, and address.
 - Authority note: do not blindly set one `owned_venue_slug` if the parser includes offsite or adjacent venue labels such as The Arundel Emporium or Earl's Yard. Either filter to Network-owned rooms, model rooms under Network, or extend the catalog authority model before treating the whole feed as authoritative.
+
+#### Alder
+
+- Suggested source key: `alder`
+- Suggested venue slug: `alder`
+- Primary candidates: `https://alderbar.com/`, `https://alder-bar.business.site/`, and venue-managed `https://linktr.ee/alderbar`
+- Venue evidence: public venue listings and the venue-managed Linktree identify Alder/Alder Bar at Unit 111-112 JC Albyn Complex, Percy Street, Neepsend, Sheffield S3 8BT.
+- Event evidence observed: the venue-managed Linktree was visible in search results with current `What's on at Alder!` listings and outbound ticket links. Venue/culture pages describe Alder as a live music venue with recurring jazz, folk, experimental, karaoke, and Get Together Festival programming. The Linktree fetch itself was blocked by robots during research, so implementation needs a fresh browser/API investigation.
+- Why it matters: active Neepsend/Kelham grassroots room with eclectic programming. Treat as high priority despite source-shape uncertainty.
+- Likely ingest shape: high priority discovery task. Prefer a venue-owned source over third-party listings: first check whether `alderbar.com` or the Google business site exposes parseable events; if not, inspect the venue-managed Linktree and linked ticket providers. A practical first pass may need a small `source_page` parser over a stable venue-managed listing page plus outbound ticket URLs as detail links.
+- Authority note: Alder programming appears to span music, film, comedy, workshops, and community events. Add explicit music filtering before auto-promoting, and do not treat all linked Linktree items as live music.
 
 #### Crookes Club
 
@@ -209,7 +231,27 @@ Treat this section as a decision backlog, not as implementation truth. Before ad
 
 - Primary page: `https://foundrysu.com/events`
 - Research note: official Events & Tickets page has a Live Music category, but the crawl did not expose enough event rows to confirm a simple static parser.
-- Decision: worth revisiting if JavaScript/API discovery is acceptable. Lower priority than Hallamshire, Network, and Crookes because parser effort is less clear.
+- Decision: worth revisiting if JavaScript/API discovery is acceptable. Lower priority than the high-priority backlog because parser effort is less clear.
+
+#### The Irish Sheffield
+
+- Suggested source key: `the-irish-sheffield`
+- Suggested venue slug: `the-irish-sheffield`
+- Primary page: `https://www.theirishsheffield.co.uk/`
+- Venue evidence: official site lists The Irish at 301 Ecclesall Road, Sharrow, Sheffield S11 8NX.
+- Event evidence observed: the official page explicitly describes live music and links to Facebook/Instagram, but says to keep an eye on socials for gig nights, open sessions, and special events. No stable parseable event list was observed on the site during research.
+- Decision: secondary source candidate. Add only after finding a stable venue-managed listing feed or accepting venue-managed social posts as the primary listing source.
+- Parser note: if added, likely starts as social/link discovery rather than a normal HTML event-list parser. Needs music-only filtering because the venue also promotes sport, run club, and private bookings.
+
+#### Maida Vale Sheffield
+
+- Suggested source key: `maida-vale-sheffield`
+- Suggested venue slug: `maida-vale-sheffield`
+- Primary page: `https://www.maidavalesheffield.com/`
+- Venue evidence: official site lists Maida Vale at 88 West Street, Sheffield S1 4EP.
+- Event evidence observed: the official homepage has a `Maida News & Events` area and states `Live music EVERY BANK HOLIDAY`, but no detailed dated event feed was observed in the text crawl.
+- Decision: secondary source candidate. Useful for West Street live-cover-band coverage, but not enough machine-readable event data was found for a first parser pass.
+- Parser note: recheck for a hidden events link or social/ticket feed before implementation. If only generic bank-holiday live music text exists, do not create recurring events without dated primary evidence.
 
 #### Sheffield Cathedral
 
