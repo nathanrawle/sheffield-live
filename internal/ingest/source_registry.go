@@ -31,13 +31,15 @@ var sourcePageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
 }
 
 var icsLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
-	"sidney_and_matilda": ExtractSidneyAndMatildaICSLinks,
-	"leadmill_calendar":  ExtractLeadmillICSLinks,
+	"sidney_and_matilda":               ExtractSidneyAndMatildaICSLinks,
+	"leadmill_calendar":                ExtractLeadmillICSLinks,
+	"hallamshire_hotel_cfg_filestring": hallamshire_hotel_cfg_filestring,
 }
 
 var icsParserFamilies = map[string]icsParserFunc{
-	"generic":  ParseICS,
-	"leadmill": ParseLeadmillICS,
+	"generic":           ParseICS,
+	"leadmill":          ParseLeadmillICS,
+	"hallamshire_hotel": ParseHallamshireHotelICS,
 }
 
 var linkedPageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{

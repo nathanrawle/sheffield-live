@@ -21,6 +21,7 @@ const JazzAtTheLescarSource = "jazz-at-the-lescar"
 const TheGreystonesSource = "the-greystones"
 const LeadmillSource = "leadmill"
 const CorporationSource = "corporation"
+const HallamshireHotelSource = "hallamshire-hotel"
 
 type pageProcessMode string
 

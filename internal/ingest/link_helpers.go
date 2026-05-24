@@ -144,7 +144,28 @@ func hiddenCalendarURL(base *url.URL, raw string) (string, bool) {
 	if !IsCalendarURL(resolved.String()) {
 		return "", false
 	}
+	if hiddenCalendarURLIsPrivateGoogleCalendar(resolved) {
+		return "", false
+	}
 	return resolved.String(), true
+}
+
+func hiddenCalendarURLIsPrivateGoogleCalendar(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if !strings.HasSuffix(host, "calendar.google.com") {
+		return false
+	}
+	path := strings.ToLower(strings.TrimSpace(u.EscapedPath()))
+	if path == "" {
+		return false
+	}
+	return strings.Contains(path, "/private/") ||
+		strings.Contains(path, "/settings") ||
+		strings.Contains(path, "/eventedit") ||
+		strings.Contains(path, "/u/")
 }
 
 func hiddenCalendarDedupKey(value string) string {

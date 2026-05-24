@@ -1,0 +1,11 @@
+key: hallamshire-hotel
+name: Hallamshire Hotel listings
+url: https://hallamshirehotel.pub/
+review_stage_source_name: Hallamshire Hotel manual ingest
+import_run_notes: manual Hallamshire Hotel snapshot + ICS parse report
+owned_venue_slug: hallamshire-hotel
+mode: linked_ics
+linked_ics:
+  secondary_source_name: Hallamshire Hotel Google Calendar ICS
+  ics_link_extractor: hallamshire_hotel_cfg_filestring
+  ics_parser: hallamshire_hotel

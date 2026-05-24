@@ -47,9 +47,11 @@ func TestExtractSameHostLinksHonorsLimit(t *testing.T) {
 func TestExtractHiddenCalendarLinks(t *testing.T) {
 	body := []byte(`
 		<link rel="alternate" href="https://calendar.google.com/calendar/ical/venue%40example.com/public/basic.ics">
+		<link rel="alternate" href="https://calendar.google.com/calendar/ical/venue%40example.com/private/basic.ics">
 		<script>
 			window.calendar = "https%3A%2F%2Fcalendar.google.com%2Fcalendar%2Fical%2Fother%2540example.com%2Fpublic%2Fbasic.ics";
 		</script>
+		<a href="https://calendar.google.com/calendar/u/0/r/settings">edit</a>
 		<a href="https://example.test/not-calendar">not calendar</a>
 		<a href="https://calendar.google.com/calendar/ical/venue%40example.com/public/basic.ics">duplicate</a>
 	`)

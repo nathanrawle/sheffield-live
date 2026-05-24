@@ -24,6 +24,7 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 		TheGreystonesSource,
 		LeadmillSource,
 		CorporationSource,
+		HallamshireHotelSource,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("catalog keys = %v, want %v", got, want)
