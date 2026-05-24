@@ -1,0 +1,11 @@
+key: delicious-clam
+name: Delicious Clam listings
+url: https://www.deliciousclam.co.uk/events
+review_stage_source_name: Delicious Clam manual ingest
+import_run_notes: manual Delicious Clam snapshot + detail-page parse report
+owned_venue_slug: delicious-clam
+mode: linked_detail_pages
+linked_detail_pages:
+  secondary_source_name: Delicious Clam delegated event detail page
+  linked_page_link_extractor: delicious_clam_ticket_links
+  linked_page_parser: delicious_clam_ticket_page

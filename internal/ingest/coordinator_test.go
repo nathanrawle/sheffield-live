@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -835,6 +836,57 @@ func TestRunManualCorporationParsesLinkedDetailPages(t *testing.T) {
 	}
 }
 
+func TestRunManualDeliciousClamFetchesOfficialPageBeforeDelegatedDetailPages(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)}
+	calls := []string{}
+	fetcher := fakeFetcher{
+		calls: &calls,
+		results: map[string]FetchResult{
+			"https://www.deliciousclam.co.uk/events": {
+				URL:         "https://www.deliciousclam.co.uk/events",
+				FinalURL:    "https://www.deliciousclam.co.uk/events",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "delicious_clam_events.html"),
+				CapturedAt:  time.Date(2026, 6, 28, 12, 1, 0, 0, time.UTC),
+			},
+			"https://www.skiddle.com/e/42362090": {
+				URL:         "https://www.skiddle.com/e/42362090",
+				FinalURL:    "https://www.skiddle.com/e/42362090",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "delicious_clam_detail_good.html"),
+				CapturedAt:  time.Date(2026, 6, 28, 12, 2, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: DeliciousClamSource, Limit: 1})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	wantCalls := []string{
+		"https://www.deliciousclam.co.uk/events",
+		"https://www.skiddle.com/e/42362090",
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("fetch calls = %#v, want %#v", calls, wantCalls)
+	}
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, deliciousClamVenueName; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+}
+
 func TestRunManualSourceFetchFailureReturnsErrRunFailed(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
@@ -1001,9 +1053,13 @@ func TestRunManualCalendarErrorsFailStatusAndNotes(t *testing.T) {
 type fakeFetcher struct {
 	results map[string]FetchResult
 	err     error
+	calls   *[]string
 }
 
 func (f fakeFetcher) Fetch(_ context.Context, url string) (FetchResult, error) {
+	if f.calls != nil {
+		*f.calls = append(*f.calls, url)
+	}
 	if f.err != nil {
 		return FetchResult{}, f.err
 	}

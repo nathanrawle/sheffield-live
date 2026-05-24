@@ -10,6 +10,7 @@ import (
 var eventTitleVenueAliases = map[string][]string{
 	"cafe-no-9":          {"Cafe No. 9", "Cafe No9"},
 	"corporation":        {"Corporation", "Corporation Sheffield"},
+	"delicious-clam":     {"Delicious Clam"},
 	"leadmill":           {"The Leadmill", "Leadmill"},
 	"lescar":             {"The Lescar", "Lescar"},
 	"network-sheffield":  {"Network", "Network Sheffield", "Network 1", "Network 2", "Network 3"},

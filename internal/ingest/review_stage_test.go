@@ -815,6 +815,48 @@ func TestReviewGroupsFromYellowArchReportUsesCanonicalVenueSlugAndSourceName(t *
 	}
 }
 
+func TestReviewGroupsFromDeliciousClamReportUsesCanonicalVenueSlugAndSourceName(t *testing.T) {
+	report := Report{
+		Source:      DeliciousClamSource,
+		SourceURL:   "https://www.deliciousclam.co.uk/events",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://www.skiddle.com/e/42362090",
+				Candidates: []EventCandidate{
+					{
+						Summary:  "DC Presents: Screensaver / Knorke / Strixen",
+						Location: deliciousClamVenueName,
+						URL:      "https://www.skiddle.com/e/42362090",
+						StartAt:  "2026-05-26T18:30:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	clusters := ReviewClustersFromReport(report)
+	if got, want := len(clusters), 1; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	if got, want := clusters[0].SourceName, "Delicious Clam manual ingest"; got != want {
+		t.Fatalf("source name = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].Candidates[0].VenueSlug, deliciousClamVenueSlug; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceName, "Delicious Clam manual ingest"; got != want {
+		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceURL, "https://www.skiddle.com/e/42362090"; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceEventKey, "url:https://www.skiddle.com/e/42362090"; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+}
+
 func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *testing.T) {
 	report := Report{
 		Source:      LeadmillSource,
