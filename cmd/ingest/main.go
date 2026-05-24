@@ -1341,8 +1341,15 @@ func localMediaEventFiles(mediaRoot string) ([]string, error) {
 		return nil, errors.New("media root is required")
 	}
 	eventsRoot := filepath.Join(mediaRoot, "events")
+	info, err := os.Stat(eventsRoot)
+	if err != nil {
+		return nil, fmt.Errorf("media events directory %q: %w", eventsRoot, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("media events path %q is not a directory", eventsRoot)
+	}
 	var files []string
-	err := filepath.WalkDir(eventsRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(eventsRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -1363,9 +1370,6 @@ func localMediaEventFiles(mediaRoot string) ([]string, error) {
 		files = append(files, filepath.ToSlash(rel))
 		return nil
 	})
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}

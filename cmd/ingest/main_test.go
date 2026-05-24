@@ -2186,6 +2186,51 @@ func TestRunWithArgsCleanupMediaDryRunDoesNotMutate(t *testing.T) {
 	}
 }
 
+func TestRunWithArgsCleanupMediaMissingEventsDirDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	mediaRoot := filepath.Join(t.TempDir(), "media")
+	if err := os.MkdirAll(mediaRoot, 0o755); err != nil {
+		t.Fatalf("make media root: %v", err)
+	}
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/unused.jpg",
+		PublicURL:   "/media/events/unused.jpg",
+		StoragePath: "events/unused.jpg",
+		ContentType: "image/jpeg",
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err = runWithArgs([]string{"-db", path, "fix", "media", "-media-root", mediaRoot}, &stdout, io.Discard)
+	if err == nil {
+		t.Fatal("cleanup media succeeded with missing events directory")
+	}
+	if !strings.Contains(err.Error(), "media events directory") {
+		t.Fatalf("cleanup media error = %v, want media events directory error", err)
+	}
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+	if _, ok, err := st.LoadImageAsset(ctx, "https://example.test/unused.jpg"); err != nil {
+		t.Fatalf("load unused image asset: %v", err)
+	} else if !ok {
+		t.Fatal("unused image asset was deleted when media events directory was missing")
+	}
+}
+
 func TestRunWithArgsCleanupMediaCanRetryAfterDeleteFailure(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
