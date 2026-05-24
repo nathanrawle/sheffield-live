@@ -2219,6 +2219,9 @@ func TestRunWithArgsCleanupMediaMissingEventsDirDoesNotMutate(t *testing.T) {
 	if !strings.Contains(err.Error(), "media events directory") {
 		t.Fatalf("cleanup media error = %v, want media events directory error", err)
 	}
+	if stdout.Len() != 0 {
+		t.Fatalf("cleanup media stdout = %q, want empty on preflight failure", stdout.String())
+	}
 	st, err = sqlite.Open(path)
 	if err != nil {
 		t.Fatalf("reopen sqlite store: %v", err)
@@ -2228,6 +2231,63 @@ func TestRunWithArgsCleanupMediaMissingEventsDirDoesNotMutate(t *testing.T) {
 		t.Fatalf("load unused image asset: %v", err)
 	} else if !ok {
 		t.Fatal("unused image asset was deleted when media events directory was missing")
+	}
+}
+
+func TestRunWithArgsCleanupMediaFollowsEventsDirSymlink(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	mediaRoot := filepath.Join(t.TempDir(), "media")
+	actualEventsRoot := filepath.Join(t.TempDir(), "events-target")
+	if err := os.MkdirAll(mediaRoot, 0o755); err != nil {
+		t.Fatalf("make media root: %v", err)
+	}
+	unusedPath := filepath.Join(actualEventsRoot, "unused.jpg")
+	writeCLIMediaFile(t, unusedPath)
+	if err := os.Symlink(actualEventsRoot, filepath.Join(mediaRoot, "events")); err != nil {
+		t.Skipf("create events symlink: %v", err)
+	}
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := st.SaveImageAsset(ctx, ingest.ImageAsset{
+		SourceURL:   "https://example.test/unused.jpg",
+		PublicURL:   "/media/events/unused.jpg",
+		StoragePath: "events/unused.jpg",
+		ContentType: "image/jpeg",
+		CopiedAt:    time.Date(2026, time.May, 9, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("save image asset: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runWithArgs([]string{"-db", path, "fix", "media", "-media-root", mediaRoot}, &stdout, io.Discard); err != nil {
+		t.Fatalf("cleanup media: %v", err)
+	}
+	var payload mediaCleanupRunReport
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode media cleanup output: %v", err)
+	}
+	if payload.MediaCleanup.DeletedFiles != 1 || payload.MediaCleanup.DeletedAssetRows != 1 {
+		t.Fatalf("media cleanup report = %#v, want symlinked file and asset row deleted", payload.MediaCleanup)
+	}
+	if _, err := os.Stat(unusedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unused symlink target file stat error = %v, want deleted", err)
+	}
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+	if _, ok, err := st.LoadImageAsset(ctx, "https://example.test/unused.jpg"); err != nil {
+		t.Fatalf("load unused image asset: %v", err)
+	} else if ok {
+		t.Fatal("unused image asset still exists after symlink cleanup")
 	}
 }
 

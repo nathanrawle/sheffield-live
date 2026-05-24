@@ -1198,13 +1198,13 @@ func runImageFocusBackfill(ctx context.Context, st *sqlite.Store, stdout io.Writ
 
 func runMediaCleanup(ctx context.Context, st *sqlite.Store, stdout io.Writer, mediaRoot, mediaURLPrefix string, apply bool) error {
 	report, cleanupErr := cleanupLocalMedia(ctx, st, mediaRoot, mediaURLPrefix, apply)
+	if cleanupErr != nil {
+		return cleanupErr
+	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(mediaCleanupRunReport{MediaCleanup: report}); err != nil {
 		return err
-	}
-	if cleanupErr != nil {
-		return cleanupErr
 	}
 	if len(report.Errors) > 0 {
 		return errors.New("one or more media cleanup operations failed")
@@ -1341,7 +1341,11 @@ func localMediaEventFiles(mediaRoot string) ([]string, error) {
 		return nil, errors.New("media root is required")
 	}
 	eventsRoot := filepath.Join(mediaRoot, "events")
-	info, err := os.Stat(eventsRoot)
+	resolvedEventsRoot, err := filepath.EvalSymlinks(eventsRoot)
+	if err != nil {
+		return nil, fmt.Errorf("media events directory %q: %w", eventsRoot, err)
+	}
+	info, err := os.Stat(resolvedEventsRoot)
 	if err != nil {
 		return nil, fmt.Errorf("media events directory %q: %w", eventsRoot, err)
 	}
@@ -1349,7 +1353,7 @@ func localMediaEventFiles(mediaRoot string) ([]string, error) {
 		return nil, fmt.Errorf("media events path %q is not a directory", eventsRoot)
 	}
 	var files []string
-	err = filepath.WalkDir(eventsRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(resolvedEventsRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -1363,11 +1367,11 @@ func localMediaEventFiles(mediaRoot string) ([]string, error) {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		rel, err := filepath.Rel(mediaRoot, path)
+		rel, err := filepath.Rel(resolvedEventsRoot, path)
 		if err != nil {
 			return err
 		}
-		files = append(files, filepath.ToSlash(rel))
+		files = append(files, filepath.ToSlash(filepath.Join("events", rel)))
 		return nil
 	})
 	if err != nil {
