@@ -46,4 +46,5 @@ Docs:
 - [Common tasks](docs/common-tasks.md)
 - [Logging](docs/logging.md)
 - [Source catalog](docs/source-catalog.md)
+- [Deployment](docs/deployment.md)
 - [Architecture](docs/architecture.md) and [sources](docs/sources.md)
