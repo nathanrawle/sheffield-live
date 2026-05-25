@@ -25,6 +25,7 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 		LeadmillSource,
 		CorporationSource,
 		HallamshireHotelSource,
+		TheWashingtonSource,
 		NetworkSheffieldSource,
 		AlderSource,
 		CrookesClubSource,
@@ -132,6 +133,20 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	}
 	if got := cfg.NonAuthoritativeSingletonAutoPromotionDisabled; got {
 		t.Fatalf("university performance venues non_authoritative_singleton_auto_promotion_disabled = %v, want false", got)
+	}
+
+	cfg, err = catalog.ConfigForSource(TheWashingtonSource)
+	if err != nil {
+		t.Fatalf("config for the washington: %v", err)
+	}
+	if got, want := cfg.LinkedPageLinkExtractorFamily, "the_washington_api_links"; got != want {
+		t.Fatalf("the washington linked page link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "the_washington_api"; got != want {
+		t.Fatalf("the washington linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlug, TheWashingtonSource; got != want {
+		t.Fatalf("the washington owned venue slug = %q, want %q", got, want)
 	}
 }
 

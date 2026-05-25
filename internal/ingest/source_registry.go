@@ -50,6 +50,7 @@ var linkedPageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
 	"delicious_clam_ticket_links":                ExtractDeliciousClamTicketLinks,
 	"hagglers_corner_detail_links":               hagglers_corner_detail_links,
 	"greystones_month_links":                     ExtractTheGreystonesMonthLinks,
+	"the_washington_api_links":                   the_washington_api_links,
 	"network_sheffield_detail_links":             network_sheffield_detail_links,
 	"university_performance_venues_detail_links": university_performance_venues_detail_links,
 }
@@ -60,6 +61,7 @@ var linkedPageParserFamilies = map[string]func(pageURL string, body []byte) Pars
 	"delicious_clam_ticket_page":                ParseDeliciousClamTicketPage,
 	"hagglers_corner_detail_page":               ParseHagglersCornerDetailPage,
 	"greystones_month_page":                     ParseTheGreystonesMonthPage,
+	"the_washington_api":                        ParseTheWashingtonAPIDetailPage,
 	"network_sheffield_detail_page":             ParseNetworkSheffieldDetailPage,
 	"university_performance_venues_detail_page": ParseUniversityPerformanceVenuesDetailPage,
 }

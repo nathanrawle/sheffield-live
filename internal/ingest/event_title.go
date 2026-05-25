@@ -20,6 +20,7 @@ var eventTitleVenueAliases = map[string][]string{
 	"drama-studio":       {"Drama Studio"},
 	"greystones":         {"The Greystones", "Greystones"},
 	"sidney-and-matilda": {"Sidney & Matilda", "Sidney and Matilda"},
+	"the-washington":     {"The Washington", "Washington"},
 	"yellow-arch":        {"Yellow Arch", "Yellow Arch Studios"},
 }
 
