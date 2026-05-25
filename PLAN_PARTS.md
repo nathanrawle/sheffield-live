@@ -2,9 +2,9 @@
 
 | plan-part-name | mini-summary | status | planner-agent-id | implementer-agent-id | reviewer-agent-id | plan-part-file |
 | --- | --- | --- | --- | --- | --- | --- |
-| import-supporting-source | Add existing-event supporting-source attachment and manual new-listing secondary-source persistence for import-review clusters. | implemented | top-level session | top-level session |  | `001_IMPORT_SUPPORTING_SOURCE_PLAN.md` |
-| import-near-title-resolution | Add near-title same-event and false-positive separation/new-listing paths. | implemented | top-level session | top-level session |  | `002_IMPORT_NEAR_TITLE_RESOLUTION_PLAN.md` |
-| import-authoritative-resolution | Add manual authoritative import resolution with source-first target semantics. | implemented | top-level session | top-level session |  | `003_IMPORT_AUTHORITATIVE_RESOLUTION_PLAN.md` |
+| import-supporting-source | Add existing-event supporting-source attachment and manual new-listing secondary-source persistence for import-review clusters. | implemented | top-level session | top-level session | 019e6180-3a23-7083-b03d-4c057ce6638d | `001_IMPORT_SUPPORTING_SOURCE_PLAN.md` |
+| import-near-title-resolution | Add near-title same-event and false-positive separation/new-listing paths. | implemented | top-level session | top-level session | 019e6180-3a23-7083-b03d-4c057ce6638d | `002_IMPORT_NEAR_TITLE_RESOLUTION_PLAN.md` |
+| import-authoritative-resolution | Add manual authoritative import resolution with source-first target semantics. | implemented | top-level session | top-level session | 019e6180-3a23-7083-b03d-4c057ce6638d | `003_IMPORT_AUTHORITATIVE_RESOLUTION_PLAN.md` |
 | canonical-exact-provenance | Record supporting provenance during canonical exact auto-resolution. | planned | top-level session |  |  | `004_CANONICAL_EXACT_PROVENANCE_PLAN.md` |
 | title-repair-slug-conflict | Resolve title-repair slug conflicts by merge/update or keep-separate. | planned | top-level session |  |  | `005_TITLE_REPAIR_SLUG_CONFLICT_PLAN.md` |
 | historical-duplicate-keep-separate | Add all-keep false-positive resolution for historical duplicate clusters. | planned | top-level session |  |  | `006_HISTORICAL_DUPLICATE_KEEP_SEPARATE_PLAN.md` |
