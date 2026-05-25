@@ -243,17 +243,39 @@ func hagglersCornerHasMusicSignal(title string, lines []string) bool {
 
 func hagglersCornerHasContraryLocationEvidence(lines []string) bool {
 	for _, line := range lines {
-		line = strings.ToLower(strings.TrimSpace(line))
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		if match := hagglersCornerLocationLabelPattern.FindStringSubmatch(line); len(match) > 1 {
-			if hagglersCornerTextHasOffsiteVenue(match[1]) {
+			location := strings.TrimSpace(match[1])
+			if location != "" && !hagglersCornerTextIsHagglersVenue(location) {
 				return true
 			}
 			continue
 		}
-		if strings.Contains(line, " at ") && hagglersCornerTextHasOffsiteVenue(line) {
+		lowerLine := strings.ToLower(line)
+		if strings.Contains(lowerLine, " at ") && hagglersCornerTextHasOffsiteVenue(lowerLine) {
+			return true
+		}
+	}
+	return false
+}
+
+func hagglersCornerTextIsHagglersVenue(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	for _, signal := range []string{
+		"hagglers corner",
+		"hagglers",
+		"586 queens road",
+		"586 queen's road",
+		"queens road, sheffield",
+		"queen's road, sheffield",
+	} {
+		if strings.Contains(value, signal) {
 			return true
 		}
 	}

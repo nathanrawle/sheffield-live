@@ -199,6 +199,14 @@ func TestParseHagglersCornerDetailPageRejectsContraryLocationEvidence(t *testing
 			body: `<p>Fri 24th April 2026, 7pm</p><p>Venue: The Leadmill</p><p>Live music from touring bands.</p>`,
 		},
 		{
+			name: "unknown labelled venue",
+			body: `<p>Fri 24th April 2026, 7pm</p><p>Venue: Sheffield Cathedral</p><p>Live music from touring bands.</p>`,
+		},
+		{
+			name: "unknown labelled location",
+			body: `<p>Fri 24th April 2026, 7pm</p><p>Location: Plot 22</p><p>Live music from touring bands.</p>`,
+		},
+		{
 			name: "offsite wording",
 			body: `<p>Fri 24th April 2026, 7pm</p><p>Live DJ set at Yellow Arch.</p>`,
 		},
@@ -220,6 +228,27 @@ func TestParseHagglersCornerDetailPageRejectsContraryLocationEvidence(t *testing
 				t.Fatalf("skip reason = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestParseHagglersCornerDetailPageAllowsLabelledHagglersEvidence(t *testing.T) {
+	result := ParseHagglersCornerDetailPage("https://hagglerscorner.co.uk/labelled-hagglers/", hagglersCornerDetailHTML("Friday DJ Set", `
+		<p>Fri 24th April 2026, 7pm</p>
+		<p>Location: Hagglers Corner, 586 Queens Road, Sheffield</p>
+		<p>Live music from touring bands.</p>
+	`))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Skips), 0; got != want {
+		t.Fatalf("skips = %#v, want none", result.Skips)
+	}
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := result.Candidates[0].Location, hagglersCornerVenueName; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
 	}
 }
 
