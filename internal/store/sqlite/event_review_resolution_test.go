@@ -1124,6 +1124,159 @@ func TestAcceptEventReviewSupportingSourceAppliesExactIdentityTarget(t *testing.
 	}
 }
 
+func TestAcceptEventReviewSupportingSourceAppliesNearTitleTarget(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	incomingTitle := "Jane Doe + The Openers"
+	targetTitle := "Jane Doe"
+	if _, err := db.Exec(`
+		UPDATE event_review_evidence
+		SET payload = ?
+		WHERE id = ?
+	`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthoritySupporting), incomingTitle, fixture.venueText, "", fixture.start, fixture.end, "near-title-same-event"), fixture.evidenceID); err != nil {
+		t.Fatalf("update near-title payload: %v", err)
+	}
+	targetID := mustInsertExactIdentityEvent(t, db, "near-title-same-event-target", targetTitle, fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load near-title import review cluster: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil || len(detail.ImportReadiness.ExistingEventTargets) != 1 {
+		t.Fatalf("near-title targets = %#v", detail.ImportReadiness)
+	}
+	if target := detail.ImportReadiness.ExistingEventTargets[0]; target.EventID != targetID || target.TargetBasis != seedstore.EventReviewImportTargetBasisNearTitle {
+		t.Fatalf("near-title target = %#v", target)
+	}
+
+	if err := st.AcceptEventReviewSupportingSource(context.Background(), seedstore.EventReviewAcceptSupportingSourceInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:    fixture.evidenceID,
+		TargetEventID: targetID,
+		TargetBasis:   seedstore.EventReviewImportTargetBasisNearTitle,
+	}); err != nil {
+		t.Fatalf("accept near-title supporting source: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	var evidenceEventID sql.NullInt64
+	if err := db.QueryRow(`SELECT event_id FROM event_review_evidence WHERE id = ?`, fixture.evidenceID).Scan(&evidenceEventID); err != nil {
+		t.Fatalf("load near-title evidence event id: %v", err)
+	}
+	if !evidenceEventID.Valid || evidenceEventID.Int64 != targetID {
+		t.Fatalf("near-title evidence event id = %v, want %d", evidenceEventID, targetID)
+	}
+	detail, ok, err = st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load resolved near-title supporting cluster: %v", err)
+	}
+	if !ok || detail.Resolution == nil || detail.Resolution.AppliedSupportingSource == nil {
+		t.Fatal("resolved near-title supporting cluster missing applied supporting source")
+	}
+	if got := detail.Resolution.AppliedSupportingSource; got.EventID != targetID || got.TargetBasis != seedstore.EventReviewImportTargetBasisNearTitle {
+		t.Fatalf("near-title applied supporting source = %#v", got)
+	}
+}
+
+func TestResolveEventReviewImportSeparateAndInsertCreatesNearTitleSeparations(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	incomingTitle := "Jane Doe + The Openers"
+	targetTitle := "Jane Doe"
+	if _, err := db.Exec(`
+		UPDATE event_review_evidence
+		SET payload = ?
+		WHERE id = ?
+	`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthoritySupporting), incomingTitle, fixture.venueText, "", fixture.start, fixture.end, "near-title-separate-event"), fixture.evidenceID); err != nil {
+		t.Fatalf("update near-title separate payload: %v", err)
+	}
+	targetID := mustInsertExactIdentityEvent(t, db, "near-title-separate-target", targetTitle, fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	beforeEvents := mustCount(t, db, "events")
+	beforeSeparations := mustCount(t, db, "event_review_separations")
+
+	if err := st.ResolveEventReviewImportSeparateAndInsert(context.Background(), seedstore.EventReviewImportSeparateAndInsertInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:       fixture.evidenceID,
+		NearTitleEventID: targetID,
+	}); err != nil {
+		t.Fatalf("resolve near-title separate import: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	if got := mustCount(t, db, "events"); got != beforeEvents+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents+1)
+	}
+	if got := mustCount(t, db, "event_review_separations"); got != beforeSeparations+2 {
+		t.Fatalf("event_review_separations rows = %d, want %d", got, beforeSeparations+2)
+	}
+
+	var newEventID int64
+	if err := db.QueryRow(`SELECT event_id FROM event_review_evidence WHERE id = ?`, fixture.evidenceID).Scan(&newEventID); err != nil {
+		t.Fatalf("load near-title separate evidence event id: %v", err)
+	}
+	if newEventID <= 0 || newEventID == targetID {
+		t.Fatalf("near-title separate new event id = %d, target %d", newEventID, targetID)
+	}
+	var canonicalEventID int64
+	if err := db.QueryRow(`SELECT canonical_event_id FROM event_review_clusters WHERE id = ?`, fixture.clusterID).Scan(&canonicalEventID); err != nil {
+		t.Fatalf("load near-title separate canonical event id: %v", err)
+	}
+	if canonicalEventID != newEventID {
+		t.Fatalf("canonical event id = %d, want %d", canonicalEventID, newEventID)
+	}
+
+	for _, tc := range []struct {
+		name string
+		a    string
+		b    string
+	}{
+		{name: "event evidence", a: seedstore.EventReviewSeparationEventEndpointKey(targetID), b: eventReviewSeparationEndpointKeyEvidence("import-review-" + strconv.FormatInt(fixture.clusterID, 10))},
+		{name: "event event", a: seedstore.EventReviewSeparationEventEndpointKey(targetID), b: seedstore.EventReviewSeparationEventEndpointKey(newEventID)},
+	} {
+		a, b := tc.a, tc.b
+		if a > b {
+			a, b = b, a
+		}
+		var count int
+		if err := db.QueryRow(`
+			SELECT COUNT(*)
+			FROM event_review_separations
+			WHERE active = 1 AND endpoint_a_key = ? AND endpoint_b_key = ?
+		`, a, b).Scan(&count); err != nil {
+			t.Fatalf("load %s separation count: %v", tc.name, err)
+		}
+		if count != 1 {
+			t.Fatalf("%s separation count = %d, want 1", tc.name, count)
+		}
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load resolved near-title separate cluster: %v", err)
+	}
+	if !ok || detail.Resolution == nil || detail.Resolution.AppliedImportListing == nil {
+		t.Fatal("resolved near-title separate cluster missing applied import listing")
+	}
+	if got := detail.Resolution.AppliedImportListing; got.EventID != newEventID || got.EvidenceID != fixture.evidenceID || got.Title != incomingTitle {
+		t.Fatalf("near-title applied import listing = %#v", got)
+	}
+	if len(detail.Resolution.AppliedSeparations) != 2 {
+		t.Fatalf("applied separations = %#v, want 2", detail.Resolution.AppliedSeparations)
+	}
+}
+
 func TestResolveEventReviewClusterRejectsSelectedImportReviewWhenEvidenceUpdateIsPreempted(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()

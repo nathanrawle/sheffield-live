@@ -2269,6 +2269,86 @@ func TestAdminEventReviewDetailAcceptsImportReviewSupportingSource(t *testing.T)
 	}
 }
 
+func TestAdminEventReviewDetailAcceptsImportReviewNearTitleSeparate(t *testing.T) {
+	startAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	reviewStore := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             76,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        7,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				Candidates: []store.EventReviewImportCandidateSummary{{
+					EvidenceID:          304,
+					EvidenceFingerprint: "near-title-fingerprint",
+					SourceID:            42,
+					SourceName:          "Fixture source",
+					SourceURL:           "https://source.example.test/events",
+					SourceAuthority:     store.SourceAuthoritySupporting,
+					Title:               "Existing Target + Support",
+					VenueSlug:           "leadmill",
+					StartAt:             &startAt,
+				}},
+				ExistingEventTargets: []store.EventReviewImportExistingEventTarget{{
+					EvidenceID:          304,
+					EvidenceFingerprint: "near-title-fingerprint",
+					EventID:             89,
+					EventSlug:           "existing-target-title",
+					EventTitle:          "Existing Target",
+					TargetBasis:         store.EventReviewImportTargetBasisNearTitle,
+					SourceIdentityKeys:  []string{"near-source-key"},
+				}},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(reviewStore))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/76", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, `name="action" value="resolve_import_supporting_source"`)
+	assertContains(t, body, `name="target_basis" value="near_title"`)
+	assertContains(t, body, `name="action" value="resolve_import_near_title_separate"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "7")
+	form.Set("action", "resolve_import_near_title_separate")
+	form.Set("evidence_id", "304")
+	form.Set("target_event_id", "89")
+	form.Add("source_identity_key", "near-source-key")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/76", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if !reviewStore.nearSeparateCalled {
+		t.Fatal("expected near-title separate store method to be called")
+	}
+	if got := reviewStore.nearSeparateInput; got.ClusterID != 76 || got.ExpectedVersion != 7 || got.EvidenceID != 304 || got.NearTitleEventID != 89 || len(got.SourceIdentityKeys) != 1 || got.SourceIdentityKeys[0] != "near-source-key" {
+		t.Fatalf("near-title separate input = %#v", got)
+	}
+}
+
 func TestAdminEventReviewDetailSavesSourceIdentityChoicesAndRedirects(t *testing.T) {
 	store := &eventReviewOnlyStoreStub{
 		detail: store.EventReviewClusterDetail{
@@ -7194,6 +7274,9 @@ type adminReviewEventReviewStoreStub struct {
 	acceptSupportingCalled      bool
 	acceptSupportingInput       store.EventReviewAcceptSupportingSourceInput
 	acceptSupportingErr         error
+	nearSeparateCalled          bool
+	nearSeparateInput           store.EventReviewImportSeparateAndInsertInput
+	nearSeparateErr             error
 	supersedeCalled             bool
 	supersedeInput              store.EventReviewSupersedeInput
 	supersedeErr                error
@@ -7238,6 +7321,12 @@ func (s *adminReviewEventReviewStoreStub) AcceptEventReviewSupportingSource(_ co
 	return s.acceptSupportingErr
 }
 
+func (s *adminReviewEventReviewStoreStub) ResolveEventReviewImportSeparateAndInsert(_ context.Context, input store.EventReviewImportSeparateAndInsertInput) error {
+	s.nearSeparateCalled = true
+	s.nearSeparateInput = input
+	return s.nearSeparateErr
+}
+
 func (s *adminReviewEventReviewStoreStub) SupersedeEventReviewCluster(_ context.Context, input store.EventReviewSupersedeInput) error {
 	s.supersedeCalled = true
 	s.supersedeInput = input
@@ -7261,6 +7350,9 @@ type eventReviewOnlyStoreStub struct {
 	acceptSupportingCalled      bool
 	acceptSupportingInput       store.EventReviewAcceptSupportingSourceInput
 	acceptSupportingErr         error
+	nearSeparateCalled          bool
+	nearSeparateInput           store.EventReviewImportSeparateAndInsertInput
+	nearSeparateErr             error
 	supersedeCalled             bool
 	supersedeInput              store.EventReviewSupersedeInput
 	supersedeErr                error
@@ -7339,6 +7431,12 @@ func (s *eventReviewOnlyStoreStub) AcceptEventReviewSupportingSource(_ context.C
 	s.acceptSupportingCalled = true
 	s.acceptSupportingInput = input
 	return s.acceptSupportingErr
+}
+
+func (s *eventReviewOnlyStoreStub) ResolveEventReviewImportSeparateAndInsert(_ context.Context, input store.EventReviewImportSeparateAndInsertInput) error {
+	s.nearSeparateCalled = true
+	s.nearSeparateInput = input
+	return s.nearSeparateErr
 }
 
 func (s *eventReviewOnlyStoreStub) SupersedeEventReviewCluster(_ context.Context, input store.EventReviewSupersedeInput) error {

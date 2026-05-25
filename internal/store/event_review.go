@@ -629,6 +629,13 @@ type EventReviewResolutionAppliedSupportingSourceSummary struct {
 	PromotedReview bool
 }
 
+type EventReviewResolutionAppliedSeparationSummary struct {
+	SeparationID int64
+	EndpointAKey string
+	EndpointBKey string
+	Reason       string
+}
+
 type EventReviewClusterIdentityKeySummary struct {
 	ID              int64
 	IdentityKeyID   int64
@@ -732,6 +739,7 @@ type EventReviewResolutionSummary struct {
 	AppliedAutoResolution   *EventReviewResolutionAppliedAutoResolutionSummary
 	AppliedImportListing    *EventReviewResolutionAppliedImportListingSummary
 	AppliedSupportingSource *EventReviewResolutionAppliedSupportingSourceSummary
+	AppliedSeparations      []EventReviewResolutionAppliedSeparationSummary
 	AppliedTitleRepair      *EventReviewResolutionAppliedTitleRepairSummary
 	AppliedLiveActions      []EventReviewResolutionAppliedLiveActionSummary
 	SnapshotRaw             string
@@ -901,6 +909,13 @@ type EventReviewAcceptSupportingSourceInput struct {
 	EvidenceID         int64
 	TargetEventID      int64
 	TargetBasis        EventReviewImportTargetBasis
+	SourceIdentityKeys []string
+}
+
+type EventReviewImportSeparateAndInsertInput struct {
+	EventReviewResolutionInput
+	EvidenceID         int64
+	NearTitleEventID   int64
 	SourceIdentityKeys []string
 }
 

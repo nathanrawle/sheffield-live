@@ -63,6 +63,7 @@ type EventReviewAdminStore interface {
 	DiscardEventReviewCluster(ctx context.Context, input store.EventReviewDiscardInput) error
 	ResolveEventReviewCluster(ctx context.Context, input store.EventReviewResolutionInput) error
 	AcceptEventReviewSupportingSource(ctx context.Context, input store.EventReviewAcceptSupportingSourceInput) error
+	ResolveEventReviewImportSeparateAndInsert(ctx context.Context, input store.EventReviewImportSeparateAndInsertInput) error
 	SupersedeEventReviewCluster(ctx context.Context, input store.EventReviewSupersedeInput) error
 }
 
@@ -2126,7 +2127,7 @@ func (s *Server) postAdminEventReviewDecision(w http.ResponseWriter, r *http.Req
 			return
 		}
 		targetBasis := store.EventReviewImportTargetBasis(strings.TrimSpace(r.FormValue("target_basis")))
-		if !targetBasis.Valid() || targetBasis == store.EventReviewImportTargetBasisNearTitle {
+		if !targetBasis.Valid() {
 			http.Error(w, "supported target basis is required", http.StatusBadRequest)
 			return
 		}
@@ -2155,6 +2156,50 @@ func (s *Server) postAdminEventReviewDecision(w http.ResponseWriter, r *http.Req
 			SourceIdentityKeys: r.Form["source_identity_key"],
 		}); err != nil {
 			s.logRequestError(r, "accept import review supporting source", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_import_near_title_separate":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		evidenceID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("evidence_id")), 10, 64)
+		if err != nil || evidenceID <= 0 {
+			http.Error(w, "evidence id is required", http.StatusBadRequest)
+			return
+		}
+		targetEventID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("target_event_id")), 10, 64)
+		if err != nil || targetEventID <= 0 {
+			http.Error(w, "target event id is required", http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canAcceptSupportingSourceEventReviewCluster(cluster) {
+			http.Error(w, "event review cluster is not eligible for near-title separation", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.ResolveEventReviewImportSeparateAndInsert(r.Context(), store.EventReviewImportSeparateAndInsertInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			EvidenceID:         evidenceID,
+			NearTitleEventID:   targetEventID,
+			SourceIdentityKeys: r.Form["source_identity_key"],
+		}); err != nil {
+			s.logRequestError(r, "resolve import near-title separate", err, "event_review_cluster_id", clusterID)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

@@ -175,6 +175,17 @@
               {{range .SourceIdentityKeys}}<input type="hidden" name="source_identity_key" value="{{.}}">{{end}}
               <button type="submit" class="button">Accept as supporting source</button>
             </form>
+            {{if eq .TargetBasis "near_title"}}
+            <form method="post" class="review-inline-form">
+              <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+              <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+              <input type="hidden" name="action" value="resolve_import_near_title_separate">
+              <input type="hidden" name="evidence_id" value="{{.EvidenceID}}">
+              <input type="hidden" name="target_event_id" value="{{.EventID}}">
+              {{range .SourceIdentityKeys}}<input type="hidden" name="source_identity_key" value="{{.}}">{{end}}
+              <button type="submit" class="button button-secondary">Confirm separate and insert</button>
+            </form>
+            {{end}}
             {{else}}&mdash;{{end}}
           </td>
         </tr>

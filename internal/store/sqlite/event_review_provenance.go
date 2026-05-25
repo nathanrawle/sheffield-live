@@ -282,6 +282,12 @@ func terminalEvidenceOutcomeMatchesInputTx(ctx context.Context, q queryer, clust
 		if resolution.AppliedTitleRepair != nil && resolution.AppliedTitleRepair.EventID == *input.EventID {
 			return true, nil
 		}
+		inputEventKey := seedstore.EventReviewSeparationEventEndpointKey(*input.EventID)
+		for _, separation := range resolution.AppliedSeparations {
+			if separation.EndpointAKey == inputEventKey || separation.EndpointBKey == inputEventKey {
+				return true, nil
+			}
+		}
 		for _, action := range resolution.AppliedLiveActions {
 			if action.EventID == *input.EventID {
 				return true, nil

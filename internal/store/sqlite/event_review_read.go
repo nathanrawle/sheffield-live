@@ -313,6 +313,20 @@ func (s *Store) LoadEventReviewCluster(ctx context.Context, id int64) (seedstore
 		}
 	}
 	importReadiness := loadEventReviewImportReadinessTx(summary, evidence, evidenceIdentityKeys, exactIdentityMatches, sourceIdentityLinks, sourceIdentityChoices)
+	if importReadiness != nil {
+		nearTargets, err := loadEventReviewImportNearTitleTargetsTx(ctx, tx, s, summary, evidence, importReadiness.ExistingEventTargets)
+		if err != nil {
+			return seedstore.EventReviewClusterDetail{}, false, err
+		}
+		importReadiness.ExistingEventTargets = append(importReadiness.ExistingEventTargets, nearTargets...)
+		if importReadiness.SelectedCandidateReadiness != nil {
+			for _, target := range nearTargets {
+				if target.EvidenceID == importReadiness.SelectedCandidateReadiness.EvidenceID {
+					importReadiness.SelectedCandidateReadiness.ExistingEventTargets = append(importReadiness.SelectedCandidateReadiness.ExistingEventTargets, target)
+				}
+			}
+		}
+	}
 	canonicalChoices, err := loadEventReviewClusterChoiceSummariesTx(ctx, tx, id, "event_review_canonical_choices")
 	if err != nil {
 		return seedstore.EventReviewClusterDetail{}, false, err
@@ -509,6 +523,15 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 				PromotedReview: parsed.AppliedSupportingSource.PromotedReview,
 			}
 		}
+		summary.AppliedSeparations = make([]seedstore.EventReviewResolutionAppliedSeparationSummary, 0, len(parsed.AppliedSeparations))
+		for _, separation := range parsed.AppliedSeparations {
+			summary.AppliedSeparations = append(summary.AppliedSeparations, seedstore.EventReviewResolutionAppliedSeparationSummary{
+				SeparationID: separation.SeparationID,
+				EndpointAKey: strings.TrimSpace(separation.EndpointAKey),
+				EndpointBKey: strings.TrimSpace(separation.EndpointBKey),
+				Reason:       strings.TrimSpace(separation.Reason),
+			})
+		}
 		if parsed.AppliedTitleRepair != nil {
 			summary.AppliedTitleRepair = &seedstore.EventReviewResolutionAppliedTitleRepairSummary{
 				EventID:  parsed.AppliedTitleRepair.EventID,
@@ -549,6 +572,7 @@ type eventReviewResolutionSnapshotParsed struct {
 	AppliedAutoResolution   *eventReviewResolutionAppliedAutoResolutionSnapshotView   `json:"applied_auto_resolution,omitempty"`
 	AppliedImportListing    *eventReviewResolutionAppliedImportListingSnapshotView    `json:"applied_import_listing,omitempty"`
 	AppliedSupportingSource *eventReviewResolutionAppliedSupportingSourceSnapshotView `json:"applied_supporting_source,omitempty"`
+	AppliedSeparations      []eventReviewResolutionAppliedSeparationSnapshotView      `json:"applied_separations,omitempty"`
 	AppliedTitleRepair      *eventReviewResolutionAppliedTitleRepairSnapshotView      `json:"applied_title_repair,omitempty"`
 	AppliedLiveActions      []eventReviewResolutionAppliedLiveActionSnapshotView      `json:"applied_live_actions,omitempty"`
 }
@@ -586,6 +610,13 @@ type eventReviewResolutionAppliedSupportingSourceSnapshotView struct {
 	EvidenceID     int64                                  `json:"evidence_id,omitempty"`
 	TargetBasis    seedstore.EventReviewImportTargetBasis `json:"target_basis,omitempty"`
 	PromotedReview bool                                   `json:"promoted_review,omitempty"`
+}
+
+type eventReviewResolutionAppliedSeparationSnapshotView struct {
+	SeparationID int64  `json:"separation_id,omitempty"`
+	EndpointAKey string `json:"endpoint_a_key,omitempty"`
+	EndpointBKey string `json:"endpoint_b_key,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 type eventReviewResolutionAppliedLiveActionSnapshotView struct {
@@ -2109,6 +2140,62 @@ func buildEventReviewImportExistingEventTargets(summary seedstore.EventReviewClu
 		return out[i].TargetBasis < out[j].TargetBasis
 	})
 	return out
+}
+
+func loadEventReviewImportNearTitleTargetsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, s *Store, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary, hardTargets []seedstore.EventReviewImportExistingEventTarget) ([]seedstore.EventReviewImportExistingEventTarget, error) {
+	if summary.Status != seedstore.EventReviewClusterStatusOpen ||
+		summary.ConflictType != seedstore.EventReviewConflictTypeImportReview ||
+		summary.ConflictReason != seedstore.EventReviewConflictReasonIngestCandidate {
+		return nil, nil
+	}
+	hardTargetByEvidenceID := make(map[int64]struct{}, len(hardTargets))
+	for _, target := range hardTargets {
+		if target.TargetBasis != seedstore.EventReviewImportTargetBasisNearTitle {
+			hardTargetByEvidenceID[target.EvidenceID] = struct{}{}
+		}
+	}
+	now := time.Now().UTC()
+	targets := make([]seedstore.EventReviewImportExistingEventTarget, 0)
+	for _, row := range evidence {
+		if _, ok := hardTargetByEvidenceID[row.EvidenceID]; ok {
+			continue
+		}
+		if row.EventID != nil {
+			continue
+		}
+		material, err := buildImportReviewCandidateMaterialTx(ctx, tx, s, seedstore.EventReviewCluster{
+			ID:               summary.ID,
+			Status:           summary.Status,
+			Version:          summary.Version,
+			CanonicalEventID: summary.CanonicalEventID,
+			ConflictType:     summary.ConflictType,
+			ConflictReason:   summary.ConflictReason,
+		}, row, nil, "import_review_near_title_readiness", reviewSourceIdentitySupporting, now)
+		if err != nil {
+			continue
+		}
+		nearMatches, _, err := supportingNearTitleGuardMatchesTx(ctx, tx, material.Event, s.sourceMetadata)
+		if err != nil {
+			return nil, err
+		}
+		if len(nearMatches) != 1 {
+			continue
+		}
+		target := nearMatches[0].record
+		targets = append(targets, seedstore.EventReviewImportExistingEventTarget{
+			EvidenceID:          row.EvidenceID,
+			EvidenceFingerprint: row.EvidenceFingerprint,
+			EventID:             target.ID,
+			EventSlug:           target.Event.Slug,
+			EventTitle:          target.Event.Name,
+			PublicationState:    string(target.Event.PublicationState),
+			TargetBasis:         seedstore.EventReviewImportTargetBasisNearTitle,
+		})
+	}
+	return targets, nil
 }
 
 func normalizedImportReadinessStrings(values []string) []string {
