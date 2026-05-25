@@ -16,22 +16,23 @@ import (
 )
 
 type eventReviewResolutionSnapshot struct {
-	ClusterID               int64                                                 `json:"cluster_id"`
-	ExpectedVersion         int                                                   `json:"expected_version"`
-	CurrentVersion          int                                                   `json:"current_version"`
-	CurrentStatus           seedstore.EventReviewClusterStatus                    `json:"current_status"`
-	TargetStatus            seedstore.EventReviewResolutionStatus                 `json:"target_status"`
-	DiscardReason           string                                                `json:"discard_reason,omitempty"`
-	SupersededByClusterID   int64                                                 `json:"superseded_by_cluster_id,omitempty"`
-	CanonicalEventID        *int64                                                `json:"canonical_event_id,omitempty"`
-	RepairRunID             *int64                                                `json:"repair_run_id,omitempty"`
-	AppliedAutoResolution   *eventReviewResolutionAppliedAutoResolutionSnapshot   `json:"applied_auto_resolution,omitempty"`
-	AppliedImportListing    *eventReviewResolutionAppliedImportListingSnapshot    `json:"applied_import_listing,omitempty"`
-	AppliedSupportingSource *eventReviewResolutionAppliedSupportingSourceSnapshot `json:"applied_supporting_source,omitempty"`
-	AppliedSeparations      []eventReviewResolutionAppliedSeparationSnapshot      `json:"applied_separations,omitempty"`
-	AppliedTitleRepair      *eventReviewResolutionAppliedTitleRepairSnapshot      `json:"applied_title_repair,omitempty"`
-	AppliedLiveActions      []eventReviewResolutionAppliedLiveActionSnapshot      `json:"applied_live_actions,omitempty"`
-	RecordedAt              string                                                `json:"recorded_at"`
+	ClusterID                  int64                                                    `json:"cluster_id"`
+	ExpectedVersion            int                                                      `json:"expected_version"`
+	CurrentVersion             int                                                      `json:"current_version"`
+	CurrentStatus              seedstore.EventReviewClusterStatus                       `json:"current_status"`
+	TargetStatus               seedstore.EventReviewResolutionStatus                    `json:"target_status"`
+	DiscardReason              string                                                   `json:"discard_reason,omitempty"`
+	SupersededByClusterID      int64                                                    `json:"superseded_by_cluster_id,omitempty"`
+	CanonicalEventID           *int64                                                   `json:"canonical_event_id,omitempty"`
+	RepairRunID                *int64                                                   `json:"repair_run_id,omitempty"`
+	AppliedAutoResolution      *eventReviewResolutionAppliedAutoResolutionSnapshot      `json:"applied_auto_resolution,omitempty"`
+	AppliedImportListing       *eventReviewResolutionAppliedImportListingSnapshot       `json:"applied_import_listing,omitempty"`
+	AppliedSupportingSource    *eventReviewResolutionAppliedSupportingSourceSnapshot    `json:"applied_supporting_source,omitempty"`
+	AppliedAuthoritativeImport *eventReviewResolutionAppliedAuthoritativeImportSnapshot `json:"applied_authoritative_import,omitempty"`
+	AppliedSeparations         []eventReviewResolutionAppliedSeparationSnapshot         `json:"applied_separations,omitempty"`
+	AppliedTitleRepair         *eventReviewResolutionAppliedTitleRepairSnapshot         `json:"applied_title_repair,omitempty"`
+	AppliedLiveActions         []eventReviewResolutionAppliedLiveActionSnapshot         `json:"applied_live_actions,omitempty"`
+	RecordedAt                 string                                                   `json:"recorded_at"`
 }
 
 type eventReviewResolutionAppliedAutoResolutionSnapshot struct {
@@ -89,6 +90,17 @@ type eventReviewResolutionAppliedSeparationSnapshot struct {
 	EndpointAKey string `json:"endpoint_a_key,omitempty"`
 	EndpointBKey string `json:"endpoint_b_key,omitempty"`
 	Reason       string `json:"reason,omitempty"`
+}
+
+type eventReviewResolutionAppliedAuthoritativeImportSnapshot struct {
+	EventID    int64  `json:"event_id"`
+	EventSlug  string `json:"event_slug,omitempty"`
+	Title      string `json:"title,omitempty"`
+	SourceID   int64  `json:"source_id,omitempty"`
+	SourceName string `json:"source_name,omitempty"`
+	SourceURL  string `json:"source_url,omitempty"`
+	EvidenceID int64  `json:"evidence_id,omitempty"`
+	Result     string `json:"result,omitempty"`
 }
 
 func (s *Store) ResolveEventReviewCluster(ctx context.Context, input seedstore.EventReviewResolutionInput) error {
@@ -176,7 +188,7 @@ func (s *Store) ResolveEventReviewCluster(ctx context.Context, input seedstore.E
 			return err
 		}
 
-		snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, &repairRunID, nil, nil, nil, nil, nil, appliedActions, now)
+		snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, &repairRunID, nil, nil, nil, nil, nil, nil, appliedActions, now)
 		if err != nil {
 			return err
 		}
@@ -247,7 +259,7 @@ func (s *Store) ResolveEventReviewCluster(ctx context.Context, input seedstore.E
 		if err := updateEventTitleTx(ctx, tx, readiness.CanonicalEventID, readiness.DraftSlug, readiness.DraftTitle, now); err != nil {
 			return err
 		}
-		snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, nil, nil, nil, nil, &applied, nil, now)
+		snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, nil, nil, nil, nil, nil, &applied, nil, now)
 		if err != nil {
 			return err
 		}
@@ -668,7 +680,7 @@ func applyImportReviewListingEvidenceTx(ctx context.Context, tx interface {
 		SourceURL:  candidateInput.SourceURL,
 		EvidenceID: evidence.EvidenceID,
 	}
-	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, nil, &applied, nil, nil, nil, nil, now)
+	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, nil, &applied, nil, nil, nil, nil, nil, now)
 	if err != nil {
 		return err
 	}
@@ -857,7 +869,7 @@ func (s *Store) AcceptEventReviewSupportingSource(ctx context.Context, input see
 	snapshotCluster := cluster
 	canonicalEventID := targetRecord.ID
 	snapshotCluster.CanonicalEventID = &canonicalEventID
-	snapshot, err := marshalEventReviewResolutionSnapshot(snapshotCluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, nil, nil, &applied, nil, nil, nil, now)
+	snapshot, err := marshalEventReviewResolutionSnapshot(snapshotCluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, nil, nil, &applied, nil, nil, nil, nil, now)
 	if err != nil {
 		return err
 	}
@@ -1148,7 +1160,7 @@ func (s *Store) ResolveEventReviewImportSeparateAndInsert(ctx context.Context, i
 	snapshotCluster := cluster
 	canonicalEventID := eventID
 	snapshotCluster.CanonicalEventID = &canonicalEventID
-	snapshot, err := marshalEventReviewResolutionSnapshot(snapshotCluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, nil, &appliedListing, nil, appliedSeparations, nil, nil, now)
+	snapshot, err := marshalEventReviewResolutionSnapshot(snapshotCluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, nil, &appliedListing, nil, nil, appliedSeparations, nil, nil, now)
 	if err != nil {
 		return err
 	}
@@ -1273,6 +1285,176 @@ func eventReviewSeparationEndpointValues(endpoint seedstore.EventReviewSeparatio
 		canonicalEventID = *endpoint.CanonicalEventID
 	}
 	return eventID, evidenceID, identityKeyID, canonicalEventID
+}
+
+func (s *Store) ResolveEventReviewImportAuthoritative(ctx context.Context, input seedstore.EventReviewImportAuthoritativeInput) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	if input.EvidenceID <= 0 {
+		return errors.New("event review evidence ID is required")
+	}
+
+	cluster, tx, err := beginOpenEventReviewClusterTx(ctx, s.db, input.EventReviewResolutionInput)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if cluster.ConflictType != seedstore.EventReviewConflictTypeImportReview || cluster.ConflictReason != seedstore.EventReviewConflictReasonIngestCandidate {
+		return fmt.Errorf("event review cluster %d is not an import-review ingest candidate cluster", cluster.ID)
+	}
+
+	activeEvidence, err := loadEventReviewClusterEvidenceSummariesTx(ctx, tx, cluster.ID)
+	if err != nil {
+		return err
+	}
+	var evidence *seedstore.EventReviewClusterEvidenceSummary
+	for i := range activeEvidence {
+		if activeEvidence[i].EvidenceID == input.EvidenceID {
+			evidence = &activeEvidence[i]
+			break
+		}
+	}
+	if evidence == nil {
+		return fmt.Errorf("event review cluster %d evidence %d is not active", cluster.ID, input.EvidenceID)
+	}
+	if evidence.EventID != nil {
+		return fmt.Errorf("event review cluster %d evidence %d already references event %d", cluster.ID, input.EvidenceID, *evidence.EventID)
+	}
+
+	now := time.Now().UTC()
+	selectedSourceKeys := normalizedImportReviewSourceIdentityKeys(input.SourceIdentityKeys)
+	var selectedSourceKeysArg []string
+	if len(selectedSourceKeys) > 0 {
+		selectedSourceKeysArg = selectedSourceKeys
+	}
+	material, err := buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, *evidence, selectedSourceKeysArg, "import_review_authoritative_apply", reviewSourceIdentityAuthoritative, now)
+	if err != nil {
+		return err
+	}
+	if material.SourceAuthority != seedstore.SourceAuthorityAuthoritative {
+		return fmt.Errorf("import review event review cluster %d requires an authoritative candidate", cluster.ID)
+	}
+
+	summary, ok, err := loadEventReviewClusterSummaryByIDTx(ctx, tx, cluster.ID)
+	if err != nil {
+		return err
+	}
+	scope := seedstore.ObservationRunScope("")
+	if ok {
+		scope = eventReviewObservationScopeForClusterSummary(summary)
+	}
+	beforeEventCount, err := countEventsTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	applySourceCtx := material.SourceCtx
+	applySourceCtx.SourceName = firstNonEmptyImportReviewText(evidence.SourceName, material.SourceCtx.SourceName)
+	applySourceCtx.SourceURL = firstNonEmptyImportReviewText(evidence.SourceURL, material.SourceCtx.SourceURL)
+	record, applied, err := applyAuthoritativeEventTx(ctx, tx, material.Event, applySourceCtx, now, scope, s.sourceMetadata)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return fmt.Errorf("import review event review cluster %d authoritative target is ambiguous or not eligible", cluster.ID)
+	}
+	if input.ExpectedTargetEventID > 0 && record.ID != input.ExpectedTargetEventID {
+		return fmt.Errorf("import review event review cluster %d authoritative target event %d does not match expected event %d", cluster.ID, record.ID, input.ExpectedTargetEventID)
+	}
+	afterEventCount, err := countEventsTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	result := "updated"
+	if afterEventCount > beforeEventCount {
+		result = "inserted"
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE event_review_evidence
+		SET event_id = ?,
+			updated_at = ?
+		WHERE id = ?
+			AND event_id IS NULL
+	`, record.ID, formatRFC3339UTC(now), evidence.EvidenceID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected != 1 {
+		return fmt.Errorf("import review event review cluster %d selected evidence update was rejected", cluster.ID)
+	}
+
+	primary := reviewGroupAuthoritativeLink{
+		SourceName: applySourceCtx.SourceName,
+		SourceURL:  applySourceCtx.SourceURL,
+	}
+	secondaryCandidates, err := buildImportReviewSecondaryCandidatesTx(ctx, tx, s, cluster, activeEvidence, evidence.EvidenceID, now)
+	if err != nil {
+		return err
+	}
+	if err := replaceEventSecondarySourceInfoTx(ctx, tx, record.ID, primary, reviewCandidatesMatchingEvent(secondaryCandidates, record.Event), now); err != nil {
+		return err
+	}
+	if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, record.ID, record.Event.Description, now); err != nil {
+		return err
+	}
+
+	sourceID := evidence.SourceID
+	if resolvedSourceID, ok, err := loadSourceIDByNameURLTx(ctx, tx, applySourceCtx.SourceName, applySourceCtx.SourceURL); err != nil {
+		return err
+	} else if ok {
+		sourceID = resolvedSourceID
+	}
+	appliedSnapshot := eventReviewResolutionAppliedAuthoritativeImportSnapshot{
+		EventID:    record.ID,
+		EventSlug:  record.Event.Slug,
+		Title:      record.Event.Name,
+		SourceID:   sourceID,
+		SourceName: applySourceCtx.SourceName,
+		SourceURL:  applySourceCtx.SourceURL,
+		EvidenceID: evidence.EvidenceID,
+		Result:     result,
+	}
+	snapshotCluster := cluster
+	canonicalEventID := record.ID
+	snapshotCluster.CanonicalEventID = &canonicalEventID
+	snapshot, err := marshalEventReviewResolutionSnapshot(snapshotCluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, nil, nil, nil, &appliedSnapshot, nil, nil, nil, now)
+	if err != nil {
+		return err
+	}
+	if _, err := insertEventReviewResolutionTx(ctx, tx, cluster.ID, seedstore.EventReviewResolutionStatusResolved, snapshot, "", now); err != nil {
+		return err
+	}
+	clusterUpdateRes, err := tx.ExecContext(ctx, `
+		UPDATE event_review_clusters
+		SET status = ?, canonical_event_id = ?, version = version + 1, updated_at = ?
+		WHERE id = ?
+			AND version = ?
+			AND status = ?
+	`, string(seedstore.EventReviewClusterStatusResolved), record.ID, formatRFC3339UTC(now), cluster.ID, cluster.Version, string(seedstore.EventReviewClusterStatusOpen))
+	if err != nil {
+		return err
+	}
+	clusterRowsAffected, err := clusterUpdateRes.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if clusterRowsAffected != 1 {
+		return fmt.Errorf("event review cluster %d update was rejected", cluster.ID)
+	}
+	return tx.Commit()
+}
+
+func countEventsTx(ctx context.Context, q queryer) (int, error) {
+	var count int
+	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&count)
+	return count, err
 }
 
 type eventReviewImportReviewListingPayload struct {
@@ -1432,7 +1614,7 @@ func (s *Store) DiscardEventReviewCluster(ctx context.Context, input seedstore.E
 	}
 
 	now := time.Now().UTC()
-	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusDiscarded, reason, nil, nil, nil, nil, nil, nil, nil, nil, now)
+	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusDiscarded, reason, nil, nil, nil, nil, nil, nil, nil, nil, nil, now)
 	if err != nil {
 		return err
 	}
@@ -1610,7 +1792,7 @@ func loadEventReviewClusterTx(ctx context.Context, q queryer, clusterID int64) (
 }
 
 func supersedeEventReviewClusterTx(ctx context.Context, tx execer, cluster seedstore.EventReviewCluster, supersededByClusterID int64, now time.Time) error {
-	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusSuperseded, "", &supersededByClusterID, nil, nil, nil, nil, nil, nil, nil, now)
+	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusSuperseded, "", &supersededByClusterID, nil, nil, nil, nil, nil, nil, nil, nil, now)
 	if err != nil {
 		return err
 	}
@@ -1637,23 +1819,24 @@ func supersedeEventReviewClusterTx(ctx context.Context, tx execer, cluster seeds
 	return nil
 }
 
-func marshalEventReviewResolutionSnapshot(cluster seedstore.EventReviewCluster, targetStatus seedstore.EventReviewResolutionStatus, discardReason string, supersededByClusterID *int64, repairRunID *int64, appliedAutoResolution *eventReviewResolutionAppliedAutoResolutionSnapshot, appliedImportListing *eventReviewResolutionAppliedImportListingSnapshot, appliedSupportingSource *eventReviewResolutionAppliedSupportingSourceSnapshot, appliedSeparations []eventReviewResolutionAppliedSeparationSnapshot, appliedTitleRepair *eventReviewResolutionAppliedTitleRepairSnapshot, appliedLiveActions []eventReviewResolutionAppliedLiveActionSnapshot, now time.Time) (string, error) {
+func marshalEventReviewResolutionSnapshot(cluster seedstore.EventReviewCluster, targetStatus seedstore.EventReviewResolutionStatus, discardReason string, supersededByClusterID *int64, repairRunID *int64, appliedAutoResolution *eventReviewResolutionAppliedAutoResolutionSnapshot, appliedImportListing *eventReviewResolutionAppliedImportListingSnapshot, appliedSupportingSource *eventReviewResolutionAppliedSupportingSourceSnapshot, appliedAuthoritativeImport *eventReviewResolutionAppliedAuthoritativeImportSnapshot, appliedSeparations []eventReviewResolutionAppliedSeparationSnapshot, appliedTitleRepair *eventReviewResolutionAppliedTitleRepairSnapshot, appliedLiveActions []eventReviewResolutionAppliedLiveActionSnapshot, now time.Time) (string, error) {
 	snapshot := eventReviewResolutionSnapshot{
-		ClusterID:               cluster.ID,
-		ExpectedVersion:         cluster.Version,
-		CurrentVersion:          cluster.Version,
-		CurrentStatus:           cluster.Status,
-		TargetStatus:            targetStatus,
-		DiscardReason:           strings.TrimSpace(discardReason),
-		CanonicalEventID:        cluster.CanonicalEventID,
-		RepairRunID:             repairRunID,
-		AppliedAutoResolution:   appliedAutoResolution,
-		AppliedImportListing:    appliedImportListing,
-		AppliedSupportingSource: appliedSupportingSource,
-		AppliedSeparations:      appliedSeparations,
-		AppliedTitleRepair:      appliedTitleRepair,
-		AppliedLiveActions:      appliedLiveActions,
-		RecordedAt:              formatRFC3339UTC(now),
+		ClusterID:                  cluster.ID,
+		ExpectedVersion:            cluster.Version,
+		CurrentVersion:             cluster.Version,
+		CurrentStatus:              cluster.Status,
+		TargetStatus:               targetStatus,
+		DiscardReason:              strings.TrimSpace(discardReason),
+		CanonicalEventID:           cluster.CanonicalEventID,
+		RepairRunID:                repairRunID,
+		AppliedAutoResolution:      appliedAutoResolution,
+		AppliedImportListing:       appliedImportListing,
+		AppliedSupportingSource:    appliedSupportingSource,
+		AppliedAuthoritativeImport: appliedAuthoritativeImport,
+		AppliedSeparations:         appliedSeparations,
+		AppliedTitleRepair:         appliedTitleRepair,
+		AppliedLiveActions:         appliedLiveActions,
+		RecordedAt:                 formatRFC3339UTC(now),
 	}
 	if supersededByClusterID != nil {
 		snapshot.SupersededByClusterID = *supersededByClusterID

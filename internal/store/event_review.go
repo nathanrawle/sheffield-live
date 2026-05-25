@@ -636,6 +636,17 @@ type EventReviewResolutionAppliedSeparationSummary struct {
 	Reason       string
 }
 
+type EventReviewResolutionAppliedAuthoritativeImportSummary struct {
+	EventID    int64
+	EventSlug  string
+	Title      string
+	SourceID   int64
+	SourceName string
+	SourceURL  string
+	EvidenceID int64
+	Result     string
+}
+
 type EventReviewClusterIdentityKeySummary struct {
 	ID              int64
 	IdentityKeyID   int64
@@ -729,23 +740,24 @@ type EventReviewClusterSeparationSummary struct {
 }
 
 type EventReviewResolutionSummary struct {
-	ID                      int64
-	ClusterID               int64
-	Status                  EventReviewResolutionStatus
-	DiscardReason           string
-	CanonicalEventID        *int64
-	RepairRunID             *int64
-	SupersededByClusterID   *int64
-	AppliedAutoResolution   *EventReviewResolutionAppliedAutoResolutionSummary
-	AppliedImportListing    *EventReviewResolutionAppliedImportListingSummary
-	AppliedSupportingSource *EventReviewResolutionAppliedSupportingSourceSummary
-	AppliedSeparations      []EventReviewResolutionAppliedSeparationSummary
-	AppliedTitleRepair      *EventReviewResolutionAppliedTitleRepairSummary
-	AppliedLiveActions      []EventReviewResolutionAppliedLiveActionSummary
-	SnapshotRaw             string
-	SnapshotParseWarning    string
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
+	ID                         int64
+	ClusterID                  int64
+	Status                     EventReviewResolutionStatus
+	DiscardReason              string
+	CanonicalEventID           *int64
+	RepairRunID                *int64
+	SupersededByClusterID      *int64
+	AppliedAutoResolution      *EventReviewResolutionAppliedAutoResolutionSummary
+	AppliedImportListing       *EventReviewResolutionAppliedImportListingSummary
+	AppliedSupportingSource    *EventReviewResolutionAppliedSupportingSourceSummary
+	AppliedAuthoritativeImport *EventReviewResolutionAppliedAuthoritativeImportSummary
+	AppliedSeparations         []EventReviewResolutionAppliedSeparationSummary
+	AppliedTitleRepair         *EventReviewResolutionAppliedTitleRepairSummary
+	AppliedLiveActions         []EventReviewResolutionAppliedLiveActionSummary
+	SnapshotRaw                string
+	SnapshotParseWarning       string
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
 }
 
 type EventReviewClusterDetail struct {
@@ -917,6 +929,13 @@ type EventReviewImportSeparateAndInsertInput struct {
 	EvidenceID         int64
 	NearTitleEventID   int64
 	SourceIdentityKeys []string
+}
+
+type EventReviewImportAuthoritativeInput struct {
+	EventReviewResolutionInput
+	EvidenceID            int64
+	ExpectedTargetEventID int64
+	SourceIdentityKeys    []string
 }
 
 type EventReviewDiscardInput struct {

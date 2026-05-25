@@ -2349,6 +2349,74 @@ func TestAdminEventReviewDetailAcceptsImportReviewNearTitleSeparate(t *testing.T
 	}
 }
 
+func TestAdminEventReviewDetailAppliesAuthoritativeImport(t *testing.T) {
+	startAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	reviewStore := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             77,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        8,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				Candidates: []store.EventReviewImportCandidateSummary{{
+					EvidenceID:          305,
+					EvidenceFingerprint: "authoritative-fingerprint",
+					SourceID:            42,
+					SourceName:          "Fixture source",
+					SourceURL:           "https://source.example.test/events",
+					SourceAuthority:     store.SourceAuthorityAuthoritative,
+					Title:               "Authoritative Title",
+					VenueSlug:           "leadmill",
+					StartAt:             &startAt,
+				}},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(reviewStore))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/77", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, "Authoritative import candidates")
+	assertContains(t, body, `name="action" value="resolve_import_authoritative"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "8")
+	form.Set("action", "resolve_import_authoritative")
+	form.Set("evidence_id", "305")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/77", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if !reviewStore.authoritativeCalled {
+		t.Fatal("expected authoritative import store method to be called")
+	}
+	if got := reviewStore.authoritativeInput; got.ClusterID != 77 || got.ExpectedVersion != 8 || got.EvidenceID != 305 {
+		t.Fatalf("authoritative import input = %#v", got)
+	}
+}
+
 func TestAdminEventReviewDetailSavesSourceIdentityChoicesAndRedirects(t *testing.T) {
 	store := &eventReviewOnlyStoreStub{
 		detail: store.EventReviewClusterDetail{
@@ -7277,6 +7345,9 @@ type adminReviewEventReviewStoreStub struct {
 	nearSeparateCalled          bool
 	nearSeparateInput           store.EventReviewImportSeparateAndInsertInput
 	nearSeparateErr             error
+	authoritativeCalled         bool
+	authoritativeInput          store.EventReviewImportAuthoritativeInput
+	authoritativeErr            error
 	supersedeCalled             bool
 	supersedeInput              store.EventReviewSupersedeInput
 	supersedeErr                error
@@ -7327,6 +7398,12 @@ func (s *adminReviewEventReviewStoreStub) ResolveEventReviewImportSeparateAndIns
 	return s.nearSeparateErr
 }
 
+func (s *adminReviewEventReviewStoreStub) ResolveEventReviewImportAuthoritative(_ context.Context, input store.EventReviewImportAuthoritativeInput) error {
+	s.authoritativeCalled = true
+	s.authoritativeInput = input
+	return s.authoritativeErr
+}
+
 func (s *adminReviewEventReviewStoreStub) SupersedeEventReviewCluster(_ context.Context, input store.EventReviewSupersedeInput) error {
 	s.supersedeCalled = true
 	s.supersedeInput = input
@@ -7353,6 +7430,9 @@ type eventReviewOnlyStoreStub struct {
 	nearSeparateCalled          bool
 	nearSeparateInput           store.EventReviewImportSeparateAndInsertInput
 	nearSeparateErr             error
+	authoritativeCalled         bool
+	authoritativeInput          store.EventReviewImportAuthoritativeInput
+	authoritativeErr            error
 	supersedeCalled             bool
 	supersedeInput              store.EventReviewSupersedeInput
 	supersedeErr                error
@@ -7437,6 +7517,12 @@ func (s *eventReviewOnlyStoreStub) ResolveEventReviewImportSeparateAndInsert(_ c
 	s.nearSeparateCalled = true
 	s.nearSeparateInput = input
 	return s.nearSeparateErr
+}
+
+func (s *eventReviewOnlyStoreStub) ResolveEventReviewImportAuthoritative(_ context.Context, input store.EventReviewImportAuthoritativeInput) error {
+	s.authoritativeCalled = true
+	s.authoritativeInput = input
+	return s.authoritativeErr
 }
 
 func (s *eventReviewOnlyStoreStub) SupersedeEventReviewCluster(_ context.Context, input store.EventReviewSupersedeInput) error {

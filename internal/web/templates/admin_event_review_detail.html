@@ -194,6 +194,43 @@
     </table>
   </div>
   {{end}}
+  {{if $.EventReviewCanResolveAuthoritativeImport}}
+  <h3>Authoritative import candidates</h3>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Evidence</th>
+          <th scope="col">Candidate</th>
+          <th scope="col">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Candidates}}
+        {{if eq .SourceAuthority "authoritative"}}
+        <tr>
+          <th scope="row">evidence #{{.EvidenceID}}<br><small><code>{{.EvidenceFingerprint}}</code></small></th>
+          <td>
+            {{if .Title}}<strong>{{.Title}}</strong>{{else}}&mdash;{{end}}
+            {{if .VenueSlug}}<br><small>venue <code>{{.VenueSlug}}</code></small>{{end}}
+            {{with .StartAt}}<br><small>{{dateShortPtr .}} {{timeShortPtr .}}</small>{{end}}
+          </td>
+          <td>
+            <form method="post" class="review-inline-form">
+              <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+              <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+              <input type="hidden" name="action" value="resolve_import_authoritative">
+              <input type="hidden" name="evidence_id" value="{{.EvidenceID}}">
+              <button type="submit" class="button">Apply authoritative import</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
   {{if or .CandidateComparisonScope (gt .CandidateCount 1)}}
   <h3>Normalized identity comparison</h3>
   <p class="notice">This comparison centers normalized title, venue, date, start, and exact identity values. It is read-only and does not imply the cluster can be accepted yet.</p>

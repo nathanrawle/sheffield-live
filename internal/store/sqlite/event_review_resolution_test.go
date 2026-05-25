@@ -1277,6 +1277,258 @@ func TestResolveEventReviewImportSeparateAndInsertCreatesNearTitleSeparations(t 
 	}
 }
 
+func TestResolveEventReviewImportAuthoritativeInsertsNewEvent(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	if _, err := db.Exec(`
+		UPDATE event_review_evidence
+		SET payload = ?
+		WHERE id = ?
+	`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthorityAuthoritative), "Authoritative Insert", fixture.venueText, "", fixture.start, fixture.end, "authoritative-insert"), fixture.evidenceID); err != nil {
+		t.Fatalf("update authoritative payload: %v", err)
+	}
+	beforeEvents := mustCount(t, db, "events")
+
+	if err := st.ResolveEventReviewImportAuthoritative(context.Background(), seedstore.EventReviewImportAuthoritativeInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID: fixture.evidenceID,
+	}); err != nil {
+		t.Fatalf("resolve authoritative insert: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	if got := mustCount(t, db, "events"); got != beforeEvents+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents+1)
+	}
+	var newEventID int64
+	if err := db.QueryRow(`SELECT event_id FROM event_review_evidence WHERE id = ?`, fixture.evidenceID).Scan(&newEventID); err != nil {
+		t.Fatalf("load authoritative evidence event id: %v", err)
+	}
+	if newEventID <= 0 {
+		t.Fatalf("authoritative evidence event id = %d, want positive", newEventID)
+	}
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load resolved authoritative insert cluster: %v", err)
+	}
+	if !ok || detail.Resolution == nil || detail.Resolution.AppliedAuthoritativeImport == nil {
+		t.Fatal("resolved authoritative cluster missing applied authoritative import")
+	}
+	if got := detail.Resolution.AppliedAuthoritativeImport; got.EventID != newEventID || got.EvidenceID != fixture.evidenceID || got.Result != "inserted" {
+		t.Fatalf("applied authoritative import = %#v", got)
+	}
+}
+
+func TestResolveEventReviewImportAuthoritativeUsesSourceIdentityBeforeTitleMatching(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	incomingTitle := "Authoritative Source Wins"
+	if _, err := db.Exec(`
+		UPDATE event_review_evidence
+		SET payload = ?
+		WHERE id = ?
+	`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthorityAuthoritative), incomingTitle, fixture.venueText, "", fixture.start, fixture.end, fixture.externalID), fixture.evidenceID); err != nil {
+		t.Fatalf("update authoritative source payload: %v", err)
+	}
+	targetID := mustInsertExactIdentityEvent(t, db, "authoritative-source-linked-target", "Legacy Source Target", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	sourceKey, ok := ingest.SourceIdentityKey(fixture.externalID)
+	if !ok {
+		t.Fatalf("source identity key for %q was rejected", fixture.externalID)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, targetID, fixture.sourceID, sourceKey, formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+		t.Fatalf("insert authoritative source link: %v", err)
+	}
+	beforeEvents := mustCount(t, db, "events")
+
+	if err := st.ResolveEventReviewImportAuthoritative(context.Background(), seedstore.EventReviewImportAuthoritativeInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:            fixture.evidenceID,
+		ExpectedTargetEventID: targetID,
+		SourceIdentityKeys:    []string{sourceKey},
+	}); err != nil {
+		t.Fatalf("resolve authoritative source update: %v", err)
+	}
+
+	if got := mustCount(t, db, "events"); got != beforeEvents {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents)
+	}
+	var title string
+	var startText string
+	if err := db.QueryRow(`SELECT name, start_at FROM events WHERE id = ?`, targetID).Scan(&title, &startText); err != nil {
+		t.Fatalf("load authoritative target event: %v", err)
+	}
+	if title != incomingTitle || startText != formatRFC3339UTC(fixture.start) {
+		t.Fatalf("target event title/start = %q %q, want %q %q", title, startText, incomingTitle, formatRFC3339UTC(fixture.start))
+	}
+	var evidenceEventID int64
+	if err := db.QueryRow(`SELECT event_id FROM event_review_evidence WHERE id = ?`, fixture.evidenceID).Scan(&evidenceEventID); err != nil {
+		t.Fatalf("load authoritative update evidence event id: %v", err)
+	}
+	if evidenceEventID != targetID {
+		t.Fatalf("authoritative evidence event id = %d, want %d", evidenceEventID, targetID)
+	}
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load resolved authoritative update cluster: %v", err)
+	}
+	if !ok || detail.Resolution == nil || detail.Resolution.AppliedAuthoritativeImport == nil {
+		t.Fatal("resolved authoritative update cluster missing applied authoritative import")
+	}
+	if got := detail.Resolution.AppliedAuthoritativeImport; got.EventID != targetID || got.Result != "updated" {
+		t.Fatalf("applied authoritative update = %#v", got)
+	}
+}
+
+func TestResolveEventReviewImportAuthoritativeRejectsAmbiguousSourceIdentity(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	if _, err := db.Exec(`
+		UPDATE event_review_evidence
+		SET payload = ?
+		WHERE id = ?
+	`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthorityAuthoritative), "Authoritative Ambiguous", fixture.venueText, "", fixture.start, fixture.end, "authoritative-ambiguous"), fixture.evidenceID); err != nil {
+		t.Fatalf("update authoritative ambiguous payload: %v", err)
+	}
+	targetAID := mustInsertExactIdentityEvent(t, db, "authoritative-ambiguous-a", "Authoritative Ambiguous A", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	targetBID := mustInsertExactIdentityEvent(t, db, "authoritative-ambiguous-b", "Authoritative Ambiguous B", fixture.venueID, fixture.sourceID, fixture.start.Add(4*time.Hour), fixture.end.Add(4*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	sourceKeyA := "uid:authoritative-ambiguous-a"
+	sourceKeyB := "uid:authoritative-ambiguous-b"
+	for _, row := range []struct {
+		eventID int64
+		key     string
+	}{
+		{eventID: targetAID, key: sourceKeyA},
+		{eventID: targetBID, key: sourceKeyB},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO event_source_links (
+				event_id,
+				source_id,
+				source_event_key,
+				is_authoritative,
+				created_at,
+				updated_at
+			) VALUES (?, ?, ?, 1, ?, ?)
+		`, row.eventID, fixture.sourceID, row.key, formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+			t.Fatalf("insert ambiguous authoritative source link: %v", err)
+		}
+	}
+	beforeEvents := mustCount(t, db, "events")
+
+	err := st.ResolveEventReviewImportAuthoritative(context.Background(), seedstore.EventReviewImportAuthoritativeInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:         fixture.evidenceID,
+		SourceIdentityKeys: []string{sourceKeyA, sourceKeyB},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("resolve ambiguous authoritative source error = %v, want ambiguous", err)
+	}
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	if got := mustCount(t, db, "events"); got != beforeEvents {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents)
+	}
+	var evidenceEventID sql.NullInt64
+	if err := db.QueryRow(`SELECT event_id FROM event_review_evidence WHERE id = ?`, fixture.evidenceID).Scan(&evidenceEventID); err != nil {
+		t.Fatalf("load ambiguous authoritative evidence event id: %v", err)
+	}
+	if evidenceEventID.Valid {
+		t.Fatalf("ambiguous authoritative evidence event id = %d, want NULL", evidenceEventID.Int64)
+	}
+}
+
+func TestResolveEventReviewImportAuthoritativeRejectsExpectedTargetMismatchWithoutCommit(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	incomingTitle := "Authoritative Mismatch Incoming"
+	if _, err := db.Exec(`
+		UPDATE event_review_evidence
+		SET payload = ?
+		WHERE id = ?
+	`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthorityAuthoritative), incomingTitle, fixture.venueText, "", fixture.start, fixture.end, "authoritative-expected-mismatch"), fixture.evidenceID); err != nil {
+		t.Fatalf("update authoritative mismatch payload: %v", err)
+	}
+	sourceLinkedTargetID := mustInsertExactIdentityEvent(t, db, "authoritative-mismatch-linked-target", "Authoritative Mismatch Linked", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	expectedTargetID := mustInsertExactIdentityEvent(t, db, "authoritative-mismatch-expected-target", "Authoritative Mismatch Expected", fixture.venueID, fixture.sourceID, fixture.start.Add(4*time.Hour), fixture.end.Add(4*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	sourceKey, ok := ingest.SourceIdentityKey("authoritative-expected-mismatch")
+	if !ok {
+		t.Fatal("source identity key for authoritative-expected-mismatch was rejected")
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, sourceLinkedTargetID, fixture.sourceID, sourceKey, formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+		t.Fatalf("insert mismatch authoritative source link: %v", err)
+	}
+	beforeEvents := mustCount(t, db, "events")
+
+	err := st.ResolveEventReviewImportAuthoritative(context.Background(), seedstore.EventReviewImportAuthoritativeInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:            fixture.evidenceID,
+		ExpectedTargetEventID: expectedTargetID,
+		SourceIdentityKeys:    []string{sourceKey},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match expected event") {
+		t.Fatalf("resolve authoritative target mismatch error = %v, want expected mismatch", err)
+	}
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	if got := mustCount(t, db, "events"); got != beforeEvents {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents)
+	}
+	var linkedTitle string
+	if err := db.QueryRow(`SELECT name FROM events WHERE id = ?`, sourceLinkedTargetID).Scan(&linkedTitle); err != nil {
+		t.Fatalf("load linked target title after mismatch: %v", err)
+	}
+	if linkedTitle != "Authoritative Mismatch Linked" {
+		t.Fatalf("linked target title after mismatch = %q, want rollback", linkedTitle)
+	}
+	var evidenceEventID sql.NullInt64
+	if err := db.QueryRow(`SELECT event_id FROM event_review_evidence WHERE id = ?`, fixture.evidenceID).Scan(&evidenceEventID); err != nil {
+		t.Fatalf("load mismatch authoritative evidence event id: %v", err)
+	}
+	if evidenceEventID.Valid {
+		t.Fatalf("mismatch authoritative evidence event id = %d, want NULL", evidenceEventID.Int64)
+	}
+}
+
 func TestResolveEventReviewClusterRejectsSelectedImportReviewWhenEvidenceUpdateIsPreempted(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()

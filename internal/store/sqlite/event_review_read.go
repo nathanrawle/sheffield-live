@@ -523,6 +523,18 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 				PromotedReview: parsed.AppliedSupportingSource.PromotedReview,
 			}
 		}
+		if parsed.AppliedAuthoritativeImport != nil {
+			summary.AppliedAuthoritativeImport = &seedstore.EventReviewResolutionAppliedAuthoritativeImportSummary{
+				EventID:    parsed.AppliedAuthoritativeImport.EventID,
+				EventSlug:  parsed.AppliedAuthoritativeImport.EventSlug,
+				Title:      parsed.AppliedAuthoritativeImport.Title,
+				SourceID:   parsed.AppliedAuthoritativeImport.SourceID,
+				SourceName: parsed.AppliedAuthoritativeImport.SourceName,
+				SourceURL:  parsed.AppliedAuthoritativeImport.SourceURL,
+				EvidenceID: parsed.AppliedAuthoritativeImport.EvidenceID,
+				Result:     parsed.AppliedAuthoritativeImport.Result,
+			}
+		}
 		summary.AppliedSeparations = make([]seedstore.EventReviewResolutionAppliedSeparationSummary, 0, len(parsed.AppliedSeparations))
 		for _, separation := range parsed.AppliedSeparations {
 			summary.AppliedSeparations = append(summary.AppliedSeparations, seedstore.EventReviewResolutionAppliedSeparationSummary{
@@ -566,15 +578,16 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 }
 
 type eventReviewResolutionSnapshotParsed struct {
-	RepairRunID             *int64                                                    `json:"repair_run_id,omitempty"`
-	SupersededByClusterID   *int64                                                    `json:"superseded_by_cluster_id,omitempty"`
-	CanonicalEventID        *int64                                                    `json:"canonical_event_id,omitempty"`
-	AppliedAutoResolution   *eventReviewResolutionAppliedAutoResolutionSnapshotView   `json:"applied_auto_resolution,omitempty"`
-	AppliedImportListing    *eventReviewResolutionAppliedImportListingSnapshotView    `json:"applied_import_listing,omitempty"`
-	AppliedSupportingSource *eventReviewResolutionAppliedSupportingSourceSnapshotView `json:"applied_supporting_source,omitempty"`
-	AppliedSeparations      []eventReviewResolutionAppliedSeparationSnapshotView      `json:"applied_separations,omitempty"`
-	AppliedTitleRepair      *eventReviewResolutionAppliedTitleRepairSnapshotView      `json:"applied_title_repair,omitempty"`
-	AppliedLiveActions      []eventReviewResolutionAppliedLiveActionSnapshotView      `json:"applied_live_actions,omitempty"`
+	RepairRunID                *int64                                                       `json:"repair_run_id,omitempty"`
+	SupersededByClusterID      *int64                                                       `json:"superseded_by_cluster_id,omitempty"`
+	CanonicalEventID           *int64                                                       `json:"canonical_event_id,omitempty"`
+	AppliedAutoResolution      *eventReviewResolutionAppliedAutoResolutionSnapshotView      `json:"applied_auto_resolution,omitempty"`
+	AppliedImportListing       *eventReviewResolutionAppliedImportListingSnapshotView       `json:"applied_import_listing,omitempty"`
+	AppliedSupportingSource    *eventReviewResolutionAppliedSupportingSourceSnapshotView    `json:"applied_supporting_source,omitempty"`
+	AppliedAuthoritativeImport *eventReviewResolutionAppliedAuthoritativeImportSnapshotView `json:"applied_authoritative_import,omitempty"`
+	AppliedSeparations         []eventReviewResolutionAppliedSeparationSnapshotView         `json:"applied_separations,omitempty"`
+	AppliedTitleRepair         *eventReviewResolutionAppliedTitleRepairSnapshotView         `json:"applied_title_repair,omitempty"`
+	AppliedLiveActions         []eventReviewResolutionAppliedLiveActionSnapshotView         `json:"applied_live_actions,omitempty"`
 }
 
 type eventReviewResolutionAppliedAutoResolutionSnapshotView struct {
@@ -617,6 +630,17 @@ type eventReviewResolutionAppliedSeparationSnapshotView struct {
 	EndpointAKey string `json:"endpoint_a_key,omitempty"`
 	EndpointBKey string `json:"endpoint_b_key,omitempty"`
 	Reason       string `json:"reason,omitempty"`
+}
+
+type eventReviewResolutionAppliedAuthoritativeImportSnapshotView struct {
+	EventID    int64  `json:"event_id"`
+	EventSlug  string `json:"event_slug,omitempty"`
+	Title      string `json:"title,omitempty"`
+	SourceID   int64  `json:"source_id,omitempty"`
+	SourceName string `json:"source_name,omitempty"`
+	SourceURL  string `json:"source_url,omitempty"`
+	EvidenceID int64  `json:"evidence_id,omitempty"`
+	Result     string `json:"result,omitempty"`
 }
 
 type eventReviewResolutionAppliedLiveActionSnapshotView struct {
