@@ -11,6 +11,8 @@ import (
 )
 
 const theWashingtonVenueName = "The Washington"
+const theWashingtonOfficialCalendarID = "c_u2bs6ittml6rm5k0l5qjt3pn1o@group.calendar.google.com"
+const theWashingtonSourceVenueEvidence = "The Washington (official embedded calendar)"
 
 var theWashingtonCalendarIDPattern = regexp.MustCompile(`(?i)googleCalendarId\s*:\s*['"]([^'"]+)['"]`)
 var theWashingtonCalendarAPIKeyPattern = regexp.MustCompile(`(?i)googleCalendarApiKey\s*:\s*['"]([^'"]+)['"]`)
@@ -27,6 +29,9 @@ func the_washington_api_links(pageURL string, body []byte, limit int) ([]string,
 	id := theWashingtonCalendarID(body)
 	if id == "" {
 		return nil, fmt.Errorf("no Google Calendar ID found on The Washington calendar page")
+	}
+	if id != theWashingtonOfficialCalendarID {
+		return nil, fmt.Errorf("unexpected The Washington Google Calendar ID %q", id)
 	}
 	key := theWashingtonCalendarAPIKey(body)
 	if key == "" {
@@ -45,9 +50,10 @@ func ParseTheWashingtonAPIDetailPage(pageURL string, raw []byte) ParseResult {
 
 	candidateLimit := theWashingtonCalendarURLMaxResults(pageURL)
 	requestedTimeMin, hasRequestedTimeMin := theWashingtonCalendarURLTimeMin(pageURL)
+	sourceVenueEvidence := theWashingtonHasOfficialCalendarSourceEvidence(pageURL)
 	var result ParseResult
 	for _, item := range payload.Items {
-		candidate, skip, ok, err := theWashingtonCandidateFromAPI(pageURL, item)
+		candidate, skip, ok, err := theWashingtonCandidateFromAPI(pageURL, item, sourceVenueEvidence)
 		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
 			continue
@@ -144,6 +150,25 @@ func theWashingtonCalendarURLTimeMin(pageURL string) (time.Time, bool) {
 	return parsedTimeMin, true
 }
 
+func theWashingtonHasOfficialCalendarSourceEvidence(pageURL string) bool {
+	parsed, err := url.Parse(pageURL)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(parsed.Host, "www.googleapis.com") {
+		return false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) != 5 {
+		return false
+	}
+	return parts[0] == "calendar" &&
+		parts[1] == "v3" &&
+		parts[2] == "calendars" &&
+		parts[3] == theWashingtonOfficialCalendarID &&
+		parts[4] == "events"
+}
+
 type theWashingtonAPIFeed struct {
 	Items []theWashingtonAPIEvent `json:"items"`
 }
@@ -166,7 +191,7 @@ type theWashingtonAPIEvent struct {
 	} `json:"end"`
 }
 
-func theWashingtonCandidateFromAPI(pageURL string, item theWashingtonAPIEvent) (EventCandidate, ParseSkip, bool, error) {
+func theWashingtonCandidateFromAPI(pageURL string, item theWashingtonAPIEvent, sourceVenueEvidence bool) (EventCandidate, ParseSkip, bool, error) {
 	title := strings.TrimSpace(item.Summary)
 	skip := ParseSkip{UID: strings.TrimSpace(firstNonEmpty(item.ICalUID, item.ID)), Summary: title}
 	if title == "" {
@@ -200,10 +225,12 @@ func theWashingtonCandidateFromAPI(pageURL string, item theWashingtonAPIEvent) (
 
 	rawLocation := strings.TrimSpace(item.Location)
 	if rawLocation == "" {
-		skip.Reason = "missing venue evidence"
-		return EventCandidate{}, skip, true, nil
-	}
-	if !theWashingtonVenuePattern.MatchString(rawLocation) {
+		if !sourceVenueEvidence {
+			skip.Reason = "missing venue evidence"
+			return EventCandidate{}, skip, true, nil
+		}
+		rawLocation = theWashingtonSourceVenueEvidence
+	} else if !theWashingtonVenuePattern.MatchString(rawLocation) {
 		skip.Reason = "unsupported venue"
 		return EventCandidate{}, skip, true, nil
 	}

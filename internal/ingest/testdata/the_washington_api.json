@@ -12,7 +12,6 @@
       "htmlLink": "https://www.google.com/calendar/event?eid=Xzhrc2o2aDlrNnNxM2diYTY2NHBqZWI5azg1MTQyYmExOGNxMzJiOW42NHBrMmg5bzhoMGs0Z3E0OGtfMjAyNjA1MjZUMjAwMDAwWiBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc",
       "summary": "[DJ] FIESTA!",
       "description": "Week nights are for dancing.",
-      "location": "The Washington, 79 Fitzwilliam St, Sheffield City Centre, Sheffield S1 4JP, UK",
       "start": {
         "dateTime": "2026-05-26T21:00:00+01:00",
         "timeZone": "Europe/London"
@@ -29,7 +28,6 @@
       "status": "confirmed",
       "htmlLink": "https://www.google.com/calendar/event?eid=MG4ybHZvZzBqZ2IzcG1iOXI0djRnaW9pZDYgY191MmJzNml0dG1sNnJtNWswbDVxanQzcG4xb0Bn",
       "summary": "LIVE: Slackrr",
-      "location": "The Washington, 79 Fitzwilliam St, Sheffield City Centre, Sheffield S1 4JP, UK",
       "start": {
         "date": "2026-10-30"
       },
@@ -45,7 +43,6 @@
       "htmlLink": "https://www.google.com/calendar/event?eid=cXVpei1uaWdodCBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc",
       "summary": "Quiz Night",
       "description": "General knowledge pub quiz.",
-      "location": "The Washington, 79 Fitzwilliam St, Sheffield City Centre, Sheffield S1 4JP, UK",
       "start": {
         "dateTime": "2026-05-28T20:00:00+01:00",
         "timeZone": "Europe/London"
@@ -55,23 +52,6 @@
         "timeZone": "Europe/London"
       },
       "iCalUID": "quiz-night@google.com"
-    },
-    {
-      "kind": "calendar#event",
-      "id": "missing-venue",
-      "status": "confirmed",
-      "htmlLink": "https://www.google.com/calendar/event?eid=bWlzc2luZy12ZW51ZSBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc",
-      "summary": "[DJ] No Venue Evidence",
-      "description": "DJ night without a per-event location.",
-      "start": {
-        "dateTime": "2026-05-29T20:00:00+01:00",
-        "timeZone": "Europe/London"
-      },
-      "end": {
-        "dateTime": "2026-05-29T23:00:00+01:00",
-        "timeZone": "Europe/London"
-      },
-      "iCalUID": "missing-venue@google.com"
     },
     {
       "kind": "calendar#event",

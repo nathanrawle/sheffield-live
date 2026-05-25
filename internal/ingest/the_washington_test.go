@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,7 @@ func TestParseTheWashingtonAPIDetailPageParsesMusicEventAndSkipsUnsupportedItems
 	if got, want := len(result.Candidates), 1; got != want {
 		t.Fatalf("candidates = %d, want %d", got, want)
 	}
-	if got, want := len(result.Skips), 4; got != want {
+	if got, want := len(result.Skips), 3; got != want {
 		t.Fatalf("skips = %d, want %d", got, want)
 	}
 
@@ -72,7 +73,7 @@ func TestParseTheWashingtonAPIDetailPageParsesMusicEventAndSkipsUnsupportedItems
 	if got, want := candidate.Location, theWashingtonVenueName; got != want {
 		t.Fatalf("location = %q, want %q", got, want)
 	}
-	if got, want := candidate.LocationRaw, "The Washington, 79 Fitzwilliam St, Sheffield City Centre, Sheffield S1 4JP, UK"; got != want {
+	if got, want := candidate.LocationRaw, theWashingtonSourceVenueEvidence; got != want {
 		t.Fatalf("location raw = %q, want %q", got, want)
 	}
 	if got, want := candidate.URL, "https://www.google.com/calendar/event?eid=Xzhrc2o2aDlrNnNxM2diYTY2NHBqZWI5azg1MTQyYmExOGNxMzJiOW42NHBrMmg5bzhoMGs0Z3E0OGtfMjAyNjA1MjZUMjAwMDAwWiBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc"; got != want {
@@ -90,11 +91,29 @@ func TestParseTheWashingtonAPIDetailPageParsesMusicEventAndSkipsUnsupportedItems
 	if got, want := result.Skips[1].Reason, "non-music event"; got != want {
 		t.Fatalf("second skip reason = %q, want %q", got, want)
 	}
-	if got, want := result.Skips[2].Reason, "missing venue evidence"; got != want {
+	if got, want := result.Skips[2].Reason, "unsupported venue"; got != want {
 		t.Fatalf("third skip reason = %q, want %q", got, want)
 	}
-	if got, want := result.Skips[3].Reason, "unsupported venue"; got != want {
-		t.Fatalf("fourth skip reason = %q, want %q", got, want)
+}
+
+func TestParseTheWashingtonAPIDetailPageTrustsOnlyOfficialCalendarSourceVenueEvidence(t *testing.T) {
+	untrustedURL := strings.Replace(theWashingtonExpectedAPIURLLimit10, url.QueryEscape(theWashingtonOfficialCalendarID), "not-the-washington%40group.calendar.google.com", 1)
+	result := ParseTheWashingtonAPIDetailPage(untrustedURL, readFixture(t, "the_washington_api.json"))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 0; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := len(result.Skips), 4; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := result.Skips[0].Summary, "[DJ] FIESTA!"; got != want {
+		t.Fatalf("first skip summary = %q, want %q", got, want)
+	}
+	if got, want := result.Skips[0].Reason, "missing venue evidence"; got != want {
+		t.Fatalf("first skip reason = %q, want %q", got, want)
 	}
 }
 
@@ -208,7 +227,7 @@ func TestRunManualTheWashingtonDiscoversAndParsesCalendarAPI(t *testing.T) {
 	if got, want := report.Totals.Candidates, 1; got != want {
 		t.Fatalf("candidates = %d, want %d", got, want)
 	}
-	if got, want := report.Totals.Skips, 4; got != want {
+	if got, want := report.Totals.Skips, 3; got != want {
 		t.Fatalf("skips = %d, want %d", got, want)
 	}
 	if got, want := report.Calendars[0].URL, apiURL; got != want {
@@ -283,7 +302,7 @@ func TestReplayImportRunRebuildsTheWashingtonReportFromCalendarAPI(t *testing.T)
 			StartedAt:  time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC),
 			FinishedAt: &finishedAt,
 			Status:     "succeeded",
-			Notes:      "links=1 candidates=1 skips=4 errors=0",
+			Notes:      "links=1 candidates=1 skips=3 errors=0",
 			Snapshots: []ReplaySnapshot{
 				{
 					ID:         701,
@@ -351,7 +370,7 @@ func TestReplayImportRunRebuildsTheWashingtonReportFromCalendarAPI(t *testing.T)
 	if got, want := report.Totals.Candidates, 1; got != want {
 		t.Fatalf("candidates = %d, want %d", got, want)
 	}
-	if got, want := report.Totals.Skips, 4; got != want {
+	if got, want := report.Totals.Skips, 3; got != want {
 		t.Fatalf("skips = %d, want %d", got, want)
 	}
 }
