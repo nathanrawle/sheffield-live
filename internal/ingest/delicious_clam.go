@@ -14,6 +14,9 @@ const deliciousClamVenueSlug = "delicious-clam"
 
 var (
 	deliciousClamLegacySeparatorPattern    = regexp.MustCompile(`(?is)\* \* \*`)
+	deliciousClamAnchorElementPattern      = regexp.MustCompile(`(?is)<a\b[^>]*>.*?</a>`)
+	deliciousClamHeadPattern               = regexp.MustCompile(`(?is)<head\b[^>]*>.*?</head>`)
+	deliciousClamBodyPattern               = regexp.MustCompile(`(?is)<body\b[^>]*>(.*?)</body>`)
 	deliciousClamSkiddleEventPathPattern   = regexp.MustCompile(`(?i)^/e/\d+/?$`)
 	deliciousClamSkiddleWhatsOnPathPattern = regexp.MustCompile(`(?i)^/whats-on/Sheffield/Delicious-Clam/[^/]+/\d+/?$`)
 	deliciousClamLongDatePattern           = regexp.MustCompile(`(?i)(?:\b(?:mon|tues|wednes|thurs|fri|sat|sun)(?:day)?\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\s+(20\d{2})`)
@@ -21,7 +24,11 @@ var (
 	deliciousClamPerformanceStartsPattern  = regexp.MustCompile(`(?i)performance starts\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{2}:\d{2})`)
 	deliciousClamFromPattern               = regexp.MustCompile(`(?i)\bfrom\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{2}:\d{2})`)
 	deliciousClamTimePattern               = regexp.MustCompile(`(?i)\b(\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{2}:\d{2})\b`)
+	deliciousClamVenueFieldPattern         = regexp.MustCompile(`(?i)\b(?:venue|location)\b\s*:?\s*delicious clam\b`)
+	deliciousClamVenueInSheffieldPattern   = regexp.MustCompile(`(?i)\bdelicious clam\s+in\s+sheffield\b`)
 )
+
+var deliciousClamNow = time.Now
 
 func ExtractDeliciousClamTicketLinks(pageURL string, body []byte, limit int) ([]string, error) {
 	if limit <= 0 {
@@ -41,13 +48,16 @@ func ExtractDeliciousClamTicketLinks(pageURL string, body []byte, limit int) ([]
 		return nil, err
 	}
 
-	matches := htmlAnchorTagPattern.FindAllIndex(scanBody, -1)
+	matches := deliciousClamAnchorElementPattern.FindAll(scanBody, -1)
 	seen := make(map[string]struct{}, len(matches))
 	links := make([]string, 0, min(limit, len(matches)))
 	for _, match := range matches {
-		attrs := parseHTMLAttributes(string(scanBody[match[0]:match[1]]))
+		attrs := parseHTMLAttributes(string(match))
 		resolved, ok := deliciousClamResolvedTicketURL(baseURL, attrs["href"])
 		if !ok {
+			continue
+		}
+		if !deliciousClamListingDateIsCurrentOrFuture(match, attrs, deliciousClamNow()) {
 			continue
 		}
 		if _, exists := seen[resolved]; exists {
@@ -123,6 +133,7 @@ func deliciousClamResolvedTicketURL(base *url.URL, raw string) (string, bool) {
 func deliciousClamTicketPageCandidate(pageURL string, raw []byte) (EventCandidate, ParseSkip, error) {
 	text := deliciousClamCleanText(raw)
 	lines := deliciousClamCleanLines(text)
+	bodyLines := deliciousClamBodyCleanLines(raw)
 	skip := ParseSkip{UID: strings.TrimSpace(pageURL)}
 
 	title := deliciousClamTitle(lines)
@@ -136,7 +147,7 @@ func deliciousClamTicketPageCandidate(pageURL string, raw []byte) (EventCandidat
 		return EventCandidate{}, skip, nil
 	}
 
-	venueText, venueRaw := deliciousClamVenueEvidence(lines)
+	venueText, venueRaw := deliciousClamVenueEvidence(bodyLines)
 	if venueText == "" {
 		skip.Reason = "unsupported venue"
 		return EventCandidate{}, skip, nil
@@ -149,6 +160,10 @@ func deliciousClamTicketPageCandidate(pageURL string, raw []byte) (EventCandidat
 	}
 	if multiDay {
 		skip.Reason = "multi-day event"
+		return EventCandidate{}, skip, nil
+	}
+	if !deliciousClamDateIsCurrentOrFuture(startAt, deliciousClamNow()) {
+		skip.Reason = "past event"
 		return EventCandidate{}, skip, nil
 	}
 
@@ -178,6 +193,16 @@ func deliciousClamCleanLines(text string) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+func deliciousClamBodyCleanLines(raw []byte) []string {
+	body := string(raw)
+	if match := deliciousClamBodyPattern.FindStringSubmatch(body); len(match) == 2 {
+		body = match[1]
+	} else {
+		body = deliciousClamHeadPattern.ReplaceAllString(body, " ")
+	}
+	return deliciousClamCleanLines(semanticDescriptionText(body))
 }
 
 func deliciousClamTitle(lines []string) string {
@@ -227,18 +252,32 @@ func deliciousClamHasNonMusicSignal(title string, lines []string) bool {
 }
 
 func deliciousClamVenueEvidence(lines []string) (string, string) {
-	for _, line := range lines {
+	for i, line := range lines {
 		lower := strings.ToLower(line)
 		switch {
-		case strings.Contains(lower, "delicious clam"):
-			return deliciousClamVenueName, line
 		case strings.Contains(lower, "12 exchange street"):
 			return deliciousClamVenueName, line
 		case strings.Contains(lower, "s2 5ts"):
 			return deliciousClamVenueName, line
+		case deliciousClamVenueFieldPattern.MatchString(line):
+			return deliciousClamVenueName, line
+		case deliciousClamVenueInSheffieldPattern.MatchString(line):
+			return deliciousClamVenueName, line
+		case strings.EqualFold(strings.TrimSpace(line), deliciousClamVenueName) && deliciousClamNearbyAddress(lines, i):
+			return deliciousClamVenueName, line
 		}
 	}
 	return "", ""
+}
+
+func deliciousClamNearbyAddress(lines []string, index int) bool {
+	for i := index + 1; i < len(lines) && i <= index+4; i++ {
+		lower := strings.ToLower(lines[i])
+		if strings.Contains(lower, "12 exchange street") || strings.Contains(lower, "s2 5ts") {
+			return true
+		}
+	}
+	return false
 }
 
 func deliciousClamStartAt(lines []string) (time.Time, int, bool, bool) {
@@ -311,6 +350,35 @@ func deliciousClamDateText(line string) (string, bool) {
 	return "", false
 }
 
+func deliciousClamListingDateIsCurrentOrFuture(anchor []byte, attrs map[string]string, now time.Time) bool {
+	fields := []string{
+		semanticDescriptionText(string(anchor)),
+		attrs["aria-label"],
+		attrs["title"],
+	}
+	for _, field := range fields {
+		dateText, ok := deliciousClamDateText(field)
+		if !ok {
+			continue
+		}
+		date, err := deliciousClamParseDate(dateText)
+		if err != nil {
+			continue
+		}
+		return deliciousClamDateIsCurrentOrFuture(date, now)
+	}
+	return false
+}
+
+func deliciousClamDateIsCurrentOrFuture(value time.Time, now time.Time) bool {
+	loc := deliciousClamLondonLocation()
+	localValue := value.In(loc)
+	localNow := now.In(loc)
+	eventDate := time.Date(localValue.Year(), localValue.Month(), localValue.Day(), 0, 0, 0, 0, loc)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
+	return !eventDate.Before(today)
+}
+
 func deliciousClamTimeText(lines []string, dateIndex int) string {
 	for i := dateIndex; i < len(lines) && i < dateIndex+5; i++ {
 		if timeText := deliciousClamPreferredTimeText(lines[i]); timeText != "" {
@@ -351,10 +419,7 @@ func deliciousClamParseDateTime(dateText, timeText string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
-	loc, err := time.LoadLocation("Europe/London")
-	if err != nil {
-		return time.Time{}, err
-	}
+	loc := deliciousClamLondonLocation()
 	return time.Date(date.Year(), date.Month(), date.Day(), hour, minute, 0, 0, loc), nil
 }
 
@@ -366,10 +431,7 @@ func deliciousClamParseDate(value string) (time.Time, error) {
 	}
 	value = strings.TrimSpace(value)
 
-	loc, err := time.LoadLocation("Europe/London")
-	if err != nil {
-		return time.Time{}, err
-	}
+	loc := deliciousClamLondonLocation()
 
 	if match := deliciousClamSlashDatePattern.FindStringSubmatch(value); len(match) == 4 {
 		day, err := strconv.Atoi(strings.TrimLeft(match[1], "0"))
@@ -402,6 +464,14 @@ func deliciousClamParseDate(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unsupported Delicious Clam date %q", value)
+}
+
+func deliciousClamLondonLocation() *time.Location {
+	loc, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
 
 func deliciousClamParseClock(value string) (int, int, error) {

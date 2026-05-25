@@ -934,6 +934,8 @@ func TestRunManualCorporationParsesLinkedDetailPages(t *testing.T) {
 }
 
 func TestRunManualDeliciousClamFetchesOfficialPageBeforeDelegatedDetailPages(t *testing.T) {
+	freezeDeliciousClamClock(t)
+
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)}
 	calls := []string{}

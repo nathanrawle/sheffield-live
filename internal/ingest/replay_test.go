@@ -387,6 +387,8 @@ func TestReplayImportRunEnrichesYellowArchDescriptionsFromDetailSnapshots(t *tes
 }
 
 func TestReplayImportRunRebuildsDeliciousClamReportFromLinkedDetailSnapshots(t *testing.T) {
+	freezeDeliciousClamClock(t)
+
 	finishedAt := time.Date(2026, 6, 28, 12, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{
 		run: ReplayRun{
