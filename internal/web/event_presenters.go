@@ -3,11 +3,13 @@ package web
 import (
 	"fmt"
 	"html/template"
+	"sort"
 	"strings"
 	"time"
 
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
+	seedstore "sheffield-live/internal/store"
 )
 
 type eventCardLocationMode int
@@ -41,6 +43,8 @@ type EventDetailView struct {
 	Title              string
 	OriginLabel        string
 	Image              EventImageView
+	Images             []EventImageView
+	HasCarousel        bool
 	DescriptionHTML    template.HTML
 	OfficialListingURL string
 	CalendarURL        string
@@ -56,6 +60,10 @@ type EventImageView struct {
 	Alt        string
 	FocusStyle template.CSS
 	Portrait   bool
+	Active     bool
+	Position   int
+	SlideLabel string
+	Loading    string
 }
 
 type EventLocationView struct {
@@ -112,8 +120,12 @@ func (p eventPresenter) Cards(events []domain.Event, mode eventCardLocationMode)
 	return cards
 }
 
-func (p eventPresenter) Detail(event domain.Event, venue domain.Venue) EventDetailView {
-	image := eventImageView(event)
+func (p eventPresenter) Detail(event domain.Event, venue domain.Venue, sourceImages []seedstore.EventImage) EventDetailView {
+	images := eventDetailImageViews(event, sourceImages)
+	var image EventImageView
+	if len(images) > 0 {
+		image = images[0]
+	}
 	headerClass := "event-detail-head"
 	if image.URL != "" {
 		if image.Portrait {
@@ -128,6 +140,8 @@ func (p eventPresenter) Detail(event domain.Event, venue domain.Venue) EventDeta
 		Title:              publicEventTitle(event, map[string]string{venue.Slug: venue.Name}),
 		OriginLabel:        originLabel(event.Origin),
 		Image:              image,
+		Images:             images,
+		HasCarousel:        len(images) > 1,
 		DescriptionHTML:    descriptionHTML(event.Description),
 		OfficialListingURL: strings.TrimSpace(event.OfficialListingURL),
 		CalendarURL:        strings.TrimSpace(event.CalendarURL),
@@ -191,7 +205,67 @@ func eventImageView(event domain.Event) EventImageView {
 		Alt:        eventImageAlt(event),
 		FocusStyle: imageFocusStyle(event.ImageFocusX, event.ImageFocusY),
 		Portrait:   eventImagePortrait(event),
+		Loading:    "lazy",
 	}
+}
+
+func eventDetailImageViews(event domain.Event, sourceImages []seedstore.EventImage) []EventImageView {
+	views := []EventImageView{}
+	seen := map[string]struct{}{}
+	if image := eventImageView(event); image.URL != "" {
+		image.Loading = "eager"
+		views = append(views, image)
+		seen[image.URL] = struct{}{}
+	}
+	sorted := append([]seedstore.EventImage(nil), sourceImages...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		left := sorted[i]
+		right := sorted[j]
+		for _, cmp := range []int{
+			strings.Compare(strings.TrimSpace(left.SourceName), strings.TrimSpace(right.SourceName)),
+			strings.Compare(strings.TrimSpace(left.ListingURL), strings.TrimSpace(right.ListingURL)),
+			strings.Compare(strings.TrimSpace(left.ImageSourceURL), strings.TrimSpace(right.ImageSourceURL)),
+			strings.Compare(strings.TrimSpace(left.ImageURL), strings.TrimSpace(right.ImageURL)),
+		} {
+			if cmp < 0 {
+				return true
+			}
+			if cmp > 0 {
+				return false
+			}
+		}
+		return false
+	})
+	for _, sourceImage := range sorted {
+		url := strings.TrimSpace(sourceImage.ImageURL)
+		if url == "" {
+			continue
+		}
+		if _, ok := seen[url]; ok {
+			continue
+		}
+		seen[url] = struct{}{}
+		alt := strings.TrimSpace(sourceImage.Alt)
+		if alt == "" {
+			alt = event.Name
+		}
+		views = append(views, EventImageView{
+			URL:        url,
+			Alt:        alt,
+			FocusStyle: imageFocusStyle(sourceImage.FocusX, sourceImage.FocusY),
+			Portrait:   eventImagePortraitFromDimensions(sourceImage.Width, sourceImage.Height),
+			Loading:    "lazy",
+		})
+	}
+	for i := range views {
+		views[i].Position = i
+		views[i].Active = i == 0
+		views[i].SlideLabel = fmt.Sprintf("Show image %d", i+1)
+		if views[i].Loading == "" {
+			views[i].Loading = "lazy"
+		}
+	}
+	return views
 }
 
 func eventImageAlt(event domain.Event) string {
@@ -202,7 +276,11 @@ func eventImageAlt(event domain.Event) string {
 }
 
 func eventImagePortrait(event domain.Event) bool {
-	return event.ImageWidth > 0 && event.ImageHeight > event.ImageWidth
+	return eventImagePortraitFromDimensions(event.ImageWidth, event.ImageHeight)
+}
+
+func eventImagePortraitFromDimensions(width, height int) bool {
+	return width > 0 && height > width
 }
 
 func imageFocusStyle(x, y int) template.CSS {

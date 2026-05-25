@@ -5,7 +5,24 @@
       <h1>{{.EventDetail.Title}}</h1>
       {{with .EventDetail.OriginLabel}}<p class="origin-badge">{{.}}</p>{{end}}
     </div>
-    {{if .EventDetail.Image.URL}}
+    {{if .EventDetail.HasCarousel}}
+    <figure class="event-detail-media event-detail-carousel" data-event-carousel aria-label="Event images">
+      <div class="event-detail-carousel-slides">
+        {{range .EventDetail.Images}}
+        <img class="event-detail-carousel-slide{{if .Active}} is-active{{end}}" src="{{.URL}}" alt="{{.Alt}}" style="{{.FocusStyle}}" loading="{{.Loading}}" decoding="async" data-carousel-slide="{{.Position}}"{{if not .Active}} hidden aria-hidden="true"{{end}}>
+        {{end}}
+      </div>
+      <div class="event-detail-carousel-controls" data-carousel-controls hidden>
+        <button type="button" class="event-detail-carousel-button" data-carousel-prev aria-label="Show previous image">&larr;</button>
+        <div class="event-detail-carousel-dots" aria-label="Choose event image">
+          {{range .EventDetail.Images}}
+          <button type="button" class="event-detail-carousel-dot{{if .Active}} is-active{{end}}" data-carousel-dot="{{.Position}}" aria-label="{{.SlideLabel}}"{{if .Active}} aria-current="true"{{end}}></button>
+          {{end}}
+        </div>
+        <button type="button" class="event-detail-carousel-button" data-carousel-next aria-label="Show next image">&rarr;</button>
+      </div>
+    </figure>
+    {{else if .EventDetail.Image.URL}}
     <figure class="event-detail-media">
       <img src="{{.EventDetail.Image.URL}}" alt="{{.EventDetail.Image.Alt}}" style="{{.EventDetail.Image.FocusStyle}}" loading="eager" decoding="async">
     </figure>

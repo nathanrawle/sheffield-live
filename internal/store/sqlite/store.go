@@ -48,7 +48,8 @@ const (
 	schemaVersionV26     = 26
 	schemaVersionV27     = 27
 	schemaVersionV28     = 28
-	schemaVersionCurrent = schemaVersionV28
+	schemaVersionV29     = 29
+	schemaVersionCurrent = schemaVersionV29
 	rfc3339Timestamp     = time.RFC3339
 	foreignKeysPragma    = "PRAGMA foreign_keys = ON"
 )
@@ -85,6 +86,7 @@ var migrations = []struct {
 	{version: schemaVersionV26, path: "migrations/0026_event_review_schema_foundation.sql"},
 	{version: schemaVersionV27, path: "migrations/0027_event_review_cluster_staging_key.sql"},
 	{version: schemaVersionV28, path: "migrations/0028_import_run_snapshot_retention.sql"},
+	{version: schemaVersionV29, path: "migrations/0029_event_source_images.sql"},
 }
 
 //go:embed migrations/*.sql
@@ -186,6 +188,9 @@ func Open(path string, sourceMetadata ...ingest.SourceMetadataLookup) (st *Store
 	}
 	if err := backfillEventGenresTx(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: backfill event genres: %w", path, err)
+	}
+	if err := backfillEventSourceImagesTx(ctx, tx); err != nil {
+		return nil, fmt.Errorf("open sqlite store %q: backfill event source images: %w", path, err)
 	}
 	if err := validate(ctx, tx); err != nil {
 		return nil, fmt.Errorf("open sqlite store %q: validate store: %w", path, err)

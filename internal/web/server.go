@@ -41,6 +41,7 @@ type Server struct {
 	replayStore                      ingest.ReplayStore
 	importRunEventReviewClusterStore ImportRunEventReviewClusterStore
 	secondarySourceStore             EventSecondarySourceInfoStore
+	eventSourceImagesStore           EventSourceImagesStore
 	eventGenreStore                  EventGenreStore
 	genreConfigStore                 GenreConfigurationStore
 	readyChecker                     ReadyChecker
@@ -95,6 +96,10 @@ type EventSecondarySourceInfoStore interface {
 	EventSecondarySourceInfoByEventSlug(ctx context.Context, slug string) ([]store.EventSecondarySourceInfo, error)
 }
 
+type EventSourceImagesStore interface {
+	EventSourceImagesByEventSlug(ctx context.Context, slug string) ([]store.EventImage, error)
+}
+
 type EventGenreStore interface {
 	EventGenresByEventSlug(ctx context.Context, slug string) ([]genre.Match, error)
 }
@@ -120,6 +125,7 @@ type ServerDeps struct {
 	ReplayStore                      ingest.ReplayStore
 	ImportRunEventReviewClusterStore ImportRunEventReviewClusterStore
 	EventSecondarySourceStore        EventSecondarySourceInfoStore
+	EventSourceImagesStore           EventSourceImagesStore
 	EventGenreStore                  EventGenreStore
 	GenreConfigurationStore          GenreConfigurationStore
 	ReadyChecker                     ReadyChecker
@@ -419,6 +425,7 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		replayStore:                      deps.ReplayStore,
 		importRunEventReviewClusterStore: importRunEventReviewClusterStore,
 		secondarySourceStore:             deps.EventSecondarySourceStore,
+		eventSourceImagesStore:           deps.EventSourceImagesStore,
 		eventGenreStore:                  deps.EventGenreStore,
 		genreConfigStore:                 deps.GenreConfigurationStore,
 		readyChecker:                     deps.ReadyChecker,
@@ -2888,6 +2895,16 @@ func (s *Server) renderEventDetailPage(w http.ResponseWriter, r *http.Request, e
 		}
 		secondarySources = loaded
 	}
+	var sourceImages []store.EventImage
+	if s.eventSourceImagesStore != nil {
+		loaded, err := s.eventSourceImagesStore.EventSourceImagesByEventSlug(r.Context(), event.Slug)
+		if err != nil {
+			s.logRequestError(r, "load event source images", err, "event_slug", event.Slug)
+			http.Error(w, "event source images not available", http.StatusInternalServerError)
+			return
+		}
+		sourceImages = loaded
+	}
 	var eventGenres []genre.Match
 	if s.eventGenreStore != nil {
 		loaded, err := s.eventGenreStore.EventGenresByEventSlug(r.Context(), event.Slug)
@@ -2905,7 +2922,7 @@ func (s *Server) renderEventDetailPage(w http.ResponseWriter, r *http.Request, e
 		Active:                "events",
 		Now:                   s.now(),
 		Event:                 event,
-		EventDetail:           newEventPresenter(venueNames, map[string]string{venue.Slug: venue.Neighbourhood}, s.localLocation).Detail(event, venue),
+		EventDetail:           newEventPresenter(venueNames, map[string]string{venue.Slug: venue.Neighbourhood}, s.localLocation).Detail(event, venue, sourceImages),
 		VenueNames:            venueNames,
 		EventSecondarySources: secondarySources,
 		EventGenres:           eventGenres,

@@ -69,6 +69,11 @@ type mediaCleanupEventImageRow struct {
 	ImageSourceURL string
 }
 
+type mediaCleanupSourceImageRow struct {
+	SourceImageID int64
+	mediaCleanupEventImageRow
+}
+
 type mediaCleanupEvidencePayload struct {
 	StartAt        string `json:"candidate_start_at"`
 	EndAt          string `json:"candidate_end_at"`
@@ -83,19 +88,20 @@ type mediaCleanupOpenEvidenceRow struct {
 }
 
 type mediaCleanupState struct {
-	opts               MediaCleanupOptions
-	report             MediaCleanupReport
-	assets             []mediaCleanupAsset
-	assetBySourceURL   map[string][]int
-	assetByPublicURL   map[string][]int
-	retainedAssets     map[int]struct{}
-	retainedStorage    map[string]struct{}
-	retainedPublicURLs map[string]struct{}
-	knownStorage       map[string]struct{}
-	existingFiles      map[string]struct{}
-	clearEventIDs      []int64
-	deleteAssetSources []string
-	filesToDelete      map[string]struct{}
+	opts                 MediaCleanupOptions
+	report               MediaCleanupReport
+	assets               []mediaCleanupAsset
+	assetBySourceURL     map[string][]int
+	assetByPublicURL     map[string][]int
+	retainedAssets       map[int]struct{}
+	retainedStorage      map[string]struct{}
+	retainedPublicURLs   map[string]struct{}
+	knownStorage         map[string]struct{}
+	existingFiles        map[string]struct{}
+	clearEventIDs        []int64
+	deleteSourceImageIDs []int64
+	deleteAssetSources   []string
+	filesToDelete        map[string]struct{}
 }
 
 func (s *Store) CleanupMedia(ctx context.Context, opts MediaCleanupOptions) (MediaCleanupReport, error) {
@@ -117,6 +123,9 @@ func (s *Store) CleanupMedia(ctx context.Context, opts MediaCleanupOptions) (Med
 		return MediaCleanupReport{}, err
 	}
 	if err := state.classifyEventRows(ctx, tx); err != nil {
+		return MediaCleanupReport{}, err
+	}
+	if err := state.classifySourceImageRows(ctx, tx); err != nil {
 		return MediaCleanupReport{}, err
 	}
 	if err := state.classifyOpenEvidenceRows(ctx, tx); err != nil {
@@ -293,6 +302,76 @@ func scanMediaCleanupEventImageRow(rows *sql.Rows) (mediaCleanupEventImageRow, e
 	return event, nil
 }
 
+func (s *mediaCleanupState) classifySourceImageRows(ctx context.Context, q queryer) error {
+	rows, err := q.QueryContext(ctx, `
+		SELECT
+			i.id,
+			e.id,
+			e.slug,
+			e.start_at,
+			e.end_at,
+			i.image_url,
+			i.image_source_url
+		FROM event_source_images i
+		JOIN events e ON e.id = i.event_id
+		WHERE TRIM(i.image_url) <> ''
+			OR TRIM(i.image_source_url) <> ''
+		ORDER BY i.id
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		row, err := scanMediaCleanupSourceImageRow(rows)
+		if err != nil {
+			return err
+		}
+		displayEnd, ok := mediaCleanupDisplayEnd(row.Start, row.End, s.opts.Location)
+		if !ok {
+			return fmt.Errorf("event %q has invalid display end", row.Slug)
+		}
+		if displayEnd.After(s.opts.Now) {
+			s.retainImageRefs(row.ImageSourceURL, row.ImageURL)
+			continue
+		}
+		if s.eventImageIsManaged(row.mediaCleanupEventImageRow) {
+			s.deleteSourceImageIDs = append(s.deleteSourceImageIDs, row.SourceImageID)
+			s.report.Items = append(s.report.Items, MediaCleanupItem{
+				Action:    "delete_event_source_image",
+				Reason:    "event_passed",
+				EventSlug: row.Slug,
+				PublicURL: strings.TrimSpace(row.ImageURL),
+				SourceURL: strings.TrimSpace(row.ImageSourceURL),
+			})
+		}
+	}
+	return rows.Err()
+}
+
+func scanMediaCleanupSourceImageRow(rows *sql.Rows) (mediaCleanupSourceImageRow, error) {
+	var row mediaCleanupSourceImageRow
+	var startText string
+	var endText sql.NullString
+	if err := rows.Scan(&row.SourceImageID, &row.ID, &row.Slug, &startText, &endText, &row.ImageURL, &row.ImageSourceURL); err != nil {
+		return mediaCleanupSourceImageRow{}, err
+	}
+	start, err := parseRFC3339UTC(startText)
+	if err != nil {
+		return mediaCleanupSourceImageRow{}, fmt.Errorf("parse event %q start time: %w", row.Slug, err)
+	}
+	end, err := parseNullableRFC3339UTC(endText)
+	if err != nil {
+		return mediaCleanupSourceImageRow{}, fmt.Errorf("parse event %q end time: %w", row.Slug, err)
+	}
+	row.Start = start
+	row.End = end
+	row.ImageURL = strings.TrimSpace(row.ImageURL)
+	row.ImageSourceURL = strings.TrimSpace(row.ImageSourceURL)
+	return row, nil
+}
+
 func (s *mediaCleanupState) classifyOpenEvidenceRows(ctx context.Context, q queryer) error {
 	rows, err := q.QueryContext(ctx, `
 		SELECT c.id, e.id, e.payload
@@ -438,6 +517,14 @@ func (s *mediaCleanupState) applyDBCleanup(ctx context.Context, tx execer) error
 				image_focus_y = 50
 			WHERE id = ?
 		`, eventID); err != nil {
+			return err
+		}
+	}
+	for _, sourceImageID := range s.deleteSourceImageIDs {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM event_source_images
+			WHERE id = ?
+		`, sourceImageID); err != nil {
 			return err
 		}
 	}

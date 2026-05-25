@@ -6931,6 +6931,189 @@ func TestEventDetailRendersHeroAndPortraitImages(t *testing.T) {
 	assertContains(t, portraitBody, `<img src="/media/events/portrait.jpg" alt="Portrait Show" style="--image-focus-x: 60%; --image-focus-y: 40%;" loading="eager" decoding="async">`)
 }
 
+func TestSQLiteEventDetailRendersSourceImageCarousel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	primarySourceID := mustInsertAdminSource(t, db, "Primary listings", "https://example.test/primary")
+	mustInsertAdminEvent(
+		t,
+		db,
+		primarySourceID,
+		"carousel-source-images",
+		"leadmill",
+		"Carousel Source Images",
+		fixtureLocalTime(2026, time.May, 9, 19, 30),
+		fixtureLocalTime(2026, time.May, 9, 22, 30),
+		"Carousel description.",
+	)
+	if _, err := db.Exec(`
+		UPDATE events
+		SET image_url = ?,
+			image_source_url = ?,
+			image_alt = ?,
+			image_width = ?,
+			image_height = ?,
+			image_focus_x = ?,
+			image_focus_y = ?
+		WHERE slug = ?
+	`, "/media/events/canonical.jpg", "https://images.example.test/canonical.jpg", "Canonical poster", 1600, 900, 25, 75, "carousel-source-images"); err != nil {
+		t.Fatalf("update canonical image: %v", err)
+	}
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, "carousel-source-images").Scan(&eventID); err != nil {
+		t.Fatalf("lookup event id: %v", err)
+	}
+	duplicateSourceID := mustInsertAdminSource(t, db, "Mirror duplicate", "https://example.test/mirror-duplicate")
+	uniqueSourceID := mustInsertAdminSource(t, db, "Mirror unique", "https://example.test/mirror-unique")
+	now := "2026-04-21T10:00:00Z"
+	for _, row := range []struct {
+		sourceID       int64
+		identityKey    string
+		imageURL       string
+		imageSourceURL string
+		alt            string
+		width          int
+		height         int
+		focusX         int
+		focusY         int
+	}{
+		{
+			sourceID:       duplicateSourceID,
+			identityKey:    "url:https://example.test/duplicate",
+			imageURL:       "/media/events/canonical.jpg",
+			imageSourceURL: "https://images.example.test/duplicate-canonical.jpg",
+			alt:            "Duplicate canonical poster",
+			width:          1600,
+			height:         900,
+			focusX:         50,
+			focusY:         50,
+		},
+		{
+			sourceID:       uniqueSourceID,
+			identityKey:    "url:https://example.test/unique",
+			imageURL:       "/media/events/source.jpg",
+			imageSourceURL: "https://images.example.test/source.jpg",
+			alt:            "Source poster",
+			width:          1200,
+			height:         800,
+			focusX:         80,
+			focusY:         20,
+		},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO event_source_images (
+				event_id,
+				source_id,
+				source_identity_key,
+				image_url,
+				image_source_url,
+				image_alt,
+				image_width,
+				image_height,
+				image_focus_x,
+				image_focus_y,
+				first_seen_at,
+				last_seen_at,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, eventID, row.sourceID, row.identityKey, row.imageURL, row.imageSourceURL, row.alt, row.width, row.height, row.focusX, row.focusY, now, now, now); err != nil {
+			t.Fatalf("insert event source image: %v", err)
+		}
+	}
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/events/carousel-source-images")
+	assertContains(t, body, `<header class="event-detail-head hero-image">`)
+	assertContains(t, body, `<figure class="event-detail-media event-detail-carousel" data-event-carousel aria-label="Event images">`)
+	assertContains(t, body, `data-carousel-controls hidden`)
+	assertContains(t, body, `<img class="event-detail-carousel-slide is-active" src="/media/events/canonical.jpg" alt="Canonical poster" style="--image-focus-x: 25%; --image-focus-y: 75%;" loading="eager" decoding="async" data-carousel-slide="0">`)
+	assertContains(t, body, `<img class="event-detail-carousel-slide" src="/media/events/source.jpg" alt="Source poster" style="--image-focus-x: 80%; --image-focus-y: 20%;" loading="lazy" decoding="async" data-carousel-slide="1" hidden aria-hidden="true">`)
+	assertContains(t, body, `data-carousel-dot="0" aria-label="Show image 1" aria-current="true"`)
+	if got := strings.Count(body, `src="/media/events/canonical.jpg"`); got != 1 {
+		t.Fatalf("canonical image render count = %d, want 1", got)
+	}
+}
+
+func TestSQLiteEventDetailUsesSingleSupportingImageWithoutCarousel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	primarySourceID := mustInsertAdminSource(t, db, "Primary listings", "https://example.test/primary-single")
+	mustInsertAdminEvent(
+		t,
+		db,
+		primarySourceID,
+		"supporting-only-image",
+		"leadmill",
+		"Supporting Only Image",
+		fixtureLocalTime(2026, time.May, 10, 19, 30),
+		fixtureLocalTime(2026, time.May, 10, 22, 30),
+		"Supporting image description.",
+	)
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, "supporting-only-image").Scan(&eventID); err != nil {
+		t.Fatalf("lookup event id: %v", err)
+	}
+	sourceID := mustInsertAdminSource(t, db, "Mirror", "https://example.test/mirror-single")
+	now := "2026-04-21T10:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO event_source_images (
+			event_id,
+			source_id,
+			source_identity_key,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y,
+			first_seen_at,
+			last_seen_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, eventID, sourceID, "url:https://example.test/mirror-single", "/media/events/supporting-only.jpg", "https://images.example.test/supporting-only.jpg", "", 800, 1200, 60, 40, now, now, now); err != nil {
+		t.Fatalf("insert event source image: %v", err)
+	}
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/events/supporting-only-image")
+	assertContains(t, body, `<header class="event-detail-head portrait-image">`)
+	assertContains(t, body, `<img src="/media/events/supporting-only.jpg" alt="Supporting Only Image" style="--image-focus-x: 60%; --image-focus-y: 40%;" loading="eager" decoding="async">`)
+	assertNotContains(t, body, `data-event-carousel`)
+}
+
 func TestVenueDetailShowsEmptyState(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/venues/empty-room")
@@ -8239,6 +8422,9 @@ func testServerDeps(value any) ServerDeps {
 	}
 	if secondarySourceStore, ok := value.(EventSecondarySourceInfoStore); ok {
 		deps.EventSecondarySourceStore = secondarySourceStore
+	}
+	if eventSourceImagesStore, ok := value.(EventSourceImagesStore); ok {
+		deps.EventSourceImagesStore = eventSourceImagesStore
 	}
 	if eventGenreStore, ok := value.(EventGenreStore); ok {
 		deps.EventGenreStore = eventGenreStore

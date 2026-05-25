@@ -178,6 +178,24 @@ func (s *Store) UpdateImageAssetFocus(ctx context.Context, sourceURL string, foc
 	`, focus.X, focus.Y, sourceURL); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE event_source_images
+		SET image_focus_x = ?, image_focus_y = ?
+		WHERE image_source_url = ?
+	`, focus.X, focus.Y, sourceURL); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE event_source_images
+		SET image_focus_x = ?, image_focus_y = ?
+		WHERE image_url IN (
+			SELECT public_url
+			FROM image_assets
+			WHERE source_url = ?
+		)
+	`, focus.X, focus.Y, sourceURL); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
