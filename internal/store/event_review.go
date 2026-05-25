@@ -429,6 +429,7 @@ type EventReviewImportReadiness struct {
 	ComparisonBlockingReasons  []string
 	PayloadWarnings            []string
 	Candidates                 []EventReviewImportCandidateSummary
+	ExistingEventTargets       []EventReviewImportExistingEventTarget
 	CandidateIdentityStatuses  []EventReviewImportCandidateIdentityStatus
 	SelectedCandidateReadiness *EventReviewImportSelectedCandidateReadiness
 	IdentityRows               []EventReviewImportIdentityRow
@@ -436,19 +437,64 @@ type EventReviewImportReadiness struct {
 }
 
 type EventReviewImportSelectedCandidateReadiness struct {
-	Eligible            bool
-	BlockingReasons     []string
-	EvidenceID          int64
-	EvidenceFingerprint string
-	EventID             *int64
-	EventSlug           string
-	Title               string
-	VenueSlug           string
-	VenueText           string
-	StartAt             *time.Time
-	SelectedSourceKeys  []EventReviewImportCandidateSourceIdentityStatus
-	ExactKeys           []EventReviewImportCandidateExactIdentityStatus
-	SourceKeys          []EventReviewImportCandidateSourceIdentityStatus
+	Eligible             bool
+	BlockingReasons      []string
+	EvidenceID           int64
+	EvidenceFingerprint  string
+	EventID              *int64
+	EventSlug            string
+	Title                string
+	VenueSlug            string
+	VenueText            string
+	StartAt              *time.Time
+	SelectedSourceKeys   []EventReviewImportCandidateSourceIdentityStatus
+	ExactKeys            []EventReviewImportCandidateExactIdentityStatus
+	SourceKeys           []EventReviewImportCandidateSourceIdentityStatus
+	ExistingEventTargets []EventReviewImportExistingEventTarget
+}
+
+type EventReviewImportTargetBasis string
+
+const (
+	EventReviewImportTargetBasisCanonicalEvent       EventReviewImportTargetBasis = "canonical_event"
+	EventReviewImportTargetBasisEvidenceEvent        EventReviewImportTargetBasis = "evidence_event"
+	EventReviewImportTargetBasisSourceIdentity       EventReviewImportTargetBasis = "source_identity"
+	EventReviewImportTargetBasisExactIdentity        EventReviewImportTargetBasis = "exact_identity"
+	EventReviewImportTargetBasisSlug                 EventReviewImportTargetBasis = "slug"
+	EventReviewImportTargetBasisExactTitleVenueStart EventReviewImportTargetBasis = "exact_title_venue_start"
+	EventReviewImportTargetBasisNearTitle            EventReviewImportTargetBasis = "near_title"
+)
+
+func (b EventReviewImportTargetBasis) Valid() bool {
+	switch b {
+	case EventReviewImportTargetBasisCanonicalEvent,
+		EventReviewImportTargetBasisEvidenceEvent,
+		EventReviewImportTargetBasisSourceIdentity,
+		EventReviewImportTargetBasisExactIdentity,
+		EventReviewImportTargetBasisSlug,
+		EventReviewImportTargetBasisExactTitleVenueStart,
+		EventReviewImportTargetBasisNearTitle:
+		return true
+	default:
+		return false
+	}
+}
+
+type EventReviewImportExistingEventTarget struct {
+	EvidenceID                int64
+	EvidenceFingerprint       string
+	EventID                   int64
+	EventSlug                 string
+	EventTitle                string
+	PublicationState          string
+	TargetBasis               EventReviewImportTargetBasis
+	SourceIdentityKeys        []string
+	ExactIdentityKeys         []string
+	ResolvedFromWithheld      bool
+	RawLinkedEventID          *int64
+	RawLinkedEventSlug        string
+	RawLinkedPublicationState string
+	BlockingReasons           []string
 }
 
 type EventReviewImportCandidateExactIdentityStatus struct {
@@ -571,6 +617,18 @@ type EventReviewResolutionAppliedImportListingSummary struct {
 	EvidenceID int64
 }
 
+type EventReviewResolutionAppliedSupportingSourceSummary struct {
+	EventID        int64
+	EventSlug      string
+	Title          string
+	SourceID       int64
+	SourceName     string
+	SourceURL      string
+	EvidenceID     int64
+	TargetBasis    EventReviewImportTargetBasis
+	PromotedReview bool
+}
+
 type EventReviewClusterIdentityKeySummary struct {
 	ID              int64
 	IdentityKeyID   int64
@@ -664,21 +722,22 @@ type EventReviewClusterSeparationSummary struct {
 }
 
 type EventReviewResolutionSummary struct {
-	ID                    int64
-	ClusterID             int64
-	Status                EventReviewResolutionStatus
-	DiscardReason         string
-	CanonicalEventID      *int64
-	RepairRunID           *int64
-	SupersededByClusterID *int64
-	AppliedAutoResolution *EventReviewResolutionAppliedAutoResolutionSummary
-	AppliedImportListing  *EventReviewResolutionAppliedImportListingSummary
-	AppliedTitleRepair    *EventReviewResolutionAppliedTitleRepairSummary
-	AppliedLiveActions    []EventReviewResolutionAppliedLiveActionSummary
-	SnapshotRaw           string
-	SnapshotParseWarning  string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	ID                      int64
+	ClusterID               int64
+	Status                  EventReviewResolutionStatus
+	DiscardReason           string
+	CanonicalEventID        *int64
+	RepairRunID             *int64
+	SupersededByClusterID   *int64
+	AppliedAutoResolution   *EventReviewResolutionAppliedAutoResolutionSummary
+	AppliedImportListing    *EventReviewResolutionAppliedImportListingSummary
+	AppliedSupportingSource *EventReviewResolutionAppliedSupportingSourceSummary
+	AppliedTitleRepair      *EventReviewResolutionAppliedTitleRepairSummary
+	AppliedLiveActions      []EventReviewResolutionAppliedLiveActionSummary
+	SnapshotRaw             string
+	SnapshotParseWarning    string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 type EventReviewClusterDetail struct {
@@ -835,6 +894,14 @@ type EventReviewResolution struct {
 type EventReviewResolutionInput struct {
 	ClusterID       int64
 	ExpectedVersion int
+}
+
+type EventReviewAcceptSupportingSourceInput struct {
+	EventReviewResolutionInput
+	EvidenceID         int64
+	TargetEventID      int64
+	TargetBasis        EventReviewImportTargetBasis
+	SourceIdentityKeys []string
 }
 
 type EventReviewDiscardInput struct {

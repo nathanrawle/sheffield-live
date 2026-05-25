@@ -496,6 +496,19 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 			}
 			summary.AppliedImportListing = appliedImportListing
 		}
+		if parsed.AppliedSupportingSource != nil {
+			summary.AppliedSupportingSource = &seedstore.EventReviewResolutionAppliedSupportingSourceSummary{
+				EventID:        parsed.AppliedSupportingSource.EventID,
+				EventSlug:      parsed.AppliedSupportingSource.EventSlug,
+				Title:          parsed.AppliedSupportingSource.Title,
+				SourceID:       parsed.AppliedSupportingSource.SourceID,
+				SourceName:     parsed.AppliedSupportingSource.SourceName,
+				SourceURL:      parsed.AppliedSupportingSource.SourceURL,
+				EvidenceID:     parsed.AppliedSupportingSource.EvidenceID,
+				TargetBasis:    parsed.AppliedSupportingSource.TargetBasis,
+				PromotedReview: parsed.AppliedSupportingSource.PromotedReview,
+			}
+		}
 		if parsed.AppliedTitleRepair != nil {
 			summary.AppliedTitleRepair = &seedstore.EventReviewResolutionAppliedTitleRepairSummary{
 				EventID:  parsed.AppliedTitleRepair.EventID,
@@ -530,13 +543,14 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 }
 
 type eventReviewResolutionSnapshotParsed struct {
-	RepairRunID           *int64                                                  `json:"repair_run_id,omitempty"`
-	SupersededByClusterID *int64                                                  `json:"superseded_by_cluster_id,omitempty"`
-	CanonicalEventID      *int64                                                  `json:"canonical_event_id,omitempty"`
-	AppliedAutoResolution *eventReviewResolutionAppliedAutoResolutionSnapshotView `json:"applied_auto_resolution,omitempty"`
-	AppliedImportListing  *eventReviewResolutionAppliedImportListingSnapshotView  `json:"applied_import_listing,omitempty"`
-	AppliedTitleRepair    *eventReviewResolutionAppliedTitleRepairSnapshotView    `json:"applied_title_repair,omitempty"`
-	AppliedLiveActions    []eventReviewResolutionAppliedLiveActionSnapshotView    `json:"applied_live_actions,omitempty"`
+	RepairRunID             *int64                                                    `json:"repair_run_id,omitempty"`
+	SupersededByClusterID   *int64                                                    `json:"superseded_by_cluster_id,omitempty"`
+	CanonicalEventID        *int64                                                    `json:"canonical_event_id,omitempty"`
+	AppliedAutoResolution   *eventReviewResolutionAppliedAutoResolutionSnapshotView   `json:"applied_auto_resolution,omitempty"`
+	AppliedImportListing    *eventReviewResolutionAppliedImportListingSnapshotView    `json:"applied_import_listing,omitempty"`
+	AppliedSupportingSource *eventReviewResolutionAppliedSupportingSourceSnapshotView `json:"applied_supporting_source,omitempty"`
+	AppliedTitleRepair      *eventReviewResolutionAppliedTitleRepairSnapshotView      `json:"applied_title_repair,omitempty"`
+	AppliedLiveActions      []eventReviewResolutionAppliedLiveActionSnapshotView      `json:"applied_live_actions,omitempty"`
 }
 
 type eventReviewResolutionAppliedAutoResolutionSnapshotView struct {
@@ -560,6 +574,18 @@ type eventReviewResolutionAppliedImportListingSnapshotView struct {
 	SourceName string `json:"source_name,omitempty"`
 	SourceURL  string `json:"source_url,omitempty"`
 	EvidenceID int64  `json:"evidence_id,omitempty"`
+}
+
+type eventReviewResolutionAppliedSupportingSourceSnapshotView struct {
+	EventID        int64                                  `json:"event_id"`
+	EventSlug      string                                 `json:"event_slug,omitempty"`
+	Title          string                                 `json:"title,omitempty"`
+	SourceID       int64                                  `json:"source_id,omitempty"`
+	SourceName     string                                 `json:"source_name,omitempty"`
+	SourceURL      string                                 `json:"source_url,omitempty"`
+	EvidenceID     int64                                  `json:"evidence_id,omitempty"`
+	TargetBasis    seedstore.EventReviewImportTargetBasis `json:"target_basis,omitempty"`
+	PromotedReview bool                                   `json:"promoted_review,omitempty"`
 }
 
 type eventReviewResolutionAppliedLiveActionSnapshotView struct {
@@ -1166,7 +1192,7 @@ func loadEventReviewClusterSourceIdentityLinkSummariesTx(ctx context.Context, q 
 			COALESCE(s.url, ''),
 			i.normalized_key,
 			COUNT(DISTINCT e.id),
-			l.event_id,
+			ev.id,
 			COALESCE(ev.slug, ''),
 			COALESCE(ev.name, ''),
 			COALESCE(l.is_authoritative, 0),
@@ -1178,7 +1204,16 @@ func loadEventReviewClusterSourceIdentityLinkSummariesTx(ctx context.Context, q 
 		LEFT JOIN sources s ON s.id = eik.source_id
 		LEFT JOIN event_source_links l ON l.source_id = eik.source_id
 			AND l.source_event_key = i.normalized_key
-		LEFT JOIN events ev ON ev.id = l.event_id
+		LEFT JOIN events linked_ev ON linked_ev.id = l.event_id
+		LEFT JOIN events canonical_ev ON canonical_ev.id = linked_ev.canonical_event_id
+		LEFT JOIN events ev ON ev.id = CASE
+			WHEN linked_ev.origin = ? AND TRIM(COALESCE(linked_ev.publication_state, '')) <> ? THEN linked_ev.id
+			WHEN TRIM(COALESCE(linked_ev.publication_state, '')) = ?
+				AND canonical_ev.id IS NOT NULL
+				AND canonical_ev.origin = ?
+				AND TRIM(COALESCE(canonical_ev.publication_state, '')) <> ? THEN canonical_ev.id
+			ELSE NULL
+		END
 		WHERE ce.cluster_id = ?
 			AND ce.active = 1
 			AND eik.source_id IS NOT NULL
@@ -1188,13 +1223,13 @@ func loadEventReviewClusterSourceIdentityLinkSummariesTx(ctx context.Context, q 
 			COALESCE(s.name, ''),
 			COALESCE(s.url, ''),
 			i.normalized_key,
-			l.event_id,
+			ev.id,
 			ev.slug,
 			ev.name,
 			l.is_authoritative,
 			l.updated_at
 		ORDER BY COALESCE(s.name, ''), eik.source_id, i.normalized_key, COALESCE(ev.slug, ''), COALESCE(ev.name, ''), COALESCE(l.event_id, 0)
-	`, clusterID, string(seedstore.EventReviewIdentityKeyKindSource))
+	`, string(domain.OriginLive), string(domain.PublicationStateWithheld), string(domain.PublicationStateWithheld), string(domain.OriginLive), string(domain.PublicationStateWithheld), clusterID, string(seedstore.EventReviewIdentityKeyKindSource))
 	if err != nil {
 		return nil, err
 	}
@@ -1966,8 +2001,132 @@ func loadEventReviewImportReadinessTx(summary seedstore.EventReviewClusterSummar
 	}
 	readiness.IdentityRows, readiness.RawRows, readiness.ComparisonBlockingReasons, readiness.CandidateComparisonScope = buildEventReviewImportComparisonReadiness(summary, readiness.Candidates, comparisonCandidates)
 	readiness.CandidateIdentityStatuses = buildEventReviewCandidateIdentityStatuses(candidateStatuses, candidateStatusIndex, evidenceIdentityKeys, exactMatchByKey, sourceLinkByKey, sourceChoiceByKey)
+	readiness.ExistingEventTargets = buildEventReviewImportExistingEventTargets(summary, readiness.Candidates, readiness.CandidateIdentityStatuses)
 	readiness.SelectedCandidateReadiness = buildEventReviewSelectedCandidateReadiness(summary, readiness.Candidates, readiness.CandidateIdentityStatuses)
+	if readiness.SelectedCandidateReadiness != nil {
+		for _, target := range readiness.ExistingEventTargets {
+			if target.EvidenceID == readiness.SelectedCandidateReadiness.EvidenceID {
+				readiness.SelectedCandidateReadiness.ExistingEventTargets = append(readiness.SelectedCandidateReadiness.ExistingEventTargets, target)
+			}
+		}
+	}
 	return readiness
+}
+
+func buildEventReviewImportExistingEventTargets(summary seedstore.EventReviewClusterSummary, candidates []seedstore.EventReviewImportCandidateSummary, statuses []seedstore.EventReviewImportCandidateIdentityStatus) []seedstore.EventReviewImportExistingEventTarget {
+	type targetKey struct {
+		evidenceID int64
+		eventID    int64
+		basis      seedstore.EventReviewImportTargetBasis
+	}
+	targets := make(map[targetKey]*seedstore.EventReviewImportExistingEventTarget)
+	addTarget := func(target seedstore.EventReviewImportExistingEventTarget) {
+		if target.EvidenceID <= 0 || target.EventID <= 0 || !target.TargetBasis.Valid() {
+			return
+		}
+		key := targetKey{evidenceID: target.EvidenceID, eventID: target.EventID, basis: target.TargetBasis}
+		existing := targets[key]
+		if existing == nil {
+			target.SourceIdentityKeys = normalizedImportReadinessStrings(target.SourceIdentityKeys)
+			target.ExactIdentityKeys = normalizedImportReadinessStrings(target.ExactIdentityKeys)
+			targets[key] = &target
+			return
+		}
+		existing.SourceIdentityKeys = normalizedImportReadinessStrings(append(existing.SourceIdentityKeys, target.SourceIdentityKeys...))
+		existing.ExactIdentityKeys = normalizedImportReadinessStrings(append(existing.ExactIdentityKeys, target.ExactIdentityKeys...))
+		if existing.EventSlug == "" {
+			existing.EventSlug = target.EventSlug
+		}
+		if existing.EventTitle == "" {
+			existing.EventTitle = target.EventTitle
+		}
+	}
+
+	for _, candidate := range candidates {
+		if candidate.EventID != nil {
+			addTarget(seedstore.EventReviewImportExistingEventTarget{
+				EvidenceID:          candidate.EvidenceID,
+				EvidenceFingerprint: candidate.EvidenceFingerprint,
+				EventID:             *candidate.EventID,
+				EventSlug:           candidate.EventSlug,
+				TargetBasis:         seedstore.EventReviewImportTargetBasisEvidenceEvent,
+			})
+		}
+		if summary.CanonicalEventID != nil {
+			addTarget(seedstore.EventReviewImportExistingEventTarget{
+				EvidenceID:          candidate.EvidenceID,
+				EvidenceFingerprint: candidate.EvidenceFingerprint,
+				EventID:             *summary.CanonicalEventID,
+				EventSlug:           summary.CanonicalEventSlug,
+				EventTitle:          summary.DisplayTitle,
+				TargetBasis:         seedstore.EventReviewImportTargetBasisCanonicalEvent,
+			})
+		}
+	}
+
+	for _, status := range statuses {
+		for _, exactKey := range status.ExactKeys {
+			if exactKey.LinkedEventID == nil {
+				continue
+			}
+			addTarget(seedstore.EventReviewImportExistingEventTarget{
+				EvidenceID:          status.EvidenceID,
+				EvidenceFingerprint: status.EvidenceFingerprint,
+				EventID:             *exactKey.LinkedEventID,
+				EventSlug:           exactKey.LinkedEventSlug,
+				EventTitle:          exactKey.LinkedEventTitle,
+				TargetBasis:         seedstore.EventReviewImportTargetBasisExactIdentity,
+				ExactIdentityKeys:   []string{exactKey.NormalizedKey},
+			})
+		}
+		for _, sourceKey := range status.SourceKeys {
+			if sourceKey.LinkedEventID == nil {
+				continue
+			}
+			addTarget(seedstore.EventReviewImportExistingEventTarget{
+				EvidenceID:          status.EvidenceID,
+				EvidenceFingerprint: status.EvidenceFingerprint,
+				EventID:             *sourceKey.LinkedEventID,
+				EventSlug:           sourceKey.LinkedEventSlug,
+				EventTitle:          sourceKey.LinkedEventTitle,
+				TargetBasis:         seedstore.EventReviewImportTargetBasisSourceIdentity,
+				SourceIdentityKeys:  []string{sourceKey.SourceIdentityKey},
+			})
+		}
+	}
+
+	out := make([]seedstore.EventReviewImportExistingEventTarget, 0, len(targets))
+	for _, target := range targets {
+		out = append(out, *target)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].EvidenceID != out[j].EvidenceID {
+			return out[i].EvidenceID < out[j].EvidenceID
+		}
+		if out[i].EventID != out[j].EventID {
+			return out[i].EventID < out[j].EventID
+		}
+		return out[i].TargetBasis < out[j].TargetBasis
+	})
+	return out
+}
+
+func normalizedImportReadinessStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func buildEventReviewCandidateIdentityStatuses(statuses []seedstore.EventReviewImportCandidateIdentityStatus, indexByEvidenceID map[int64]int, evidenceIdentityKeys []seedstore.EventReviewEvidenceIdentityKeySummary, exactMatchByKey map[string]seedstore.EventReviewClusterExactIdentityMatchSummary, sourceLinkByKey map[string]seedstore.EventReviewClusterSourceIdentityLinkSummary, sourceChoiceByKey map[string]seedstore.EventReviewSourceIdentityChoice) []seedstore.EventReviewImportCandidateIdentityStatus {

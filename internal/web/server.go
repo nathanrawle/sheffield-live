@@ -62,6 +62,7 @@ type EventReviewAdminStore interface {
 	SetEventReviewSourceIdentityChoices(ctx context.Context, input store.SetEventReviewSourceIdentityChoicesInput) error
 	DiscardEventReviewCluster(ctx context.Context, input store.EventReviewDiscardInput) error
 	ResolveEventReviewCluster(ctx context.Context, input store.EventReviewResolutionInput) error
+	AcceptEventReviewSupportingSource(ctx context.Context, input store.EventReviewAcceptSupportingSourceInput) error
 	SupersedeEventReviewCluster(ctx context.Context, input store.EventReviewSupersedeInput) error
 }
 
@@ -151,6 +152,7 @@ type PageData struct {
 	EventReviewDetail                           store.EventReviewClusterDetail
 	EventReviewCanAcceptImportListing           bool
 	EventReviewCanAcceptSelectedImportCandidate bool
+	EventReviewCanAcceptSupportingSource        bool
 	EventReviewCanSaveSourceIdentityChoices     bool
 	EventReviewCanResolveLiveActions            bool
 	EventReviewSourceIdentityChoices            []store.EventReviewImportCandidateSourceIdentityStatus
@@ -2107,6 +2109,56 @@ func (s *Server) postAdminEventReviewDecision(w http.ResponseWriter, r *http.Req
 			return
 		}
 		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_import_supporting_source":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		evidenceID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("evidence_id")), 10, 64)
+		if err != nil || evidenceID <= 0 {
+			http.Error(w, "evidence id is required", http.StatusBadRequest)
+			return
+		}
+		targetEventID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("target_event_id")), 10, 64)
+		if err != nil || targetEventID <= 0 {
+			http.Error(w, "target event id is required", http.StatusBadRequest)
+			return
+		}
+		targetBasis := store.EventReviewImportTargetBasis(strings.TrimSpace(r.FormValue("target_basis")))
+		if !targetBasis.Valid() || targetBasis == store.EventReviewImportTargetBasisNearTitle {
+			http.Error(w, "supported target basis is required", http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canAcceptSupportingSourceEventReviewCluster(cluster) {
+			http.Error(w, "event review cluster is not eligible for supporting source resolution", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.AcceptEventReviewSupportingSource(r.Context(), store.EventReviewAcceptSupportingSourceInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			EvidenceID:         evidenceID,
+			TargetEventID:      targetEventID,
+			TargetBasis:        targetBasis,
+			SourceIdentityKeys: r.Form["source_identity_key"],
+		}); err != nil {
+			s.logRequestError(r, "accept import review supporting source", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
 	case "resolve_title_repair":
 		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
 		if err != nil || expectedVersion <= 0 {
@@ -2172,6 +2224,7 @@ func (s *Server) renderAdminEventReviewDetail(w http.ResponseWriter, r *http.Req
 	data.EventReviewDetail = cluster
 	data.EventReviewCanAcceptImportListing = canAcceptImportReviewEventReviewCluster(cluster)
 	data.EventReviewCanAcceptSelectedImportCandidate = canAcceptSelectedImportCandidateEventReviewCluster(cluster)
+	data.EventReviewCanAcceptSupportingSource = canAcceptSupportingSourceEventReviewCluster(cluster)
 	data.EventReviewCanSaveSourceIdentityChoices = canSaveEventReviewSourceIdentityChoices(cluster)
 	data.EventReviewSourceIdentityChoices = flattenEventReviewSourceIdentityChoiceStatuses(cluster)
 	data.EventReviewCanResolveLiveActions = canResolveHistoricalDuplicateEventReviewCluster(cluster)
@@ -2211,6 +2264,17 @@ func canAcceptSelectedImportCandidateEventReviewCluster(cluster store.EventRevie
 		return false
 	}
 	return true
+}
+
+func canAcceptSupportingSourceEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen {
+		return false
+	}
+	if cluster.Summary.ConflictType != store.EventReviewConflictTypeImportReview || cluster.Summary.ConflictReason != store.EventReviewConflictReasonIngestCandidate {
+		return false
+	}
+	readiness := cluster.ImportReadiness
+	return readiness != nil && len(readiness.ExistingEventTargets) > 0
 }
 
 type eventReviewSourceIdentityChoiceKey struct {

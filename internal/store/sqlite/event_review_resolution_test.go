@@ -982,6 +982,148 @@ func TestResolveEventReviewClusterAppliesSelectedImportReviewNewListingFromMulti
 	}
 }
 
+func TestAcceptEventReviewSupportingSourceAppliesExactIdentityTarget(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	beforeEvents := mustCount(t, db, "events")
+	beforeResolutions := mustCount(t, db, "event_review_resolutions")
+
+	targetID := mustInsertExactIdentityEvent(t, db, fixture.expectedSlug, fixture.title, fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	if _, err := db.Exec(`
+		UPDATE events
+		SET publication_state = ?
+		WHERE id = ?
+	`, string(domain.PublicationStateProvisional), targetID); err != nil {
+		t.Fatalf("mark target provisional: %v", err)
+	}
+	exactKey := buildExactIdentityKey(exactIdentityKeyVersion, "leadmill", fixture.start, normalizeExactIdentityCleanTitle(fixture.title))
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin exact identity tx: %v", err)
+	}
+	if err := ensureActiveExactIdentityTx(context.Background(), tx, targetID, domain.Event{
+		Slug:             fixture.expectedSlug,
+		Name:             fixture.title,
+		VenueSlug:        "leadmill",
+		Start:            fixture.start,
+		Origin:           domain.OriginLive,
+		LastChecked:      fixture.start.Add(-24 * time.Hour),
+		PublicationState: domain.PublicationStateProvisional,
+	}, 0, fixture.start.Add(-24*time.Hour)); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("ensure exact identity: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit exact identity tx: %v", err)
+	}
+	exactKeyID := insertEventReviewIdentityKeyOK(t, db, "supporting-exact-target-hash", seedstore.EventReviewIdentityKeyKindExact, exactKey)
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, exactKeyID, nil, seedstore.EventReviewEvidenceIdentityKeyRoleExact); err != nil {
+		t.Fatalf("insert exact evidence identity: %v", err)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load open import review cluster: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("open import review cluster missing readiness")
+	}
+	if len(detail.ImportReadiness.ExistingEventTargets) != 1 {
+		t.Fatalf("existing event targets = %#v, want one target", detail.ImportReadiness.ExistingEventTargets)
+	}
+	if target := detail.ImportReadiness.ExistingEventTargets[0]; target.EventID != targetID || target.TargetBasis != seedstore.EventReviewImportTargetBasisExactIdentity || len(target.ExactIdentityKeys) != 1 || target.ExactIdentityKeys[0] != exactKey {
+		t.Fatalf("existing event target = %#v", target)
+	}
+
+	if err := st.AcceptEventReviewSupportingSource(context.Background(), seedstore.EventReviewAcceptSupportingSourceInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:    fixture.evidenceID,
+		TargetEventID: targetID,
+		TargetBasis:   seedstore.EventReviewImportTargetBasisExactIdentity,
+	}); err != nil {
+		t.Fatalf("accept supporting source: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	var canonicalEventID int64
+	if err := db.QueryRow(`
+		SELECT canonical_event_id
+		FROM event_review_clusters
+		WHERE id = ?
+	`, fixture.clusterID).Scan(&canonicalEventID); err != nil {
+		t.Fatalf("load supporting cluster canonical event id: %v", err)
+	}
+	if canonicalEventID != targetID {
+		t.Fatalf("canonical event id = %d, want %d", canonicalEventID, targetID)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEvents+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents+1)
+	}
+	if got := mustCount(t, db, "event_review_resolutions"); got != beforeResolutions+1 {
+		t.Fatalf("event_review_resolutions rows = %d, want %d", got, beforeResolutions+1)
+	}
+
+	var evidenceEventID sql.NullInt64
+	if err := db.QueryRow(`
+		SELECT event_id
+		FROM event_review_evidence
+		WHERE id = ?
+	`, fixture.evidenceID).Scan(&evidenceEventID); err != nil {
+		t.Fatalf("load supporting evidence event id: %v", err)
+	}
+	if !evidenceEventID.Valid || evidenceEventID.Int64 != targetID {
+		t.Fatalf("supporting evidence event id = %v, want %d", evidenceEventID, targetID)
+	}
+
+	var publicationState string
+	if err := db.QueryRow(`
+		SELECT publication_state
+		FROM events
+		WHERE id = ?
+	`, targetID).Scan(&publicationState); err != nil {
+		t.Fatalf("load target publication state: %v", err)
+	}
+	if publicationState != string(domain.PublicationStateReviewed) {
+		t.Fatalf("target publication_state = %q, want %q", publicationState, domain.PublicationStateReviewed)
+	}
+
+	publishedSourceKey, ok := ingest.SourceIdentityKey(fixture.externalID)
+	if !ok {
+		t.Fatalf("source identity key for %q was rejected", fixture.externalID)
+	}
+	var sourceLinkCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM event_source_links
+		WHERE event_id = ? AND source_id = ? AND source_event_key = ?
+	`, targetID, fixture.sourceID, publishedSourceKey).Scan(&sourceLinkCount); err != nil {
+		t.Fatalf("load supporting source link count: %v", err)
+	}
+	if sourceLinkCount != 1 {
+		t.Fatalf("supporting source link count = %d, want 1", sourceLinkCount)
+	}
+
+	detail, ok, err = st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load resolved supporting source cluster: %v", err)
+	}
+	if !ok || detail.Resolution == nil || detail.Resolution.AppliedSupportingSource == nil {
+		t.Fatal("resolved supporting source cluster missing applied supporting source")
+	}
+	if got := detail.Resolution.AppliedSupportingSource; got.EventID != targetID || got.EvidenceID != fixture.evidenceID || got.TargetBasis != seedstore.EventReviewImportTargetBasisExactIdentity || !got.PromotedReview {
+		t.Fatalf("applied supporting source = %#v", got)
+	}
+	if detail.Resolution.AppliedImportListing != nil {
+		t.Fatalf("applied import listing = %#v, want nil", detail.Resolution.AppliedImportListing)
+	}
+}
+
 func TestResolveEventReviewClusterRejectsSelectedImportReviewWhenEvidenceUpdateIsPreempted(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()

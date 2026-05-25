@@ -360,7 +360,7 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 		SourceURL:     sourceCtx.SourceURL,
 		EvidenceCount: len(candidates),
 	}
-	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, &applied, nil, nil, nil, now)
+	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, &applied, nil, nil, nil, nil, now)
 	if err != nil {
 		return nil, err
 	}
@@ -461,7 +461,7 @@ func autoResolveEventReviewClusterUnanimousDuplicateTx(ctx context.Context, tx i
 		SourceURL:     sourceCtx.SourceURL,
 		EvidenceCount: len(candidates),
 	}
-	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, &appliedSnapshot, nil, nil, nil, now)
+	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, &appliedSnapshot, nil, nil, nil, nil, now)
 	if err != nil {
 		return nil, err
 	}

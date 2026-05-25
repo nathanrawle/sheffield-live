@@ -2182,6 +2182,93 @@ func TestAdminEventReviewDetailAcceptsImportReviewNewListing(t *testing.T) {
 	}
 }
 
+func TestAdminEventReviewDetailAcceptsImportReviewSupportingSource(t *testing.T) {
+	startAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	reviewStore := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             74,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        6,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				Candidates: []store.EventReviewImportCandidateSummary{{
+					EvidenceID:          303,
+					EvidenceFingerprint: "supporting-source-fingerprint",
+					SourceID:            42,
+					SourceName:          "Fixture source",
+					SourceURL:           "https://source.example.test/events",
+					SourceAuthority:     store.SourceAuthoritySupporting,
+					Title:               "Existing Target Title",
+					VenueSlug:           "leadmill",
+					StartAt:             &startAt,
+				}},
+				ExistingEventTargets: []store.EventReviewImportExistingEventTarget{{
+					EvidenceID:          303,
+					EvidenceFingerprint: "supporting-source-fingerprint",
+					EventID:             88,
+					EventSlug:           "existing-target-title",
+					EventTitle:          "Existing Target Title",
+					TargetBasis:         store.EventReviewImportTargetBasisExactIdentity,
+					ExactIdentityKeys:   []string{"exact-key"},
+					SourceIdentityKeys:  []string{"source-key"},
+				}},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(reviewStore))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/74", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, "Existing event targets")
+	assertContains(t, body, `name="action" value="resolve_import_supporting_source"`)
+	assertContains(t, body, `name="target_event_id" value="88"`)
+	assertContains(t, body, `name="target_basis" value="exact_identity"`)
+	assertContains(t, body, `name="source_identity_key" value="source-key"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "6")
+	form.Set("action", "resolve_import_supporting_source")
+	form.Set("evidence_id", "303")
+	form.Set("target_event_id", "88")
+	form.Set("target_basis", "exact_identity")
+	form.Add("source_identity_key", "source-key")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/74", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !reviewStore.acceptSupportingCalled {
+		t.Fatal("expected accept supporting source store method to be called")
+	}
+	if got := reviewStore.acceptSupportingInput; got.ClusterID != 74 || got.ExpectedVersion != 6 || got.EvidenceID != 303 || got.TargetEventID != 88 || got.TargetBasis != store.EventReviewImportTargetBasisExactIdentity || len(got.SourceIdentityKeys) != 1 || got.SourceIdentityKeys[0] != "source-key" {
+		t.Fatalf("accept supporting source input = %#v", got)
+	}
+}
+
 func TestAdminEventReviewDetailSavesSourceIdentityChoicesAndRedirects(t *testing.T) {
 	store := &eventReviewOnlyStoreStub{
 		detail: store.EventReviewClusterDetail{
@@ -7104,6 +7191,9 @@ type adminReviewEventReviewStoreStub struct {
 	resolveCalled               bool
 	resolveInput                store.EventReviewResolutionInput
 	resolveErr                  error
+	acceptSupportingCalled      bool
+	acceptSupportingInput       store.EventReviewAcceptSupportingSourceInput
+	acceptSupportingErr         error
 	supersedeCalled             bool
 	supersedeInput              store.EventReviewSupersedeInput
 	supersedeErr                error
@@ -7142,6 +7232,12 @@ func (s *adminReviewEventReviewStoreStub) ResolveEventReviewCluster(_ context.Co
 	return s.resolveErr
 }
 
+func (s *adminReviewEventReviewStoreStub) AcceptEventReviewSupportingSource(_ context.Context, input store.EventReviewAcceptSupportingSourceInput) error {
+	s.acceptSupportingCalled = true
+	s.acceptSupportingInput = input
+	return s.acceptSupportingErr
+}
+
 func (s *adminReviewEventReviewStoreStub) SupersedeEventReviewCluster(_ context.Context, input store.EventReviewSupersedeInput) error {
 	s.supersedeCalled = true
 	s.supersedeInput = input
@@ -7162,6 +7258,9 @@ type eventReviewOnlyStoreStub struct {
 	resolveCalled               bool
 	resolveInput                store.EventReviewResolutionInput
 	resolveErr                  error
+	acceptSupportingCalled      bool
+	acceptSupportingInput       store.EventReviewAcceptSupportingSourceInput
+	acceptSupportingErr         error
 	supersedeCalled             bool
 	supersedeInput              store.EventReviewSupersedeInput
 	supersedeErr                error
@@ -7234,6 +7333,12 @@ func (s *eventReviewOnlyStoreStub) ResolveEventReviewCluster(_ context.Context, 
 	s.resolveCalled = true
 	s.resolveInput = input
 	return s.resolveErr
+}
+
+func (s *eventReviewOnlyStoreStub) AcceptEventReviewSupportingSource(_ context.Context, input store.EventReviewAcceptSupportingSourceInput) error {
+	s.acceptSupportingCalled = true
+	s.acceptSupportingInput = input
+	return s.acceptSupportingErr
 }
 
 func (s *eventReviewOnlyStoreStub) SupersedeEventReviewCluster(_ context.Context, input store.EventReviewSupersedeInput) error {

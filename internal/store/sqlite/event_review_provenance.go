@@ -276,6 +276,9 @@ func terminalEvidenceOutcomeMatchesInputTx(ctx context.Context, q queryer, clust
 		if resolution.AppliedImportListing != nil && resolution.AppliedImportListing.EventID == *input.EventID {
 			return true, nil
 		}
+		if resolution.AppliedSupportingSource != nil && resolution.AppliedSupportingSource.EventID == *input.EventID {
+			return true, nil
+		}
 		if resolution.AppliedTitleRepair != nil && resolution.AppliedTitleRepair.EventID == *input.EventID {
 			return true, nil
 		}
