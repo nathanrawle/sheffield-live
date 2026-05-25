@@ -663,6 +663,47 @@ func TestCreateEventReviewClustersFromReportStagesOwnedSingletonWhenProvisionalV
 	}
 }
 
+func TestCreateEventReviewClustersFromReportStagesOwnedSingletonWhenAutoPromotionDeclines(t *testing.T) {
+	st := &fakeEventReviewClustersStore{
+		results: []fakeEventReviewClustersResult{{id: 301, created: true}},
+		promotionResults: []fakePromotionResult{{
+			promoted: false,
+		}},
+	}
+	report := alderSingletonReport(99, "Alder Review Fallback", "https://www.eventbrite.com/e/alder-review-fallback-tickets-1004", "Alder", "Alder, Unit 111, J C Albyn Complex, Percy St, Neepsend, Sheffield S3 8BT, UK", "2026-06-23T19:00:00Z")
+
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create event-review clusters: %v", err)
+	}
+
+	if got, want := stage.AutoPromotedCount, 0; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 1; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+	if got, want := stage.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event-review clusters created = %d, want %d", got, want)
+	}
+	if got, want := len(stage.EventReviewClusters), 1; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
+	}
+	if got, want := len(st.promotedInputs), 1; got != want {
+		t.Fatalf("promoted inputs = %d, want %d", got, want)
+	}
+	if got, want := len(st.inputs), 1; got != want {
+		t.Fatalf("staged event-review clusters = %d, want %d", got, want)
+	}
+	promoted := st.promotedInputs[0]
+	if got, want := promoted.Candidates[0].VenueSlug, "alder"; got != want {
+		t.Fatalf("promoted candidate venue slug = %q, want %q", got, want)
+	}
+	if promoted.AuthoritativeSourceEventKey == "" {
+		t.Fatal("authoritative source event key = empty")
+	}
+}
+
 func TestCreateEventReviewClustersFromReportRollsBackProvisionalVenueWhenAuthoritativeApplyDoesNotApply(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
