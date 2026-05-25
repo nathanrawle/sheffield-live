@@ -241,6 +241,67 @@ func TestParseAlderEventDetailPageAcceptsTicketpassLiveMusic(t *testing.T) {
 	}
 }
 
+func TestParseAlderEventDetailPageAcceptsMissingEndTime(t *testing.T) {
+	tests := []struct {
+		name    string
+		pageURL string
+		body    []byte
+	}{
+		{
+			name:    "eventbrite",
+			pageURL: "https://www.eventbrite.com/e/kelham-pride-26-alder-tickets-1989007239195",
+			body: alderEventbriteFixture(t, alderEventbriteNode(
+				"https://www.eventbrite.com/e/kelham-pride-26-alder-tickets-1989007239195",
+				"Kelham Pride 26 @ Alder",
+				"A live music festival with bands and bangers.",
+				"Alder",
+				"Percy Street, #Unit 111, Neepsend, S3 8BT",
+				"2026-06-20T17:00:00+01:00",
+				"",
+			)),
+		},
+		{
+			name:    "fatsoma",
+			pageURL: "https://www.fatsoma.com/e/8muxb2li/bad-luck-crowd-indigo-run-tom-hale",
+			body: alderFatsomaFixture(t, alderFatsomaEventNode(
+				"Bad Luck Crowd / Indigo Run / Tom Hale",
+				`<p>Bad Luck Crowd</p><p>Indigo Run</p><p>Tom Hale</p>`,
+				"2026-05-29T19:45:00+01:00",
+				"",
+				"Really pleased to announce that we'll be back playing Alder in Sheffield on May 29th.",
+			), map[string]any{"type": "categories", "id": "category-1", "attributes": map[string]any{"name": "Gigs"}}, map[string]any{"type": "locations", "id": "location-1", "attributes": map[string]any{"name": "Alder", "address": "Unit 111, J C Albyn Complex, Percy St, Neepsend, Sheffield S3 8BT, UK"}}),
+		},
+		{
+			name:    "ticketpass",
+			pageURL: "https://ticketpass.org/event/EJGDKI/shrub-x-worm-boys-at-alder",
+			body: alderTicketpassFixture(t, alderTicketpassEventPage(
+				"SHRUB x Worm Boys @ Alder",
+				"<p>Double bill of bands for your live music viewing pleasure.</p>",
+				"2026-05-21T18:30:00.000000Z",
+				"",
+			)),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := ParseAlderEventDetailPage(tc.pageURL, tc.body)
+			if got, want := len(result.Errors), 0; got != want {
+				t.Fatalf("errors = %#v, want none", result.Errors)
+			}
+			if got, want := len(result.Skips), 0; got != want {
+				t.Fatalf("skips = %#v, want none", result.Skips)
+			}
+			if got, want := len(result.Candidates), 1; got != want {
+				t.Fatalf("candidates = %d, want %d", got, want)
+			}
+			if got := result.Candidates[0].EndAt; got != "" {
+				t.Fatalf("end = %q, want blank", got)
+			}
+		})
+	}
+}
+
 func TestParseAlderEventDetailPageRejectsNonMusicAndVenueIssues(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -292,6 +353,27 @@ func TestParseAlderEventDetailPageRejectsNonMusicAndVenueIssues(t *testing.T) {
 				},
 				"startDate": "2026-06-20T17:00:00+01:00",
 				"endDate":   "2026-06-21T01:00:00+01:00",
+			}),
+			wantReason: "unsupported venue",
+		},
+		{
+			name:    "offsite alder address",
+			pageURL: "https://www.eventbrite.com/e/offsite-alder-street-arts-tickets-123",
+			body: alderEventbriteFixture(t, map[string]any{
+				"@context":    "https://schema.org",
+				"@type":       "Event",
+				"name":        "Alder Street Arts Live Music Night",
+				"description": "A live music gig with bands.",
+				"url":         "https://www.eventbrite.com/e/offsite-alder-street-arts-tickets-123",
+				"location": map[string]any{
+					"@type": "Place",
+					"name":  "Alder",
+					"address": map[string]any{
+						"streetAddress": "1 Alder Street, Sheffield S3 8BT",
+					},
+				},
+				"startDate": "2026-06-20T17:00:00+01:00",
+				"endDate":   "2026-06-20T22:00:00+01:00",
 			}),
 			wantReason: "unsupported venue",
 		},

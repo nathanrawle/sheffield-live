@@ -18,6 +18,7 @@ var (
 	alderTicketpassPagePattern  = regexp.MustCompile(`(?is)<div\b[^>]*id\s*=\s*["']app["'][^>]*data-page\s*=\s*["']([^"']+)["']`)
 	alderMusicPositivePattern   = regexp.MustCompile(`(?i)\b(?:live music|gig|gigs|band|bands|festival|festivals|banger|bangers|playing alder|concert|concerts|dj|djs|club night|club nights|album launch|tour|touring)\b`)
 	alderMusicNegativePattern   = regexp.MustCompile(`(?i)\b(?:spoken word|folktale|folktales|myth|myths|legend|legends|comedy|film|screening|theatre|theater|workshop|market|markets|quiz|talk|lecture|community|private hire|poetry|storytelling)\b`)
+	alderNonAlnumPattern        = regexp.MustCompile(`[^a-z0-9]+`)
 )
 
 func alder_listing_links(baseURL string, body []byte, limit int) ([]string, error) {
@@ -169,10 +170,6 @@ func alderEventbriteCandidateFromNode(pageURL string, node map[string]any) (Even
 		return EventCandidate{}, skip, true, nil
 	}
 	endText := alderJSONString(node["endDate"])
-	if endText == "" {
-		skip.Reason = "missing event end time"
-		return EventCandidate{}, skip, true, nil
-	}
 
 	description := alderNormalizedDescription(alderJSONString(node["description"]))
 	performers := alderJSONLDText(node["performer"])
@@ -187,9 +184,9 @@ func alderEventbriteCandidateFromNode(pageURL string, node map[string]any) (Even
 	if err != nil {
 		return EventCandidate{}, ParseSkip{}, false, fmt.Errorf("parse Alder start time for %q: %w", title, err)
 	}
-	endAt, err := alderParseDateTime(endText)
+	endAt, err := alderOptionalEndAt(title, endText)
 	if err != nil {
-		return EventCandidate{}, ParseSkip{}, false, fmt.Errorf("parse Alder end time for %q: %w", title, err)
+		return EventCandidate{}, ParseSkip{}, false, err
 	}
 
 	location, locationRaw, ok := alderVenueEvidence(locationName, locationAddress)
@@ -207,7 +204,7 @@ func alderEventbriteCandidateFromNode(pageURL string, node map[string]any) (Even
 		URL:         pageURL,
 		Status:      "Listed",
 		StartAt:     formatTime(startAt),
-		EndAt:       formatTime(endAt),
+		EndAt:       endAt,
 	}, ParseSkip{}, true, nil
 }
 
@@ -240,10 +237,6 @@ func alderFatsomaCandidate(pageURL string, raw []byte) (EventCandidate, ParseSki
 			return EventCandidate{}, skip, nil
 		}
 		endText := alderJSONString(attrs["ends-at"])
-		if endText == "" {
-			skip.Reason = "missing event end time"
-			return EventCandidate{}, skip, nil
-		}
 
 		locationName, locationAddress := alderFatsomaLocation(included, event)
 		location, locationRaw, ok := alderVenueEvidence(locationName, locationAddress)
@@ -265,9 +258,9 @@ func alderFatsomaCandidate(pageURL string, raw []byte) (EventCandidate, ParseSki
 		if err != nil {
 			return EventCandidate{}, ParseSkip{}, fmt.Errorf("parse Alder start time for %q: %w", title, err)
 		}
-		endAt, err := alderParseDateTime(endText)
+		endAt, err := alderOptionalEndAt(title, endText)
 		if err != nil {
-			return EventCandidate{}, ParseSkip{}, fmt.Errorf("parse Alder end time for %q: %w", title, err)
+			return EventCandidate{}, ParseSkip{}, err
 		}
 
 		return EventCandidate{
@@ -279,7 +272,7 @@ func alderFatsomaCandidate(pageURL string, raw []byte) (EventCandidate, ParseSki
 			URL:         pageURL,
 			Status:      "Listed",
 			StartAt:     formatTime(startAt),
-			EndAt:       formatTime(endAt),
+			EndAt:       endAt,
 		}, ParseSkip{}, nil
 	}
 
@@ -320,10 +313,6 @@ func alderTicketpassCandidate(pageURL string, raw []byte) (EventCandidate, Parse
 		return EventCandidate{}, skip, nil
 	}
 	endText := alderJSONString(firstDate["endTime"])
-	if endText == "" {
-		skip.Reason = "missing event end time"
-		return EventCandidate{}, skip, nil
-	}
 
 	venue, _ := event["venue"].(map[string]any)
 	locationName := alderJSONString(venue["name"])
@@ -345,9 +334,9 @@ func alderTicketpassCandidate(pageURL string, raw []byte) (EventCandidate, Parse
 	if err != nil {
 		return EventCandidate{}, ParseSkip{}, fmt.Errorf("parse Alder start time for %q: %w", title, err)
 	}
-	endAt, err := alderParseDateTime(endText)
+	endAt, err := alderOptionalEndAt(title, endText)
 	if err != nil {
-		return EventCandidate{}, ParseSkip{}, fmt.Errorf("parse Alder end time for %q: %w", title, err)
+		return EventCandidate{}, ParseSkip{}, err
 	}
 
 	return EventCandidate{
@@ -359,7 +348,7 @@ func alderTicketpassCandidate(pageURL string, raw []byte) (EventCandidate, Parse
 		URL:         pageURL,
 		Status:      "Listed",
 		StartAt:     formatTime(startAt),
-		EndAt:       formatTime(endAt),
+		EndAt:       endAt,
 	}, ParseSkip{}, nil
 }
 
@@ -440,19 +429,52 @@ func alderVenueEvidence(name, address string) (string, string, bool) {
 		return "", "", false
 	}
 
-	lower := strings.ToLower(name)
-	if !strings.Contains(lower, "alder") {
-		return "", "", false
-	}
-	if strings.ContainsAny(lower, "/|") || strings.Contains(lower, " and ") {
+	if !alderVenueNameEvidence(name) {
 		return "", "", false
 	}
 
-	locationRaw := alderVenueName
-	if address = alderNormalizedText(address); address != "" {
-		locationRaw += ", " + address
+	address = alderNormalizedText(address)
+	if !alderVenueAddressEvidence(address) {
+		return "", "", false
 	}
-	return alderVenueName, locationRaw, true
+
+	return alderVenueName, alderVenueName + ", " + address, true
+}
+
+func alderVenueNameEvidence(name string) bool {
+	lower := strings.ToLower(name)
+	if strings.ContainsAny(lower, "/|") || strings.Contains(lower, " and ") {
+		return false
+	}
+
+	switch alderTokenText(name) {
+	case "alder", "alder bar", "alder sheffield", "alder bar sheffield":
+		return true
+	default:
+		return false
+	}
+}
+
+func alderVenueAddressEvidence(address string) bool {
+	if address == "" {
+		return false
+	}
+
+	tokens := alderTokenText(address)
+	compact := strings.ReplaceAll(tokens, " ", "")
+	hasPercyStreet := strings.Contains(tokens, "percy street") || strings.Contains(tokens, "percy st")
+	hasPostcode := strings.Contains(compact, "s38bt")
+	hasVenueMarker := strings.Contains(compact, "unit111") ||
+		strings.Contains(compact, "unit112") ||
+		strings.Contains(compact, "111112") ||
+		strings.Contains(compact, "jcalbyn") ||
+		strings.Contains(tokens, "neepsend")
+	return hasPercyStreet && hasPostcode && hasVenueMarker
+}
+
+func alderTokenText(value string) string {
+	lower := strings.ToLower(alderNormalizedText(value))
+	return strings.Join(strings.Fields(alderNonAlnumPattern.ReplaceAllString(lower, " ")), " ")
 }
 
 func alderParseDateTime(value string) (time.Time, error) {
@@ -473,6 +495,18 @@ func alderParseDateTime(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unsupported datetime %q", value)
+}
+
+func alderOptionalEndAt(title, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	endAt, err := alderParseDateTime(value)
+	if err != nil {
+		return "", fmt.Errorf("parse Alder end time for %q: %w", title, err)
+	}
+	return formatTime(endAt), nil
 }
 
 func alderHasMusicSignal(value string) bool {
