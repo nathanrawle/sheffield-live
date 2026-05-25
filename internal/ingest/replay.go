@@ -216,7 +216,7 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 				report.Totals.Snapshots++
 				continue
 			}
-			parse, err := parseReplayLinkedPageForSource(sourceCfg, firstNonEmpty(snapshot.envelope.Metadata.FinalURL, snapshot.envelope.Metadata.URL), snapshot.body, page.snapshot.CapturedAt)
+			parse, err := parseReplayLinkedPageForSource(sourceCfg, firstNonEmpty(snapshot.envelope.Metadata.FinalURL, snapshot.envelope.Metadata.URL), snapshot.body, snapshot.snapshot.CapturedAt)
 			if err != nil {
 				return Report{}, fmt.Errorf("import run %d parse linked page %q: %w", importRunID, link, err)
 			}

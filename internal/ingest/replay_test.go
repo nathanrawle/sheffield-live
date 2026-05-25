@@ -461,6 +461,72 @@ func TestReplayImportRunRebuildsDeliciousClamReportFromLinkedDetailSnapshots(t *
 	}
 }
 
+func TestReplayImportRunUsesDeliciousClamDetailSnapshotTime(t *testing.T) {
+	setDeliciousClamClock(t, time.Date(2027, 1, 1, 12, 0, 0, 0, time.UTC))
+
+	finishedAt := time.Date(2026, 7, 1, 12, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         180,
+			StartedAt:  time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=1 candidates=0 skips=1 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         403,
+					SourceName: "Delicious Clam listings",
+					SourceURL:  "https://www.deliciousclam.co.uk/events",
+					CapturedAt: time.Date(2026, 5, 25, 12, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:        "https://www.deliciousclam.co.uk/events",
+						FinalURL:   "https://www.deliciousclam.co.uk/events",
+						Status:     "200 OK",
+						StatusCode: 200,
+						Body:       readFixture(t, "delicious_clam_events.html"),
+						CapturedAt: time.Date(2026, 5, 25, 12, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         404,
+					SourceName: "Delicious Clam delegated event detail page",
+					SourceURL:  "https://www.skiddle.com/e/42362090",
+					CapturedAt: time.Date(2026, 7, 1, 12, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:        "https://www.skiddle.com/e/42362090",
+						FinalURL:   "https://www.skiddle.com/e/42362090",
+						Status:     "200 OK",
+						StatusCode: 200,
+						Body:       readFixture(t, "delicious_clam_detail_good.html"),
+						CapturedAt: time.Date(2026, 7, 1, 12, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 180, ReplayOptions{Limit: 1})
+	if !errors.Is(err, ErrRunFailed) {
+		t.Fatalf("replay import run error = %v, want %v", err, ErrRunFailed)
+	}
+
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 0; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Skips), 1; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Skips[0].Reason, "past event"; got != want {
+		t.Fatalf("skip reason = %q, want %q", got, want)
+	}
+}
+
 func TestReplayImportRunRebuildsCrookesClubReportFromSourcePageAndLoungeSnapshots(t *testing.T) {
 	finishedAt := time.Date(2026, 5, 24, 12, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{
