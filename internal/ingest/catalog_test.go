@@ -26,6 +26,7 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 		CorporationSource,
 		HallamshireHotelSource,
 		NetworkSheffieldSource,
+		AlderSource,
 		CrookesClubSource,
 		DeliciousClamSource,
 		HagglersCornerSource,
@@ -52,6 +53,20 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	}
 	if got, want := cfg.VenueNormalizerFamily, "network_sheffield"; got != want {
 		t.Fatalf("network sheffield venue normalizer family = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(AlderSource)
+	if err != nil {
+		t.Fatalf("config for alder: %v", err)
+	}
+	if got, want := cfg.LinkedPageLinkExtractorFamily, "alder_listing_links"; got != want {
+		t.Fatalf("alder linked page link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "alder_event_detail_page"; got != want {
+		t.Fatalf("alder linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlug, AlderSource; got != want {
+		t.Fatalf("alder owned venue slug = %q, want %q", got, want)
 	}
 
 	cfg, err = catalog.ConfigForSource(CrookesClubSource)
