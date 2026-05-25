@@ -558,6 +558,200 @@ func TestCreateEventReviewClustersFromReportAutoPromotesSingletonAtNewProvisiona
 	}
 }
 
+func TestCreateEventReviewClustersFromReportAutoPromotesOwnedSingletonAtNewProvisionalVenue(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+	runID, _, _ := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+
+	report := alderSingletonReport(runID, "Alder New Music Night", "https://www.eventbrite.com/e/alder-new-music-night-tickets-1001", "Alder", "Alder, Unit 111, J C Albyn Complex, Percy St, Neepsend, Sheffield S3 8BT, UK", "2026-06-20T19:00:00Z")
+	stage, err := createEventReviewClustersFromReport(ctx, st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create event-review clusters: %v", err)
+	}
+
+	if got, want := stage.AutoPromotedCount, 1; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 0; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+	if got, want := len(stage.EventReviewClusters), 0; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
+	}
+
+	venue, ok := st.VenueBySlug("alder")
+	if !ok {
+		t.Fatal("provisional Alder venue not found")
+	}
+	if got, want := venue.ValidationState, domain.ValidationStateProvisional; got != want {
+		t.Fatalf("venue validation state = %q, want %q", got, want)
+	}
+
+	event, ok := st.EventBySlug(stage.AutoPromoted[0].EventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", stage.AutoPromoted[0].EventSlug)
+	}
+	if got, want := event.VenueSlug, "alder"; got != want {
+		t.Fatalf("event venue slug = %q, want %q", got, want)
+	}
+	if got, want := event.PublicationState, domain.PublicationStateReviewed; got != want {
+		t.Fatalf("event publication state = %q, want %q", got, want)
+	}
+}
+
+func TestCreateEventReviewClustersFromReportStagesOwnedSingletonWhenProvisionalVenueSlugDiffers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+	runID, _, _ := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+
+	input := ingest.ReviewStageClusterInput{
+		ImportRunID:                 runID,
+		Title:                       "New listing review: Mismatched Alder Evidence",
+		SourceName:                  "Alder manual ingest",
+		SourceURL:                   "https://www.eventbrite.com/e/mismatched-alder-evidence-tickets-1002",
+		Notes:                       "Created from manual ingest run " + strconv.FormatInt(runID, 10) + " review staging.",
+		AuthoritativeSourceName:     "Alder manual ingest",
+		AuthoritativeSourceURL:      "https://www.eventbrite.com/e/mismatched-alder-evidence-tickets-1002",
+		AuthoritativeSourceEventKey: "url:https://www.eventbrite.com/e/mismatched-alder-evidence-tickets-1002",
+		Candidates: []review.CandidateInput{{
+			ExternalID:       "https://www.eventbrite.com/e/mismatched-alder-evidence-tickets-1002",
+			Name:             "Mismatched Alder Evidence",
+			VenueSlug:        "alder",
+			VenueText:        "Alder",
+			VenueLocationRaw: "Wrong Hall, 1 Void Street, Sheffield",
+			StartAt:          "2026-06-21T19:00:00Z",
+			Status:           "Listed",
+			Description:      "Live music at Alder.",
+			SourceName:       "Alder manual ingest",
+			SourceURL:        "https://www.eventbrite.com/e/mismatched-alder-evidence-tickets-1002",
+			CalendarURL:      "https://www.eventbrite.com/e/mismatched-alder-evidence-tickets-1002",
+		}},
+	}
+
+	eventSlug, promoted, err := st.PromoteSingletonReviewClusterIfMissing(ctx, input)
+	if err != nil {
+		t.Fatalf("promote singleton review cluster: %v", err)
+	}
+	if promoted {
+		t.Fatalf("promoted = true with event slug %q, want false", eventSlug)
+	}
+	if _, ok := st.VenueBySlug("alder"); ok {
+		t.Fatal("Alder venue was created for mismatched venue evidence")
+	}
+	if _, ok := st.VenueBySlug("wrong-hall"); ok {
+		t.Fatal("mismatched provisional venue was committed")
+	}
+}
+
+func TestCreateEventReviewClustersFromReportStagesOwnedSingletonWhenAutoPromotionDeclines(t *testing.T) {
+	st := &fakeEventReviewClustersStore{
+		results: []fakeEventReviewClustersResult{{id: 301, created: true}},
+		promotionResults: []fakePromotionResult{{
+			promoted: false,
+		}},
+	}
+	report := alderSingletonReport(99, "Alder Review Fallback", "https://www.eventbrite.com/e/alder-review-fallback-tickets-1004", "Alder", "Alder, Unit 111, J C Albyn Complex, Percy St, Neepsend, Sheffield S3 8BT, UK", "2026-06-23T19:00:00Z")
+
+	stage, err := createEventReviewClustersFromReport(context.Background(), st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create event-review clusters: %v", err)
+	}
+
+	if got, want := stage.AutoPromotedCount, 0; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 1; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+	if got, want := stage.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event-review clusters created = %d, want %d", got, want)
+	}
+	if got, want := len(stage.EventReviewClusters), 1; got != want {
+		t.Fatalf("event-review clusters = %d, want %d", got, want)
+	}
+	if got, want := len(st.promotedInputs), 1; got != want {
+		t.Fatalf("promoted inputs = %d, want %d", got, want)
+	}
+	if got, want := len(st.inputs), 1; got != want {
+		t.Fatalf("staged event-review clusters = %d, want %d", got, want)
+	}
+	promoted := st.promotedInputs[0]
+	if got, want := promoted.Candidates[0].VenueSlug, "alder"; got != want {
+		t.Fatalf("promoted candidate venue slug = %q, want %q", got, want)
+	}
+	if promoted.AuthoritativeSourceEventKey == "" {
+		t.Fatal("authoritative source event key = empty")
+	}
+}
+
+func TestCreateEventReviewClustersFromReportRollsBackProvisionalVenueWhenAuthoritativeApplyDoesNotApply(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	runID, _, _ := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+	sourceID, err := st.EnsureSource(ctx, "CLI collision source", "https://example.test/collision")
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	db := openRawDB(t, path)
+	insertCLIEventWithOrigin(t, db, sourceID, "live-rollback-collision-alder-20260622190000", "leadmill", "Rollback Collision", "2026-06-22T19:00:00Z", domain.OriginTest)
+	db.Close()
+
+	st, err = sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close reopened sqlite store: %v", err)
+		}
+	}()
+
+	report := alderSingletonReport(runID, "Rollback Collision", "https://www.eventbrite.com/e/rollback-collision-tickets-1003", "Alder", "Alder, Unit 111, J C Albyn Complex, Percy St, Neepsend, Sheffield S3 8BT, UK", "2026-06-22T19:00:00Z")
+	stage, err := createEventReviewClustersFromReport(ctx, st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create event-review clusters: %v", err)
+	}
+
+	if got, want := stage.AutoPromotedCount, 0; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.EventReviewClustersCreated, 1; got != want {
+		t.Fatalf("event-review clusters created = %d, want %d", got, want)
+	}
+	if _, ok := st.VenueBySlug("alder"); ok {
+		t.Fatal("Alder venue was committed even though authoritative apply did not apply")
+	}
+}
+
 func TestCreateEventReviewClustersFromReportKeepsOffsiteLeadmillSingletonInReview(t *testing.T) {
 	st := &fakeEventReviewClustersStore{results: []fakeEventReviewClustersResult{{id: 101, created: true}}}
 	report := ingest.Report{
@@ -3442,11 +3636,6 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 		wantAutoPromoted := 1
 		wantCreated := 0
 		wantReviewCandidates := 0
-		if result.Source == ingest.NetworkSheffieldSource || result.Source == ingest.UniversityOfSheffieldPerformanceVenuesSource {
-			wantAutoPromoted = 0
-			wantCreated = 1
-			wantReviewCandidates = 1
-		}
 		if result.EventReviewClusters.AutoPromotedCount != wantAutoPromoted {
 			t.Fatalf("auto promoted count for %q = %d, want %d", result.Source, result.EventReviewClusters.AutoPromotedCount, wantAutoPromoted)
 		}
@@ -3726,6 +3915,28 @@ func successfulManualReportForEventReviewClustersWithSource(source, sourceURL st
 				},
 			},
 		},
+	}
+}
+
+func alderSingletonReport(runID int64, title, url, location, locationRaw, startAt string) ingest.Report {
+	return ingest.Report{
+		Source:      ingest.AlderSource,
+		SourceURL:   "https://linktr.ee/alderbar",
+		ImportRunID: runID,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: url,
+			Candidates: []ingest.EventCandidate{{
+				UID:         url,
+				Summary:     title,
+				Location:    location,
+				LocationRaw: locationRaw,
+				StartAt:     startAt,
+				Status:      "Listed",
+				Description: "Live music at Alder.",
+				URL:         url,
+			}},
+		}},
 	}
 }
 
@@ -4164,6 +4375,11 @@ func cliSlugFromText(value string) string {
 
 func insertCLIEvent(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, name, startAt string) {
 	t.Helper()
+	insertCLIEventWithOrigin(t, db, sourceID, slug, venueSlug, name, startAt, domain.OriginLive)
+}
+
+func insertCLIEventWithOrigin(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, name, startAt string, origin domain.Origin) {
+	t.Helper()
 
 	var venueID int64
 	if err := db.QueryRow(`
@@ -4188,7 +4404,7 @@ func insertCLIEvent(t *testing.T, db *sql.DB, sourceID int64, slug, venueSlug, n
 			origin,
 			publication_state
 		) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
-	`, slug, venueID, sourceID, name, startAt, "Test", "Listed", "Existing description.", "2026-05-01T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed)); err != nil {
+	`, slug, venueID, sourceID, name, startAt, "Test", "Listed", "Existing description.", "2026-05-01T10:00:00Z", string(origin), string(domain.PublicationStateReviewed)); err != nil {
 		t.Fatalf("insert CLI event: %v", err)
 	}
 }
