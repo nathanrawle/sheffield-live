@@ -58,6 +58,23 @@
     },
     {
       "kind": "calendar#event",
+      "id": "missing-venue",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=bWlzc2luZy12ZW51ZSBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc",
+      "summary": "[DJ] No Venue Evidence",
+      "description": "DJ night without a per-event location.",
+      "start": {
+        "dateTime": "2026-05-29T20:00:00+01:00",
+        "timeZone": "Europe/London"
+      },
+      "end": {
+        "dateTime": "2026-05-29T23:00:00+01:00",
+        "timeZone": "Europe/London"
+      },
+      "iCalUID": "missing-venue@google.com"
+    },
+    {
+      "kind": "calendar#event",
       "id": "offsite-1",
       "status": "confirmed",
       "htmlLink": "https://www.google.com/calendar/event?eid=b2Zmc2l0ZS0xIGNfdTJiczZpdHRtbDZybTVrMGw1cWp0M3BuMW9AZw",

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +17,7 @@ var theWashingtonCalendarAPIKeyPattern = regexp.MustCompile(`(?i)googleCalendarA
 var theWashingtonVenuePattern = regexp.MustCompile(`(?i)\bwashington\b`)
 var theWashingtonMusicPositivePattern = regexp.MustCompile(`(?i)(?:\[(?:dj|live)\]|\blive\s*:|\bdj\b|\bdjs\b|\bgig\b|\bgigs\b|\blive music\b|\bband\b|\bbands\b|\bclub night\b|\bclub nights\b|\bopen mic\b|\balbum launch\b|\btour\b)`)
 var theWashingtonMusicNegativePattern = regexp.MustCompile(`(?i)\b(?:quiz|comedy|film|screening|theatre|theater|workshop|market|talk|lecture|private hire|community)\b`)
+var theWashingtonNow = time.Now
 
 func the_washington_api_links(pageURL string, body []byte, limit int) ([]string, error) {
 	if limit <= 0 {
@@ -31,7 +33,7 @@ func the_washington_api_links(pageURL string, body []byte, limit int) ([]string,
 		return nil, fmt.Errorf("no Google Calendar API key found on The Washington calendar page")
 	}
 
-	apiURL := theWashingtonCalendarAPIURL(id, key)
+	apiURL := theWashingtonCalendarAPIURL(id, key, limit, theWashingtonNow())
 	return []string{apiURL}, nil
 }
 
@@ -41,6 +43,8 @@ func ParseTheWashingtonAPIDetailPage(pageURL string, raw []byte) ParseResult {
 		return ParseResult{Errors: []string{fmt.Sprintf("decode The Washington calendar API response: %v", err)}}
 	}
 
+	candidateLimit := theWashingtonCalendarURLMaxResults(pageURL)
+	requestedTimeMin, hasRequestedTimeMin := theWashingtonCalendarURLTimeMin(pageURL)
 	var result ParseResult
 	for _, item := range payload.Items {
 		candidate, skip, ok, err := theWashingtonCandidateFromAPI(pageURL, item)
@@ -53,6 +57,21 @@ func ParseTheWashingtonAPIDetailPage(pageURL string, raw []byte) ParseResult {
 		}
 		if skip.Reason != "" {
 			result.Skips = append(result.Skips, skip)
+			continue
+		}
+		if hasRequestedTimeMin {
+			startAt, err := time.Parse(time.RFC3339, candidate.StartAt)
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("parse The Washington normalized start time for %q: %v", candidate.Summary, err))
+				continue
+			}
+			if startAt.Before(requestedTimeMin) {
+				result.Skips = append(result.Skips, ParseSkip{UID: candidate.UID, Summary: candidate.Summary, Reason: "event before requested time window"})
+				continue
+			}
+		}
+		if candidateLimit > 0 && len(result.Candidates) >= candidateLimit {
+			result.Skips = append(result.Skips, ParseSkip{UID: candidate.UID, Summary: candidate.Summary, Reason: "candidate limit reached"})
 			continue
 		}
 		result.Candidates = append(result.Candidates, candidate)
@@ -76,11 +95,53 @@ func theWashingtonCalendarAPIKey(body []byte) string {
 	return strings.TrimSpace(string(match[1]))
 }
 
-func theWashingtonCalendarAPIURL(calendarID, apiKey string) string {
+func theWashingtonCalendarAPIURL(calendarID, apiKey string, limit int, now time.Time) string {
+	if limit <= 0 {
+		limit = 1
+	}
 	return "https://www.googleapis.com/calendar/v3/calendars/" +
 		url.QueryEscape(strings.TrimSpace(calendarID)) +
 		"/events?key=" + url.QueryEscape(strings.TrimSpace(apiKey)) +
-		"&singleEvents=true&orderBy=startTime&maxResults=2500&timeMin=2026-01-01T00:00:00Z"
+		"&singleEvents=true&orderBy=startTime&maxResults=" + fmt.Sprintf("%d", limit) +
+		"&timeMin=" + url.QueryEscape(theWashingtonCalendarTimeMin(now))
+}
+
+func theWashingtonCalendarTimeMin(now time.Time) string {
+	loc, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		loc = time.UTC
+	}
+	local := now.In(loc)
+	startOfLocalDay := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	return startOfLocalDay.UTC().Format(time.RFC3339)
+}
+
+func theWashingtonCalendarURLMaxResults(pageURL string) int {
+	parsed, err := url.Parse(pageURL)
+	if err != nil {
+		return 0
+	}
+	maxResults, err := strconv.Atoi(strings.TrimSpace(parsed.Query().Get("maxResults")))
+	if err != nil || maxResults <= 0 {
+		return 0
+	}
+	return maxResults
+}
+
+func theWashingtonCalendarURLTimeMin(pageURL string) (time.Time, bool) {
+	parsed, err := url.Parse(pageURL)
+	if err != nil {
+		return time.Time{}, false
+	}
+	timeMin := strings.TrimSpace(parsed.Query().Get("timeMin"))
+	if timeMin == "" {
+		return time.Time{}, false
+	}
+	parsedTimeMin, err := time.Parse(time.RFC3339, timeMin)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsedTimeMin, true
 }
 
 type theWashingtonAPIFeed struct {
@@ -138,7 +199,11 @@ func theWashingtonCandidateFromAPI(pageURL string, item theWashingtonAPIEvent) (
 	}
 
 	rawLocation := strings.TrimSpace(item.Location)
-	if rawLocation != "" && !theWashingtonVenuePattern.MatchString(rawLocation) {
+	if rawLocation == "" {
+		skip.Reason = "missing venue evidence"
+		return EventCandidate{}, skip, true, nil
+	}
+	if !theWashingtonVenuePattern.MatchString(rawLocation) {
 		skip.Reason = "unsupported venue"
 		return EventCandidate{}, skip, true, nil
 	}
@@ -155,16 +220,11 @@ func theWashingtonCandidateFromAPI(pageURL string, item theWashingtonAPIEvent) (
 		return EventCandidate{}, skip, true, nil
 	}
 
-	locationText := theWashingtonVenueName
-	if rawLocation == "" {
-		rawLocation = theWashingtonVenueName
-	}
-
 	return EventCandidate{
 		UID:         firstNonEmpty(item.ICalUID, item.ID, officialURL),
 		Summary:     title,
 		Description: semanticDescriptionText(item.Description),
-		Location:    locationText,
+		Location:    theWashingtonVenueName,
 		LocationRaw: rawLocation,
 		URL:         officialURL,
 		Status:      "CONFIRMED",
