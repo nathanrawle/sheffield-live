@@ -119,13 +119,9 @@ func networkSheffieldCandidateFromNode(pageURL string, node map[string]any) (Eve
 	}
 
 	officialURL := strings.TrimSpace(pageURL)
-	externalURL := yellowArchJSONString(node["url"])
-	if externalURL == "" {
-		externalURL = officialURL
-	}
 
 	return EventCandidate{
-		UID:            externalURL,
+		UID:            officialURL,
 		Summary:        title,
 		Description:    semanticDescriptionText(yellowArchJSONString(node["description"])),
 		Location:       venueText,
@@ -149,15 +145,20 @@ func networkSheffieldVenueEvidence(title, locationName string) (string, string, 
 		return "", "", nil, false
 	}
 
-	if room := networkSheffieldRoomText(title); room != "" {
-		return room, room, []RoomCandidate{{Slug: networkSheffieldRoomSlug(room), Name: room}}, true
-	}
-	if room := networkSheffieldRoomText(locationName); room != "" {
-		return room, room, []RoomCandidate{{Slug: networkSheffieldRoomSlug(room), Name: room}}, true
+	locationRoom := networkSheffieldRoomText(locationName)
+	locationVenue := networkSheffieldVenueText(locationName)
+	if locationName != "" && locationRoom == "" && locationVenue == "" {
+		return "", "", nil, false
 	}
 
-	if venue := networkSheffieldVenueText(locationName); venue != "" {
-		return venue, "", nil, true
+	if room := networkSheffieldRoomText(title); room != "" && (locationName == "" || locationRoom != "" || locationVenue != "") {
+		return room, room, []RoomCandidate{{Slug: networkSheffieldRoomSlug(room), Name: room}}, true
+	}
+	if locationRoom != "" {
+		return locationRoom, locationRoom, []RoomCandidate{{Slug: networkSheffieldRoomSlug(locationRoom), Name: locationRoom}}, true
+	}
+	if locationVenue != "" {
+		return locationVenue, "", nil, true
 	}
 	if venue := networkSheffieldVenueText(title); venue != "" {
 		return venue, "", nil, true

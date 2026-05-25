@@ -29,34 +29,34 @@ func TestNetworkSheffieldDetailLinksExtractEventPages(t *testing.T) {
 
 func TestNetworkSheffieldDetailPageParsesNetworkAndRoomLabels(t *testing.T) {
 	tests := []struct {
-		name           string
-		pageURL        string
-		fixture        string
-		wantSummary    string
-		wantLocation   string
-		wantRoomText   string
-		wantRoomSlugs  string
-		wantExternalID string
+		name          string
+		pageURL       string
+		fixture       string
+		wantSummary   string
+		wantLocation  string
+		wantRoomText  string
+		wantRoomSlugs string
+		wantUID       string
 	}{
 		{
-			name:           "room",
-			pageURL:        "https://www.networksheffield.co.uk/event/godeth-network-sheffield/",
-			fixture:        "network_sheffield_detail_room.html",
-			wantSummary:    "GODETH | Network 3",
-			wantLocation:   "Network 3",
-			wantRoomText:   "Network 3",
-			wantRoomSlugs:  "network-3",
-			wantExternalID: "https://www.fatsoma.com/e/o0hkx7ur/godeth-network-3",
+			name:          "room",
+			pageURL:       "https://www.networksheffield.co.uk/event/godeth-network-sheffield/",
+			fixture:       "network_sheffield_detail_room.html",
+			wantSummary:   "GODETH | Network 3",
+			wantLocation:  "Network 3",
+			wantRoomText:  "Network 3",
+			wantRoomSlugs: "network-3",
+			wantUID:       "https://www.networksheffield.co.uk/event/godeth-network-sheffield/",
 		},
 		{
-			name:           "plain",
-			pageURL:        "https://www.networksheffield.co.uk/event/park-drive/",
-			fixture:        "network_sheffield_detail_plain.html",
-			wantSummary:    "Park Drive",
-			wantLocation:   "Network",
-			wantRoomText:   "",
-			wantRoomSlugs:  "",
-			wantExternalID: "https://www.fatsoma.com/e/vv1i1awd/park-drive",
+			name:          "plain",
+			pageURL:       "https://www.networksheffield.co.uk/event/park-drive/",
+			fixture:       "network_sheffield_detail_plain.html",
+			wantSummary:   "Park Drive",
+			wantLocation:  "Network",
+			wantRoomText:  "",
+			wantRoomSlugs: "",
+			wantUID:       "https://www.networksheffield.co.uk/event/park-drive/",
 		},
 	}
 
@@ -86,8 +86,8 @@ func TestNetworkSheffieldDetailPageParsesNetworkAndRoomLabels(t *testing.T) {
 			if got, want := candidate.Rooms, roomCandidatesFromSlugs(tc.wantRoomSlugs); !reflect.DeepEqual(got, want) {
 				t.Fatalf("rooms = %#v, want %#v", got, want)
 			}
-			if got, want := candidate.UID, tc.wantExternalID; got != want {
-				t.Fatalf("external id = %q, want %q", got, want)
+			if got, want := candidate.UID, tc.wantUID; got != want {
+				t.Fatalf("uid = %q, want %q", got, want)
 			}
 			if got, want := candidate.URL, tc.pageURL; got != want {
 				t.Fatalf("url = %q, want %q", got, want)
@@ -232,6 +232,18 @@ func TestNetworkSheffieldDetailPageRejectsAdjacentAndUnknownVenues(t *testing.T)
 			title:       "Example | Somewhere Else",
 			venue:       "Somewhere Else",
 			wantSummary: "Example | Somewhere Else",
+		},
+		{
+			name:        "unknown venue with network title",
+			title:       "Network Sheffield Presents Example",
+			venue:       "Somewhere Else",
+			wantSummary: "Network Sheffield Presents Example",
+		},
+		{
+			name:        "unknown venue with network room title",
+			title:       "Example | Network 3",
+			venue:       "Somewhere Else",
+			wantSummary: "Example | Network 3",
 		},
 	}
 
@@ -378,6 +390,9 @@ func TestRunManualNetworkSheffieldParsesListingAndSkipsAdjacentPages(t *testing.
 	if roomCluster.AuthoritativeSourceEventKey == "" {
 		t.Fatal("authoritative source event key is empty")
 	}
+	if wantKey, ok := SourceIdentityKey(godethURL); !ok || roomCluster.AuthoritativeSourceEventKey != wantKey {
+		t.Fatalf("authoritative source event key = %q, want official URL key %q", roomCluster.AuthoritativeSourceEventKey, wantKey)
+	}
 
 	if len(plainCluster.Candidates) != 1 {
 		t.Fatal("plain cluster not found")
@@ -401,6 +416,139 @@ func TestRunManualNetworkSheffieldParsesListingAndSkipsAdjacentPages(t *testing.
 	}
 	if got, want := arundelCalendar.Skips[0].Reason, "unsupported venue"; got != want {
 		t.Fatalf("arundel skip reason = %q, want %q", got, want)
+	}
+}
+
+func TestReplayImportRunRebuildsNetworkSheffieldReportFromLinkedDetailSnapshots(t *testing.T) {
+	finishedAt := time.Date(2026, 5, 24, 12, 30, 0, 0, time.UTC)
+	listingURL := "https://www.networksheffield.co.uk/events/"
+	parkDriveURL := "https://www.networksheffield.co.uk/event/park-drive/"
+	godethURL := "https://www.networksheffield.co.uk/event/godeth-network-sheffield/"
+	arundelURL := "https://www.networksheffield.co.uk/event/as-it-is-album-launch-show-matinee-arundel-emporium/"
+
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         410,
+			StartedAt:  time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=3 candidates=2 skips=1 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         601,
+					SourceName: "Network Sheffield listings",
+					SourceURL:  listingURL,
+					CapturedAt: time.Date(2026, 5, 24, 12, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         listingURL,
+						FinalURL:    listingURL,
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "network_sheffield_events.html"),
+						CapturedAt:  time.Date(2026, 5, 24, 12, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         602,
+					SourceName: "Network Sheffield event detail page",
+					SourceURL:  parkDriveURL,
+					CapturedAt: time.Date(2026, 5, 24, 12, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         parkDriveURL,
+						FinalURL:    parkDriveURL,
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "network_sheffield_detail_plain.html"),
+						CapturedAt:  time.Date(2026, 5, 24, 12, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         603,
+					SourceName: "Network Sheffield event detail page",
+					SourceURL:  godethURL,
+					CapturedAt: time.Date(2026, 5, 24, 12, 3, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         godethURL,
+						FinalURL:    godethURL,
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "network_sheffield_detail_room.html"),
+						CapturedAt:  time.Date(2026, 5, 24, 12, 3, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         604,
+					SourceName: "Network Sheffield event detail page",
+					SourceURL:  arundelURL,
+					CapturedAt: time.Date(2026, 5, 24, 12, 4, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         arundelURL,
+						FinalURL:    arundelURL,
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body: networkSheffieldDetailFixture(
+							"As It Is - Album Launch Show - Matinee | Arundel Emporium",
+							"The Arundel Emporium",
+							"https://www.fatsoma.com/e/nfxp68iq/as-it-is-album-launch-show-matinee-arundel-emporium",
+							"Rejected adjacent venue",
+						),
+						CapturedAt: time.Date(2026, 5, 24, 12, 4, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 410, ReplayOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+	if got, want := report.Source, NetworkSheffieldSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, listingURL; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 3; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 1; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+
+	plainCalendar := findCalendarReport(report.Calendars, parkDriveURL)
+	if plainCalendar == nil || len(plainCalendar.Candidates) != 1 {
+		t.Fatalf("plain venue replay calendar = %#v, want one candidate", plainCalendar)
+	}
+	if got, want := plainCalendar.Candidates[0].Location, "Network"; got != want {
+		t.Fatalf("plain location = %q, want %q", got, want)
+	}
+	if got, want := plainCalendar.Candidates[0].UID, parkDriveURL; got != want {
+		t.Fatalf("plain uid = %q, want %q", got, want)
+	}
+
+	roomCalendar := findCalendarReport(report.Calendars, godethURL)
+	if roomCalendar == nil || len(roomCalendar.Candidates) != 1 {
+		t.Fatalf("room replay calendar = %#v, want one candidate", roomCalendar)
+	}
+	if got, want := roomCalendar.Candidates[0].Location, "Network 3"; got != want {
+		t.Fatalf("room location = %q, want %q", got, want)
+	}
+	if got, want := roomCalendar.Candidates[0].RoomText, "Network 3"; got != want {
+		t.Fatalf("room text = %q, want %q", got, want)
+	}
+	if got, want := roomCalendar.Candidates[0].Rooms, roomCandidatesFromSlugs("network-3"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("rooms = %#v, want %#v", got, want)
+	}
+	if got, want := roomCalendar.Candidates[0].UID, godethURL; got != want {
+		t.Fatalf("room uid = %q, want %q", got, want)
 	}
 }
 
