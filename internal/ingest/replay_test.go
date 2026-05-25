@@ -387,13 +387,13 @@ func TestReplayImportRunEnrichesYellowArchDescriptionsFromDetailSnapshots(t *tes
 }
 
 func TestReplayImportRunRebuildsDeliciousClamReportFromLinkedDetailSnapshots(t *testing.T) {
-	freezeDeliciousClamClock(t)
+	setDeliciousClamClock(t, time.Date(2027, 1, 1, 12, 0, 0, 0, time.UTC))
 
-	finishedAt := time.Date(2026, 6, 28, 12, 30, 0, 0, time.UTC)
+	finishedAt := time.Date(2026, 5, 25, 12, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{
 		run: ReplayRun{
 			ID:         179,
-			StartedAt:  time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC),
+			StartedAt:  time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC),
 			FinishedAt: &finishedAt,
 			Status:     "succeeded",
 			Notes:      "links=1 candidates=1 skips=0 errors=0",
@@ -402,28 +402,28 @@ func TestReplayImportRunRebuildsDeliciousClamReportFromLinkedDetailSnapshots(t *
 					ID:         401,
 					SourceName: "Delicious Clam listings",
 					SourceURL:  "https://www.deliciousclam.co.uk/events",
-					CapturedAt: time.Date(2026, 6, 28, 12, 1, 0, 0, time.UTC),
+					CapturedAt: time.Date(2026, 5, 25, 12, 1, 0, 0, time.UTC),
 					Payload: mustReplaySnapshotPayload(t, FetchResult{
 						URL:        "https://www.deliciousclam.co.uk/events",
 						FinalURL:   "https://www.deliciousclam.co.uk/events",
 						Status:     "200 OK",
 						StatusCode: 200,
 						Body:       readFixture(t, "delicious_clam_events.html"),
-						CapturedAt: time.Date(2026, 6, 28, 12, 1, 0, 0, time.UTC),
+						CapturedAt: time.Date(2026, 5, 25, 12, 1, 0, 0, time.UTC),
 					}, nil),
 				},
 				{
 					ID:         402,
 					SourceName: "Delicious Clam delegated event detail page",
 					SourceURL:  "https://www.skiddle.com/e/42362090",
-					CapturedAt: time.Date(2026, 6, 28, 12, 2, 0, 0, time.UTC),
+					CapturedAt: time.Date(2026, 5, 25, 12, 2, 0, 0, time.UTC),
 					Payload: mustReplaySnapshotPayload(t, FetchResult{
 						URL:        "https://www.skiddle.com/e/42362090",
 						FinalURL:   "https://www.skiddle.com/e/42362090",
 						Status:     "200 OK",
 						StatusCode: 200,
 						Body:       readFixture(t, "delicious_clam_detail_good.html"),
-						CapturedAt: time.Date(2026, 6, 28, 12, 2, 0, 0, time.UTC),
+						CapturedAt: time.Date(2026, 5, 25, 12, 2, 0, 0, time.UTC),
 					}, nil),
 				},
 			},
@@ -449,6 +449,9 @@ func TestReplayImportRunRebuildsDeliciousClamReportFromLinkedDetailSnapshots(t *
 	}
 	if got, want := len(report.Calendars), 1; got != want {
 		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d; skips = %#v", got, want, report.Calendars[0].Skips)
 	}
 	if got, want := report.Calendars[0].Candidates[0].Location, deliciousClamVenueName; got != want {
 		t.Fatalf("location = %q, want %q", got, want)

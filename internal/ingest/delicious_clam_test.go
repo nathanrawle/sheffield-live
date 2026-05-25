@@ -9,9 +9,14 @@ import (
 
 func freezeDeliciousClamClock(t *testing.T) {
 	t.Helper()
+	setDeliciousClamClock(t, time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC))
+}
+
+func setDeliciousClamClock(t *testing.T, now time.Time) {
+	t.Helper()
 	old := deliciousClamNow
 	deliciousClamNow = func() time.Time {
-		return time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+		return now
 	}
 	t.Cleanup(func() {
 		deliciousClamNow = old

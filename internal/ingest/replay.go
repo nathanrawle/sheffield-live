@@ -216,7 +216,7 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 				report.Totals.Snapshots++
 				continue
 			}
-			parse, err := parseLinkedPageForSource(sourceCfg, firstNonEmpty(snapshot.envelope.Metadata.FinalURL, snapshot.envelope.Metadata.URL), snapshot.body)
+			parse, err := parseReplayLinkedPageForSource(sourceCfg, firstNonEmpty(snapshot.envelope.Metadata.FinalURL, snapshot.envelope.Metadata.URL), snapshot.body, page.snapshot.CapturedAt)
 			if err != nil {
 				return Report{}, fmt.Errorf("import run %d parse linked page %q: %w", importRunID, link, err)
 			}
@@ -301,19 +301,44 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 }
 
 func parseReplaySourcePage(cfg sourceConfig, pageURL string, body []byte, limit int, capturedAt time.Time) (sourcePageParseResult, error) {
-	if cfg.Key != TheWashingtonSource || capturedAt.IsZero() {
-		return parseSourcePage(cfg, pageURL, body, limit)
-	}
-
-	old := theWashingtonNow
-	theWashingtonNow = func() time.Time {
-		return capturedAt
-	}
-	defer func() {
-		theWashingtonNow = old
-	}()
+	restore := replaySourceClock(cfg, capturedAt)
+	defer restore()
 
 	return parseSourcePage(cfg, pageURL, body, limit)
+}
+
+func parseReplayLinkedPageForSource(cfg sourceConfig, pageURL string, body []byte, capturedAt time.Time) (ParseResult, error) {
+	restore := replaySourceClock(cfg, capturedAt)
+	defer restore()
+
+	return parseLinkedPageForSource(cfg, pageURL, body)
+}
+
+func replaySourceClock(cfg sourceConfig, capturedAt time.Time) func() {
+	if capturedAt.IsZero() {
+		return func() {}
+	}
+
+	switch cfg.Key {
+	case TheWashingtonSource:
+		old := theWashingtonNow
+		theWashingtonNow = func() time.Time {
+			return capturedAt
+		}
+		return func() {
+			theWashingtonNow = old
+		}
+	case DeliciousClamSource:
+		old := deliciousClamNow
+		deliciousClamNow = func() time.Time {
+			return capturedAt
+		}
+		return func() {
+			deliciousClamNow = old
+		}
+	default:
+		return func() {}
+	}
 }
 
 type decodedReplaySnapshot struct {
