@@ -2946,8 +2946,11 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 	runManualImport = func(ctx context.Context, st *sqlite.Store, _ ingest.Fetcher, _ *ingest.Catalog, opts ingest.Options) (ingest.Report, error) {
 		runID, startedAt, finishedAt := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
 		location := "External Room"
-		if opts.Source == ingest.NetworkSheffieldSource {
+		switch opts.Source {
+		case ingest.NetworkSheffieldSource:
 			location = "Network 1"
+		case ingest.UniversityOfSheffieldPerformanceVenuesSource:
+			location = "Octagon Centre"
 		}
 		return ingest.Report{
 			Source:      opts.Source,
@@ -2993,7 +2996,7 @@ func TestRunWithArgsAllSourcesStagesEachSource(t *testing.T) {
 		wantAutoPromoted := 1
 		wantCreated := 0
 		wantReviewCandidates := 0
-		if result.Source == ingest.NetworkSheffieldSource {
+		if result.Source == ingest.NetworkSheffieldSource || result.Source == ingest.UniversityOfSheffieldPerformanceVenuesSource {
 			wantAutoPromoted = 0
 			wantCreated = 1
 			wantReviewCandidates = 1

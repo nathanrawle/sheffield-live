@@ -1380,7 +1380,7 @@ func backfillCanonicalUnknownEnds(ctx context.Context, tx interface {
 		if authoritative != 1 {
 			continue
 		}
-		if strings.TrimSpace(sourceMetadata.OwnedVenueSlugForReviewStageSourceName(sourceName)) != strings.TrimSpace(venueSlug) {
+		if !sourceMetadataOwnsReviewStageVenue(sourceMetadata, sourceName, venueSlug) {
 			continue
 		}
 		ids = append(ids, eventID)

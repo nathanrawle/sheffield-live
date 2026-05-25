@@ -29,6 +29,7 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 		CrookesClubSource,
 		DeliciousClamSource,
 		HagglersCornerSource,
+		UniversityOfSheffieldPerformanceVenuesSource,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("catalog keys = %v, want %v", got, want)
@@ -93,6 +94,29 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	}
 	if got, want := cfg.OwnedVenueSlug, HagglersCornerSource; got != want {
 		t.Fatalf("hagglers corner owned venue slug = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(UniversityOfSheffieldPerformanceVenuesSource)
+	if err != nil {
+		t.Fatalf("config for university performance venues: %v", err)
+	}
+	if got, want := cfg.LinkedPageLinkExtractorFamily, "university_performance_venues_detail_links"; got != want {
+		t.Fatalf("university performance venues linked page link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "university_performance_venues_detail_page"; got != want {
+		t.Fatalf("university performance venues linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.VenueNormalizerFamily, "university_performance_venues"; got != want {
+		t.Fatalf("university performance venues venue normalizer family = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlug, ""; got != want {
+		t.Fatalf("university performance venues owned venue slug = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlugs, []string{"octagon-centre", "firth-hall", "drama-studio"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("university performance venues owned venue slugs = %#v, want %#v", got, want)
+	}
+	if got := cfg.NonAuthoritativeSingletonAutoPromotionDisabled; got {
+		t.Fatalf("university performance venues non_authoritative_singleton_auto_promotion_disabled = %v, want false", got)
 	}
 }
 
@@ -159,6 +183,42 @@ source_page:
 `) + "\n",
 			},
 			wantErr: "owned_venue_slug and non_authoritative_singleton_venue_slug cannot both be set",
+		},
+		{
+			name: "conflicting ownership list",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+owned_venue_slug: one
+owned_venue_slugs:
+  - one
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+`) + "\n",
+			},
+			wantErr: "owned_venue_slug and owned_venue_slugs cannot both be set",
+		},
+		{
+			name: "conflicting ownership list and singleton",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+owned_venue_slugs:
+  - one
+non_authoritative_singleton_venue_slug: one
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+`) + "\n",
+			},
+			wantErr: "owned_venue_slugs and non_authoritative_singleton_venue_slug cannot both be set",
 		},
 		{
 			name: "mode mismatch",

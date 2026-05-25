@@ -1105,6 +1105,116 @@ func TestReviewClustersFromReportSkipsAuthoritativeGroupMetadataWhenCandidatesDi
 	}
 }
 
+func TestReviewClustersFromUniversityPerformanceVenuesReportUsesMultiVenueAuthority(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("default catalog: %v", err)
+	}
+
+	report := Report{
+		Source:      UniversityOfSheffieldPerformanceVenuesSource,
+		SourceURL:   "https://performancevenues.group.shef.ac.uk/whats-on/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://performancevenues.group.shef.ac.uk/event/shared/",
+				Candidates: []EventCandidate{
+					{
+						UID:      "shared-uid",
+						Summary:  "University Event",
+						Location: "Octagon Centre",
+						URL:      "https://performancevenues.group.shef.ac.uk/event/shared/",
+						StartAt:  "2026-08-07T19:30:00Z",
+					},
+					{
+						UID:      "shared-uid",
+						Summary:  "University Event",
+						Location: "Firth Hall",
+						URL:      "https://performancevenues.group.shef.ac.uk/event/shared/",
+						StartAt:  "2026-08-07T19:30:00Z",
+					},
+					{
+						UID:      "shared-uid",
+						Summary:  "University Event",
+						Location: "Drama Studio",
+						URL:      "https://performancevenues.group.shef.ac.uk/event/shared/",
+						StartAt:  "2026-08-07T19:30:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	clusters := ReviewClustersFromReportWithCatalog(catalog, report)
+	if got, want := len(clusters), 1; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	if got, want := clusters[0].Candidates[0].VenueSlug, "octagon-centre"; got != want {
+		t.Fatalf("first venue slug = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].Candidates[1].VenueSlug, "firth-hall"; got != want {
+		t.Fatalf("second venue slug = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].Candidates[2].VenueSlug, "drama-studio"; got != want {
+		t.Fatalf("third venue slug = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceName, "University of Sheffield Performance Venues manual ingest"; got != want {
+		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceURL, "https://performancevenues.group.shef.ac.uk/event/shared/"; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceEventKey, "uid:shared-uid"; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+}
+
+func TestReviewClustersFromUniversityPerformanceVenuesReportSkipsUnknownVenueAuthority(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("default catalog: %v", err)
+	}
+
+	report := Report{
+		Source:      UniversityOfSheffieldPerformanceVenuesSource,
+		SourceURL:   "https://performancevenues.group.shef.ac.uk/whats-on/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://performancevenues.group.shef.ac.uk/event/unknown/",
+				Candidates: []EventCandidate{
+					{
+						UID:      "unknown-uid",
+						Summary:  "Unknown Venue Event",
+						Location: "Firth Court",
+						URL:      "https://performancevenues.group.shef.ac.uk/event/unknown/",
+						StartAt:  "2026-08-07T19:30:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	clusters := ReviewClustersFromReportWithCatalog(catalog, report)
+	if got, want := len(clusters), 1; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	if got, want := clusters[0].Candidates[0].VenueSlug, ""; got != want {
+		t.Fatalf("venue slug = %q, want empty", got)
+	}
+	if got := clusters[0].AuthoritativeSourceName; got != "" {
+		t.Fatalf("authoritative source name = %q, want empty", got)
+	}
+	if got := clusters[0].AuthoritativeSourceURL; got != "" {
+		t.Fatalf("authoritative source url = %q, want empty", got)
+	}
+	if got := clusters[0].AuthoritativeSourceEventKey; got != "" {
+		t.Fatalf("authoritative source event key = %q, want empty", got)
+	}
+}
+
 func TestReviewClustersFromReportPreservesStableOrder(t *testing.T) {
 	report := successfulReviewStageReport(
 		CalendarReport{

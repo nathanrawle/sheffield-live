@@ -88,8 +88,19 @@ func ReviewClustersFromReportWithCatalog(catalog *Catalog, report Report) []Revi
 }
 
 func reviewStageAuthoritativeSource(catalog *Catalog, source, baseSourceName, baseSourceURL string, candidates []review.CandidateInput) (string, string, string) {
-	ownedVenueSlug := strings.TrimSpace(catalog.OwnedVenueSlugForSource(source))
-	if ownedVenueSlug == "" || len(candidates) == 0 {
+	ownedVenueSlugs := catalog.OwnedVenueSlugsForSource(source)
+	if len(ownedVenueSlugs) == 0 || len(candidates) == 0 {
+		return "", "", ""
+	}
+	ownedVenueSet := make(map[string]struct{}, len(ownedVenueSlugs))
+	for _, slug := range ownedVenueSlugs {
+		slug = strings.TrimSpace(slug)
+		if slug == "" {
+			continue
+		}
+		ownedVenueSet[slug] = struct{}{}
+	}
+	if len(ownedVenueSet) == 0 {
 		return "", "", ""
 	}
 
@@ -97,7 +108,7 @@ func reviewStageAuthoritativeSource(catalog *Catalog, source, baseSourceName, ba
 	var authoritativeSourceURL string
 	var authoritativeSourceEventKey string
 	for _, candidate := range candidates {
-		if strings.TrimSpace(candidate.VenueSlug) != ownedVenueSlug {
+		if _, ok := ownedVenueSet[strings.TrimSpace(candidate.VenueSlug)]; !ok {
 			return "", "", ""
 		}
 		candidateEventKey := reviewStageAuthoritativeSourceEventKey(candidate)

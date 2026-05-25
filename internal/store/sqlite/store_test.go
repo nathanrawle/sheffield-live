@@ -1760,6 +1760,65 @@ func TestOpenRejectsCanonicalEqualTimeEndOutsideOwnedVenueBackfill(t *testing.T)
 	}
 }
 
+func TestOpenBackfillsCanonicalEqualTimeEndForUniversityMultiVenueAuthoritativeSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	db := mustRawDB(t, path)
+
+	const (
+		sourceName = "University of Sheffield Performance Venues manual ingest"
+		sourceURL  = "https://performancevenues.group.shef.ac.uk/event/man-in-the-mirror/"
+		startAt    = "2026-08-07T19:30:00Z"
+	)
+	slug := mustLiveEventSlug(t, "Man in the Mirror", "octagon-centre", startAt)
+	insertLegacyVenue(t, db, "octagon-centre", "Octagon Centre", domain.OriginLive)
+	sourceID := mustEnsureSourceID(t, st, sourceName, sourceURL)
+	mustInsertRepairLegacyEvent(t, db, sourceID, slug, "octagon-centre", "Man in the Mirror", startAt, "University venue test event")
+	if _, err := db.Exec(`
+		UPDATE events
+		SET end_at = start_at
+		WHERE slug = ?
+	`, slug); err != nil {
+		t.Fatalf("set equal-time end: %v", err)
+	}
+	mustInsertAuthoritativeSourceLink(t, db, slug, sourceName, sourceURL, "pv-1")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close reopened store: %v", err)
+		}
+	}()
+
+	db = mustRawDB(t, path)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close reopened raw db: %v", err)
+		}
+	}()
+
+	var endAt sql.NullString
+	if err := db.QueryRow(`SELECT end_at FROM events WHERE slug = ?`, slug).Scan(&endAt); err != nil {
+		t.Fatalf("load end_at: %v", err)
+	}
+	if endAt.Valid {
+		t.Fatalf("end_at = %q, want NULL", endAt.String)
+	}
+}
+
 func TestOpenRejectsAbandonedHistoricalDuplicateBranchSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 

@@ -1703,6 +1703,63 @@ func assertEventImageFields(t *testing.T, db *sql.DB, slug, wantURL, wantSourceU
 	}
 }
 
+func TestPromoteSingletonReviewClusterIfMissingTreatsUniversityMultiVenueAsAuthoritative(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	insertLegacyVenue(t, st.db, "octagon-centre", "Octagon Centre", domain.OriginLive)
+
+	sourceName := "University of Sheffield Performance Venues manual ingest"
+	sourceURL := "https://performancevenues.group.shef.ac.uk/event/man-in-the-mirror/"
+	slug, promoted, err := st.PromoteSingletonReviewClusterIfMissing(ctx, ingest.ReviewStageClusterInput{
+		Title:      "University of Sheffield Performance Venues singleton",
+		SourceName: sourceName,
+		SourceURL:  sourceURL,
+		Candidates: []review.CandidateInput{{
+			ExternalID: "pv-1",
+			Name:       "Man in the Mirror",
+			VenueSlug:  "octagon-centre",
+			StartAt:    "2026-08-07T19:30:00Z",
+			Status:     "Listed",
+			SourceName: sourceName,
+			SourceURL:  sourceURL,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote university singleton: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	if slug == "" {
+		t.Fatal("slug = empty, want promoted authoritative event")
+	}
+
+	event, ok := st.EventBySlug(slug)
+	if !ok {
+		t.Fatalf("event %q not found", slug)
+	}
+	if got, want := event.VenueSlug, "octagon-centre"; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+	if got, want := event.SourceName, sourceName; got != want {
+		t.Fatalf("source name = %q, want %q", got, want)
+	}
+	if got, want := event.PublicationState, domain.PublicationStateReviewed; got != want {
+		t.Fatalf("publication state = %q, want %q", got, want)
+	}
+}
+
 func mustReviewCatalog(t *testing.T) *ingest.Catalog {
 	t.Helper()
 

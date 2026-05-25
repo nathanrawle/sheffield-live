@@ -123,6 +123,127 @@ func TestReplayImportRunRebuildsReportFromSnapshotEnvelopes(t *testing.T) {
 	}
 }
 
+func TestReplayImportRunRebuildsUniversityPerformanceVenuesReportFromRecognizedDetailPages(t *testing.T) {
+	finishedAt := time.Date(2026, 5, 12, 10, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         88,
+			StartedAt:  time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=2 candidates=3 skips=0 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         701,
+					SourceName: "University of Sheffield Performance Venues listings",
+					SourceURL:  "https://performancevenues.group.shef.ac.uk/whats-on/",
+					CapturedAt: time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://performancevenues.group.shef.ac.uk/whats-on/",
+						FinalURL:    "https://performancevenues.group.shef.ac.uk/whats-on/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body: universityPerformanceVenuesListingHTML(
+							"/our-events/man-in-the-mirror/",
+							"/our-events/firth-hall-choral/",
+						),
+						CapturedAt: time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         702,
+					SourceName: "University of Sheffield Performance Venues listings event details",
+					SourceURL:  "https://performancevenues.group.shef.ac.uk/our-events/man-in-the-mirror/",
+					CapturedAt: time.Date(2026, 5, 12, 10, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://performancevenues.group.shef.ac.uk/our-events/man-in-the-mirror/",
+						FinalURL:    "https://performancevenues.group.shef.ac.uk/our-events/man-in-the-mirror/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body: universityPerformanceVenuesDetailHTML(
+							"Man in the Mirror",
+							"Friday 7th August, 2026 & Saturday 8th August, 2026",
+							"Octagon Centre",
+							"7:30 pm",
+							"£35.75",
+							"Live music tribute concert.",
+							"https://performancevenues.gigantic.com/man-in-the-mirror",
+						),
+						CapturedAt: time.Date(2026, 5, 12, 10, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         703,
+					SourceName: "University of Sheffield Performance Venues listings event details",
+					SourceURL:  "https://performancevenues.group.shef.ac.uk/our-events/firth-hall-choral/",
+					CapturedAt: time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://performancevenues.group.shef.ac.uk/our-events/firth-hall-choral/",
+						FinalURL:    "https://performancevenues.group.shef.ac.uk/our-events/firth-hall-choral/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body: universityPerformanceVenuesDetailHTML(
+							"Firth Hall Choral",
+							"Friday 9th August, 2026",
+							"Firth Hall",
+							"6pm",
+							"Free",
+							"Live music recital evening.",
+							"",
+						),
+						CapturedAt: time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 88, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, UniversityOfSheffieldPerformanceVenuesSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, "https://performancevenues.group.shef.ac.uk/whats-on/"; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 2; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 2; got != want {
+		t.Fatalf("first calendar candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Octagon Centre"; got != want {
+		t.Fatalf("first calendar location = %q, want %q", got, want)
+	}
+	if got, want := len(report.Calendars[1].Candidates), 1; got != want {
+		t.Fatalf("second calendar candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[1].Candidates[0].Location, "Firth Hall"; got != want {
+		t.Fatalf("second calendar location = %q, want %q", got, want)
+	}
+	if got, want := report.Totals.Snapshots, 3; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 3; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 0; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+}
+
 func TestReplayImportRunRebuildsYellowArchReportFromSourcePageSnapshot(t *testing.T) {
 	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{
