@@ -583,17 +583,38 @@ func (s *Store) promoteAuthoritativeSingletonReviewClusterIfMissing(ctx context.
 	sourceCtx := reviewSourceIdentityContextForCandidateInput(reviewSourceIdentityAuthoritative, input.SourceName, input.SourceURL, input.AuthoritativeSourceName, input.AuthoritativeSourceURL, input.AuthoritativeSourceEventKey, input.Candidates[0], "authoritative_singleton_autopromotion")
 	event.SourceName = sourceCtx.SourceName
 	event.SourceURL = sourceCtx.SourceURL
+
+	matcher, err := loadVenueMatcher(ctx, tx)
+	if err != nil {
+		return "", false, err
+	}
+	venueMatch, err := ensureProvisionalVenueForCandidateTx(ctx, tx, &matcher, reviewCandidateFromInput(input.Candidates[0]))
+	if err != nil {
+		return "", false, err
+	}
+	if venueMatch.status != venueMatchResolved {
+		return "", false, nil
+	}
+	if strings.TrimSpace(venueMatch.slug) != strings.TrimSpace(input.Candidates[0].VenueSlug) {
+		return "", false, nil
+	}
+	event.VenueSlug = strings.TrimSpace(venueMatch.slug)
+	event.Slug, err = buildLiveEventSlug(event.Name, event.VenueSlug, event.Start)
+	if err != nil {
+		return "", false, err
+	}
+
 	appliedEvent, applied, err := applyAuthoritativeEventTx(ctx, tx, event, sourceCtx, now, scope, s.sourceMetadata)
 	if err != nil {
 		return "", false, err
+	}
+	if !applied {
+		return "", false, nil
 	}
 	if err := tx.Commit(); err != nil {
 		return "", false, err
 	}
 	committed = true
-	if !applied {
-		return "", false, nil
-	}
 	return appliedEvent.Event.Slug, true, nil
 }
 
