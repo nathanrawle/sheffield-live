@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <title>The Washington calendar</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.css">
+</head>
+<body>
+  <div id="calendar" class="calendar-wrapper"></div>
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/google-calendar@5.11.3/main.global.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      var calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
+        initialView: 'dayGridMonth',
+        height: 'auto',
+        googleCalendarApiKey: 'AIzaSyAVR1AfCKKfQrAZj_ErEY5UEy0QLG0AHAc',
+        eventSources: [
+          {
+            googleCalendarId: 'c_u2bs6ittml6rm5k0l5qjt3pn1o@group.calendar.google.com',
+            className: 'washington-event-source'
+          }
+        ]
+      });
+      calendar.render();
+    });
+  </script>
+</body>
+</html>

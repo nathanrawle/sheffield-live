@@ -1,0 +1,74 @@
+{
+  "kind": "calendar#events",
+  "summary": "Washington Events",
+  "description": "Public events calendar",
+  "timeZone": "Europe/London",
+  "accessRole": "reader",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "id": "_8ksj6h9k6sq3gba664pjeb9k85142ba18cq32b9n64pk2h9o8h0k4gq48k_20260526T200000Z",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=Xzhrc2o2aDlrNnNxM2diYTY2NHBqZWI5azg1MTQyYmExOGNxMzJiOW42NHBrMmg5bzhoMGs0Z3E0OGtfMjAyNjA1MjZUMjAwMDAwWiBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc",
+      "summary": "[DJ] FIESTA!",
+      "description": "Week nights are for dancing.",
+      "start": {
+        "dateTime": "2026-05-26T21:00:00+01:00",
+        "timeZone": "Europe/London"
+      },
+      "end": {
+        "dateTime": "2026-05-27T03:00:00+01:00",
+        "timeZone": "Europe/London"
+      },
+      "iCalUID": "E93E4748-F137-4ABA-AC41-713AE8DABCDE"
+    },
+    {
+      "kind": "calendar#event",
+      "id": "0n2lvog0jgb3pmb9r4v4gioid6",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=MG4ybHZvZzBqZ2IzcG1iOXI0djRnaW9pZDYgY191MmJzNml0dG1sNnJtNWswbDVxanQzcG4xb0Bn",
+      "summary": "LIVE: Slackrr",
+      "start": {
+        "date": "2026-10-30"
+      },
+      "end": {
+        "date": "2026-10-31"
+      },
+      "iCalUID": "0n2lvog0jgb3pmb9r4v4gioid6@google.com"
+    },
+    {
+      "kind": "calendar#event",
+      "id": "quiz-night",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=cXVpei1uaWdodCBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc",
+      "summary": "Quiz Night",
+      "description": "General knowledge pub quiz.",
+      "start": {
+        "dateTime": "2026-05-28T20:00:00+01:00",
+        "timeZone": "Europe/London"
+      },
+      "end": {
+        "dateTime": "2026-05-28T22:00:00+01:00",
+        "timeZone": "Europe/London"
+      },
+      "iCalUID": "quiz-night@google.com"
+    },
+    {
+      "kind": "calendar#event",
+      "id": "offsite-1",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=b2Zmc2l0ZS0xIGNfdTJiczZpdHRtbDZybTVrMGw1cWp0M3BuMW9AZw",
+      "summary": "Offsite Showcase",
+      "location": "Somewhere Else, Sheffield",
+      "start": {
+        "dateTime": "2026-06-01T20:00:00+01:00",
+        "timeZone": "Europe/London"
+      },
+      "end": {
+        "dateTime": "2026-06-01T23:00:00+01:00",
+        "timeZone": "Europe/London"
+      },
+      "iCalUID": "offsite-1@google.com"
+    }
+  ]
+}

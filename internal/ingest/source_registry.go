@@ -24,15 +24,18 @@ var sourcePageParserFamilies = map[string]sourcePageParserFunc{
 	"yellow_arch_jsonld": ParseYellowArchSourcePage,
 	"cafe_no_9":          ParseCafeNo9SourcePage,
 	"jazz_at_the_lescar": ParseJazzAtTheLescarSourcePage,
+	"crookes_club":       ParseCrookesClubSourcePage,
 }
 
 var sourcePageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
-	"cafe_no_9_pagination": ExtractCafeNo9SourcePageLinks,
+	"cafe_no_9_pagination":         ExtractCafeNo9SourcePageLinks,
+	"crookes_club_secondary_pages": ExtractCrookesClubSecondaryPages,
 }
 
 var icsLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
-	"sidney_and_matilda": ExtractSidneyAndMatildaICSLinks,
-	"leadmill_calendar":  ExtractLeadmillICSLinks,
+	"sidney_and_matilda":               ExtractSidneyAndMatildaICSLinks,
+	"leadmill_calendar":                ExtractLeadmillICSLinks,
+	"hallamshire_hotel_cfg_filestring": hallamshire_hotel_cfg_filestring,
 }
 
 var icsParserFamilies = map[string]icsParserFunc{
@@ -41,18 +44,35 @@ var icsParserFamilies = map[string]icsParserFunc{
 }
 
 var linkedPageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
-	"corporation_detail_links": ExtractCorporationDetailLinks,
-	"greystones_month_links":   ExtractTheGreystonesMonthLinks,
+	"corporation_detail_links":                   ExtractCorporationDetailLinks,
+	"alder_listing_links":                        alder_listing_links,
+	"delicious_clam_ticket_links":                ExtractDeliciousClamTicketLinks,
+	"hagglers_corner_detail_links":               hagglers_corner_detail_links,
+	"greystones_month_links":                     ExtractTheGreystonesMonthLinks,
+	"the_washington_api_links":                   the_washington_api_links,
+	"network_sheffield_detail_links":             network_sheffield_detail_links,
+	"university_performance_venues_detail_links": university_performance_venues_detail_links,
 }
 
 var linkedPageParserFamilies = map[string]func(pageURL string, body []byte) ParseResult{
-	"corporation_detail_page": ParseCorporationDetailPage,
-	"greystones_month_page":   ParseTheGreystonesMonthPage,
+	"corporation_detail_page":                   ParseCorporationDetailPage,
+	"alder_event_detail_page":                   ParseAlderEventDetailPage,
+	"delicious_clam_ticket_page":                ParseDeliciousClamTicketPage,
+	"hagglers_corner_detail_page":               ParseHagglersCornerDetailPage,
+	"greystones_month_page":                     ParseTheGreystonesMonthPage,
+	"the_washington_api":                        ParseTheWashingtonAPIDetailPage,
+	"network_sheffield_detail_page":             ParseNetworkSheffieldDetailPage,
+	"university_performance_venues_detail_page": ParseUniversityPerformanceVenuesDetailPage,
 }
 
 var venueNormalizerFamilies = map[string]venueNormalizerFunc{
-	"default":  VenueSlugFromText,
-	"leadmill": func(value string) string { return VenueSlugFromText(leadmillVenueText(value)) },
+	"default":           VenueSlugFromText,
+	"leadmill":          func(value string) string { return VenueSlugFromText(leadmillVenueText(value)) },
+	"network_sheffield": func(value string) string { return networkSheffieldVenueSlugFromText(value) },
+	"university_performance_venues": func(value string) string {
+		slug, _, _ := universityPerformanceVenuesVenueSlugFromText(value)
+		return slug
+	},
 }
 
 func hasSourcePageParserFamily(name string) bool {

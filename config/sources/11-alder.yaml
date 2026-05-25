@@ -1,0 +1,11 @@
+key: alder
+name: Alder listings
+url: https://linktr.ee/alderbar
+review_stage_source_name: Alder manual ingest
+import_run_notes: manual Alder snapshot + linked-detail parse report
+owned_venue_slug: alder
+mode: linked_detail_pages
+linked_detail_pages:
+  secondary_source_name: Alder linked event detail page
+  linked_page_link_extractor: alder_listing_links
+  linked_page_parser: alder_event_detail_page

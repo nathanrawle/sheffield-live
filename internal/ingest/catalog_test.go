@@ -24,6 +24,14 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 		TheGreystonesSource,
 		LeadmillSource,
 		CorporationSource,
+		HallamshireHotelSource,
+		TheWashingtonSource,
+		NetworkSheffieldSource,
+		AlderSource,
+		CrookesClubSource,
+		DeliciousClamSource,
+		HagglersCornerSource,
+		UniversityOfSheffieldPerformanceVenuesSource,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("catalog keys = %v, want %v", got, want)
@@ -35,6 +43,121 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	}
 	if got, want := cfg.ICSParserFamily, "leadmill"; got != want {
 		t.Fatalf("leadmill ics parser family = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(HallamshireHotelSource)
+	if err != nil {
+		t.Fatalf("config for hallamshire hotel: %v", err)
+	}
+	if got, want := cfg.ICSLinkExtractorFamily, "hallamshire_hotel_cfg_filestring"; got != want {
+		t.Fatalf("hallamshire hotel ics link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.ICSParserFamily, "generic"; got != want {
+		t.Fatalf("hallamshire hotel ics parser family = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(NetworkSheffieldSource)
+	if err != nil {
+		t.Fatalf("config for network sheffield: %v", err)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "network_sheffield_detail_page"; got != want {
+		t.Fatalf("network sheffield linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.VenueNormalizerFamily, "network_sheffield"; got != want {
+		t.Fatalf("network sheffield venue normalizer family = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(AlderSource)
+	if err != nil {
+		t.Fatalf("config for alder: %v", err)
+	}
+	if got, want := cfg.LinkedPageLinkExtractorFamily, "alder_listing_links"; got != want {
+		t.Fatalf("alder linked page link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "alder_event_detail_page"; got != want {
+		t.Fatalf("alder linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlug, AlderSource; got != want {
+		t.Fatalf("alder owned venue slug = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(CrookesClubSource)
+	if err != nil {
+		t.Fatalf("config for crookes club: %v", err)
+	}
+	if got, want := cfg.SourcePageParserFamily, "crookes_club"; got != want {
+		t.Fatalf("crookes club source page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.SourcePageLinkExtractorFamily, "crookes_club_secondary_pages"; got != want {
+		t.Fatalf("crookes club source page link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlug, CrookesClubSource; got != want {
+		t.Fatalf("crookes club owned venue slug = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(DeliciousClamSource)
+	if err != nil {
+		t.Fatalf("config for delicious clam: %v", err)
+	}
+	if got, want := cfg.LinkedPageLinkExtractorFamily, "delicious_clam_ticket_links"; got != want {
+		t.Fatalf("delicious clam linked page link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "delicious_clam_ticket_page"; got != want {
+		t.Fatalf("delicious clam linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlug, DeliciousClamSource; got != want {
+		t.Fatalf("delicious clam owned venue slug = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(HagglersCornerSource)
+	if err != nil {
+		t.Fatalf("config for hagglers corner: %v", err)
+	}
+	if got, want := cfg.LinkedPageLinkExtractorFamily, "hagglers_corner_detail_links"; got != want {
+		t.Fatalf("hagglers corner linked page link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "hagglers_corner_detail_page"; got != want {
+		t.Fatalf("hagglers corner linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlug, HagglersCornerSource; got != want {
+		t.Fatalf("hagglers corner owned venue slug = %q, want %q", got, want)
+	}
+
+	cfg, err = catalog.ConfigForSource(UniversityOfSheffieldPerformanceVenuesSource)
+	if err != nil {
+		t.Fatalf("config for university performance venues: %v", err)
+	}
+	if got, want := cfg.LinkedPageLinkExtractorFamily, "university_performance_venues_detail_links"; got != want {
+		t.Fatalf("university performance venues linked page link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "university_performance_venues_detail_page"; got != want {
+		t.Fatalf("university performance venues linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.VenueNormalizerFamily, "university_performance_venues"; got != want {
+		t.Fatalf("university performance venues venue normalizer family = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlug, ""; got != want {
+		t.Fatalf("university performance venues owned venue slug = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlugs, []string{"octagon-centre", "firth-hall", "drama-studio"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("university performance venues owned venue slugs = %#v, want %#v", got, want)
+	}
+	if got := cfg.NonAuthoritativeSingletonAutoPromotionDisabled; got {
+		t.Fatalf("university performance venues non_authoritative_singleton_auto_promotion_disabled = %v, want false", got)
+	}
+
+	cfg, err = catalog.ConfigForSource(TheWashingtonSource)
+	if err != nil {
+		t.Fatalf("config for the washington: %v", err)
+	}
+	if got, want := cfg.LinkedPageLinkExtractorFamily, "the_washington_api_links"; got != want {
+		t.Fatalf("the washington linked page link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.LinkedPageParserFamily, "the_washington_api"; got != want {
+		t.Fatalf("the washington linked page parser family = %q, want %q", got, want)
+	}
+	if got, want := cfg.OwnedVenueSlug, TheWashingtonSource; got != want {
+		t.Fatalf("the washington owned venue slug = %q, want %q", got, want)
 	}
 }
 
@@ -101,6 +224,42 @@ source_page:
 `) + "\n",
 			},
 			wantErr: "owned_venue_slug and non_authoritative_singleton_venue_slug cannot both be set",
+		},
+		{
+			name: "conflicting ownership list",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+owned_venue_slug: one
+owned_venue_slugs:
+  - one
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+`) + "\n",
+			},
+			wantErr: "owned_venue_slug and owned_venue_slugs cannot both be set",
+		},
+		{
+			name: "conflicting ownership list and singleton",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+owned_venue_slugs:
+  - one
+non_authoritative_singleton_venue_slug: one
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+`) + "\n",
+			},
+			wantErr: "owned_venue_slugs and non_authoritative_singleton_venue_slug cannot both be set",
 		},
 		{
 			name: "mode mismatch",

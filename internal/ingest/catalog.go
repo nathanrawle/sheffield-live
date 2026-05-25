@@ -21,6 +21,14 @@ const JazzAtTheLescarSource = "jazz-at-the-lescar"
 const TheGreystonesSource = "the-greystones"
 const LeadmillSource = "leadmill"
 const CorporationSource = "corporation"
+const HallamshireHotelSource = "hallamshire-hotel"
+const TheWashingtonSource = "the-washington"
+const NetworkSheffieldSource = "network-sheffield"
+const AlderSource = "alder"
+const CrookesClubSource = "crookes-club"
+const DeliciousClamSource = "delicious-clam"
+const HagglersCornerSource = "hagglers-corner"
+const UniversityOfSheffieldPerformanceVenuesSource = "university-of-sheffield-performance-venues"
 
 type pageProcessMode string
 
@@ -35,6 +43,7 @@ type sourceConfig struct {
 	Name                                           string
 	URL                                            string
 	OwnedVenueSlug                                 string
+	OwnedVenueSlugs                                []string
 	NonAuthoritativeSingletonVenueSlug             string
 	NonAuthoritativeSingletonAutoPromotionDisabled bool
 	GuardedNearMatchDisabled                       bool
@@ -54,10 +63,28 @@ type sourceConfig struct {
 }
 
 func (cfg sourceConfig) nonAuthoritativeSingletonVenueSlug() string {
-	if strings.TrimSpace(cfg.OwnedVenueSlug) != "" || cfg.NonAuthoritativeSingletonAutoPromotionDisabled {
+	if len(cfg.ownedVenueSlugs()) > 0 || cfg.NonAuthoritativeSingletonAutoPromotionDisabled {
 		return ""
 	}
 	return strings.TrimSpace(cfg.NonAuthoritativeSingletonVenueSlug)
+}
+
+func (cfg sourceConfig) ownedVenueSlugs() []string {
+	if len(cfg.OwnedVenueSlugs) > 0 {
+		return append([]string(nil), cfg.OwnedVenueSlugs...)
+	}
+	if strings.TrimSpace(cfg.OwnedVenueSlug) != "" {
+		return []string{strings.TrimSpace(cfg.OwnedVenueSlug)}
+	}
+	return nil
+}
+
+func (cfg sourceConfig) ownedVenueSlug() string {
+	slugs := cfg.ownedVenueSlugs()
+	if len(slugs) != 1 {
+		return ""
+	}
+	return slugs[0]
 }
 
 func (cfg sourceConfig) guardedNearMatchDisabled() bool {
@@ -111,6 +138,7 @@ type sourceDefinition struct {
 	ReviewStageSourceName                          string                              `yaml:"review_stage_source_name"`
 	ImportRunNotes                                 string                              `yaml:"import_run_notes"`
 	OwnedVenueSlug                                 string                              `yaml:"owned_venue_slug"`
+	OwnedVenueSlugs                                []string                            `yaml:"owned_venue_slugs"`
 	NonAuthoritativeSingletonVenueSlug             string                              `yaml:"non_authoritative_singleton_venue_slug"`
 	NonAuthoritativeSingletonAutoPromotionDisabled bool                                `yaml:"non_authoritative_singleton_auto_promotion_disabled"`
 	GuardedNearMatchDisabled                       bool                                `yaml:"guarded_near_match_disabled"`
@@ -230,6 +258,7 @@ func sourceConfigFromDefinition(def sourceDefinition) (sourceConfig, error) {
 		Name:                               strings.TrimSpace(def.Name),
 		URL:                                strings.TrimSpace(def.URL),
 		OwnedVenueSlug:                     strings.TrimSpace(def.OwnedVenueSlug),
+		OwnedVenueSlugs:                    normalizeSourceVenueSlugs(def.OwnedVenueSlugs),
 		NonAuthoritativeSingletonVenueSlug: strings.TrimSpace(def.NonAuthoritativeSingletonVenueSlug),
 		NonAuthoritativeSingletonAutoPromotionDisabled: def.NonAuthoritativeSingletonAutoPromotionDisabled,
 		GuardedNearMatchDisabled:                       def.GuardedNearMatchDisabled,
@@ -252,8 +281,14 @@ func sourceConfigFromDefinition(def sourceDefinition) (sourceConfig, error) {
 		return sourceConfig{}, errors.New("mode is required")
 	}
 
+	if cfg.OwnedVenueSlug != "" && len(cfg.OwnedVenueSlugs) > 0 {
+		return sourceConfig{}, errors.New("owned_venue_slug and owned_venue_slugs cannot both be set")
+	}
 	if cfg.OwnedVenueSlug != "" && cfg.NonAuthoritativeSingletonVenueSlug != "" {
 		return sourceConfig{}, errors.New("owned_venue_slug and non_authoritative_singleton_venue_slug cannot both be set")
+	}
+	if len(cfg.OwnedVenueSlugs) > 0 && cfg.NonAuthoritativeSingletonVenueSlug != "" {
+		return sourceConfig{}, errors.New("owned_venue_slugs and non_authoritative_singleton_venue_slug cannot both be set")
 	}
 	if cfg.GuardedNearMatchWindowMinutes < 0 {
 		return sourceConfig{}, errors.New("guarded_near_match_window_minutes must not be negative")
@@ -353,6 +388,26 @@ func validateSourceFamilies(cfg sourceConfig) error {
 	return nil
 }
 
+func normalizeSourceVenueSlugs(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func (c *Catalog) registeredSourceKeys() []string {
 	if c == nil {
 		return nil
@@ -388,7 +443,15 @@ func (c *Catalog) OwnedVenueSlugForSource(source string) string {
 	if err != nil {
 		return ""
 	}
-	return cfg.OwnedVenueSlug
+	return cfg.ownedVenueSlug()
+}
+
+func (c *Catalog) OwnedVenueSlugsForSource(source string) []string {
+	cfg, err := c.configForSource(source)
+	if err != nil {
+		return nil
+	}
+	return cfg.ownedVenueSlugs()
 }
 
 func (c *Catalog) ReviewStageSourceNameForSource(source string) string {
@@ -417,11 +480,26 @@ func (c *Catalog) ownedVenueSlugForReviewStageSourceName(sourceName string) stri
 	if !ok {
 		return ""
 	}
-	return strings.TrimSpace(cfg.OwnedVenueSlug)
+	return cfg.ownedVenueSlug()
 }
 
 func (c *Catalog) OwnedVenueSlugForReviewStageSourceName(sourceName string) string {
 	return c.ownedVenueSlugForReviewStageSourceName(sourceName)
+}
+
+func (c *Catalog) ownedVenueSlugsForReviewStageSourceName(sourceName string) []string {
+	if c == nil {
+		return nil
+	}
+	cfg, ok := c.byReviewStageSourceName[strings.TrimSpace(sourceName)]
+	if !ok {
+		return nil
+	}
+	return cfg.ownedVenueSlugs()
+}
+
+func (c *Catalog) OwnedVenueSlugsForReviewStageSourceName(sourceName string) []string {
+	return c.ownedVenueSlugsForReviewStageSourceName(sourceName)
 }
 
 func (c *Catalog) nonAuthoritativeSingletonVenueSlugForReviewStageSourceName(sourceName string) string {
@@ -648,7 +726,15 @@ func OwnedVenueSlugForSource(source string) string {
 	if err != nil {
 		return ""
 	}
-	return cfg.OwnedVenueSlug
+	return cfg.ownedVenueSlug()
+}
+
+func OwnedVenueSlugsForSource(source string) []string {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		return nil
+	}
+	return catalog.OwnedVenueSlugsForSource(source)
 }
 
 func ReviewStageSourceNameForSource(source string) string {
@@ -675,6 +761,14 @@ func OwnedVenueSlugForReviewStageSourceName(sourceName string) string {
 		return ""
 	}
 	return catalog.ownedVenueSlugForReviewStageSourceName(sourceName)
+}
+
+func OwnedVenueSlugsForReviewStageSourceName(sourceName string) []string {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		return nil
+	}
+	return catalog.OwnedVenueSlugsForReviewStageSourceName(sourceName)
 }
 
 func NonAuthoritativeSingletonVenueSlugForSource(source string) string {

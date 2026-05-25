@@ -1,0 +1,11 @@
+key: the-washington
+name: The Washington listings
+url: https://thewashington.pub/cal.html
+review_stage_source_name: The Washington manual ingest
+import_run_notes: manual The Washington snapshot + Google Calendar API parse report
+owned_venue_slug: the-washington
+mode: linked_detail_pages
+linked_detail_pages:
+  secondary_source_name: The Washington Google Calendar API
+  linked_page_link_extractor: the_washington_api_links
+  linked_page_parser: the_washington_api

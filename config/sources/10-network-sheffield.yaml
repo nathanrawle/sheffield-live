@@ -1,0 +1,12 @@
+key: network-sheffield
+name: Network Sheffield listings
+url: https://www.networksheffield.co.uk/events/
+review_stage_source_name: Network Sheffield manual ingest
+import_run_notes: manual Network Sheffield snapshot + detail-page parse report
+owned_venue_slug: network-sheffield
+mode: linked_detail_pages
+linked_detail_pages:
+  secondary_source_name: Network Sheffield event detail page
+  linked_page_link_extractor: network_sheffield_detail_links
+  linked_page_parser: network_sheffield_detail_page
+  venue_normalizer: network_sheffield

@@ -123,6 +123,127 @@ func TestReplayImportRunRebuildsReportFromSnapshotEnvelopes(t *testing.T) {
 	}
 }
 
+func TestReplayImportRunRebuildsUniversityPerformanceVenuesReportFromRecognizedDetailPages(t *testing.T) {
+	finishedAt := time.Date(2026, 5, 12, 10, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         88,
+			StartedAt:  time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=2 candidates=3 skips=0 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         701,
+					SourceName: "University of Sheffield Performance Venues listings",
+					SourceURL:  "https://performancevenues.group.shef.ac.uk/whats-on/",
+					CapturedAt: time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://performancevenues.group.shef.ac.uk/whats-on/",
+						FinalURL:    "https://performancevenues.group.shef.ac.uk/whats-on/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body: universityPerformanceVenuesListingHTML(
+							"/our-events/man-in-the-mirror/",
+							"/our-events/firth-hall-choral/",
+						),
+						CapturedAt: time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         702,
+					SourceName: "University of Sheffield Performance Venues listings event details",
+					SourceURL:  "https://performancevenues.group.shef.ac.uk/our-events/man-in-the-mirror/",
+					CapturedAt: time.Date(2026, 5, 12, 10, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://performancevenues.group.shef.ac.uk/our-events/man-in-the-mirror/",
+						FinalURL:    "https://performancevenues.group.shef.ac.uk/our-events/man-in-the-mirror/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body: universityPerformanceVenuesDetailHTML(
+							"Man in the Mirror",
+							"Friday 7th August, 2026 & Saturday 8th August, 2026",
+							"Octagon Centre",
+							"7:30 pm",
+							"£35.75",
+							"Live music tribute concert.",
+							"https://performancevenues.gigantic.com/man-in-the-mirror",
+						),
+						CapturedAt: time.Date(2026, 5, 12, 10, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         703,
+					SourceName: "University of Sheffield Performance Venues listings event details",
+					SourceURL:  "https://performancevenues.group.shef.ac.uk/our-events/firth-hall-choral/",
+					CapturedAt: time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://performancevenues.group.shef.ac.uk/our-events/firth-hall-choral/",
+						FinalURL:    "https://performancevenues.group.shef.ac.uk/our-events/firth-hall-choral/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body: universityPerformanceVenuesDetailHTML(
+							"Firth Hall Choral",
+							"Friday 9th August, 2026",
+							"Firth Hall",
+							"6pm",
+							"Free",
+							"Live music recital evening.",
+							"",
+						),
+						CapturedAt: time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 88, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, UniversityOfSheffieldPerformanceVenuesSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, "https://performancevenues.group.shef.ac.uk/whats-on/"; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 2; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 2; got != want {
+		t.Fatalf("first calendar candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Octagon Centre"; got != want {
+		t.Fatalf("first calendar location = %q, want %q", got, want)
+	}
+	if got, want := len(report.Calendars[1].Candidates), 1; got != want {
+		t.Fatalf("second calendar candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[1].Candidates[0].Location, "Firth Hall"; got != want {
+		t.Fatalf("second calendar location = %q, want %q", got, want)
+	}
+	if got, want := report.Totals.Snapshots, 3; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 3; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 0; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+}
+
 func TestReplayImportRunRebuildsYellowArchReportFromSourcePageSnapshot(t *testing.T) {
 	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{
@@ -262,6 +383,237 @@ func TestReplayImportRunEnrichesYellowArchDescriptionsFromDetailSnapshots(t *tes
 	}
 	if got, want := report.Totals.Snapshots, 2; got != want {
 		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+}
+
+func TestReplayImportRunRebuildsDeliciousClamReportFromLinkedDetailSnapshots(t *testing.T) {
+	setDeliciousClamClock(t, time.Date(2027, 1, 1, 12, 0, 0, 0, time.UTC))
+
+	finishedAt := time.Date(2026, 5, 25, 12, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         179,
+			StartedAt:  time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=1 candidates=1 skips=0 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         401,
+					SourceName: "Delicious Clam listings",
+					SourceURL:  "https://www.deliciousclam.co.uk/events",
+					CapturedAt: time.Date(2026, 5, 25, 12, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:        "https://www.deliciousclam.co.uk/events",
+						FinalURL:   "https://www.deliciousclam.co.uk/events",
+						Status:     "200 OK",
+						StatusCode: 200,
+						Body:       readFixture(t, "delicious_clam_events.html"),
+						CapturedAt: time.Date(2026, 5, 25, 12, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         402,
+					SourceName: "Delicious Clam delegated event detail page",
+					SourceURL:  "https://www.skiddle.com/e/42362090",
+					CapturedAt: time.Date(2026, 5, 25, 12, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:        "https://www.skiddle.com/e/42362090",
+						FinalURL:   "https://www.skiddle.com/e/42362090",
+						Status:     "200 OK",
+						StatusCode: 200,
+						Body:       readFixture(t, "delicious_clam_detail_good.html"),
+						CapturedAt: time.Date(2026, 5, 25, 12, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 179, ReplayOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, DeliciousClamSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, "https://www.deliciousclam.co.uk/events"; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d; skips = %#v", got, want, report.Calendars[0].Skips)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, deliciousClamVenueName; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].StartAt, "2026-06-28T18:30:00Z"; got != want {
+		t.Fatalf("start = %q, want %q", got, want)
+	}
+}
+
+func TestReplayImportRunUsesDeliciousClamDetailSnapshotTime(t *testing.T) {
+	setDeliciousClamClock(t, time.Date(2027, 1, 1, 12, 0, 0, 0, time.UTC))
+
+	finishedAt := time.Date(2026, 7, 1, 12, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         180,
+			StartedAt:  time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=1 candidates=0 skips=1 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         403,
+					SourceName: "Delicious Clam listings",
+					SourceURL:  "https://www.deliciousclam.co.uk/events",
+					CapturedAt: time.Date(2026, 5, 25, 12, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:        "https://www.deliciousclam.co.uk/events",
+						FinalURL:   "https://www.deliciousclam.co.uk/events",
+						Status:     "200 OK",
+						StatusCode: 200,
+						Body:       readFixture(t, "delicious_clam_events.html"),
+						CapturedAt: time.Date(2026, 5, 25, 12, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         404,
+					SourceName: "Delicious Clam delegated event detail page",
+					SourceURL:  "https://www.skiddle.com/e/42362090",
+					CapturedAt: time.Date(2026, 7, 1, 12, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:        "https://www.skiddle.com/e/42362090",
+						FinalURL:   "https://www.skiddle.com/e/42362090",
+						Status:     "200 OK",
+						StatusCode: 200,
+						Body:       readFixture(t, "delicious_clam_detail_good.html"),
+						CapturedAt: time.Date(2026, 7, 1, 12, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 180, ReplayOptions{Limit: 1})
+	if !errors.Is(err, ErrRunFailed) {
+		t.Fatalf("replay import run error = %v, want %v", err, ErrRunFailed)
+	}
+
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 0; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Skips), 1; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Skips[0].Reason, "past event"; got != want {
+		t.Fatalf("skip reason = %q, want %q", got, want)
+	}
+}
+
+func TestReplayImportRunRebuildsCrookesClubReportFromSourcePageAndLoungeSnapshots(t *testing.T) {
+	finishedAt := time.Date(2026, 5, 24, 12, 30, 0, 0, time.UTC)
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         277,
+			StartedAt:  time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=1 candidates=3 skips=3 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         401,
+					SourceName: "Crookes Club listings",
+					SourceURL:  "https://crookesclub.co.uk/",
+					CapturedAt: time.Date(2026, 5, 24, 12, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://crookesclub.co.uk/",
+						FinalURL:    "https://crookesclub.co.uk/",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "crookes_club_home.html"),
+						CapturedAt:  time.Date(2026, 5, 24, 12, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         402,
+					SourceName: "Crookes Club listings",
+					SourceURL:  "https://crookesclub.co.uk/lounge-live-music",
+					CapturedAt: time.Date(2026, 5, 24, 12, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         "https://crookesclub.co.uk/lounge-live-music",
+						FinalURL:    "https://crookesclub.co.uk/lounge-live-music",
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        readFixture(t, "crookes_club_lounge.html"),
+						CapturedAt:  time.Date(2026, 5, 24, 12, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 277, ReplayOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, CrookesClubSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, "https://crookesclub.co.uk/"; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := report.Links[0], "https://crookesclub.co.uk/lounge-live-music"; got != want {
+		t.Fatalf("link = %q, want %q", got, want)
+	}
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 1; got != want {
+		t.Fatalf("homepage candidates = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[1].Candidates), 2; got != want {
+		t.Fatalf("lounge candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Snapshots, 2; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 3; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 3; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].RoomText, crookesClubConcertRoomName; got != want {
+		t.Fatalf("homepage room text = %q, want %q", got, want)
+	}
+	if got, want := report.Calendars[1].Candidates[0].RoomText, crookesClubLoungeRoomName; got != want {
+		t.Fatalf("lounge room text = %q, want %q", got, want)
 	}
 }
 

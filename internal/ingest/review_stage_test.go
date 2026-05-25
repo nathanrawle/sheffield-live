@@ -815,6 +815,48 @@ func TestReviewGroupsFromYellowArchReportUsesCanonicalVenueSlugAndSourceName(t *
 	}
 }
 
+func TestReviewGroupsFromDeliciousClamReportUsesCanonicalVenueSlugAndSourceName(t *testing.T) {
+	report := Report{
+		Source:      DeliciousClamSource,
+		SourceURL:   "https://www.deliciousclam.co.uk/events",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://www.skiddle.com/e/42362090",
+				Candidates: []EventCandidate{
+					{
+						Summary:  "DC Presents: Screensaver / Knorke / Strixen",
+						Location: deliciousClamVenueName,
+						URL:      "https://www.skiddle.com/e/42362090",
+						StartAt:  "2026-05-26T18:30:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	clusters := ReviewClustersFromReport(report)
+	if got, want := len(clusters), 1; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	if got, want := clusters[0].SourceName, "Delicious Clam manual ingest"; got != want {
+		t.Fatalf("source name = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].Candidates[0].VenueSlug, deliciousClamVenueSlug; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceName, "Delicious Clam manual ingest"; got != want {
+		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceURL, "https://www.skiddle.com/e/42362090"; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceEventKey, "url:https://www.skiddle.com/e/42362090"; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+}
+
 func TestReviewGroupsFromLeadmillReportUsesCanonicalVenueSlugAndSourceName(t *testing.T) {
 	report := Report{
 		Source:      LeadmillSource,
@@ -1051,6 +1093,174 @@ func TestReviewClustersFromReportSkipsAuthoritativeGroupMetadataWhenCandidatesDi
 	clusters := ReviewClustersFromReport(report)
 	if got, want := len(clusters), 1; got != want {
 		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	if got := clusters[0].AuthoritativeSourceName; got != "" {
+		t.Fatalf("authoritative source name = %q, want empty", got)
+	}
+	if got := clusters[0].AuthoritativeSourceURL; got != "" {
+		t.Fatalf("authoritative source url = %q, want empty", got)
+	}
+	if got := clusters[0].AuthoritativeSourceEventKey; got != "" {
+		t.Fatalf("authoritative source event key = %q, want empty", got)
+	}
+}
+
+func TestReviewClustersFromUniversityPerformanceVenuesReportUsesMultiVenueAuthority(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("default catalog: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		location string
+		slug     string
+	}{
+		{name: "octagon", location: "Octagon Centre", slug: "octagon-centre"},
+		{name: "firth hall", location: "Firth Hall", slug: "firth-hall"},
+		{name: "drama studio", location: "Drama Studio", slug: "drama-studio"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			report := Report{
+				Source:      UniversityOfSheffieldPerformanceVenuesSource,
+				SourceURL:   "https://performancevenues.group.shef.ac.uk/whats-on/",
+				ImportRunID: 42,
+				Status:      importStatusSucceeded,
+				Calendars: []CalendarReport{
+					{
+						URL: "https://performancevenues.group.shef.ac.uk/event/shared/",
+						Candidates: []EventCandidate{
+							{
+								UID:      "shared-uid",
+								Summary:  "University Event",
+								Location: tc.location,
+								URL:      "https://performancevenues.group.shef.ac.uk/event/shared/",
+								StartAt:  "2026-08-07T19:30:00Z",
+							},
+							{
+								UID:      "shared-uid",
+								Summary:  "University Event",
+								Location: tc.location,
+								URL:      "https://performancevenues.group.shef.ac.uk/event/shared/",
+								StartAt:  "2026-08-07T19:30:00Z",
+							},
+						},
+					},
+				},
+			}
+
+			clusters := ReviewClustersFromReportWithCatalog(catalog, report)
+			if got, want := len(clusters), 1; got != want {
+				t.Fatalf("clusters = %d, want %d", got, want)
+			}
+			for i, candidate := range clusters[0].Candidates {
+				if got, want := candidate.VenueSlug, tc.slug; got != want {
+					t.Fatalf("candidate %d venue slug = %q, want %q", i, got, want)
+				}
+			}
+			if got, want := clusters[0].AuthoritativeSourceName, "University of Sheffield Performance Venues manual ingest"; got != want {
+				t.Fatalf("authoritative source name = %q, want %q", got, want)
+			}
+			if got, want := clusters[0].AuthoritativeSourceURL, "https://performancevenues.group.shef.ac.uk/event/shared/"; got != want {
+				t.Fatalf("authoritative source url = %q, want %q", got, want)
+			}
+			if got, want := clusters[0].AuthoritativeSourceEventKey, "uid:shared-uid"; got != want {
+				t.Fatalf("authoritative source event key = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestReviewClustersFromUniversityPerformanceVenuesReportRejectsCrossVenueAuthority(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("default catalog: %v", err)
+	}
+
+	report := Report{
+		Source:      UniversityOfSheffieldPerformanceVenuesSource,
+		SourceURL:   "https://performancevenues.group.shef.ac.uk/whats-on/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://performancevenues.group.shef.ac.uk/event/shared/",
+				Candidates: []EventCandidate{
+					{
+						UID:      "shared-uid",
+						Summary:  "University Event",
+						Location: "Octagon Centre",
+						URL:      "https://performancevenues.group.shef.ac.uk/event/shared/",
+						StartAt:  "2026-08-07T19:30:00Z",
+					},
+					{
+						UID:      "shared-uid",
+						Summary:  "University Event",
+						Location: "Firth Hall",
+						URL:      "https://performancevenues.group.shef.ac.uk/event/shared/",
+						StartAt:  "2026-08-07T19:30:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	clusters := ReviewClustersFromReportWithCatalog(catalog, report)
+	if got, want := len(clusters), 1; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	if got, want := clusters[0].Candidates[0].VenueSlug, "octagon-centre"; got != want {
+		t.Fatalf("first venue slug = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].Candidates[1].VenueSlug, "firth-hall"; got != want {
+		t.Fatalf("second venue slug = %q, want %q", got, want)
+	}
+	if got := clusters[0].AuthoritativeSourceName; got != "" {
+		t.Fatalf("authoritative source name = %q, want empty", got)
+	}
+	if got := clusters[0].AuthoritativeSourceURL; got != "" {
+		t.Fatalf("authoritative source url = %q, want empty", got)
+	}
+	if got := clusters[0].AuthoritativeSourceEventKey; got != "" {
+		t.Fatalf("authoritative source event key = %q, want empty", got)
+	}
+}
+
+func TestReviewClustersFromUniversityPerformanceVenuesReportSkipsUnknownVenueAuthority(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("default catalog: %v", err)
+	}
+
+	report := Report{
+		Source:      UniversityOfSheffieldPerformanceVenuesSource,
+		SourceURL:   "https://performancevenues.group.shef.ac.uk/whats-on/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://performancevenues.group.shef.ac.uk/event/unknown/",
+				Candidates: []EventCandidate{
+					{
+						UID:      "unknown-uid",
+						Summary:  "Unknown Venue Event",
+						Location: "Firth Court",
+						URL:      "https://performancevenues.group.shef.ac.uk/event/unknown/",
+						StartAt:  "2026-08-07T19:30:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	clusters := ReviewClustersFromReportWithCatalog(catalog, report)
+	if got, want := len(clusters), 1; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	if got, want := clusters[0].Candidates[0].VenueSlug, ""; got != want {
+		t.Fatalf("venue slug = %q, want empty", got)
 	}
 	if got := clusters[0].AuthoritativeSourceName; got != "" {
 		t.Fatalf("authoritative source name = %q, want empty", got)

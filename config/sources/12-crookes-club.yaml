@@ -1,0 +1,10 @@
+key: crookes-club
+name: Crookes Club listings
+url: https://crookesclub.co.uk/
+review_stage_source_name: Crookes Club manual ingest
+import_run_notes: manual Crookes Club snapshot + source-page parse report
+owned_venue_slug: crookes-club
+mode: source_page
+source_page:
+  source_page_parser: crookes_club
+  source_page_link_extractor: crookes_club_secondary_pages

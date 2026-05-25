@@ -903,11 +903,7 @@ func authoritativeSingletonSourceEventKeyForClusterInput(sourceMetadata ingest.S
 	if sourceEventKey == "" || len(input.Candidates) != 1 {
 		return ""
 	}
-	ownedVenueSlug := strings.TrimSpace(sourceMetadata.OwnedVenueSlugForReviewStageSourceName(input.SourceName))
-	if ownedVenueSlug == "" {
-		return ""
-	}
-	if strings.TrimSpace(input.Candidates[0].VenueSlug) != ownedVenueSlug {
+	if !sourceMetadataOwnsReviewStageVenue(sourceMetadata, input.SourceName, input.Candidates[0].VenueSlug) {
 		return ""
 	}
 	return sourceEventKey

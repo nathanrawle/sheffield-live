@@ -1,0 +1,15 @@
+key: university-of-sheffield-performance-venues
+name: University of Sheffield Performance Venues listings
+url: https://performancevenues.group.shef.ac.uk/whats-on/
+review_stage_source_name: University of Sheffield Performance Venues manual ingest
+import_run_notes: manual University of Sheffield Performance Venues snapshot + detail-page parse report
+owned_venue_slugs:
+  - octagon-centre
+  - firth-hall
+  - drama-studio
+mode: linked_detail_pages
+linked_detail_pages:
+  secondary_source_name: University of Sheffield Performance Venues event detail page
+  linked_page_link_extractor: university_performance_venues_detail_links
+  linked_page_parser: university_performance_venues_detail_page
+  venue_normalizer: university_performance_venues

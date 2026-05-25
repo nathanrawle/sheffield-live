@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -490,6 +491,103 @@ func TestRunManualSidneyAndMatildaEnrichesICSDescriptionsFromDetailPages(t *test
 	}
 }
 
+func TestRunManualUniversityPerformanceVenuesParsesRecognizedDetailPages(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)}
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			"https://performancevenues.group.shef.ac.uk/whats-on/": {
+				URL:         "https://performancevenues.group.shef.ac.uk/whats-on/",
+				FinalURL:    "https://performancevenues.group.shef.ac.uk/whats-on/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: universityPerformanceVenuesListingHTML(
+					"/our-events/man-in-the-mirror/",
+					"/our-events/firth-hall-choral/",
+				),
+				CapturedAt: time.Date(2026, 5, 12, 10, 1, 0, 0, time.UTC),
+			},
+			"https://performancevenues.group.shef.ac.uk/our-events/man-in-the-mirror/": {
+				URL:         "https://performancevenues.group.shef.ac.uk/our-events/man-in-the-mirror/",
+				FinalURL:    "https://performancevenues.group.shef.ac.uk/our-events/man-in-the-mirror/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: universityPerformanceVenuesDetailHTML(
+					"Man in the Mirror",
+					"Friday 7th August, 2026 & Saturday 8th August, 2026",
+					"Octagon Centre",
+					"7:30 pm",
+					"£35.75",
+					"Live music tribute concert.",
+					"https://performancevenues.gigantic.com/man-in-the-mirror",
+				),
+				CapturedAt: time.Date(2026, 5, 12, 10, 2, 0, 0, time.UTC),
+			},
+			"https://performancevenues.group.shef.ac.uk/our-events/firth-hall-choral/": {
+				URL:         "https://performancevenues.group.shef.ac.uk/our-events/firth-hall-choral/",
+				FinalURL:    "https://performancevenues.group.shef.ac.uk/our-events/firth-hall-choral/",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: universityPerformanceVenuesDetailHTML(
+					"Firth Hall Choral",
+					"Friday 9th August, 2026",
+					"Firth Hall",
+					"6pm",
+					"Free",
+					"Live music recital evening.",
+					"",
+				),
+				CapturedAt: time.Date(2026, 5, 12, 10, 3, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: UniversityOfSheffieldPerformanceVenuesSource, Limit: 20})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := len(store.snapshots), 3; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Links, 2; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 2; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Candidates, 3; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Totals.Skips, 0; got != want {
+		t.Fatalf("skips = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].URL, "https://performancevenues.group.shef.ac.uk/our-events/man-in-the-mirror/"; got != want {
+		t.Fatalf("first calendar url = %q, want %q", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 2; got != want {
+		t.Fatalf("first calendar candidates = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, "Octagon Centre"; got != want {
+		t.Fatalf("first calendar location = %q, want %q", got, want)
+	}
+	if got, want := report.Calendars[1].URL, "https://performancevenues.group.shef.ac.uk/our-events/firth-hall-choral/"; got != want {
+		t.Fatalf("second calendar url = %q, want %q", got, want)
+	}
+	if got, want := report.Calendars[1].Candidates[0].Location, "Firth Hall"; got != want {
+		t.Fatalf("second calendar location = %q, want %q", got, want)
+	}
+	if got, want := store.finishedNotes, "links=2 candidates=3 skips=0 errors=0"; got != want {
+		t.Fatalf("finished notes = %q, want %q", got, want)
+	}
+}
+
 func TestRunManualJazzAtTheLescarParsesListingsFromSourcePage(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 23, 19, 0, 0, 0, time.UTC)}
@@ -835,6 +933,59 @@ func TestRunManualCorporationParsesLinkedDetailPages(t *testing.T) {
 	}
 }
 
+func TestRunManualDeliciousClamFetchesOfficialPageBeforeDelegatedDetailPages(t *testing.T) {
+	freezeDeliciousClamClock(t)
+
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)}
+	calls := []string{}
+	fetcher := fakeFetcher{
+		calls: &calls,
+		results: map[string]FetchResult{
+			"https://www.deliciousclam.co.uk/events": {
+				URL:         "https://www.deliciousclam.co.uk/events",
+				FinalURL:    "https://www.deliciousclam.co.uk/events",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "delicious_clam_events.html"),
+				CapturedAt:  time.Date(2026, 6, 28, 12, 1, 0, 0, time.UTC),
+			},
+			"https://www.skiddle.com/e/42362090": {
+				URL:         "https://www.skiddle.com/e/42362090",
+				FinalURL:    "https://www.skiddle.com/e/42362090",
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "delicious_clam_detail_good.html"),
+				CapturedAt:  time.Date(2026, 6, 28, 12, 2, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: DeliciousClamSource, Limit: 1})
+	if err != nil {
+		t.Fatalf("run manual: %v", err)
+	}
+
+	wantCalls := []string{
+		"https://www.deliciousclam.co.uk/events",
+		"https://www.skiddle.com/e/42362090",
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("fetch calls = %#v, want %#v", calls, wantCalls)
+	}
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := report.Calendars[0].Candidates[0].Location, deliciousClamVenueName; got != want {
+		t.Fatalf("location = %q, want %q", got, want)
+	}
+}
+
 func TestRunManualSourceFetchFailureReturnsErrRunFailed(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{now: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
@@ -1001,9 +1152,13 @@ func TestRunManualCalendarErrorsFailStatusAndNotes(t *testing.T) {
 type fakeFetcher struct {
 	results map[string]FetchResult
 	err     error
+	calls   *[]string
 }
 
 func (f fakeFetcher) Fetch(_ context.Context, url string) (FetchResult, error) {
+	if f.calls != nil {
+		*f.calls = append(*f.calls, url)
+	}
 	if f.err != nil {
 		return FetchResult{}, f.err
 	}

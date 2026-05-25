@@ -8,12 +8,19 @@ import (
 )
 
 var eventTitleVenueAliases = map[string][]string{
+	"alder":              {"Alder", "Alder Bar", "Alder Sheffield"},
 	"cafe-no-9":          {"Cafe No. 9", "Cafe No9"},
 	"corporation":        {"Corporation", "Corporation Sheffield"},
+	"delicious-clam":     {"Delicious Clam"},
 	"leadmill":           {"The Leadmill", "Leadmill"},
+	"octagon-centre":     {"Octagon", "Octagon Centre", "The Octagon", "The Octagon Centre"},
 	"lescar":             {"The Lescar", "Lescar"},
+	"network-sheffield":  {"Network", "Network Sheffield", "Network 1", "Network 2", "Network 3"},
+	"firth-hall":         {"Firth Hall"},
+	"drama-studio":       {"Drama Studio"},
 	"greystones":         {"The Greystones", "Greystones"},
 	"sidney-and-matilda": {"Sidney & Matilda", "Sidney and Matilda"},
+	"the-washington":     {"The Washington", "Washington"},
 	"yellow-arch":        {"Yellow Arch", "Yellow Arch Studios"},
 }
 
