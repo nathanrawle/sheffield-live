@@ -52,15 +52,6 @@ type icsProperty struct {
 }
 
 func ParseICS(raw []byte) ParseResult {
-	return parseICSWithOptions(raw, icsParseOptions{})
-}
-
-type icsParseOptions struct {
-	AcceptAllDay    bool
-	DefaultLocation string
-}
-
-func parseICSWithOptions(raw []byte, opts icsParseOptions) ParseResult {
 	lines := unfoldICSLines(string(raw))
 	var result ParseResult
 	var event []icsProperty
@@ -86,7 +77,7 @@ func parseICSWithOptions(raw []byte, opts icsParseOptions) ParseResult {
 					result.Errors = append(result.Errors, "END:VEVENT without BEGIN:VEVENT")
 					continue
 				}
-				candidate, skip := parseEventWithOptions(event, opts)
+				candidate, skip := parseEvent(event)
 				if skip.Reason != "" {
 					result.Skips = append(result.Skips, skip)
 				} else {
@@ -152,17 +143,10 @@ func parseICSProperty(line string) (icsProperty, bool) {
 }
 
 func parseEvent(properties []icsProperty) (EventCandidate, ParseSkip) {
-	return parseEventWithOptions(properties, icsParseOptions{})
-}
-
-func parseEventWithOptions(properties []icsProperty, opts icsParseOptions) (EventCandidate, ParseSkip) {
 	uid := cleanICSValue(firstValue(properties, "UID"))
 	summary := cleanICSValue(firstValue(properties, "SUMMARY"))
 	rawLocation := strings.TrimSpace(firstValue(properties, "LOCATION"))
 	location := cleanICSValue(rawLocation)
-	if location == "" {
-		location = strings.TrimSpace(opts.DefaultLocation)
-	}
 	skip := ParseSkip{UID: uid, Summary: summary}
 
 	if summary == "" {
@@ -181,7 +165,7 @@ func parseEventWithOptions(properties []icsProperty, opts icsParseOptions) (Even
 		skip.Reason = "missing DTSTART"
 		return EventCandidate{}, skip
 	}
-	startAt, reason, err := parseICSTimeWithOptions(startProp, opts)
+	startAt, reason, err := parseICSTime(startProp)
 	if reason != "" {
 		skip.Reason = reason
 		return EventCandidate{}, skip
@@ -193,7 +177,7 @@ func parseEventWithOptions(properties []icsProperty, opts icsParseOptions) (Even
 
 	var endText string
 	if endProp, ok := firstProperty(properties, "DTEND"); ok {
-		endAt, reason, err := parseICSTimeWithOptions(endProp, opts)
+		endAt, reason, err := parseICSTime(endProp)
 		if reason != "" {
 			skip.Reason = reason
 			return EventCandidate{}, skip
@@ -269,25 +253,10 @@ func firstValue(properties []icsProperty, name string) string {
 }
 
 func parseICSTime(property icsProperty) (time.Time, string, error) {
-	return parseICSTimeWithOptions(property, icsParseOptions{})
-}
-
-func parseICSTimeWithOptions(property icsProperty, opts icsParseOptions) (time.Time, string, error) {
 	valueType := strings.ToUpper(property.params["VALUE"])
 	value := strings.TrimSpace(property.value)
 	if valueType == "DATE" || (len(value) == len("20060102") && !strings.Contains(value, "T")) {
-		if !opts.AcceptAllDay {
-			return time.Time{}, "all-day event", nil
-		}
-		loc, err := time.LoadLocation("Europe/London")
-		if err != nil {
-			return time.Time{}, "", err
-		}
-		parsed, err := parseWithLayouts(value, loc, "20060102")
-		if err != nil {
-			return time.Time{}, "", err
-		}
-		return parsed.UTC(), "", nil
+		return time.Time{}, "all-day event", nil
 	}
 
 	if tzid := property.params["TZID"]; tzid != "" && tzid != "Europe/London" {

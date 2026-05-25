@@ -70,6 +70,23 @@ func TestExtractHiddenCalendarLinks(t *testing.T) {
 	}
 }
 
+func TestExtractHiddenCalendarLinksPrefersPublicGoogleICSBeforeLimit(t *testing.T) {
+	body := []byte(`
+		<a href="https://venue.example.test/export.ics">Other calendar</a>
+		<div>https%3A%2F%2Fcalendar.google.com%2Fcalendar%2Fical%2Fvenue%2540example.com%2Fpublic%2Fbasic.ics</div>
+	`)
+
+	got, err := ExtractHiddenCalendarLinks("https://venue.example.test/", body, 1)
+	if err != nil {
+		t.Fatalf("extract links: %v", err)
+	}
+
+	want := []string{"https://calendar.google.com/calendar/ical/venue%40example.com/public/basic.ics"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("links = %#v, want %#v", got, want)
+	}
+}
+
 func TestParseLabeledFields(t *testing.T) {
 	got := ParseLabeledFields([]byte(`
 		<p><strong>Dates:</strong> Fri 3 July 2026</p>

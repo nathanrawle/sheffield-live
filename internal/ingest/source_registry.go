@@ -39,9 +39,8 @@ var icsLinkExtractorFamilies = map[string]pageLinkExtractorFunc{
 }
 
 var icsParserFamilies = map[string]icsParserFunc{
-	"generic":           ParseICS,
-	"leadmill":          ParseLeadmillICS,
-	"hallamshire_hotel": ParseHallamshireHotelICS,
+	"generic":  ParseICS,
+	"leadmill": ParseLeadmillICS,
 }
 
 var linkedPageLinkExtractorFamilies = map[string]pageLinkExtractorFunc{

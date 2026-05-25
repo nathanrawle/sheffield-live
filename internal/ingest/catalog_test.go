@@ -45,6 +45,17 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 		t.Fatalf("leadmill ics parser family = %q, want %q", got, want)
 	}
 
+	cfg, err = catalog.ConfigForSource(HallamshireHotelSource)
+	if err != nil {
+		t.Fatalf("config for hallamshire hotel: %v", err)
+	}
+	if got, want := cfg.ICSLinkExtractorFamily, "hallamshire_hotel_cfg_filestring"; got != want {
+		t.Fatalf("hallamshire hotel ics link extractor family = %q, want %q", got, want)
+	}
+	if got, want := cfg.ICSParserFamily, "generic"; got != want {
+		t.Fatalf("hallamshire hotel ics parser family = %q, want %q", got, want)
+	}
+
 	cfg, err = catalog.ConfigForSource(NetworkSheffieldSource)
 	if err != nil {
 		t.Fatalf("config for network sheffield: %v", err)

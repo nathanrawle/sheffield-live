@@ -74,18 +74,24 @@ func ExtractHiddenCalendarLinks(baseURL string, body []byte, limit int) ([]strin
 		return nil, err
 	}
 	seen := make(map[string]bool)
-	links := make([]string, 0, limit)
+	preferred := make([]string, 0, limit)
+	other := make([]string, 0, limit)
 	for _, candidate := range hiddenCalendarCandidates(body) {
-		resolved, ok := hiddenCalendarURL(parsedBase, candidate)
+		resolved, parsed, ok := hiddenCalendarURL(parsedBase, candidate)
 		key := hiddenCalendarDedupKey(resolved)
 		if !ok || seen[key] {
 			continue
 		}
 		seen[key] = true
-		links = append(links, resolved)
-		if len(links) >= limit {
-			break
+		if hiddenCalendarURLIsPublicGoogleICS(parsed) {
+			preferred = append(preferred, resolved)
+		} else {
+			other = append(other, resolved)
 		}
+	}
+	links := append(preferred, other...)
+	if len(links) > limit {
+		links = links[:limit]
 	}
 	return links, nil
 }
@@ -129,25 +135,37 @@ func hiddenCalendarCandidates(body []byte) []string {
 	return out
 }
 
-func hiddenCalendarURL(base *url.URL, raw string) (string, bool) {
+func hiddenCalendarURL(base *url.URL, raw string) (string, *url.URL, bool) {
 	raw = strings.TrimSpace(html.UnescapeString(raw))
 	if raw == "" {
-		return "", false
+		return "", nil, false
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
 	resolved := base.ResolveReference(parsed)
 	resolved.Fragment = ""
 	resolved.RawFragment = ""
 	if !IsCalendarURL(resolved.String()) {
-		return "", false
+		return "", nil, false
 	}
 	if hiddenCalendarURLIsPrivateGoogleCalendar(resolved) {
-		return "", false
+		return "", nil, false
 	}
-	return resolved.String(), true
+	return resolved.String(), resolved, true
+}
+
+func hiddenCalendarURLIsPublicGoogleICS(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host != "calendar.google.com" {
+		return false
+	}
+	path := strings.ToLower(strings.TrimSpace(u.EscapedPath()))
+	return strings.HasPrefix(path, "/calendar/ical/") && strings.HasSuffix(path, "/public/basic.ics")
 }
 
 func hiddenCalendarURLIsPrivateGoogleCalendar(u *url.URL) bool {
