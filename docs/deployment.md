@@ -144,6 +144,78 @@ sudo bash scripts/deploy-vps.sh --source-dir "$PWD"
 
 The deploy script does not rewrite `/etc/sheaflive.env`, systemd unit files, Caddy, SSH, or firewall settings.
 
+## Add Another Domain
+
+Use this when adding another domain name that should serve the same app.
+
+First point DNS for the new domain at the VPS:
+
+```text
+A      @      <vps-ipv4>
+CNAME  www    <domain>
+```
+
+Remove any default root `AAAA` record unless IPv6 has also been configured on the VPS, in the provider firewall, in UFW, and in Caddy. Otherwise some visitors may resolve the new domain over IPv6 and reach the wrong host.
+
+Check the authoritative DNS result before changing Caddy:
+
+```bash
+dig +short example.com A
+dig +short example.com AAAA
+dig +short www.example.com CNAME
+dig +short www.example.com A
+```
+
+Expected:
+
+- root `A` returns the VPS IPv4 address
+- root `AAAA` returns no output unless IPv6 is deliberately configured
+- `www` is a CNAME to the root domain
+- `www` resolves to the VPS IPv4 address
+
+Add the new domain to `/etc/caddy/Caddyfile`:
+
+```caddyfile
+www.example.com {
+    redir https://example.com{uri} permanent
+}
+
+example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Validate and reload Caddy:
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+Caddy should automatically request and store certificates for the new hostnames. Watch the logs:
+
+```bash
+sudo journalctl -u caddy -n 120 --no-pager | grep -E 'certificate|obtaining|obtained|renew|tls'
+```
+
+Verify the public routes:
+
+```bash
+curl -I https://example.com/healthz
+curl -I https://www.example.com/healthz
+```
+
+The bare domain should return `200`, and `www` should return a permanent redirect to the bare domain.
+
+Inspect the served certificate:
+
+```bash
+echo | openssl s_client -connect example.com:443 -servername example.com 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+```
+
+The issuer should be Let's Encrypt or another Caddy-configured ACME issuer, and the `notAfter` date should be in the future.
+
 ## Existing Data
 
 The bootstrap script leaves `/var/lib/sheaflive` in place. Re-running it updates binaries, config files, service files, Caddy, and `/etc/sheaflive.env`, but it does not delete the SQLite database or media directory.
