@@ -107,8 +107,15 @@ func reviewStageAuthoritativeSource(catalog *Catalog, source, baseSourceName, ba
 	var authoritativeSourceName string
 	var authoritativeSourceURL string
 	var authoritativeSourceEventKey string
+	var authoritativeVenueSlug string
 	for _, candidate := range candidates {
-		if _, ok := ownedVenueSet[strings.TrimSpace(candidate.VenueSlug)]; !ok {
+		venueSlug := strings.TrimSpace(candidate.VenueSlug)
+		if _, ok := ownedVenueSet[venueSlug]; !ok {
+			return "", "", ""
+		}
+		if authoritativeVenueSlug == "" {
+			authoritativeVenueSlug = venueSlug
+		} else if venueSlug != authoritativeVenueSlug {
 			return "", "", ""
 		}
 		candidateEventKey := reviewStageAuthoritativeSourceEventKey(candidate)

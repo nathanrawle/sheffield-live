@@ -18,11 +18,12 @@ var (
 	universityPerformanceVenuesHeadingPattern       = regexp.MustCompile(`(?is)<h1\b[^>]*>(.*?)</h1>`)
 	universityPerformanceVenuesTitlePattern         = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title>`)
 	universityPerformanceVenuesAnchorPattern        = regexp.MustCompile(`(?is)<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>`)
+	universityPerformanceVenuesChromePattern        = regexp.MustCompile(`(?is)<(?:header|nav|footer)\b[^>]*>.*?</(?:header|nav|footer)>`)
 	universityPerformanceVenuesYearPattern          = regexp.MustCompile(`\b(20\d{2})\b`)
 	universityPerformanceVenuesRangePattern         = regexp.MustCompile(`(?i)\b\d{1,2}(?:st|nd|rd|th)?\s*-\s*\d{1,2}(?:st|nd|rd|th)?\b`)
 	universityPerformanceVenuesDateChunkPattern     = regexp.MustCompile(`(?i)^(?:(?:mon(?:day)?|tues(?:day)?|wednes(?:day)?|thurs(?:day)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\s+)?(?:(\d{1,2})(?:st|nd|rd|th)?(?:\s+([A-Za-z]+))?|([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?)(?:,?\s*(20\d{2}))?$`)
 	universityPerformanceVenuesTimePattern          = regexp.MustCompile(`(?i)\b(\d{1,2}(?:(?::|\.)\d{2})?\s*(?:am|pm)?|\d{2}:\d{2})\b`)
-	universityPerformanceVenuesMusicPositivePattern = regexp.MustCompile(`(?i)\b(?:gigs?|concerts?|music|musical|choir|orchestra|ensemble|recital|recitals|band|bands|trio|duo|quartet|quintet|folk|jazz|rock|pop|indie|metal|electronic|blues|soul|funk|reggae|sevdah|tour|album|live|tribute|gig|symphony|strings?|wind orchestra|chamber choir|pop/jazz|classical)\b`)
+	universityPerformanceVenuesMusicPositivePattern = regexp.MustCompile(`(?i)\b(?:gigs?|concerts?|music|musical|choir|orchestra|ensemble|recital|recitals|band|bands|trio|duo|quartet|quintet|folk|jazz|rock|pop|indie|metal|electronic|blues|soul|funk|reggae|sevdah|album|tribute|gig|symphony|strings?|wind orchestra|chamber choir|pop/jazz|classical)\b`)
 	universityPerformanceVenuesNonMusicPattern      = regexp.MustCompile(`(?i)\b(?:film|screening|q\s*&\s*a|theatre|theater|comedy|talk|lecture|workshop|ceremony|award|conference|panel|discussion|poetry|play|homo|fundraiser|quiz|private hire|hire)\b`)
 )
 
@@ -255,11 +256,17 @@ func universityPerformanceVenuesVenueParts(value string) []string {
 }
 
 func universityPerformanceVenuesHasMusicSignal(title string, raw []byte) bool {
-	text := strings.ToLower(title + "\n" + semanticDescriptionText(string(raw)))
+	text := strings.ToLower(title + "\n" + universityPerformanceVenuesMusicSignalText(raw))
 	if universityPerformanceVenuesNonMusicPattern.MatchString(text) {
 		return false
 	}
 	return universityPerformanceVenuesMusicPositivePattern.MatchString(text)
+}
+
+func universityPerformanceVenuesMusicSignalText(raw []byte) string {
+	text := universityPerformanceVenuesChromePattern.ReplaceAllString(string(raw), " ")
+	text = universityPerformanceVenuesAnchorPattern.ReplaceAllString(text, " ")
+	return semanticDescriptionText(text)
 }
 
 func universityPerformanceVenuesParseDates(value string) ([]time.Time, string, error) {

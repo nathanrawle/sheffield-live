@@ -180,6 +180,26 @@ func TestParseUniversityPerformanceVenuesDetailPageSkipsUnknownNonMusicAndInvali
 			wantReason:  "non-music event",
 		},
 		{
+			name:        "generic live wording is not music",
+			title:       "Campus Life Live",
+			dates:       "Friday 7th August, 2026",
+			venue:       "Drama Studio",
+			times:       "7:30 pm",
+			cost:        "£15",
+			description: "A live hosted evening with guests and audience questions.",
+			wantReason:  "non-music event",
+		},
+		{
+			name:        "generic tour wording is not music",
+			title:       "Octagon Centre Tour",
+			dates:       "Friday 7th August, 2026",
+			venue:       "Octagon Centre",
+			times:       "7:30 pm",
+			cost:        "Free",
+			description: "Tour the venue after hours with University guides.",
+			wantReason:  "non-music event",
+		},
+		{
 			name:        "missing year",
 			title:       "Missing Year Event",
 			dates:       "Friday 7th August",
@@ -220,6 +240,40 @@ func TestParseUniversityPerformanceVenuesDetailPageSkipsUnknownNonMusicAndInvali
 				t.Fatalf("skip reason = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestParseUniversityPerformanceVenuesDetailPageIgnoresChromeMusicText(t *testing.T) {
+	raw := []byte(`
+		<html>
+			<head><title>Guided Open Evening - Performance Venues</title></head>
+			<body>
+				<header><a href="/whats-on/">Live music, concerts and choir listings</a></header>
+				<h1>Guided Open Evening</h1>
+				<p>Explore the building after hours with University staff.</p>
+				<section class="event-details">
+					<p><strong>Dates:</strong> Friday 7th August, 2026</p>
+					<p><strong>Venue:</strong> Octagon Centre</p>
+					<p><strong>Times:</strong> 7:30 pm</p>
+					<p><strong>Cost:</strong> Free</p>
+				</section>
+				<footer>Music and concert venue information</footer>
+			</body>
+		</html>
+	`)
+
+	result := ParseUniversityPerformanceVenuesDetailPage("https://performancevenues.group.shef.ac.uk/our-events/guided-open-evening/", raw)
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 0; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := len(result.Skips), 1; got != want {
+		t.Fatalf("skips = %#v, want 1", result.Skips)
+	}
+	if got, want := result.Skips[0].Reason, "non-music event"; got != want {
+		t.Fatalf("skip reason = %q, want %q", got, want)
 	}
 }
 
