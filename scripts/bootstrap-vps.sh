@@ -441,7 +441,7 @@ EOF
 
 	systemctl daemon-reload
 	systemctl enable ${APP_NAME}-web.service
-	systemctl enable --now ${APP_NAME}-ingest.timer
+	systemctl enable ${APP_NAME}-ingest.timer
 }
 
 deploy_app_files() {
@@ -450,6 +450,11 @@ deploy_app_files() {
 		--source-dir "${BUILD_DIR}" \
 		--app-name "${APP_NAME}" \
 		--go-bin /usr/local/go/bin/go
+}
+
+start_ingest_timer() {
+	log "Starting ${APP_NAME}-ingest.timer"
+	systemctl restart ${APP_NAME}-ingest.timer
 }
 
 write_caddyfile() {
@@ -539,6 +544,7 @@ main() {
 	write_env_file
 	write_systemd_units
 	deploy_app_files
+	start_ingest_timer
 	write_caddyfile
 	maybe_run_initial_ingest
 	warn_if_dns_not_ready

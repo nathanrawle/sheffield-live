@@ -83,6 +83,7 @@ parse_args() {
 			;;
 		--skip-restart)
 			SKIP_RESTART=1
+			SKIP_HEALTH_CHECK=1
 			shift
 			;;
 		--skip-health-check)
