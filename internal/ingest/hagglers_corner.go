@@ -13,13 +13,15 @@ const hagglersCornerVenueEvidence = "Hagglers Corner, 586 Queens Road, Sheffield
 
 var (
 	hagglersCornerDetailPathPattern     = regexp.MustCompile(`^/[a-z0-9][a-z0-9-]*/?$`)
+	hagglersCornerArticlePattern        = regexp.MustCompile(`(?is)<article\b[^>]*>(.*?)</article>`)
 	hagglersCornerH1Pattern             = regexp.MustCompile(`(?is)<h1\b[^>]*>(.*?)</h1>`)
 	hagglersCornerTitleTagPattern       = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title>`)
-	hagglersCornerAggregateTitlePattern = regexp.MustCompile(`(?i)^\s*what'?s on(?: this)?(?:\s+[a-z]+)?\s*$`)
-	hagglersCornerNonMusicTitlePattern  = regexp.MustCompile(`(?i)\b(?:quiz|market|workshop|private(?:\s+hire)?|community(?:\s+event)?|fundraiser|comedy)\b`)
+	hagglersCornerAggregateTitlePattern = regexp.MustCompile(`(?i)^\s*(?:what'?s on(?: this)?(?:\s+[a-z]+)?(?:\s+20\d{2})?|this month at hagglers(?: corner)?|(?:events\s*(?:&|and)\s*gigs|events|gigs)\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+20\d{2})?|(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(?:events|gigs)(?:\s+20\d{2})?(?:\s+at\s+hagglers(?: corner)?)?)\s*$`)
+	hagglersCornerNonMusicTitlePattern  = regexp.MustCompile(`(?i)\b(?:quiz(?:\s+night)?s?|markets?|workshops?|private(?:\s+hire)?|community(?:[-\s]+only|\s+event)?|fundraisers?|comedy)\b`)
 	hagglersCornerMusicSignalPattern    = regexp.MustCompile(`(?i)\b(?:gig|gigs|live music|live performance|performance|dj|djs|band|bands|album launch|launch party|sound system|selector|selectors|reggae|house|disco|club night|club|live set|warm up dj set|roots|dancehall|afrobeats|hip hop|soul|funk|jazz)\b`)
 	hagglersCornerDatePattern           = regexp.MustCompile(`(?i)\b(?:\b(?:mon|tues|wednes|thurs|fri|sat|sun)(?:day)?\s+)?(\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+(?:20\d{2}|\d{2})|\d{1,2}/\d{1,2}/(?:20\d{2}|\d{2})|\d{4}-\d{2}-\d{2})\b`)
 	hagglersCornerTimePattern           = regexp.MustCompile(`(?i)\b(?:from\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{2}:\d{2})(?:\s*[–-]\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{2}:\d{2}))?\b`)
+	hagglersCornerLocationLabelPattern  = regexp.MustCompile(`(?i)^\s*(?:venue|location|address)\s*[:\-]\s*(.+)$`)
 )
 
 var hagglersCornerRejectedDetailPaths = map[string]struct{}{
@@ -33,6 +35,25 @@ var hagglersCornerRejectedDetailPaths = map[string]struct{}{
 	"markets":      {},
 	"venue-hire":   {},
 	"workshops":    {},
+}
+
+var hagglersCornerOffsiteVenueSignals = []string{
+	"arundel emporium",
+	"cafe no. 9",
+	"cafe no 9",
+	"corporation",
+	"delicious clam",
+	"earl's yard",
+	"earls yard",
+	"foundry",
+	"greystones",
+	"leadmill",
+	"lescar",
+	"network sheffield",
+	"record junkee",
+	"sidney & matilda",
+	"sidney and matilda",
+	"yellow arch",
 }
 
 func hagglers_corner_detail_links(baseURL string, body []byte, limit int) ([]string, error) {
@@ -92,8 +113,12 @@ func hagglersCornerDetailCandidate(pageURL string, raw []byte) (EventCandidate, 
 	}
 
 	lines := hagglersCornerCleanLines(raw)
-	if hagglersCornerHasNonMusicSignal(title) {
+	if hagglersCornerHasNonMusicSignal(title, lines) {
 		skip.Reason = "non-music event"
+		return EventCandidate{}, skip, nil
+	}
+	if hagglersCornerHasContraryLocationEvidence(lines) {
+		skip.Reason = "unsupported venue"
 		return EventCandidate{}, skip, nil
 	}
 
@@ -167,7 +192,7 @@ func hagglersCornerCleanTitle(value string) string {
 }
 
 func hagglersCornerCleanLines(raw []byte) []string {
-	text := semanticDescriptionText(string(raw))
+	text := semanticDescriptionText(string(hagglersCornerArticleBody(raw)))
 	lines := strings.Split(text, "\n")
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -180,12 +205,27 @@ func hagglersCornerCleanLines(raw []byte) []string {
 	return out
 }
 
+func hagglersCornerArticleBody(raw []byte) []byte {
+	if match := hagglersCornerArticlePattern.FindSubmatch(raw); len(match) > 1 {
+		return match[1]
+	}
+	return raw
+}
+
 func hagglersCornerIsAggregatePost(title string) bool {
 	return hagglersCornerAggregateTitlePattern.MatchString(strings.TrimSpace(title))
 }
 
-func hagglersCornerHasNonMusicSignal(title string) bool {
-	return hagglersCornerNonMusicTitlePattern.MatchString(strings.ToLower(strings.TrimSpace(title)))
+func hagglersCornerHasNonMusicSignal(title string, lines []string) bool {
+	if hagglersCornerNonMusicTitlePattern.MatchString(strings.ToLower(strings.TrimSpace(title))) {
+		return true
+	}
+	for _, line := range lines {
+		if hagglersCornerNonMusicTitlePattern.MatchString(strings.ToLower(line)) {
+			return true
+		}
+	}
+	return false
 }
 
 func hagglersCornerHasMusicSignal(title string, lines []string) bool {
@@ -195,6 +235,38 @@ func hagglersCornerHasMusicSignal(title string, lines []string) bool {
 	}
 	for i := 0; i < len(lines) && i < 6; i++ {
 		if hagglersCornerMusicSignalPattern.MatchString(strings.ToLower(lines[i])) {
+			return true
+		}
+	}
+	return false
+}
+
+func hagglersCornerHasContraryLocationEvidence(lines []string) bool {
+	for _, line := range lines {
+		line = strings.ToLower(strings.TrimSpace(line))
+		if line == "" {
+			continue
+		}
+		if match := hagglersCornerLocationLabelPattern.FindStringSubmatch(line); len(match) > 1 {
+			if hagglersCornerTextHasOffsiteVenue(match[1]) {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(line, " at ") && hagglersCornerTextHasOffsiteVenue(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func hagglersCornerTextHasOffsiteVenue(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	for _, signal := range hagglersCornerOffsiteVenueSignals {
+		if strings.Contains(value, signal) {
 			return true
 		}
 	}

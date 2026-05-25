@@ -118,21 +118,108 @@ func TestParseHagglersCornerDetailPageRejectsNonMusicEvents(t *testing.T) {
 	}
 }
 
-func TestParseHagglersCornerDetailPageSkipsAggregateMonthlyPost(t *testing.T) {
-	result := ParseHagglersCornerDetailPage("https://hagglerscorner.co.uk/whats-on-this-april/", hagglersCornerDetailHTML("WHATS ON THIS APRIL", `
-		<p>WEDNESDAY 1ST | ATTIKK | 7:30PM</p>
-		<p>MONTHLY COMEDY NIGHT | NO HAGGLING ALL COMEDY</p>
-		<p>FREE/PAYF</p>
-	`))
+func TestParseHagglersCornerDetailPageRejectsBodyLevelNonMusicEvents(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "market",
+			body: `<p>Fri 24th April 2026, 7pm</p><p>DJ warm up set while the night market stalls open.</p>`,
+		},
+		{
+			name: "workshop",
+			body: `<p>Fri 24th April 2026, 7pm</p><p>Live performance followed by a screen printing workshop.</p>`,
+		},
+		{
+			name: "private",
+			body: `<p>Fri 24th April 2026, 7pm</p><p>Live music for a private hire celebration.</p>`,
+		},
+		{
+			name: "community",
+			body: `<p>Fri 24th April 2026, 7pm</p><p>A community event with live music and food.</p>`,
+		},
+	}
 
-	if got, want := len(result.Candidates), 0; got != want {
-		t.Fatalf("candidates = %d, want %d", got, want)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := ParseHagglersCornerDetailPage("https://hagglerscorner.co.uk/body-"+tc.name+"/", hagglersCornerDetailHTML("Friday DJ Set", tc.body))
+			if got, want := len(result.Errors), 0; got != want {
+				t.Fatalf("errors = %#v, want none", result.Errors)
+			}
+			if got, want := len(result.Candidates), 0; got != want {
+				t.Fatalf("candidates = %d, want %d", got, want)
+			}
+			if got, want := len(result.Skips), 1; got != want {
+				t.Fatalf("skips = %#v, want 1", result.Skips)
+			}
+			if got, want := result.Skips[0].Reason, "non-music event"; got != want {
+				t.Fatalf("skip reason = %q, want %q", got, want)
+			}
+		})
 	}
-	if got, want := len(result.Skips), 1; got != want {
-		t.Fatalf("skips = %#v, want 1", result.Skips)
+}
+
+func TestParseHagglersCornerDetailPageSkipsAggregateMonthlyPost(t *testing.T) {
+	tests := []string{
+		"WHATS ON THIS APRIL",
+		"April events",
+		"This month at Hagglers",
+		"Events & gigs April 2026",
 	}
-	if got, want := result.Skips[0].Reason, "aggregate monthly post"; got != want {
-		t.Fatalf("skip reason = %q, want %q", got, want)
+
+	for _, title := range tests {
+		t.Run(title, func(t *testing.T) {
+			result := ParseHagglersCornerDetailPage("https://hagglerscorner.co.uk/whats-on-this-april/", hagglersCornerDetailHTML(title, `
+				<p>WEDNESDAY 1ST | ATTIKK | 7:30PM</p>
+				<p>MONTHLY COMEDY NIGHT | NO HAGGLING ALL COMEDY</p>
+				<p>FREE/PAYF</p>
+			`))
+
+			if got, want := len(result.Candidates), 0; got != want {
+				t.Fatalf("candidates = %d, want %d", got, want)
+			}
+			if got, want := len(result.Skips), 1; got != want {
+				t.Fatalf("skips = %#v, want 1", result.Skips)
+			}
+			if got, want := result.Skips[0].Reason, "aggregate monthly post"; got != want {
+				t.Fatalf("skip reason = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestParseHagglersCornerDetailPageRejectsContraryLocationEvidence(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "labelled venue",
+			body: `<p>Fri 24th April 2026, 7pm</p><p>Venue: The Leadmill</p><p>Live music from touring bands.</p>`,
+		},
+		{
+			name: "offsite wording",
+			body: `<p>Fri 24th April 2026, 7pm</p><p>Live DJ set at Yellow Arch.</p>`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := ParseHagglersCornerDetailPage("https://hagglerscorner.co.uk/offsite-"+tc.name+"/", hagglersCornerDetailHTML("Friday DJ Set", tc.body))
+			if got, want := len(result.Errors), 0; got != want {
+				t.Fatalf("errors = %#v, want none", result.Errors)
+			}
+			if got, want := len(result.Candidates), 0; got != want {
+				t.Fatalf("candidates = %d, want %d", got, want)
+			}
+			if got, want := len(result.Skips), 1; got != want {
+				t.Fatalf("skips = %#v, want 1", result.Skips)
+			}
+			if got, want := result.Skips[0].Reason, "unsupported venue"; got != want {
+				t.Fatalf("skip reason = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
