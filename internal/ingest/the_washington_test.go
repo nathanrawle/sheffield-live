@@ -10,10 +10,14 @@ import (
 const theWashingtonExpectedAPIURLLimit10 = "https://www.googleapis.com/calendar/v3/calendars/c_u2bs6ittml6rm5k0l5qjt3pn1o%40group.calendar.google.com/events?key=AIzaSyAVR1AfCKKfQrAZj_ErEY5UEy0QLG0AHAc&singleEvents=true&orderBy=startTime&maxResults=10&timeMin=2026-05-24T23%3A00%3A00Z"
 
 func freezeTheWashingtonClock(t *testing.T) {
+	setTheWashingtonClock(t, time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC))
+}
+
+func setTheWashingtonClock(t *testing.T, now time.Time) {
 	t.Helper()
 	old := theWashingtonNow
 	theWashingtonNow = func() time.Time {
-		return time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+		return now
 	}
 	t.Cleanup(func() {
 		theWashingtonNow = old
@@ -268,7 +272,7 @@ func TestReviewStageTheWashingtonIsAuthoritativeOwnedVenue(t *testing.T) {
 }
 
 func TestReplayImportRunRebuildsTheWashingtonReportFromCalendarAPI(t *testing.T) {
-	freezeTheWashingtonClock(t)
+	setTheWashingtonClock(t, time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC))
 
 	finishedAt := time.Date(2026, 5, 25, 12, 30, 0, 0, time.UTC)
 	calURL := "https://thewashington.pub/cal.html"

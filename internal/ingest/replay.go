@@ -125,7 +125,7 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 		return replayFinalizeReport(report, sourceCfg)
 	}
 
-	pageParse, err := parseSourcePage(sourceCfg, pageBaseURL, page.body, opts.Limit)
+	pageParse, err := parseReplaySourcePage(sourceCfg, pageBaseURL, page.body, opts.Limit, page.snapshot.CapturedAt)
 	if err != nil {
 		report.Errors = append(report.Errors, err.Error())
 		return replayFinalizeReport(report, sourceCfg)
@@ -298,6 +298,22 @@ func ReplayImportRunWithCatalog(ctx context.Context, st ReplayStore, catalog *Ca
 	}
 
 	return replayFinalizeReport(report, sourceCfg)
+}
+
+func parseReplaySourcePage(cfg sourceConfig, pageURL string, body []byte, limit int, capturedAt time.Time) (sourcePageParseResult, error) {
+	if cfg.Key != TheWashingtonSource || capturedAt.IsZero() {
+		return parseSourcePage(cfg, pageURL, body, limit)
+	}
+
+	old := theWashingtonNow
+	theWashingtonNow = func() time.Time {
+		return capturedAt
+	}
+	defer func() {
+		theWashingtonNow = old
+	}()
+
+	return parseSourcePage(cfg, pageURL, body, limit)
 }
 
 type decodedReplaySnapshot struct {
