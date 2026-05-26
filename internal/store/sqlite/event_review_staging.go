@@ -1179,7 +1179,7 @@ func stageTerminalEventReviewEvidenceTx(ctx context.Context, tx interface {
 	if err != nil {
 		return result, err
 	}
-	existingMaterialMatches := existingFound && eventReviewEvidenceMaterialMatchesInput(existingEvidence, input)
+	existingMaterialMatches := existingFound && terminalEventReviewEvidenceMaterialMatchesInput(existingEvidence, input, terminalCluster, terminalResolution)
 	exactReplay := existingMaterialMatches && terminalOutcomeMatches
 	compatibleFresh := !existingFound && terminalOutcomeMatches
 	successorRequired := !terminalOutcomeMatches || (existingFound && !existingMaterialMatches)

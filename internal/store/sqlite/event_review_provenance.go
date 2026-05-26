@@ -516,6 +516,51 @@ func eventReviewEvidenceMaterialMatchesInput(material eventReviewEvidenceMateria
 	return true
 }
 
+func terminalEventReviewEvidenceMaterialMatchesInput(material eventReviewEvidenceMaterial, input seedstore.StageEventReviewEvidenceInput, cluster seedstore.EventReviewCluster, resolution *seedstore.EventReviewResolutionSummary) bool {
+	if eventReviewEvidenceMaterialMatchesInput(material, input) {
+		return true
+	}
+	if input.EventID != nil || material.EventID == nil || !terminalResolutionReferencesEventID(cluster, resolution, *material.EventID) {
+		return false
+	}
+	materialWithoutResolvedEvent := material
+	materialWithoutResolvedEvent.EventID = nil
+	return eventReviewEvidenceMaterialMatchesInput(materialWithoutResolvedEvent, input)
+}
+
+func terminalResolutionReferencesEventID(cluster seedstore.EventReviewCluster, resolution *seedstore.EventReviewResolutionSummary, eventID int64) bool {
+	if eventID <= 0 {
+		return false
+	}
+	if cluster.CanonicalEventID != nil && *cluster.CanonicalEventID == eventID {
+		return true
+	}
+	if resolution == nil {
+		return false
+	}
+	if resolution.AppliedAutoResolution != nil && resolution.AppliedAutoResolution.EventID == eventID {
+		return true
+	}
+	if resolution.AppliedImportListing != nil && resolution.AppliedImportListing.EventID == eventID {
+		return true
+	}
+	if resolution.AppliedSupportingSource != nil && resolution.AppliedSupportingSource.EventID == eventID {
+		return true
+	}
+	if resolution.AppliedAuthoritativeImport != nil && resolution.AppliedAuthoritativeImport.EventID == eventID {
+		return true
+	}
+	if resolution.AppliedTitleRepair != nil && resolution.AppliedTitleRepair.EventID == eventID {
+		return true
+	}
+	for _, action := range resolution.AppliedLiveActions {
+		if action.EventID == eventID {
+			return true
+		}
+	}
+	return false
+}
+
 func eventReviewOptionalInt64Equal(a, b *int64) bool {
 	switch {
 	case a == nil && b == nil:

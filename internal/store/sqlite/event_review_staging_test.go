@@ -1465,6 +1465,13 @@ func TestStageEventReviewEvidenceAutoResolvesCanonicalExactMatchAndIsIdempotent(
 	venueID := lookupStoreVenueID(t, db, "leadmill")
 	insertLegacyEvent(t, db, "live-legacy-event-leadmill-20260510190000", venueID, sourceID, domain.OriginLive)
 	canonicalEventID := lookupEventIDBySlug(t, db, "live-legacy-event-leadmill-20260510190000")
+	if _, err := db.Exec(`
+		UPDATE events
+		SET publication_state = ?
+		WHERE id = ?
+	`, string(domain.PublicationStateProvisional), canonicalEventID); err != nil {
+		t.Fatalf("mark canonical event provisional: %v", err)
+	}
 
 	identityKey := "canonical-exact-match"
 	identityHash := buildEventReviewIdentityKeyHash(seedstore.EventReviewIdentityKeyKindExact, eventReviewIdentityKeyVersion, identityKey)
@@ -1512,14 +1519,31 @@ func TestStageEventReviewEvidenceAutoResolvesCanonicalExactMatchAndIsIdempotent(
 	if result.ClusterID != clusterID {
 		t.Fatalf("cluster id = %d, want %d", result.ClusterID, clusterID)
 	}
-	resolution, err := st.FinalizeOpenEventReviewClusterRestage(ctx, result.ClusterID, []int64{result.EvidenceID})
+	secondarySourceID := insertStoreNamedSource(t, db, "Secondary canonical source", "https://secondary.example.test/listing")
+	secondaryEvidenceID := insertEventReviewEvidenceOK(t, db, secondarySourceID, nil, "canonical-exact-secondary-fingerprint", `{
+		"source_authority":"supporting",
+		"source_name":"Secondary canonical source",
+		"source_url":"https://secondary.example.test/listing",
+		"candidate_external_id":"canonical-exact-match-secondary",
+		"candidate_title":"Legacy Event",
+		"candidate_venue_slug":"leadmill",
+		"candidate_start_at":"2026-05-10T19:00:00Z",
+		"candidate_end_at":"2026-05-10T22:00:00Z",
+		"candidate_genre":"Indie",
+		"candidate_status":"Listed",
+		"candidate_description":"Legacy event",
+		"calendar_url":"https://secondary.example.test/calendar.ics"
+	}`)
+	insertEventReviewClusterEvidenceOK(t, db, clusterID, secondaryEvidenceID, true, time.Date(2026, time.May, 15, 10, 10, 0, 0, time.UTC), nil, "secondary canonical exact evidence")
+	beforeObservations := mustCount(t, db, "event_source_attribute_observations")
+	resolution, err := st.FinalizeOpenEventReviewClusterRestage(ctx, result.ClusterID, []int64{result.EvidenceID, secondaryEvidenceID})
 	if err != nil {
 		t.Fatalf("finalize canonical exact cluster: %v", err)
 	}
 	if resolution == nil || resolution.AppliedAutoResolution == nil {
 		t.Fatal("finalized canonical exact cluster missing applied auto-resolution summary")
 	}
-	if resolution.AppliedAutoResolution.Result != "canonical_exact_match" || resolution.AppliedAutoResolution.EventID != canonicalEventID || resolution.AppliedAutoResolution.EventSlug != "live-legacy-event-leadmill-20260510190000" || resolution.AppliedAutoResolution.SourceID != sourceID || resolution.AppliedAutoResolution.SourceName != "Store test source" || resolution.AppliedAutoResolution.SourceURL != "https://example.test/store-test" || resolution.AppliedAutoResolution.EvidenceCount != 1 {
+	if resolution.AppliedAutoResolution.Result != "canonical_exact_match" || resolution.AppliedAutoResolution.EventID != canonicalEventID || resolution.AppliedAutoResolution.EventSlug != "live-legacy-event-leadmill-20260510190000" || resolution.AppliedAutoResolution.SourceID != sourceID || resolution.AppliedAutoResolution.SourceName != "Store test source" || resolution.AppliedAutoResolution.SourceURL != "https://example.test/store-test" || resolution.AppliedAutoResolution.EvidenceCount != 2 {
 		t.Fatalf("canonical exact finalized auto-resolution = %#v", resolution.AppliedAutoResolution)
 	}
 	assertEventReviewClusterState(t, db, clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
@@ -1532,11 +1556,63 @@ func TestStageEventReviewEvidenceAutoResolvesCanonicalExactMatchAndIsIdempotent(
 		t.Fatal("resolved canonical exact cluster missing applied auto-resolution summary")
 	}
 	applied := detail.Resolution.AppliedAutoResolution
-	if applied.Result != "canonical_exact_match" || applied.EventID != canonicalEventID || applied.EventSlug != "live-legacy-event-leadmill-20260510190000" || applied.SourceID != sourceID || applied.SourceName != "Store test source" || applied.SourceURL != "https://example.test/store-test" || applied.EvidenceCount != 1 {
+	if applied.Result != "canonical_exact_match" || applied.EventID != canonicalEventID || applied.EventSlug != "live-legacy-event-leadmill-20260510190000" || applied.SourceID != sourceID || applied.SourceName != "Store test source" || applied.SourceURL != "https://example.test/store-test" || applied.EvidenceCount != 2 {
 		t.Fatalf("canonical exact applied auto-resolution = %#v", applied)
 	}
 	if detail.Summary.CanonicalEventID == nil || *detail.Summary.CanonicalEventID != canonicalEventID {
 		t.Fatalf("canonical exact summary canonical_event_id = %#v, want %d", detail.Summary.CanonicalEventID, canonicalEventID)
+	}
+	for _, evidenceID := range []int64{result.EvidenceID, secondaryEvidenceID} {
+		var linkedEventID sql.NullInt64
+		if err := db.QueryRow(`SELECT event_id FROM event_review_evidence WHERE id = ?`, evidenceID).Scan(&linkedEventID); err != nil {
+			t.Fatalf("load canonical exact evidence event_id: %v", err)
+		}
+		if !linkedEventID.Valid || linkedEventID.Int64 != canonicalEventID {
+			t.Fatalf("evidence %d event_id = %#v, want %d", evidenceID, linkedEventID, canonicalEventID)
+		}
+	}
+	var publicationState string
+	if err := db.QueryRow(`SELECT publication_state FROM events WHERE id = ?`, canonicalEventID).Scan(&publicationState); err != nil {
+		t.Fatalf("load canonical exact publication state: %v", err)
+	}
+	if publicationState != string(domain.PublicationStateReviewed) {
+		t.Fatalf("canonical exact publication state = %q, want %q", publicationState, domain.PublicationStateReviewed)
+	}
+	for _, tc := range []struct {
+		sourceID int64
+		key      string
+	}{
+		{sourceID: sourceID, key: "uid:canonical-exact-match"},
+		{sourceID: secondarySourceID, key: "uid:canonical-exact-match-secondary"},
+	} {
+		var linkedEventID int64
+		var authoritative int
+		if err := db.QueryRow(`
+			SELECT event_id, is_authoritative
+			FROM event_source_links
+			WHERE source_id = ? AND source_event_key = ?
+		`, tc.sourceID, tc.key).Scan(&linkedEventID, &authoritative); err != nil {
+			t.Fatalf("load canonical exact source link %q: %v", tc.key, err)
+		}
+		if linkedEventID != canonicalEventID || authoritative != 0 {
+			t.Fatalf("source link %q = event %d authoritative %d, want event %d supporting", tc.key, linkedEventID, authoritative, canonicalEventID)
+		}
+	}
+	var secondaryInfoRows int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM event_secondary_source_info
+		WHERE event_id = ?
+			AND source_id = ?
+			AND info_type IN ('genre', 'description')
+	`, canonicalEventID, secondarySourceID).Scan(&secondaryInfoRows); err != nil {
+		t.Fatalf("count canonical exact secondary info: %v", err)
+	}
+	if secondaryInfoRows != 2 {
+		t.Fatalf("canonical exact secondary info rows = %d, want 2", secondaryInfoRows)
+	}
+	if got := mustCount(t, db, "event_source_attribute_observations"); got <= beforeObservations {
+		t.Fatalf("event_source_attribute_observations = %d, want greater than %d", got, beforeObservations)
 	}
 	if got := mustCount(t, db, "event_review_resolutions"); got != beforeResolutions+1 {
 		t.Fatalf("event_review_resolutions rows = %d, want %d", got, beforeResolutions+1)
