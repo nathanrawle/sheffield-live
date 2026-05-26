@@ -2234,7 +2234,8 @@ func TestAdminEventReviewDetailAcceptsImportReviewSupportingSource(t *testing.T)
 				EvidenceCount:  1,
 			},
 			ImportReadiness: &store.EventReviewImportReadiness{
-				CandidateCount: 1,
+				CandidateCount:  1,
+				NewListingScope: true,
 				Candidates: []store.EventReviewImportCandidateSummary{{
 					EvidenceID:          303,
 					EvidenceFingerprint: "supporting-source-fingerprint",
@@ -2274,6 +2275,7 @@ func TestAdminEventReviewDetailAcceptsImportReviewSupportingSource(t *testing.T)
 	}
 	body := getRR.Body.String()
 	assertContains(t, body, "Existing event targets")
+	assertNotContains(t, body, `name="action" value="resolve_import_new_listing"`)
 	assertContains(t, body, `name="action" value="resolve_import_supporting_source"`)
 	assertContains(t, body, `name="target_event_id" value="88"`)
 	assertContains(t, body, `name="target_basis" value="exact_identity"`)

@@ -2496,6 +2496,9 @@ func canAcceptImportReviewEventReviewCluster(cluster store.EventReviewClusterDet
 	if readiness == nil || !readiness.NewListingScope || len(readiness.Candidates) != 1 {
 		return false
 	}
+	if importReadinessHasExistingTargetForEvidence(readiness, readiness.Candidates[0].EvidenceID) {
+		return false
+	}
 	return readiness.Candidates[0].SourceAuthority == store.SourceAuthoritySupporting
 }
 
@@ -2547,6 +2550,18 @@ func canResolveAuthoritativeImportEventReviewCluster(cluster store.EventReviewCl
 	}
 	for _, target := range cluster.ImportReadiness.AuthoritativeTargets {
 		if target.EvidenceID == evidenceID && len(target.BlockingReasons) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func importReadinessHasExistingTargetForEvidence(readiness *store.EventReviewImportReadiness, evidenceID int64) bool {
+	if readiness == nil || evidenceID <= 0 {
+		return false
+	}
+	for _, target := range readiness.ExistingEventTargets {
+		if target.EvidenceID == evidenceID {
 			return true
 		}
 	}

@@ -1505,6 +1505,52 @@ func TestResolveEventReviewClusterAppliesSelectedImportReviewNewListingFromMulti
 	}
 }
 
+func TestResolveEventReviewClusterSkipsMalformedNonSelectedSecondaryEvidence(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	beforeEvents := mustCount(t, db, "events")
+
+	selectedKeyID := insertEventReviewIdentityKeyOK(t, db, "selected-import-review-secondary-hash", seedstore.EventReviewIdentityKeyKindSource, "selected-import-review-secondary-key")
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, selectedKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert selected evidence identity: %v", err)
+	}
+	if _, err := insertEventReviewSourceIdentityChoice(t, db, fixture.clusterID, fixture.sourceID, "selected-import-review-secondary-key", true, "preferred selected candidate", time.Date(2026, time.May, 15, 9, 40, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("insert selected source identity choice: %v", err)
+	}
+
+	malformedEvidenceID := insertEventReviewEvidenceOK(t, db, fixture.sourceID, nil, "import-review-malformed-secondary-"+strconv.FormatInt(fixture.clusterID, 10), "{bad json")
+	insertEventReviewClusterEvidenceOK(t, db, fixture.clusterID, malformedEvidenceID, true, fixture.start.Add(10*time.Minute), nil, "malformed secondary evidence")
+
+	if err := st.ResolveEventReviewCluster(context.Background(), seedstore.EventReviewResolutionInput{
+		ClusterID:       fixture.clusterID,
+		ExpectedVersion: 1,
+	}); err != nil {
+		t.Fatalf("resolve selected multi-evidence cluster with malformed secondary: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	if got := mustCount(t, db, "events"); got != beforeEvents+1 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents+1)
+	}
+	var selectedEventID sql.NullInt64
+	if err := db.QueryRow(`SELECT event_id FROM event_review_evidence WHERE id = ?`, fixture.evidenceID).Scan(&selectedEventID); err != nil {
+		t.Fatalf("load selected evidence event id: %v", err)
+	}
+	if !selectedEventID.Valid {
+		t.Fatal("selected evidence event id was not set")
+	}
+	var malformedEventID sql.NullInt64
+	if err := db.QueryRow(`SELECT event_id FROM event_review_evidence WHERE id = ?`, malformedEvidenceID).Scan(&malformedEventID); err != nil {
+		t.Fatalf("load malformed evidence event id: %v", err)
+	}
+	if malformedEventID.Valid {
+		t.Fatalf("malformed secondary evidence event id = %v, want NULL", malformedEventID)
+	}
+}
+
 func TestAcceptEventReviewSupportingSourceAppliesExactIdentityTarget(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()
@@ -1564,6 +1610,12 @@ func TestAcceptEventReviewSupportingSourceAppliesExactIdentityTarget(t *testing.
 	}
 	if exactTarget == nil || len(exactTarget.ExactIdentityKeys) != 1 || exactTarget.ExactIdentityKeys[0] != exactKey || len(exactTarget.BlockingReasons) != 0 {
 		t.Fatalf("exact existing event target = %#v; all targets = %#v", exactTarget, detail.ImportReadiness.ExistingEventTargets)
+	}
+	if detail.ImportReadiness.NewListingScope {
+		t.Fatalf("new listing scope = true, want blocked when exact existing target is available")
+	}
+	if !hasString(detail.ImportReadiness.BlockingReasons, "candidate resolves to existing live event") {
+		t.Fatalf("new-listing blockers = %#v, want existing-event blocker", detail.ImportReadiness.BlockingReasons)
 	}
 
 	if err := st.AcceptEventReviewSupportingSource(context.Background(), seedstore.EventReviewAcceptSupportingSourceInput{

@@ -332,6 +332,7 @@ func (s *Store) LoadEventReviewCluster(ctx context.Context, id int64) (seedstore
 		}
 		importReadiness.AuthoritativeTargets = authoritativeTargets
 		assignSelectedCandidateExistingEventTargets(importReadiness)
+		finalizeEventReviewImportNewListingScope(importReadiness)
 	}
 	canonicalChoices, err := loadEventReviewClusterChoiceSummariesTx(ctx, tx, id, "event_review_canonical_choices")
 	if err != nil {
@@ -2584,6 +2585,32 @@ func assignSelectedCandidateExistingEventTargets(readiness *seedstore.EventRevie
 		if target.EvidenceID == readiness.SelectedCandidateReadiness.EvidenceID {
 			readiness.SelectedCandidateReadiness.ExistingEventTargets = append(readiness.SelectedCandidateReadiness.ExistingEventTargets, target)
 		}
+	}
+}
+
+func finalizeEventReviewImportNewListingScope(readiness *seedstore.EventReviewImportReadiness) {
+	if readiness == nil || !readiness.NewListingScope {
+		return
+	}
+	targetEvidenceID := int64(0)
+	if len(readiness.Candidates) == 1 {
+		targetEvidenceID = readiness.Candidates[0].EvidenceID
+	}
+	for _, target := range readiness.ExistingEventTargets {
+		if targetEvidenceID > 0 && target.EvidenceID != targetEvidenceID {
+			continue
+		}
+		readiness.NewListingScope = false
+		if target.TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+			appendUniqueImportReadinessReason(&readiness.BlockingReasons, "candidate matches existing live event by near title")
+			return
+		}
+		if len(target.BlockingReasons) > 0 {
+			appendUniqueImportReadinessReason(&readiness.BlockingReasons, "candidate existing-event target requires review")
+			return
+		}
+		appendUniqueImportReadinessReason(&readiness.BlockingReasons, "candidate resolves to existing live event")
+		return
 	}
 }
 

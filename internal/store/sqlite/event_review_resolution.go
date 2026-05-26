@@ -125,6 +125,33 @@ type eventReviewResolutionAppliedAuthoritativeImportSnapshot struct {
 	Result     string `json:"result,omitempty"`
 }
 
+type importReviewCandidateMaterializationError struct {
+	err error
+}
+
+func (e importReviewCandidateMaterializationError) Error() string {
+	if e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e importReviewCandidateMaterializationError) Unwrap() error {
+	return e.err
+}
+
+func importReviewCandidateMaterializationErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return importReviewCandidateMaterializationError{err: err}
+}
+
+func isImportReviewCandidateMaterializationError(err error) bool {
+	var materializationErr importReviewCandidateMaterializationError
+	return errors.As(err, &materializationErr)
+}
+
 func (s *Store) ResolveEventReviewCluster(ctx context.Context, input seedstore.EventReviewResolutionInput) error {
 	if s == nil || s.db == nil {
 		return errors.New("sqlite store is not open")
@@ -938,20 +965,20 @@ func buildImportReviewCandidateMaterialTx(ctx context.Context, tx interface {
 }, s *Store, cluster seedstore.EventReviewCluster, evidence seedstore.EventReviewClusterEvidenceSummary, selectedSourceKeys []string, entrypoint string, mode reviewSourceIdentityMode, now time.Time) (importReviewCandidateMaterial, error) {
 	parsed, err := parseImportReviewCandidatePayload(evidence.Payload)
 	if err != nil {
-		return importReviewCandidateMaterial{}, fmt.Errorf("import review event review cluster %d payload could not be parsed: %w", cluster.ID, err)
+		return importReviewCandidateMaterial{}, importReviewCandidateMaterializationErr(fmt.Errorf("import review event review cluster %d payload could not be parsed: %w", cluster.ID, err))
 	}
 	if strings.TrimSpace(parsed.Title) == "" {
-		return importReviewCandidateMaterial{}, fmt.Errorf("import review event review cluster %d requires a candidate title", cluster.ID)
+		return importReviewCandidateMaterial{}, importReviewCandidateMaterializationErr(fmt.Errorf("import review event review cluster %d requires a candidate title", cluster.ID))
 	}
 	start, err := parseRFC3339UTC(strings.TrimSpace(parsed.StartAt))
 	if err != nil {
-		return importReviewCandidateMaterial{}, fmt.Errorf("import review event review cluster %d requires a valid start time: %w", cluster.ID, err)
+		return importReviewCandidateMaterial{}, importReviewCandidateMaterializationErr(fmt.Errorf("import review event review cluster %d requires a valid start time: %w", cluster.ID, err))
 	}
 	var end time.Time
 	if endText := strings.TrimSpace(parsed.EndAt); endText != "" {
 		end, err = parseRFC3339UTC(endText)
 		if err != nil {
-			return importReviewCandidateMaterial{}, fmt.Errorf("import review event review cluster %d has invalid end time: %w", cluster.ID, err)
+			return importReviewCandidateMaterial{}, importReviewCandidateMaterializationErr(fmt.Errorf("import review event review cluster %d has invalid end time: %w", cluster.ID, err))
 		}
 	}
 
@@ -986,7 +1013,7 @@ func buildImportReviewCandidateMaterialTx(ctx context.Context, tx interface {
 		candidateInput.SourceURL = strings.TrimSpace(evidence.SourceURL)
 	}
 	if candidateInput.VenueSlug == "" && candidateInput.VenueText == "" {
-		return importReviewCandidateMaterial{}, fmt.Errorf("import review event review cluster %d requires a venue", cluster.ID)
+		return importReviewCandidateMaterial{}, importReviewCandidateMaterializationErr(fmt.Errorf("import review event review cluster %d requires a venue", cluster.ID))
 	}
 
 	venue, err := resolveImportReviewVenueTx(ctx, tx, candidateInput)
@@ -1030,11 +1057,11 @@ func buildImportReviewCandidateMaterialTx(ctx context.Context, tx interface {
 	}
 	event.Slug, err = buildLiveEventSlug(event.Name, event.VenueSlug, event.Start)
 	if err != nil {
-		return importReviewCandidateMaterial{}, fmt.Errorf("import review event review cluster %d cannot build event slug: %w", cluster.ID, err)
+		return importReviewCandidateMaterial{}, importReviewCandidateMaterializationErr(fmt.Errorf("import review event review cluster %d cannot build event slug: %w", cluster.ID, err))
 	}
 	event = s.decorateEventForPublish(event)
 	if err := event.ValidateCanonical(); err != nil {
-		return importReviewCandidateMaterial{}, fmt.Errorf("import review event review cluster %d is not a valid event: %w", cluster.ID, err)
+		return importReviewCandidateMaterial{}, importReviewCandidateMaterializationErr(fmt.Errorf("import review event review cluster %d is not a valid event: %w", cluster.ID, err))
 	}
 
 	sourceCtx := reviewSourceIdentityContextForCandidateInput(mode, candidateInput.SourceName, candidateInput.SourceURL, "", "", "", candidateInput, entrypoint)
@@ -1102,6 +1129,9 @@ func buildImportReviewSecondaryCandidatesTx(ctx context.Context, tx interface {
 		}
 		material, err := buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, row, nil, "import_review_secondary_source_matching", reviewSourceIdentitySupporting, now)
 		if err != nil {
+			if isImportReviewCandidateMaterializationError(err) {
+				continue
+			}
 			return nil, err
 		}
 		candidates = append(candidates, material.Candidate)
@@ -2071,9 +2101,9 @@ func resolveImportReviewVenueTx(ctx context.Context, q queryer, candidate review
 		}
 		return domain.Venue{}, fmt.Errorf("import review venue match %q could not be loaded", match.slug)
 	case venueMatchAmbiguous:
-		return domain.Venue{}, fmt.Errorf("import review venue is ambiguous")
+		return domain.Venue{}, importReviewCandidateMaterializationErr(fmt.Errorf("import review venue is ambiguous"))
 	default:
-		return domain.Venue{}, fmt.Errorf("import review venue could not be resolved")
+		return domain.Venue{}, importReviewCandidateMaterializationErr(fmt.Errorf("import review venue could not be resolved"))
 	}
 }
 
