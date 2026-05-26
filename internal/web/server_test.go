@@ -734,22 +734,29 @@ func TestAdminReviewRendersTitleRepairReadiness(t *testing.T) {
 		{
 			name: "slug conflict",
 			readiness: &store.EventReviewTitleRepairReadiness{
-				CanonicalEventID:      88,
-				CurrentTitle:          "Legacy Event",
-				CurrentSlug:           "title-repair-current",
-				CurrentEventLive:      true,
-				DraftTitle:            "Conflict Title",
-				DraftSlug:             "title-repair-slug-conflict",
-				Eligible:              false,
-				BlockingReasons:       []string{"target slug already belongs to another live event"},
-				SlugConflictEventID:   int64Ptr(91),
-				SlugConflictEventSlug: "title-repair-slug-conflict",
+				CanonicalEventID:                88,
+				CurrentTitle:                    "Legacy Event",
+				CurrentSlug:                     "title-repair-current",
+				CurrentEventLive:                true,
+				DraftTitle:                      "Conflict Title",
+				DraftSlug:                       "title-repair-slug-conflict",
+				Eligible:                        false,
+				BlockingReasons:                 []string{"target slug already belongs to another live event"},
+				SlugConflictEventID:             int64Ptr(91),
+				SlugConflictEventSlug:           "title-repair-slug-conflict",
+				SlugConflictEventTitle:          "Slug Owner",
+				SlugConflictResolutionAvailable: true,
 			},
 			wantContains: []string{
 				"target slug already belongs to another live event",
 				`href="/admin/events/title-repair-slug-conflict"`,
 				"event #91",
+				"Slug Owner",
 				"title-repair-slug-conflict",
+				"Resolve slug conflict",
+				`name="action" value="resolve_title_slug_conflict"`,
+				`name="mode" value="merge_duplicate"`,
+				`name="mode" value="keep_separate_no_change"`,
 			},
 			wantNotContain: []string{
 				"Apply stored live actions",
@@ -3538,6 +3545,85 @@ func TestAdminEventReviewResolveTitleRepairPostsAndRedirects(t *testing.T) {
 		t.Fatalf("queue status = %d, want %d", queueRR.Code, http.StatusOK)
 	}
 	assertContains(t, queueRR.Body.String(), "Resolved event review cluster.")
+}
+
+func TestAdminEventReviewResolveTitleSlugConflictPostsAndRedirects(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	stagingKey := "repair-queue-title-slug"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                 42,
+				Status:             store.EventReviewClusterStatusOpen,
+				Version:            5,
+				StagingKey:         &stagingKey,
+				StagingKeyVersion:  1,
+				ConflictType:       "title_repair",
+				ConflictReason:     "authoritative_slug_conflict",
+				CanonicalEventID:   int64Ptr(88),
+				CanonicalEventSlug: "title-repair-current",
+				DisplayTitle:       "Title Repair Current",
+				DisplayVenueSlug:   "title-repair-hall",
+				DisplayVenueName:   "Title Repair Hall",
+				DisplayStartAt:     &openTime,
+				EvidenceCount:      2,
+			},
+			TitleRepairReadiness: &store.EventReviewTitleRepairReadiness{
+				CanonicalEventID:                88,
+				CurrentTitle:                    "Legacy Event",
+				CurrentSlug:                     "title-repair-current",
+				CurrentEventLive:                true,
+				DraftTitle:                      "Updated Title",
+				DraftSlug:                       "title-repair-current-renamed",
+				Eligible:                        false,
+				BlockingReasons:                 []string{"target slug already belongs to another live event"},
+				SlugConflictEventID:             int64Ptr(91),
+				SlugConflictEventSlug:           "title-repair-current-renamed",
+				SlugConflictResolutionAvailable: true,
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/42", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "5")
+	form.Set("action", "resolve_title_slug_conflict")
+	form.Set("mode", "keep_separate_no_change")
+	form.Set("original_canonical_event_id", "88")
+	form.Set("slug_conflict_event_id", "91")
+	form.Set("draft_title", "Updated Title")
+	form.Set("draft_slug", "title-repair-current-renamed")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/42", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !store.titleSlugConflictCalled {
+		t.Fatal("expected title slug conflict store method to be called")
+	}
+	if got := store.titleSlugConflictInput; got.ClusterID != 42 || got.ExpectedVersion != 5 || string(got.Mode) != "keep_separate_no_change" || got.OriginalCanonicalEventID != 88 || got.SlugConflictEventID != 91 || got.DraftTitle != "Updated Title" || got.DraftSlug != "title-repair-current-renamed" {
+		t.Fatalf("title slug conflict input = %#v", got)
+	}
 }
 
 func TestAdminEventReviewResolveLiveActionsRejectsTitleRepairCluster(t *testing.T) {
@@ -7414,6 +7500,9 @@ type adminReviewEventReviewStoreStub struct {
 	resolveCalled               bool
 	resolveInput                store.EventReviewResolutionInput
 	resolveErr                  error
+	titleSlugConflictCalled     bool
+	titleSlugConflictInput      store.EventReviewTitleRepairSlugConflictInput
+	titleSlugConflictErr        error
 	acceptSupportingCalled      bool
 	acceptSupportingInput       store.EventReviewAcceptSupportingSourceInput
 	acceptSupportingErr         error
@@ -7461,6 +7550,12 @@ func (s *adminReviewEventReviewStoreStub) ResolveEventReviewCluster(_ context.Co
 	return s.resolveErr
 }
 
+func (s *adminReviewEventReviewStoreStub) ResolveTitleRepairSlugConflict(_ context.Context, input store.EventReviewTitleRepairSlugConflictInput) error {
+	s.titleSlugConflictCalled = true
+	s.titleSlugConflictInput = input
+	return s.titleSlugConflictErr
+}
+
 func (s *adminReviewEventReviewStoreStub) AcceptEventReviewSupportingSource(_ context.Context, input store.EventReviewAcceptSupportingSourceInput) error {
 	s.acceptSupportingCalled = true
 	s.acceptSupportingInput = input
@@ -7499,6 +7594,9 @@ type eventReviewOnlyStoreStub struct {
 	resolveCalled               bool
 	resolveInput                store.EventReviewResolutionInput
 	resolveErr                  error
+	titleSlugConflictCalled     bool
+	titleSlugConflictInput      store.EventReviewTitleRepairSlugConflictInput
+	titleSlugConflictErr        error
 	acceptSupportingCalled      bool
 	acceptSupportingInput       store.EventReviewAcceptSupportingSourceInput
 	acceptSupportingErr         error
@@ -7580,6 +7678,12 @@ func (s *eventReviewOnlyStoreStub) ResolveEventReviewCluster(_ context.Context, 
 	s.resolveCalled = true
 	s.resolveInput = input
 	return s.resolveErr
+}
+
+func (s *eventReviewOnlyStoreStub) ResolveTitleRepairSlugConflict(_ context.Context, input store.EventReviewTitleRepairSlugConflictInput) error {
+	s.titleSlugConflictCalled = true
+	s.titleSlugConflictInput = input
+	return s.titleSlugConflictErr
 }
 
 func (s *eventReviewOnlyStoreStub) AcceptEventReviewSupportingSource(_ context.Context, input store.EventReviewAcceptSupportingSourceInput) error {

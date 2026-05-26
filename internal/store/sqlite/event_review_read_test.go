@@ -333,14 +333,41 @@ func TestEventReviewReadModelsTitleRepairReadiness(t *testing.T) {
 	if conflictDetail.TitleRepairReadiness == nil {
 		t.Fatal("slug conflict readiness is nil")
 	}
-	if got := conflictDetail.TitleRepairReadiness; got.Eligible || got.SlugConflictEventID == nil || *got.SlugConflictEventID != slugConflictEventID || got.SlugConflictEventSlug != "title-repair-slug-conflict" {
+	if got := conflictDetail.TitleRepairReadiness; got.Eligible || !got.SlugConflictResolutionAvailable || got.SlugConflictEventID == nil || *got.SlugConflictEventID != slugConflictEventID || got.SlugConflictEventSlug != "title-repair-slug-conflict" {
 		t.Fatalf("slug conflict readiness = %#v", got)
+	}
+	if _, err := insertEventReviewSeparation(t, db,
+		seedstore.EventReviewSeparationEndpoint{
+			Kind:    seedstore.EventReviewSeparationEndpointKindEvent,
+			Key:     seedstore.EventReviewSeparationEventEndpointKey(conflictCanonicalID),
+			EventID: int64Ptr(conflictCanonicalID),
+		},
+		seedstore.EventReviewSeparationEndpoint{
+			Kind:    seedstore.EventReviewSeparationEndpointKindEvent,
+			Key:     seedstore.EventReviewSeparationEventEndpointKey(slugConflictEventID),
+			EventID: int64Ptr(slugConflictEventID),
+		},
+		true,
+		"title repair separated slug conflict",
+		time.Date(2026, time.May, 15, 10, 11, 30, 0, time.UTC),
+		time.Date(2026, time.May, 15, 10, 11, 30, 0, time.UTC)); err != nil {
+		t.Fatalf("insert title repair separation: %v", err)
+	}
+	separatedConflictDetail, ok, err := st.LoadEventReviewCluster(context.Background(), conflictClusterID)
+	if err != nil {
+		t.Fatalf("load separated slug conflict title repair cluster: %v", err)
+	}
+	if !ok {
+		t.Fatal("separated slug conflict title repair cluster load returned ok=false")
+	}
+	if got := separatedConflictDetail.TitleRepairReadiness; got == nil || got.SlugConflictResolutionAvailable || !hasString(got.BlockingReasons, "target slug conflict is already marked separate") {
+		t.Fatalf("separated slug conflict readiness = %#v", got)
 	}
 
 	authoritativeStagingKey := "title-repair-authoritative"
 	authoritativeClusterID := insertEventReviewClusterAt(t, db, string(seedstore.EventReviewClusterStatusOpen), &authoritativeStagingKey, eventTitleRepairStagingKeyVersion, &eligibleCanonicalID, eventTitleRepairConflictType, eventTitleRepairConflictReasonAuthoritativeSlugConflict, time.Date(2026, time.May, 15, 10, 12, 0, 0, time.UTC))
 	insertEventReviewDraftChoiceOK(t, db, authoritativeClusterID, "name", seedstore.EventReviewChoiceKindManual, nil, nil, "Authoritative Title", time.Date(2026, time.May, 15, 10, 13, 0, 0, time.UTC))
-	insertEventReviewDraftChoiceOK(t, db, authoritativeClusterID, "slug", seedstore.EventReviewChoiceKindManual, nil, nil, "authoritative-title", time.Date(2026, time.May, 15, 10, 14, 0, 0, time.UTC))
+	insertEventReviewDraftChoiceOK(t, db, authoritativeClusterID, "slug", seedstore.EventReviewChoiceKindManual, nil, nil, "title-repair-slug-conflict", time.Date(2026, time.May, 15, 10, 14, 0, 0, time.UTC))
 	authoritativeDetail, ok, err := st.LoadEventReviewCluster(context.Background(), authoritativeClusterID)
 	if err != nil {
 		t.Fatalf("load authoritative title repair cluster: %v", err)
@@ -351,7 +378,7 @@ func TestEventReviewReadModelsTitleRepairReadiness(t *testing.T) {
 	if authoritativeDetail.TitleRepairReadiness == nil {
 		t.Fatal("authoritative readiness is nil")
 	}
-	if got := authoritativeDetail.TitleRepairReadiness; got.Eligible || len(got.BlockingReasons) == 0 {
+	if got := authoritativeDetail.TitleRepairReadiness; got.Eligible || !got.SlugConflictResolutionAvailable || got.SlugConflictEventID == nil || *got.SlugConflictEventID != slugConflictEventID {
 		t.Fatalf("authoritative readiness = %#v", got)
 	}
 

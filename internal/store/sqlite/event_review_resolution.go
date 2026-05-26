@@ -31,6 +31,7 @@ type eventReviewResolutionSnapshot struct {
 	AppliedAuthoritativeImport *eventReviewResolutionAppliedAuthoritativeImportSnapshot `json:"applied_authoritative_import,omitempty"`
 	AppliedSeparations         []eventReviewResolutionAppliedSeparationSnapshot         `json:"applied_separations,omitempty"`
 	AppliedTitleRepair         *eventReviewResolutionAppliedTitleRepairSnapshot         `json:"applied_title_repair,omitempty"`
+	AppliedTitleSlugConflict   *eventReviewResolutionAppliedTitleSlugConflictSnapshot   `json:"applied_title_slug_conflict,omitempty"`
 	AppliedLiveActions         []eventReviewResolutionAppliedLiveActionSnapshot         `json:"applied_live_actions,omitempty"`
 	RecordedAt                 string                                                   `json:"recorded_at"`
 }
@@ -58,6 +59,17 @@ type eventReviewResolutionAppliedTitleRepairSnapshot struct {
 	NewTitle string `json:"new_title,omitempty"`
 	OldSlug  string `json:"old_slug,omitempty"`
 	NewSlug  string `json:"new_slug,omitempty"`
+}
+
+type eventReviewResolutionAppliedTitleSlugConflictSnapshot struct {
+	Mode                seedstore.EventReviewTitleRepairSlugConflictMode `json:"mode"`
+	OldCanonicalEventID int64                                            `json:"old_canonical_event_id,omitempty"`
+	SlugConflictEventID int64                                            `json:"slug_conflict_event_id,omitempty"`
+	SurvivingEventID    int64                                            `json:"surviving_event_id,omitempty"`
+	OldTitle            string                                           `json:"old_title,omitempty"`
+	NewTitle            string                                           `json:"new_title,omitempty"`
+	OldSlug             string                                           `json:"old_slug,omitempty"`
+	NewSlug             string                                           `json:"new_slug,omitempty"`
 }
 
 type eventReviewResolutionAppliedImportListingSnapshot struct {
@@ -287,6 +299,180 @@ func (s *Store) ResolveEventReviewCluster(ctx context.Context, input seedstore.E
 	default:
 		return fmt.Errorf("event review cluster %d conflict type %q is not supported", cluster.ID, cluster.ConflictType)
 	}
+}
+
+func (s *Store) ResolveTitleRepairSlugConflict(ctx context.Context, input seedstore.EventReviewTitleRepairSlugConflictInput) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	if !input.Mode.Valid() {
+		return fmt.Errorf("invalid title repair slug conflict mode %q", input.Mode)
+	}
+	if input.OriginalCanonicalEventID <= 0 {
+		return errors.New("original canonical event ID is required")
+	}
+	if input.SlugConflictEventID <= 0 {
+		return errors.New("slug conflict event ID is required")
+	}
+	if strings.TrimSpace(input.DraftTitle) == "" {
+		return errors.New("draft title is required")
+	}
+	if strings.TrimSpace(input.DraftSlug) == "" {
+		return errors.New("draft slug is required")
+	}
+
+	cluster, tx, err := beginOpenEventReviewClusterTx(ctx, s.db, input.EventReviewResolutionInput)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if cluster.ConflictType != eventTitleRepairConflictType {
+		return fmt.Errorf("event review cluster %d is not a title repair cluster", cluster.ID)
+	}
+	switch cluster.ConflictReason {
+	case eventTitleRepairConflictReasonSupportingCleanTitle, eventTitleRepairConflictReasonAuthoritativeSlugConflict:
+	default:
+		return fmt.Errorf("title repair event review cluster %d conflict reason %q is not supported for slug conflict resolution", cluster.ID, cluster.ConflictReason)
+	}
+
+	draftChoices, err := loadEventReviewClusterChoiceSummariesTx(ctx, tx, cluster.ID, "event_review_draft_choices")
+	if err != nil {
+		return err
+	}
+	readiness, err := loadEventReviewTitleRepairReadinessTx(ctx, tx, seedstore.EventReviewClusterSummary{
+		ID:               cluster.ID,
+		Status:           cluster.Status,
+		Version:          cluster.Version,
+		ConflictType:     cluster.ConflictType,
+		ConflictReason:   cluster.ConflictReason,
+		CanonicalEventID: cluster.CanonicalEventID,
+	}, draftChoices)
+	if err != nil {
+		return err
+	}
+	if readiness == nil || !readiness.SlugConflictResolutionAvailable {
+		reasons := ""
+		if readiness != nil {
+			reasons = strings.Join(append(readiness.BlockingReasons, readiness.SlugConflictBlockingReasons...), "; ")
+		}
+		if reasons == "" {
+			reasons = "title repair slug conflict is not resolvable"
+		}
+		return fmt.Errorf("title repair event review cluster %d slug conflict is not resolvable: %s", cluster.ID, reasons)
+	}
+	if readiness.CanonicalEventID != input.OriginalCanonicalEventID {
+		return fmt.Errorf("title repair event review cluster %d canonical event changed from %d to %d", cluster.ID, input.OriginalCanonicalEventID, readiness.CanonicalEventID)
+	}
+	if readiness.SlugConflictEventID == nil || *readiness.SlugConflictEventID != input.SlugConflictEventID {
+		return fmt.Errorf("title repair event review cluster %d slug conflict event changed", cluster.ID)
+	}
+	if readiness.DraftTitle != strings.TrimSpace(input.DraftTitle) {
+		return fmt.Errorf("title repair event review cluster %d draft title changed", cluster.ID)
+	}
+	if readiness.DraftSlug != strings.TrimSpace(input.DraftSlug) {
+		return fmt.Errorf("title repair event review cluster %d draft slug changed", cluster.ID)
+	}
+
+	canonicalRecord, ok, err := loadEventRecordByIDTx(ctx, tx, input.OriginalCanonicalEventID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("original canonical event %d was not found", input.OriginalCanonicalEventID)
+	}
+	conflictRecord, ok, err := loadEventRecordByIDTx(ctx, tx, input.SlugConflictEventID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("slug conflict event %d was not found", input.SlugConflictEventID)
+	}
+	if !isLiveNonWithheldEventRow(string(canonicalRecord.Event.Origin), string(canonicalRecord.Event.PublicationState)) {
+		return fmt.Errorf("original canonical event %d is not live/non-withheld", input.OriginalCanonicalEventID)
+	}
+	if !isLiveNonWithheldEventRow(string(conflictRecord.Event.Origin), string(conflictRecord.Event.PublicationState)) {
+		return fmt.Errorf("slug conflict event %d is not live/non-withheld", input.SlugConflictEventID)
+	}
+	separated, err := hasActiveEventReviewSeparationBetweenKeysTx(ctx, tx, seedstore.EventReviewSeparationEventEndpointKey(input.OriginalCanonicalEventID), seedstore.EventReviewSeparationEventEndpointKey(input.SlugConflictEventID))
+	if err != nil {
+		return err
+	}
+	if separated {
+		return fmt.Errorf("title repair event review cluster %d slug conflict is already marked separate", cluster.ID)
+	}
+
+	now := time.Now().UTC()
+	applied := eventReviewResolutionAppliedTitleSlugConflictSnapshot{
+		Mode:                input.Mode,
+		OldCanonicalEventID: input.OriginalCanonicalEventID,
+		SlugConflictEventID: input.SlugConflictEventID,
+		OldTitle:            readiness.CurrentTitle,
+		NewTitle:            readiness.DraftTitle,
+		OldSlug:             readiness.CurrentSlug,
+		NewSlug:             readiness.DraftSlug,
+	}
+	resolvedCanonicalEventID := input.OriginalCanonicalEventID
+	var appliedSeparations []eventReviewResolutionAppliedSeparationSnapshot
+	switch input.Mode {
+	case seedstore.EventReviewTitleRepairSlugConflictModeKeepSeparateNoChange:
+		separation, err := insertEventReviewSeparationTx(ctx, tx,
+			eventReviewEventSeparationEndpoint(input.OriginalCanonicalEventID),
+			eventReviewEventSeparationEndpoint(input.SlugConflictEventID),
+			"title repair slug conflict keep separate",
+			now,
+		)
+		if err != nil {
+			return err
+		}
+		appliedSeparations = []eventReviewResolutionAppliedSeparationSnapshot{separation}
+	case seedstore.EventReviewTitleRepairSlugConflictModeMergeDuplicate:
+		proposed := canonicalRecord.Event
+		proposed.Name = readiness.DraftTitle
+		proposed.Slug = readiness.DraftSlug
+		if !eventRecordHasResolvedIdentity(conflictRecord, proposed) {
+			return fmt.Errorf("title repair event review cluster %d slug conflict event %d does not match the proposed event identity", cluster.ID, input.SlugConflictEventID)
+		}
+		if err := updateEventTitleTx(ctx, tx, input.SlugConflictEventID, readiness.DraftSlug, readiness.DraftTitle, now); err != nil {
+			return err
+		}
+		if err := mergeDuplicateEventRecordTx(ctx, tx, input.OriginalCanonicalEventID, input.SlugConflictEventID, now); err != nil {
+			return err
+		}
+		applied.SurvivingEventID = input.SlugConflictEventID
+		resolvedCanonicalEventID = input.SlugConflictEventID
+	default:
+		return fmt.Errorf("invalid title repair slug conflict mode %q", input.Mode)
+	}
+
+	snapshotCluster := cluster
+	snapshotCluster.CanonicalEventID = &resolvedCanonicalEventID
+	snapshot, err := marshalEventReviewTitleSlugConflictResolutionSnapshot(snapshotCluster, appliedSeparations, &applied, now)
+	if err != nil {
+		return err
+	}
+	if _, err := insertEventReviewResolutionTx(ctx, tx, cluster.ID, seedstore.EventReviewResolutionStatusResolved, snapshot, "", now); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE event_review_clusters
+		SET status = ?, canonical_event_id = ?, version = version + 1, updated_at = ?
+		WHERE id = ?
+			AND version = ?
+			AND status = ?
+	`, string(seedstore.EventReviewClusterStatusResolved), resolvedCanonicalEventID, formatRFC3339UTC(now), cluster.ID, cluster.Version, string(seedstore.EventReviewClusterStatusOpen))
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected != 1 {
+		return fmt.Errorf("event review cluster %d update was rejected", cluster.ID)
+	}
+	return tx.Commit()
 }
 
 func resolveImportReviewClusterTx(ctx context.Context, tx interface {
@@ -1840,6 +2026,25 @@ func marshalEventReviewResolutionSnapshot(cluster seedstore.EventReviewCluster, 
 	}
 	if supersededByClusterID != nil {
 		snapshot.SupersededByClusterID = *supersededByClusterID
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func marshalEventReviewTitleSlugConflictResolutionSnapshot(cluster seedstore.EventReviewCluster, appliedSeparations []eventReviewResolutionAppliedSeparationSnapshot, appliedTitleSlugConflict *eventReviewResolutionAppliedTitleSlugConflictSnapshot, now time.Time) (string, error) {
+	snapshot := eventReviewResolutionSnapshot{
+		ClusterID:                cluster.ID,
+		ExpectedVersion:          cluster.Version,
+		CurrentVersion:           cluster.Version,
+		CurrentStatus:            cluster.Status,
+		TargetStatus:             seedstore.EventReviewResolutionStatusResolved,
+		CanonicalEventID:         cluster.CanonicalEventID,
+		AppliedSeparations:       appliedSeparations,
+		AppliedTitleSlugConflict: appliedTitleSlugConflict,
+		RecordedAt:               formatRFC3339UTC(now),
 	}
 	data, err := json.Marshal(snapshot)
 	if err != nil {

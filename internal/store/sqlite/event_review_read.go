@@ -559,6 +559,18 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 				NewSlug:  parsed.AppliedTitleRepair.NewSlug,
 			}
 		}
+		if parsed.AppliedTitleSlugConflict != nil {
+			summary.AppliedTitleSlugConflict = &seedstore.EventReviewResolutionAppliedTitleSlugConflictSummary{
+				Mode:                parsed.AppliedTitleSlugConflict.Mode,
+				OldCanonicalEventID: parsed.AppliedTitleSlugConflict.OldCanonicalEventID,
+				SlugConflictEventID: parsed.AppliedTitleSlugConflict.SlugConflictEventID,
+				SurvivingEventID:    parsed.AppliedTitleSlugConflict.SurvivingEventID,
+				OldTitle:            parsed.AppliedTitleSlugConflict.OldTitle,
+				NewTitle:            parsed.AppliedTitleSlugConflict.NewTitle,
+				OldSlug:             parsed.AppliedTitleSlugConflict.OldSlug,
+				NewSlug:             parsed.AppliedTitleSlugConflict.NewSlug,
+			}
+		}
 		summary.AppliedLiveActions = make([]seedstore.EventReviewResolutionAppliedLiveActionSummary, 0, len(parsed.AppliedLiveActions))
 		for _, action := range parsed.AppliedLiveActions {
 			summary.AppliedLiveActions = append(summary.AppliedLiveActions, seedstore.EventReviewResolutionAppliedLiveActionSummary{
@@ -593,6 +605,7 @@ type eventReviewResolutionSnapshotParsed struct {
 	AppliedAuthoritativeImport *eventReviewResolutionAppliedAuthoritativeImportSnapshotView `json:"applied_authoritative_import,omitempty"`
 	AppliedSeparations         []eventReviewResolutionAppliedSeparationSnapshotView         `json:"applied_separations,omitempty"`
 	AppliedTitleRepair         *eventReviewResolutionAppliedTitleRepairSnapshotView         `json:"applied_title_repair,omitempty"`
+	AppliedTitleSlugConflict   *eventReviewResolutionAppliedTitleSlugConflictSnapshotView   `json:"applied_title_slug_conflict,omitempty"`
 	AppliedLiveActions         []eventReviewResolutionAppliedLiveActionSnapshotView         `json:"applied_live_actions,omitempty"`
 }
 
@@ -662,6 +675,17 @@ type eventReviewResolutionAppliedTitleRepairSnapshotView struct {
 	NewTitle string `json:"new_title,omitempty"`
 	OldSlug  string `json:"old_slug,omitempty"`
 	NewSlug  string `json:"new_slug,omitempty"`
+}
+
+type eventReviewResolutionAppliedTitleSlugConflictSnapshotView struct {
+	Mode                seedstore.EventReviewTitleRepairSlugConflictMode `json:"mode"`
+	OldCanonicalEventID int64                                            `json:"old_canonical_event_id,omitempty"`
+	SlugConflictEventID int64                                            `json:"slug_conflict_event_id,omitempty"`
+	SurvivingEventID    int64                                            `json:"surviving_event_id,omitempty"`
+	OldTitle            string                                           `json:"old_title,omitempty"`
+	NewTitle            string                                           `json:"new_title,omitempty"`
+	OldSlug             string                                           `json:"old_slug,omitempty"`
+	NewSlug             string                                           `json:"new_slug,omitempty"`
 }
 
 func scanEventReviewClusterSummaryRow(scanner interface {
@@ -1649,16 +1673,19 @@ func loadEventReviewTitleRepairReadinessTx(ctx context.Context, q queryer, summa
 		readiness.BlockingReasons = append(readiness.BlockingReasons, "draft slug is required")
 	}
 
+	supportedConflictReason := false
 	switch summary.ConflictReason {
 	case eventTitleRepairConflictReasonSupportingCleanTitle:
+		supportedConflictReason = true
 	case eventTitleRepairConflictReasonAuthoritativeSlugConflict:
-		readiness.BlockingReasons = append(readiness.BlockingReasons, "authoritative slug conflict resolution is not implemented")
+		supportedConflictReason = true
 	case "":
 		readiness.BlockingReasons = append(readiness.BlockingReasons, "unsupported title repair conflict reason")
 	default:
 		readiness.BlockingReasons = append(readiness.BlockingReasons, "unsupported title repair conflict reason: "+summary.ConflictReason)
 	}
 
+	baseBlockingReasons := len(readiness.BlockingReasons)
 	if readiness.DraftSlug != "" && readiness.CurrentSlug != "" && readiness.DraftSlug != readiness.CurrentSlug {
 		conflict, ok, err := loadEventReviewTitleRepairEventBySlugTx(ctx, q, readiness.DraftSlug)
 		if err != nil {
@@ -1667,7 +1694,24 @@ func loadEventReviewTitleRepairReadinessTx(ctx context.Context, q queryer, summa
 		if ok && isLiveNonWithheldEventRow(conflict.origin, conflict.publicationState) && (summary.CanonicalEventID == nil || conflict.id != *summary.CanonicalEventID) {
 			readiness.SlugConflictEventID = &conflict.id
 			readiness.SlugConflictEventSlug = strings.TrimSpace(conflict.slug)
-			readiness.BlockingReasons = append(readiness.BlockingReasons, "target slug already belongs to another live event")
+			readiness.SlugConflictEventTitle = strings.TrimSpace(conflict.name)
+			separated := false
+			if summary.CanonicalEventID != nil && *summary.CanonicalEventID > 0 {
+				separated, err = hasActiveEventReviewSeparationBetweenKeysTx(ctx, q, seedstore.EventReviewSeparationEventEndpointKey(*summary.CanonicalEventID), seedstore.EventReviewSeparationEventEndpointKey(conflict.id))
+				if err != nil {
+					return nil, err
+				}
+			}
+			if separated {
+				reason := "target slug conflict is already marked separate"
+				readiness.BlockingReasons = append(readiness.BlockingReasons, reason)
+				readiness.SlugConflictBlockingReasons = append(readiness.SlugConflictBlockingReasons, reason)
+			} else {
+				readiness.BlockingReasons = append(readiness.BlockingReasons, "target slug already belongs to another live event")
+				if supportedConflictReason && baseBlockingReasons == 0 {
+					readiness.SlugConflictResolutionAvailable = true
+				}
+			}
 		}
 	}
 

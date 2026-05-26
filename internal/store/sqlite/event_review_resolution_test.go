@@ -418,6 +418,139 @@ func TestResolveEventReviewClusterAppliesTitleRepairAndRefreshesExactIdentity(t 
 	}
 }
 
+func TestResolveTitleRepairSlugConflictMergesDuplicateIntoSlugOwner(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedTitleRepairResolutionFixture(t, db)
+	conflictID := mustInsertExactIdentityEvent(t, db, fixture.newSlug, "Clean duplicate title", fixture.venueID, fixture.sourceID, time.Date(2026, time.May, 18, 19, 0, 0, 0, time.UTC), time.Date(2026, time.May, 18, 21, 0, 0, 0, time.UTC), time.Date(2026, time.May, 18, 9, 5, 0, 0, time.UTC), domain.OriginLive)
+
+	if err := st.ResolveTitleRepairSlugConflict(context.Background(), seedstore.EventReviewTitleRepairSlugConflictInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		Mode:                     seedstore.EventReviewTitleRepairSlugConflictModeMergeDuplicate,
+		OriginalCanonicalEventID: fixture.eventID,
+		SlugConflictEventID:      conflictID,
+		DraftTitle:               fixture.newTitle,
+		DraftSlug:                fixture.newSlug,
+	}); err != nil {
+		t.Fatalf("resolve title repair slug conflict merge: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	var canonicalID int64
+	if err := db.QueryRow(`SELECT canonical_event_id FROM event_review_clusters WHERE id = ?`, fixture.clusterID).Scan(&canonicalID); err != nil {
+		t.Fatalf("load cluster canonical id: %v", err)
+	}
+	if canonicalID != conflictID {
+		t.Fatalf("cluster canonical event id = %d, want surviving conflict event %d", canonicalID, conflictID)
+	}
+	var oldCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE id = ?`, fixture.eventID).Scan(&oldCount); err != nil {
+		t.Fatalf("count old canonical event rows: %v", err)
+	}
+	if oldCount != 0 {
+		t.Fatalf("old canonical event rows = %d, want 0", oldCount)
+	}
+	var title, slug string
+	if err := db.QueryRow(`SELECT name, slug FROM events WHERE id = ?`, conflictID).Scan(&title, &slug); err != nil {
+		t.Fatalf("load surviving event: %v", err)
+	}
+	if title != fixture.newTitle || slug != fixture.newSlug {
+		t.Fatalf("surviving event = (%q, %q), want (%q, %q)", title, slug, fixture.newTitle, fixture.newSlug)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load resolved title slug conflict cluster: %v", err)
+	}
+	if !ok {
+		t.Fatal("load resolved title slug conflict cluster ok = false")
+	}
+	if detail.Resolution == nil || detail.Resolution.AppliedTitleSlugConflict == nil {
+		t.Fatalf("resolved title slug conflict summary = %#v", detail.Resolution)
+	}
+	applied := detail.Resolution.AppliedTitleSlugConflict
+	if applied.Mode != seedstore.EventReviewTitleRepairSlugConflictModeMergeDuplicate || applied.OldCanonicalEventID != fixture.eventID || applied.SlugConflictEventID != conflictID || applied.SurvivingEventID != conflictID {
+		t.Fatalf("applied title slug conflict = %#v", applied)
+	}
+}
+
+func TestResolveTitleRepairSlugConflictKeepsSeparateWithoutTitleChange(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedTitleRepairResolutionFixture(t, db)
+	conflictID := mustInsertExactIdentityEvent(t, db, fixture.newSlug, "Distinct event title", fixture.venueID, fixture.sourceID, time.Date(2026, time.May, 19, 19, 0, 0, 0, time.UTC), time.Date(2026, time.May, 19, 21, 0, 0, 0, time.UTC), time.Date(2026, time.May, 18, 9, 5, 0, 0, time.UTC), domain.OriginLive)
+
+	if err := st.ResolveTitleRepairSlugConflict(context.Background(), seedstore.EventReviewTitleRepairSlugConflictInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		Mode:                     seedstore.EventReviewTitleRepairSlugConflictModeKeepSeparateNoChange,
+		OriginalCanonicalEventID: fixture.eventID,
+		SlugConflictEventID:      conflictID,
+		DraftTitle:               fixture.newTitle,
+		DraftSlug:                fixture.newSlug,
+	}); err != nil {
+		t.Fatalf("resolve title repair slug conflict keep separate: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	var canonicalID int64
+	if err := db.QueryRow(`SELECT canonical_event_id FROM event_review_clusters WHERE id = ?`, fixture.clusterID).Scan(&canonicalID); err != nil {
+		t.Fatalf("load cluster canonical id: %v", err)
+	}
+	if canonicalID != fixture.eventID {
+		t.Fatalf("cluster canonical event id = %d, want original event %d", canonicalID, fixture.eventID)
+	}
+	var originalTitle, originalSlug, conflictTitle string
+	if err := db.QueryRow(`SELECT name, slug FROM events WHERE id = ?`, fixture.eventID).Scan(&originalTitle, &originalSlug); err != nil {
+		t.Fatalf("load original event: %v", err)
+	}
+	if err := db.QueryRow(`SELECT name FROM events WHERE id = ?`, conflictID).Scan(&conflictTitle); err != nil {
+		t.Fatalf("load conflict event: %v", err)
+	}
+	if originalTitle != fixture.oldTitle || originalSlug != fixture.oldSlug || conflictTitle != "Distinct event title" {
+		t.Fatalf("events mutated unexpectedly: original=(%q,%q) conflict=%q", originalTitle, originalSlug, conflictTitle)
+	}
+	var separationCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM event_review_separations
+		WHERE active = 1
+			AND ((endpoint_a_key = ? AND endpoint_b_key = ?) OR (endpoint_a_key = ? AND endpoint_b_key = ?))
+	`, seedstore.EventReviewSeparationEventEndpointKey(fixture.eventID), seedstore.EventReviewSeparationEventEndpointKey(conflictID), seedstore.EventReviewSeparationEventEndpointKey(conflictID), seedstore.EventReviewSeparationEventEndpointKey(fixture.eventID)).Scan(&separationCount); err != nil {
+		t.Fatalf("load separation count: %v", err)
+	}
+	if separationCount != 1 {
+		t.Fatalf("separation count = %d, want 1", separationCount)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load resolved title slug conflict cluster: %v", err)
+	}
+	if !ok {
+		t.Fatal("load resolved title slug conflict cluster ok = false")
+	}
+	if detail.Resolution == nil || detail.Resolution.AppliedTitleSlugConflict == nil {
+		t.Fatalf("resolved title slug conflict summary = %#v", detail.Resolution)
+	}
+	applied := detail.Resolution.AppliedTitleSlugConflict
+	if applied.Mode != seedstore.EventReviewTitleRepairSlugConflictModeKeepSeparateNoChange || applied.OldCanonicalEventID != fixture.eventID || applied.SlugConflictEventID != conflictID || applied.SurvivingEventID != 0 {
+		t.Fatalf("applied title slug conflict = %#v", applied)
+	}
+	if len(detail.Resolution.AppliedSeparations) != 1 {
+		t.Fatalf("applied separations = %#v, want 1", detail.Resolution.AppliedSeparations)
+	}
+}
+
 func TestResolveEventReviewClusterRejectsUnsupportedTitleRepairStates(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -430,15 +563,6 @@ func TestResolveEventReviewClusterRejectsUnsupportedTitleRepairStates(t *testing
 				_ = fixture
 			},
 			wantErr: "version",
-		},
-		{
-			name: "unsupported conflict reason",
-			mutate: func(t *testing.T, db *sql.DB, fixture titleRepairResolutionFixture) {
-				if _, err := db.Exec(`UPDATE event_review_clusters SET conflict_reason = ? WHERE id = ?`, "authoritative_slug_conflict", fixture.clusterID); err != nil {
-					t.Fatalf("update conflict reason: %v", err)
-				}
-			},
-			wantErr: "authoritative slug conflict resolution is not implemented",
 		},
 		{
 			name: "missing draft name",
@@ -1636,6 +1760,36 @@ func TestTerminalReplayDoesNotMatchSeparatedOldNearTitleTarget(t *testing.T) {
 		t.Fatalf("terminal replay new target: %v", err)
 	} else if !matched {
 		t.Fatal("terminal replay did not match resolved imported event")
+	}
+}
+
+func TestTerminalReplayMatchesTitleSlugConflictEventIDs(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	oldCanonicalID := int64(701)
+	slugConflictID := int64(702)
+	survivingID := slugConflictID
+	cluster := seedstore.EventReviewCluster{ID: 1001, Status: seedstore.EventReviewClusterStatusResolved}
+	resolution := &seedstore.EventReviewResolutionSummary{
+		AppliedTitleSlugConflict: &seedstore.EventReviewResolutionAppliedTitleSlugConflictSummary{
+			Mode:                seedstore.EventReviewTitleRepairSlugConflictModeMergeDuplicate,
+			OldCanonicalEventID: oldCanonicalID,
+			SlugConflictEventID: slugConflictID,
+			SurvivingEventID:    survivingID,
+		},
+	}
+	for _, eventID := range []int64{oldCanonicalID, slugConflictID, survivingID} {
+		if matched, err := terminalEvidenceOutcomeMatchesInputTx(context.Background(), db, cluster, resolution, seedstore.StageEventReviewEvidenceInput{EventID: int64Ptr(eventID)}); err != nil {
+			t.Fatalf("terminal replay title slug conflict event %d: %v", eventID, err)
+		} else if !matched {
+			t.Fatalf("terminal replay did not match title slug conflict event %d", eventID)
+		}
+	}
+	if matched, err := terminalEvidenceOutcomeMatchesInputTx(context.Background(), db, cluster, resolution, seedstore.StageEventReviewEvidenceInput{EventID: int64Ptr(799)}); err != nil {
+		t.Fatalf("terminal replay unrelated title slug conflict event: %v", err)
+	} else if matched {
+		t.Fatal("terminal replay matched unrelated title slug conflict event")
 	}
 }
 

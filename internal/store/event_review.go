@@ -610,6 +610,17 @@ type EventReviewResolutionAppliedTitleRepairSummary struct {
 	NewSlug  string
 }
 
+type EventReviewResolutionAppliedTitleSlugConflictSummary struct {
+	Mode                EventReviewTitleRepairSlugConflictMode
+	OldCanonicalEventID int64
+	SlugConflictEventID int64
+	SurvivingEventID    int64
+	OldTitle            string
+	NewTitle            string
+	OldSlug             string
+	NewSlug             string
+}
+
 type EventReviewResolutionAppliedAutoResolutionSummary struct {
 	EventID       int64
 	EventSlug     string
@@ -773,6 +784,7 @@ type EventReviewResolutionSummary struct {
 	AppliedAuthoritativeImport *EventReviewResolutionAppliedAuthoritativeImportSummary
 	AppliedSeparations         []EventReviewResolutionAppliedSeparationSummary
 	AppliedTitleRepair         *EventReviewResolutionAppliedTitleRepairSummary
+	AppliedTitleSlugConflict   *EventReviewResolutionAppliedTitleSlugConflictSummary
 	AppliedLiveActions         []EventReviewResolutionAppliedLiveActionSummary
 	SnapshotRaw                string
 	SnapshotParseWarning       string
@@ -798,16 +810,19 @@ type EventReviewClusterDetail struct {
 }
 
 type EventReviewTitleRepairReadiness struct {
-	CanonicalEventID      int64
-	CurrentTitle          string
-	CurrentSlug           string
-	CurrentEventLive      bool
-	DraftTitle            string
-	DraftSlug             string
-	Eligible              bool
-	BlockingReasons       []string
-	SlugConflictEventID   *int64
-	SlugConflictEventSlug string
+	CanonicalEventID                int64
+	CurrentTitle                    string
+	CurrentSlug                     string
+	CurrentEventLive                bool
+	DraftTitle                      string
+	DraftSlug                       string
+	Eligible                        bool
+	BlockingReasons                 []string
+	SlugConflictEventID             *int64
+	SlugConflictEventSlug           string
+	SlugConflictEventTitle          string
+	SlugConflictResolutionAvailable bool
+	SlugConflictBlockingReasons     []string
 }
 
 type EventReviewCanonicalChoice struct {
@@ -956,6 +971,31 @@ type EventReviewImportAuthoritativeInput struct {
 	EvidenceID            int64
 	ExpectedTargetEventID int64
 	SourceIdentityKeys    []string
+}
+
+type EventReviewTitleRepairSlugConflictMode string
+
+const (
+	EventReviewTitleRepairSlugConflictModeMergeDuplicate       EventReviewTitleRepairSlugConflictMode = "merge_duplicate"
+	EventReviewTitleRepairSlugConflictModeKeepSeparateNoChange EventReviewTitleRepairSlugConflictMode = "keep_separate_no_change"
+)
+
+func (m EventReviewTitleRepairSlugConflictMode) Valid() bool {
+	switch m {
+	case EventReviewTitleRepairSlugConflictModeMergeDuplicate, EventReviewTitleRepairSlugConflictModeKeepSeparateNoChange:
+		return true
+	default:
+		return false
+	}
+}
+
+type EventReviewTitleRepairSlugConflictInput struct {
+	EventReviewResolutionInput
+	Mode                     EventReviewTitleRepairSlugConflictMode
+	OriginalCanonicalEventID int64
+	SlugConflictEventID      int64
+	DraftTitle               string
+	DraftSlug                string
 }
 
 type EventReviewDiscardInput struct {

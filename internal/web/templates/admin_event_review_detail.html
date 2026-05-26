@@ -21,7 +21,7 @@
 
 <section class="section-block">
   {{if eq .EventReviewDetail.Summary.Status "open"}}
-  <p class="notice">This cluster is open. You can discard it{{if .EventReviewCanAcceptImportListing}}, or accept the stored new listing{{end}}{{if .EventReviewCanAcceptSelectedImportCandidate}}, or accept the selected candidate{{end}}{{if .EventReviewCanAcceptSupportingSource}}, or accept a supporting source for an existing event{{end}}{{if and .EventReviewDetail.TitleRepairReadiness .EventReviewDetail.TitleRepairReadiness.Eligible}}, or apply the stored title repair{{else if .EventReviewCanResolveLiveActions}}, or apply its stored historical-duplicate live actions{{end}}.</p>
+  <p class="notice">This cluster is open. You can discard it{{if .EventReviewCanAcceptImportListing}}, or accept the stored new listing{{end}}{{if .EventReviewCanAcceptSelectedImportCandidate}}, or accept the selected candidate{{end}}{{if .EventReviewCanAcceptSupportingSource}}, or accept a supporting source for an existing event{{end}}{{if and .EventReviewDetail.TitleRepairReadiness .EventReviewDetail.TitleRepairReadiness.Eligible}}, or apply the stored title repair{{else if and .EventReviewDetail.TitleRepairReadiness .EventReviewDetail.TitleRepairReadiness.SlugConflictResolutionAvailable}}, or resolve its title slug conflict{{else if .EventReviewCanResolveLiveActions}}, or apply its stored historical-duplicate live actions{{end}}.</p>
   {{else}}
   <p class="notice">This cluster is {{.EventReviewDetail.Summary.Status}} and read-only. Discard, resolve, and supersede actions are not available.</p>
   {{end}}
@@ -687,7 +687,12 @@
     <div class="review-summary-row">
       <div class="review-summary-label">Slug conflict</div>
       <div class="review-summary-value">{{if .SlugConflictEventSlug}}<a href="/admin/events/{{.SlugConflictEventSlug}}">event #{{.SlugConflictEventID}}</a>{{else}}event #{{.SlugConflictEventID}}{{end}}</div>
-      <div class="review-summary-candidate">{{if .SlugConflictEventSlug}}{{.SlugConflictEventSlug}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">{{if .SlugConflictEventTitle}}{{.SlugConflictEventTitle}}{{else if .SlugConflictEventSlug}}{{.SlugConflictEventSlug}}{{else}}&mdash;{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Slug conflict slug</div>
+      <div class="review-summary-value">{{if .SlugConflictEventSlug}}{{.SlugConflictEventSlug}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">resolution available: {{if .SlugConflictResolutionAvailable}}yes{{else}}no{{end}}</div>
     </div>
     {{end}}
   </div>
@@ -698,6 +703,31 @@
     <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
     <input type="hidden" name="action" value="resolve_title_repair">
     <button type="submit" class="button">Apply title repair</button>
+  </form>
+  {{end}}
+  {{if and (eq $.EventReviewDetail.Summary.Status "open") .SlugConflictResolutionAvailable}}
+  <h3>Resolve slug conflict</h3>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="resolve_title_slug_conflict">
+    <input type="hidden" name="mode" value="merge_duplicate">
+    <input type="hidden" name="original_canonical_event_id" value="{{.CanonicalEventID}}">
+    <input type="hidden" name="slug_conflict_event_id" value="{{.SlugConflictEventID}}">
+    <input type="hidden" name="draft_title" value="{{.DraftTitle}}">
+    <input type="hidden" name="draft_slug" value="{{.DraftSlug}}">
+    <button type="submit" class="button">Merge duplicate and apply title</button>
+  </form>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="resolve_title_slug_conflict">
+    <input type="hidden" name="mode" value="keep_separate_no_change">
+    <input type="hidden" name="original_canonical_event_id" value="{{.CanonicalEventID}}">
+    <input type="hidden" name="slug_conflict_event_id" value="{{.SlugConflictEventID}}">
+    <input type="hidden" name="draft_title" value="{{.DraftTitle}}">
+    <input type="hidden" name="draft_slug" value="{{.DraftSlug}}">
+    <button type="submit" class="button">Keep separate without title change</button>
   </form>
   {{end}}
 </section>
@@ -811,6 +841,28 @@
     </div>
     <div class="review-summary-row">
       <div class="review-summary-label">New title</div>
+      <div class="review-summary-value">{{blankValue .NewTitle}}</div>
+      <div class="review-summary-candidate">{{blankValue .NewSlug}}</div>
+    </div>
+    {{end}}
+    {{with .AppliedTitleSlugConflict}}
+    <div class="review-summary-row">
+      <div class="review-summary-label">Resolved title slug conflict</div>
+      <div class="review-summary-value">{{.Mode}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Original event</div>
+      <div class="review-summary-value">event #{{.OldCanonicalEventID}}</div>
+      <div class="review-summary-candidate">{{blankValue .OldSlug}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Slug conflict event</div>
+      <div class="review-summary-value">event #{{.SlugConflictEventID}}</div>
+      <div class="review-summary-candidate">survivor: {{if .SurvivingEventID}}event #{{.SurvivingEventID}}{{else}}&mdash;{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Proposed title</div>
       <div class="review-summary-value">{{blankValue .NewTitle}}</div>
       <div class="review-summary-candidate">{{blankValue .NewSlug}}</div>
     </div>

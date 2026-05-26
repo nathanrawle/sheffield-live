@@ -285,6 +285,9 @@ func terminalEvidenceOutcomeMatchesInputTx(ctx context.Context, q queryer, clust
 		if resolution.AppliedTitleRepair != nil && resolution.AppliedTitleRepair.EventID == *input.EventID {
 			return true, nil
 		}
+		if resolution.AppliedTitleSlugConflict != nil && titleSlugConflictResolutionReferencesEventID(*resolution.AppliedTitleSlugConflict, *input.EventID) {
+			return true, nil
+		}
 		for _, action := range resolution.AppliedLiveActions {
 			if action.EventID == *input.EventID {
 				return true, nil
@@ -553,12 +556,21 @@ func terminalResolutionReferencesEventID(cluster seedstore.EventReviewCluster, r
 	if resolution.AppliedTitleRepair != nil && resolution.AppliedTitleRepair.EventID == eventID {
 		return true
 	}
+	if resolution.AppliedTitleSlugConflict != nil && titleSlugConflictResolutionReferencesEventID(*resolution.AppliedTitleSlugConflict, eventID) {
+		return true
+	}
 	for _, action := range resolution.AppliedLiveActions {
 		if action.EventID == eventID {
 			return true
 		}
 	}
 	return false
+}
+
+func titleSlugConflictResolutionReferencesEventID(resolution seedstore.EventReviewResolutionAppliedTitleSlugConflictSummary, eventID int64) bool {
+	return resolution.OldCanonicalEventID == eventID ||
+		resolution.SlugConflictEventID == eventID ||
+		resolution.SurvivingEventID == eventID
 }
 
 func eventReviewOptionalInt64Equal(a, b *int64) bool {
