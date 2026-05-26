@@ -319,11 +319,13 @@ func (s *Store) LoadEventReviewCluster(ctx context.Context, id int64) (seedstore
 			return seedstore.EventReviewClusterDetail{}, false, err
 		}
 		importReadiness.ExistingEventTargets = normalizeEventReviewImportExistingEventTargets(append(importReadiness.ExistingEventTargets, structuralTargets...))
+		importReadiness.ExistingEventTargets = applyEventReviewImportUnresolvedSourceLinkBlockers(importReadiness.ExistingEventTargets, importReadiness.CandidateIdentityStatuses)
 		nearTargets, err := loadEventReviewImportNearTitleTargetsTx(ctx, tx, s, summary, evidence, importReadiness.ExistingEventTargets)
 		if err != nil {
 			return seedstore.EventReviewClusterDetail{}, false, err
 		}
 		importReadiness.ExistingEventTargets = normalizeEventReviewImportExistingEventTargets(append(importReadiness.ExistingEventTargets, nearTargets...))
+		importReadiness.ExistingEventTargets = applyEventReviewImportUnresolvedSourceLinkBlockers(importReadiness.ExistingEventTargets, importReadiness.CandidateIdentityStatuses)
 		authoritativeTargets, err := loadEventReviewImportAuthoritativeTargetsTx(ctx, tx, s, summary, evidence)
 		if err != nil {
 			return seedstore.EventReviewClusterDetail{}, false, err
@@ -2188,7 +2190,7 @@ func buildEventReviewImportExistingEventTargets(summary seedstore.EventReviewClu
 		}
 		out = append(out, *target)
 	}
-	return out
+	return applyEventReviewImportUnresolvedSourceLinkBlockers(out, statuses)
 }
 
 func normalizeEventReviewImportExistingEventTargets(targets []seedstore.EventReviewImportExistingEventTarget) []seedstore.EventReviewImportExistingEventTarget {
@@ -2275,6 +2277,35 @@ func normalizeEventReviewImportExistingEventTargets(targets []seedstore.EventRev
 		}
 		return out[i].TargetBasis < out[j].TargetBasis
 	})
+	return out
+}
+
+const eventReviewImportUnresolvedSourceLinkBlocker = "source identity links to non-live or withheld event without live canonical"
+
+func applyEventReviewImportUnresolvedSourceLinkBlockers(targets []seedstore.EventReviewImportExistingEventTarget, statuses []seedstore.EventReviewImportCandidateIdentityStatus) []seedstore.EventReviewImportExistingEventTarget {
+	if len(targets) == 0 || len(statuses) == 0 {
+		return targets
+	}
+	blockedEvidenceIDs := make(map[int64]struct{})
+	for _, status := range statuses {
+		for _, sourceKey := range status.SourceKeys {
+			if sourceKey.LinkedEventID == nil && sourceKey.RawLinkedEventID != nil {
+				blockedEvidenceIDs[status.EvidenceID] = struct{}{}
+				break
+			}
+		}
+	}
+	if len(blockedEvidenceIDs) == 0 {
+		return targets
+	}
+	out := make([]seedstore.EventReviewImportExistingEventTarget, len(targets))
+	copy(out, targets)
+	for i := range out {
+		if _, ok := blockedEvidenceIDs[out[i].EvidenceID]; !ok {
+			continue
+		}
+		appendUniqueImportReadinessReason(&out[i].BlockingReasons, eventReviewImportUnresolvedSourceLinkBlocker)
+	}
 	return out
 }
 

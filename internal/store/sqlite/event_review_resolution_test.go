@@ -1248,6 +1248,53 @@ func TestImportReviewReadinessResolvesNonLiveSourceLinkThroughCanonicalTarget(t 
 	}
 }
 
+func TestImportReviewReadinessBlocksUnresolvedRawSourceLinkTargets(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	targetID := mustInsertExactIdentityEvent(t, db, fixture.expectedSlug, fixture.title, fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	rawLinkedID := mustInsertExactIdentityEvent(t, db, "unresolved-raw-source-link", "Unresolved Raw Source Link", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginSeed)
+	sourceKey, ok := ingest.SourceIdentityKey(fixture.externalID)
+	if !ok {
+		t.Fatalf("source identity key for %q was rejected", fixture.externalID)
+	}
+	sourceKeyID := insertEventReviewIdentityKeyOK(t, db, "unresolved-raw-source-link-key-hash", seedstore.EventReviewIdentityKeyKindSource, sourceKey)
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, sourceKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert unresolved source identity evidence key: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, rawLinkedID, fixture.sourceID, sourceKey, formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+		t.Fatalf("insert unresolved raw source link: %v", err)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load unresolved source link cluster: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("unresolved source link cluster missing readiness")
+	}
+	slugTarget := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, targetID, seedstore.EventReviewImportTargetBasisSlug)
+	if !hasString(slugTarget.BlockingReasons, eventReviewImportUnresolvedSourceLinkBlocker) {
+		t.Fatalf("slug target blockers = %#v, want unresolved source-link blocker", slugTarget.BlockingReasons)
+	}
+	for _, target := range detail.ImportReadiness.ExistingEventTargets {
+		if target.EvidenceID == fixture.evidenceID && !hasString(target.BlockingReasons, eventReviewImportUnresolvedSourceLinkBlocker) {
+			t.Fatalf("target %#v missing unresolved source-link blocker", target)
+		}
+	}
+}
+
 func TestAcceptEventReviewSupportingSourceAppliesNearTitleTarget(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()
