@@ -3589,7 +3589,7 @@ func TestAdminEventReviewResolveHistoricalDuplicateActionsPostsAndRedirects(t *t
 				CanResolveLiveActions: true,
 				Events: []store.EventReviewHistoricalDuplicateEventReadiness{
 					{EventID: 88, EventSlug: "canonical-event", PublicationState: "reviewed", Live: true, Canonical: true, CanonicalEligible: true, Action: store.EventReviewLiveActionKindKeepSeparate, KeepEligible: true},
-					{EventID: 90, EventSlug: "loser-event", PublicationState: "provisional", Live: true, Action: store.EventReviewLiveActionKindWithholdDuplicate, KeepEligible: true},
+					{EventID: 90, EventSlug: "loser-event", PublicationState: "provisional", Live: true, Action: store.EventReviewLiveActionKindWithholdDuplicate, KeepEligible: false, BlockingReasons: []string{"event is not live/non-withheld"}},
 				},
 			},
 		},
@@ -3612,6 +3612,8 @@ func TestAdminEventReviewResolveHistoricalDuplicateActionsPostsAndRedirects(t *t
 	assertContains(t, body, `name="historical_event_id" value="88"`)
 	assertContains(t, body, `name="historical_action_90"`)
 	assertContains(t, body, `name="canonical_event_id" value="90"  disabled`)
+	assertContains(t, body, `<option value="keep_separate"  disabled>Keep separate</option>`)
+	assertContains(t, body, `<option value="withhold_duplicate" selected>Withhold duplicate</option>`)
 	csrfToken := extractCSRFToken(t, body)
 
 	form := url.Values{}

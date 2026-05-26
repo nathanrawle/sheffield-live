@@ -827,8 +827,8 @@
             <td><input type="radio" name="canonical_event_id" value="{{.EventID}}" {{if .Canonical}}checked{{end}} {{if not .CanonicalEligible}}disabled{{end}}></td>
             <td>
               <select name="historical_action_{{.EventID}}">
-                <option value="keep_separate" {{if eq .Action "keep_separate"}}selected{{end}} {{if not .KeepEligible}}disabled{{end}}>Keep separate</option>
-                <option value="withhold_duplicate" {{if or (eq .Action "withhold_duplicate") (not .KeepEligible)}}selected{{end}} {{if not .KeepEligible}}disabled{{end}}>Withhold duplicate</option>
+                <option value="keep_separate" {{if and (eq .Action "keep_separate") .KeepEligible}}selected{{end}} {{if not .KeepEligible}}disabled{{end}}>Keep separate</option>
+                <option value="withhold_duplicate" {{if or (eq .Action "withhold_duplicate") (not .KeepEligible)}}selected{{end}}>Withhold duplicate</option>
               </select>
             </td>
             <td>
