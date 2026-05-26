@@ -1788,6 +1788,35 @@ func (s *Store) ResolveEventReviewImportSeparateAndInsert(ctx context.Context, i
 		return fmt.Errorf("event review cluster %d evidence %d already references event %d", cluster.ID, input.EvidenceID, *evidence.EventID)
 	}
 
+	identityStatuses, err := loadImportReviewCandidateIdentityStatusesTx(ctx, tx, cluster.ID, activeEvidence)
+	if err != nil {
+		return err
+	}
+	if err := validateImportReviewSupportingSelectedEvidence(cluster.ID, evidence.EvidenceID, identityStatuses); err != nil {
+		return err
+	}
+	identityStatus, ok := importReviewCandidateIdentityStatusForEvidence(identityStatuses, evidence.EvidenceID)
+	if !ok {
+		return fmt.Errorf("import review event review cluster %d evidence %d identity status is missing", cluster.ID, evidence.EvidenceID)
+	}
+	selectedSourceKeys := normalizedImportReviewSourceIdentityKeys(input.SourceIdentityKeys)
+	selectedSourceKeys, err = validateImportReviewSupportingSourceKeys(cluster.ID, evidence.EvidenceID, identityStatus, selectedSourceKeys)
+	if err != nil {
+		return err
+	}
+	choicesPresent := eventReviewImportSourceChoicesPresent(identityStatus.SourceKeys)
+	stagedSourceKeys := selectedSourceKeys
+	if !choicesPresent {
+		stagedSourceKeys = nil
+	}
+	stagedBases, err := validateImportReviewSupportingStagedIdentityTargets(cluster.ID, identityStatus, input.NearTitleEventID, stagedSourceKeys)
+	if err != nil {
+		return err
+	}
+	if len(stagedBases) > 0 {
+		return fmt.Errorf("import review event review cluster %d has hard target signals; use supporting-source attachment instead", cluster.ID)
+	}
+
 	targetRecord, ok, err := loadEventRecordByIDTx(ctx, tx, input.NearTitleEventID)
 	if err != nil {
 		return err
@@ -1801,9 +1830,8 @@ func (s *Store) ResolveEventReviewImportSeparateAndInsert(ctx context.Context, i
 	}
 
 	now := time.Now().UTC()
-	selectedSourceKeys := normalizedImportReviewSourceIdentityKeys(input.SourceIdentityKeys)
 	var selectedSourceKeysArg []string
-	if len(selectedSourceKeys) > 0 {
+	if choicesPresent && len(selectedSourceKeys) > 0 {
 		selectedSourceKeysArg = selectedSourceKeys
 	}
 	material, err := buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, *evidence, selectedSourceKeysArg, "import_review_confirm_near_title_separate", reviewSourceIdentitySupporting, now)

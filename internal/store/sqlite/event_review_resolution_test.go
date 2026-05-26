@@ -2322,6 +2322,152 @@ func TestResolveEventReviewImportSeparateAndInsertCreatesNearTitleSeparations(t 
 	}
 }
 
+func TestResolveEventReviewImportSeparateAndInsertValidatesSourceIdentityKeys(t *testing.T) {
+	setup := func(t *testing.T, db *sql.DB) (*Store, importReviewResolutionFixture, int64) {
+		t.Helper()
+
+		st := mustStoreFromDB(t, db)
+		fixture := seedImportReviewResolutionFixture(t, db)
+		incomingTitle := "Jane Doe + The Openers"
+		if _, err := db.Exec(`
+			UPDATE event_review_evidence
+			SET payload = ?
+			WHERE id = ?
+		`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthoritySupporting), incomingTitle, fixture.venueText, "", fixture.start, fixture.end, "near-title-validation"), fixture.evidenceID); err != nil {
+			t.Fatalf("update near-title validation payload: %v", err)
+		}
+		targetID := mustInsertExactIdentityEvent(t, db, "near-title-validation-target", "Jane Doe", fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+		return st, fixture, targetID
+	}
+
+	t.Run("unobserved source key", func(t *testing.T) {
+		_, db := openEventReviewSchemaStore(t)
+		defer db.Close()
+
+		st, fixture, targetID := setup(t, db)
+		err := st.ResolveEventReviewImportSeparateAndInsert(context.Background(), seedstore.EventReviewImportSeparateAndInsertInput{
+			EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+				ClusterID:       fixture.clusterID,
+				ExpectedVersion: 1,
+			},
+			EvidenceID:         fixture.evidenceID,
+			NearTitleEventID:   targetID,
+			SourceIdentityKeys: []string{"tampered-near-title-key"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "not observed for evidence") {
+			t.Fatalf("near-title separate with unobserved source key error = %v, want not observed", err)
+		}
+		assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	})
+
+	t.Run("unselected source key", func(t *testing.T) {
+		_, db := openEventReviewSchemaStore(t)
+		defer db.Close()
+
+		st, fixture, targetID := setup(t, db)
+		selectedKeyID := insertEventReviewIdentityKeyOK(t, db, "near-title-selected-source-hash", seedstore.EventReviewIdentityKeyKindSource, "near-title-selected-source")
+		unselectedKeyID := insertEventReviewIdentityKeyOK(t, db, "near-title-unselected-source-hash", seedstore.EventReviewIdentityKeyKindSource, "near-title-unselected-source")
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, selectedKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+			t.Fatalf("insert near-title selected source key: %v", err)
+		}
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, unselectedKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+			t.Fatalf("insert near-title unselected source key: %v", err)
+		}
+		if _, err := insertEventReviewSourceIdentityChoice(t, db, fixture.clusterID, fixture.sourceID, "near-title-selected-source", true, "selected", fixture.start.Add(-2*time.Hour)); err != nil {
+			t.Fatalf("insert near-title selected choice: %v", err)
+		}
+		if _, err := insertEventReviewSourceIdentityChoice(t, db, fixture.clusterID, fixture.sourceID, "near-title-unselected-source", false, "not selected", fixture.start.Add(-2*time.Hour)); err != nil {
+			t.Fatalf("insert near-title unselected choice: %v", err)
+		}
+
+		err := st.ResolveEventReviewImportSeparateAndInsert(context.Background(), seedstore.EventReviewImportSeparateAndInsertInput{
+			EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+				ClusterID:       fixture.clusterID,
+				ExpectedVersion: 1,
+			},
+			EvidenceID:         fixture.evidenceID,
+			NearTitleEventID:   targetID,
+			SourceIdentityKeys: []string{"near-title-unselected-source"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "not selected for evidence") {
+			t.Fatalf("near-title separate with unselected source key error = %v, want not selected", err)
+		}
+		assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	})
+
+	t.Run("non-selected evidence", func(t *testing.T) {
+		_, db := openEventReviewSchemaStore(t)
+		defer db.Close()
+
+		st, fixture, targetID := setup(t, db)
+		selectedKeyID := insertEventReviewIdentityKeyOK(t, db, "near-title-primary-selected-source-hash", seedstore.EventReviewIdentityKeyKindSource, "near-title-primary-selected-source")
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, selectedKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+			t.Fatalf("insert near-title primary selected source key: %v", err)
+		}
+		if _, err := insertEventReviewSourceIdentityChoice(t, db, fixture.clusterID, fixture.sourceID, "near-title-primary-selected-source", true, "selected", fixture.start.Add(-2*time.Hour)); err != nil {
+			t.Fatalf("insert near-title primary selected choice: %v", err)
+		}
+		extraPayload := importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthoritySupporting), "Jane Doe + The Openers", fixture.venueText, "", fixture.start, fixture.end, "near-title-validation-extra")
+		extraEvidenceID := insertEventReviewEvidenceOK(t, db, fixture.sourceID, nil, "near-title-validation-extra-"+strconv.FormatInt(fixture.clusterID, 10), extraPayload)
+		insertEventReviewClusterEvidenceOK(t, db, fixture.clusterID, extraEvidenceID, true, fixture.start.Add(10*time.Minute), nil, "extra near-title evidence")
+
+		err := st.ResolveEventReviewImportSeparateAndInsert(context.Background(), seedstore.EventReviewImportSeparateAndInsertInput{
+			EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+				ClusterID:       fixture.clusterID,
+				ExpectedVersion: 1,
+			},
+			EvidenceID:       extraEvidenceID,
+			NearTitleEventID: targetID,
+		})
+		if err == nil || !strings.Contains(err.Error(), "not selected by source identity choices") {
+			t.Fatalf("near-title separate with non-selected evidence error = %v, want not selected", err)
+		}
+		assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	})
+
+	t.Run("posted subset cannot omit conflicting source key", func(t *testing.T) {
+		_, db := openEventReviewSchemaStore(t)
+		defer db.Close()
+
+		st, fixture, targetID := setup(t, db)
+		safeKeyID := insertEventReviewIdentityKeyOK(t, db, "near-title-safe-source-hash", seedstore.EventReviewIdentityKeyKindSource, "near-title-safe-source")
+		conflictKeyID := insertEventReviewIdentityKeyOK(t, db, "near-title-conflict-source-hash", seedstore.EventReviewIdentityKeyKindSource, "near-title-conflict-source")
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, safeKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+			t.Fatalf("insert near-title safe source key: %v", err)
+		}
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, conflictKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+			t.Fatalf("insert near-title conflict source key: %v", err)
+		}
+		conflictTargetID := mustInsertExactIdentityEvent(t, db, "near-title-conflict-source-target", "Conflicting Source Target", fixture.venueID, fixture.sourceID, fixture.start.Add(3*time.Hour), fixture.end.Add(3*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+		if _, err := db.Exec(`
+			INSERT INTO event_source_links (
+				event_id,
+				source_id,
+				source_event_key,
+				is_authoritative,
+				created_at,
+				updated_at
+			) VALUES (?, ?, ?, 1, ?, ?)
+		`, conflictTargetID, fixture.sourceID, "near-title-conflict-source", formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+			t.Fatalf("insert near-title conflict source link: %v", err)
+		}
+
+		err := st.ResolveEventReviewImportSeparateAndInsert(context.Background(), seedstore.EventReviewImportSeparateAndInsertInput{
+			EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+				ClusterID:       fixture.clusterID,
+				ExpectedVersion: 1,
+			},
+			EvidenceID:         fixture.evidenceID,
+			NearTitleEventID:   targetID,
+			SourceIdentityKeys: []string{"near-title-safe-source"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "staged source identity") {
+			t.Fatalf("near-title separate with omitted conflicting source key error = %v, want staged source conflict", err)
+		}
+		assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	})
+}
+
 func TestImportReviewNearTitleReadinessSkipsSeparatedTarget(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()
