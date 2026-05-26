@@ -10,7 +10,6 @@
 | historical-duplicate-keep-separate | Add all-keep false-positive resolution for historical duplicate clusters. | reviewed | top-level session | top-level session | 019e6180-3a23-7083-b03d-4c057ce6638d | `006_HISTORICAL_DUPLICATE_KEEP_SEPARATE_PLAN.md` |
 | historical-duplicate-action-override | Allow manual historical duplicate live-action override with validation. | reviewed | top-level session | top-level session | 019e6180-3a23-7083-b03d-4c057ce6638d | `007_HISTORICAL_DUPLICATE_ACTION_OVERRIDE_PLAN.md` |
 | unsupported-cluster-docs | Rolling docs checkpoint and unsupported-cluster blocker cleanup after shipped milestones. | reviewed | top-level session | top-level session | 019e6180-3a23-7083-b03d-4c057ce6638d | `008_UNSUPPORTED_CLUSTER_DOCS_PLAN.md` |
-| recurring-calendar-uid-multi-occurrence | Handle recurring calendar UID clusters where one source UID spans multiple separate event dates. | planned | top-level session |  |  | `009_RECURRING_CALENDAR_UID_MULTI_OCCURRENCE_PLAN.md` |
 
 ## Status Values
 
