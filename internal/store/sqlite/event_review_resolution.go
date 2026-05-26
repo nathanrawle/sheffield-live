@@ -807,10 +807,10 @@ func (s *Store) ResolveTitleRepairSlugConflict(ctx context.Context, input seedst
 		if !eventRecordHasResolvedIdentity(conflictRecord, proposed) {
 			return fmt.Errorf("title repair event review cluster %d slug conflict event %d does not match the proposed event identity", cluster.ID, input.SlugConflictEventID)
 		}
-		if err := updateEventTitleTx(ctx, tx, input.SlugConflictEventID, readiness.DraftSlug, readiness.DraftTitle, now); err != nil {
+		if err := mergeDuplicateEventRecordTx(ctx, tx, input.OriginalCanonicalEventID, input.SlugConflictEventID, now); err != nil {
 			return err
 		}
-		if err := mergeDuplicateEventRecordTx(ctx, tx, input.OriginalCanonicalEventID, input.SlugConflictEventID, now); err != nil {
+		if err := updateEventTitleTx(ctx, tx, input.SlugConflictEventID, readiness.DraftSlug, readiness.DraftTitle, now); err != nil {
 			return err
 		}
 		applied.SurvivingEventID = input.SlugConflictEventID

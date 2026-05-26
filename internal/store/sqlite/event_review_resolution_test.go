@@ -877,6 +877,83 @@ func TestResolveTitleRepairSlugConflictMergesDuplicateIntoSlugOwner(t *testing.T
 	}
 }
 
+func TestResolveTitleRepairSlugConflictMergesWhenOldCanonicalOwnsDraftExactIdentity(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedTitleRepairResolutionFixture(t, db)
+	start := time.Date(2026, time.May, 18, 19, 0, 0, 0, time.UTC)
+	end := time.Date(2026, time.May, 18, 21, 0, 0, 0, time.UTC)
+	dirtyTitle := fixture.newTitle + " - Leadmill"
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin dirty canonical title tx: %v", err)
+	}
+	if err := updateEventTitleTx(context.Background(), tx, fixture.eventID, fixture.oldSlug, dirtyTitle, time.Date(2026, time.May, 18, 9, 10, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("seed dirty canonical title repair exact identity: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit dirty canonical title tx: %v", err)
+	}
+	expectedExactKey := buildExactIdentityKey(exactIdentityKeyVersion, "leadmill", start, normalizeExactIdentityCleanTitle(fixture.newTitle))
+	var oldCanonicalActiveOwner int64
+	if err := db.QueryRow(`
+		SELECT event_id
+		FROM event_exact_identities
+		WHERE identity_key = ?
+			AND active = 1
+	`, expectedExactKey).Scan(&oldCanonicalActiveOwner); err != nil {
+		t.Fatalf("load old canonical draft exact identity owner: %v", err)
+	}
+	if oldCanonicalActiveOwner != fixture.eventID {
+		t.Fatalf("draft exact identity owner = %d, want old canonical %d", oldCanonicalActiveOwner, fixture.eventID)
+	}
+	conflictID := mustInsertExactIdentityEvent(t, db, fixture.newSlug, "Slug owner before merge", fixture.venueID, fixture.sourceID, start, end, time.Date(2026, time.May, 18, 9, 5, 0, 0, time.UTC), domain.OriginLive)
+
+	if err := st.ResolveTitleRepairSlugConflict(context.Background(), seedstore.EventReviewTitleRepairSlugConflictInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		Mode:                     seedstore.EventReviewTitleRepairSlugConflictModeMergeDuplicate,
+		OriginalCanonicalEventID: fixture.eventID,
+		SlugConflictEventID:      conflictID,
+		DraftTitle:               fixture.newTitle,
+		DraftSlug:                fixture.newSlug,
+	}); err != nil {
+		t.Fatalf("resolve title repair slug conflict merge with draft exact owner: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	var canonicalID int64
+	if err := db.QueryRow(`SELECT canonical_event_id FROM event_review_clusters WHERE id = ?`, fixture.clusterID).Scan(&canonicalID); err != nil {
+		t.Fatalf("load cluster canonical id: %v", err)
+	}
+	if canonicalID != conflictID {
+		t.Fatalf("cluster canonical event id = %d, want surviving conflict event %d", canonicalID, conflictID)
+	}
+	var title, slug string
+	if err := db.QueryRow(`SELECT name, slug FROM events WHERE id = ?`, conflictID).Scan(&title, &slug); err != nil {
+		t.Fatalf("load surviving event after draft exact transfer: %v", err)
+	}
+	if title != fixture.newTitle || slug != fixture.newSlug {
+		t.Fatalf("surviving event = (%q, %q), want (%q, %q)", title, slug, fixture.newTitle, fixture.newSlug)
+	}
+	var activeOwner int64
+	if err := db.QueryRow(`
+		SELECT event_id
+		FROM event_exact_identities
+		WHERE identity_key = ?
+			AND active = 1
+	`, expectedExactKey).Scan(&activeOwner); err != nil {
+		t.Fatalf("load surviving draft exact identity owner: %v", err)
+	}
+	if activeOwner != conflictID {
+		t.Fatalf("active draft exact identity owner = %d, want surviving conflict event %d", activeOwner, conflictID)
+	}
+}
+
 func TestResolveTitleRepairSlugConflictKeepsSeparateWithoutTitleChange(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()
