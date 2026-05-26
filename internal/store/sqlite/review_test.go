@@ -1156,15 +1156,16 @@ func TestRepairEventTitlesFromReportSkipsSeparatedSupportingSlugConflict(t *test
 	defer db.Close()
 
 	const (
-		startAt = "2026-05-10T18:30:00Z"
-		dirty   = "Late Junction at The Leadmill"
-		clean   = "Late Junction"
+		startAt      = "2026-05-10T18:30:00Z"
+		cleanStartAt = "2026-05-11T18:30:00Z"
+		dirty        = "Late Junction at The Leadmill"
+		clean        = "Late Junction"
 	)
 	sourceID := mustEnsureSourceID(t, st, testSupportingSourceName, testSupportingSourceURL)
 	dirtySlug := mustLiveEventSlug(t, dirty, "leadmill", startAt)
 	cleanSlug := mustLiveEventSlug(t, clean, "leadmill", startAt)
 	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "leadmill", dirty, startAt, "Dirty duplicate.")
-	mustInsertRepairLegacyEvent(t, db, sourceID, cleanSlug, "leadmill", clean, startAt, "Clean duplicate.")
+	mustInsertRepairLegacyEvent(t, db, sourceID, cleanSlug, "leadmill", clean, cleanStartAt, "Clean duplicate at another time.")
 	dirtyID := mustEventIDBySlug(t, db, dirtySlug)
 	cleanID := mustEventIDBySlug(t, db, cleanSlug)
 	if _, err := insertEventReviewSeparation(t, db,

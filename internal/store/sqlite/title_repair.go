@@ -225,11 +225,6 @@ func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, cluster inges
 	if conflict, ok, err := loadEventRecordBySlugTx(ctx, tx, incoming.Slug); err != nil {
 		return EventTitleRepairChange{}, err
 	} else if ok && conflict.ID != record.ID {
-		if !eventRecordHasResolvedIdentity(conflict, incoming) {
-			change.Result = "skipped"
-			change.Reason = "target slug already belongs to another event"
-			return change, nil
-		}
 		separated, err := hasActiveEventReviewSeparationBetweenKeysTx(ctx, tx, seedstore.EventReviewSeparationEventEndpointKey(record.ID), seedstore.EventReviewSeparationEventEndpointKey(conflict.ID))
 		if err != nil {
 			return EventTitleRepairChange{}, err
@@ -237,6 +232,11 @@ func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, cluster inges
 		if separated {
 			change.Result = "skipped"
 			change.Reason = "target slug conflict is already marked separate"
+			return change, nil
+		}
+		if !eventRecordHasResolvedIdentity(conflict, incoming) {
+			change.Result = "skipped"
+			change.Reason = "target slug already belongs to another event"
 			return change, nil
 		}
 		if !apply {
@@ -340,7 +340,7 @@ func (s *Store) stageSupportingEventTitleRepair(ctx context.Context, cluster ing
 	var conflict *eventRecord
 	if conflictRecord, ok, err := loadEventRecordBySlugTx(ctx, tx, incoming.Slug); err != nil {
 		return EventTitleRepairChange{}, err
-	} else if ok && conflictRecord.ID != record.ID && eventRecordHasResolvedIdentity(conflictRecord, incoming) {
+	} else if ok && conflictRecord.ID != record.ID {
 		separated, err := hasActiveEventReviewSeparationBetweenKeysTx(ctx, tx, seedstore.EventReviewSeparationEventEndpointKey(record.ID), seedstore.EventReviewSeparationEventEndpointKey(conflictRecord.ID))
 		if err != nil {
 			return EventTitleRepairChange{}, err
@@ -350,7 +350,9 @@ func (s *Store) stageSupportingEventTitleRepair(ctx context.Context, cluster ing
 			change.Reason = "target slug conflict is already marked separate"
 			return change, nil
 		}
-		conflict = &conflictRecord
+		if eventRecordHasResolvedIdentity(conflictRecord, incoming) {
+			conflict = &conflictRecord
+		}
 	}
 	if !apply {
 		change.Result = "would_create_event_review"
