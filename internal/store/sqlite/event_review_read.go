@@ -326,6 +326,11 @@ func (s *Store) LoadEventReviewCluster(ctx context.Context, id int64) (seedstore
 		}
 		importReadiness.ExistingEventTargets = normalizeEventReviewImportExistingEventTargets(append(importReadiness.ExistingEventTargets, nearTargets...))
 		importReadiness.ExistingEventTargets = applyEventReviewImportUnresolvedSourceLinkBlockers(importReadiness.ExistingEventTargets, importReadiness.CandidateIdentityStatuses)
+		importReadiness.ExistingEventTargets, err = applyEventReviewImportExistingTargetBlockersTx(ctx, tx, s, summary, evidence, importReadiness.ExistingEventTargets)
+		if err != nil {
+			return seedstore.EventReviewClusterDetail{}, false, err
+		}
+		importReadiness.ExistingEventTargets = normalizeEventReviewImportExistingEventTargets(importReadiness.ExistingEventTargets)
 		authoritativeTargets, err := loadEventReviewImportAuthoritativeTargetsTx(ctx, tx, s, summary, evidence)
 		if err != nil {
 			return seedstore.EventReviewClusterDetail{}, false, err
@@ -2379,11 +2384,13 @@ func buildEventReviewImportExistingEventTargets(summary seedstore.EventReviewClu
 		if existing == nil {
 			target.SourceIdentityKeys = normalizedImportReadinessStrings(target.SourceIdentityKeys)
 			target.ExactIdentityKeys = normalizedImportReadinessStrings(target.ExactIdentityKeys)
+			target.BlockingReasons = normalizedImportReadinessStrings(target.BlockingReasons)
 			targets[key] = &target
 			return
 		}
 		existing.SourceIdentityKeys = normalizedImportReadinessStrings(append(existing.SourceIdentityKeys, target.SourceIdentityKeys...))
 		existing.ExactIdentityKeys = normalizedImportReadinessStrings(append(existing.ExactIdentityKeys, target.ExactIdentityKeys...))
+		existing.BlockingReasons = normalizedImportReadinessStrings(append(existing.BlockingReasons, target.BlockingReasons...))
 		if existing.EventSlug == "" {
 			existing.EventSlug = target.EventSlug
 		}
@@ -2415,6 +2422,7 @@ func buildEventReviewImportExistingEventTargets(summary seedstore.EventReviewClu
 	}
 
 	for _, status := range statuses {
+		sourceChoicesPresent := eventReviewImportSourceChoicesPresent(status.SourceKeys)
 		for _, exactKey := range status.ExactKeys {
 			if exactKey.LinkedEventID == nil {
 				continue
@@ -2433,6 +2441,10 @@ func buildEventReviewImportExistingEventTargets(summary seedstore.EventReviewClu
 			if sourceKey.LinkedEventID == nil {
 				continue
 			}
+			var blockingReasons []string
+			if sourceChoicesPresent && !sourceKey.ChoiceSelected {
+				blockingReasons = append(blockingReasons, "source identity is not selected")
+			}
 			addTarget(seedstore.EventReviewImportExistingEventTarget{
 				EvidenceID:                status.EvidenceID,
 				EvidenceFingerprint:       status.EvidenceFingerprint,
@@ -2445,6 +2457,7 @@ func buildEventReviewImportExistingEventTargets(summary seedstore.EventReviewClu
 				RawLinkedEventSlug:        sourceKey.RawLinkedEventSlug,
 				RawLinkedPublicationState: sourceKey.RawLinkedPublicationState,
 				ResolvedFromWithheld:      sourceKey.ResolvedFromWithheld,
+				BlockingReasons:           blockingReasons,
 			})
 		}
 	}
@@ -2458,6 +2471,97 @@ func buildEventReviewImportExistingEventTargets(summary seedstore.EventReviewClu
 		out = append(out, *target)
 	}
 	return applyEventReviewImportUnresolvedSourceLinkBlockers(out, statuses)
+}
+
+func eventReviewImportSourceChoicesPresent(sourceKeys []seedstore.EventReviewImportCandidateSourceIdentityStatus) bool {
+	for _, sourceKey := range sourceKeys {
+		if sourceKey.ChoiceUpdatedAt != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func applyEventReviewImportExistingTargetBlockersTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, s *Store, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary, targets []seedstore.EventReviewImportExistingEventTarget) ([]seedstore.EventReviewImportExistingEventTarget, error) {
+	if len(targets) == 0 {
+		return targets, nil
+	}
+	cluster := seedstore.EventReviewCluster{
+		ID:               summary.ID,
+		Status:           summary.Status,
+		Version:          summary.Version,
+		CanonicalEventID: summary.CanonicalEventID,
+		ConflictType:     summary.ConflictType,
+		ConflictReason:   summary.ConflictReason,
+	}
+	evidenceByID := make(map[int64]seedstore.EventReviewClusterEvidenceSummary, len(evidence))
+	for _, row := range evidence {
+		evidenceByID[row.EvidenceID] = row
+	}
+	type materialResult struct {
+		material importReviewCandidateMaterial
+		err      error
+		loaded   bool
+	}
+	materialByEvidenceID := make(map[int64]materialResult, len(evidence))
+	out := make([]seedstore.EventReviewImportExistingEventTarget, len(targets))
+	copy(out, targets)
+	now := time.Now().UTC()
+	for i := range out {
+		target := &out[i]
+		record, ok, err := loadEventRecordByIDTx(ctx, tx, target.EventID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "target event is missing")
+		} else {
+			if target.EventSlug == "" {
+				target.EventSlug = record.Event.Slug
+			}
+			if target.EventTitle == "" {
+				target.EventTitle = record.Event.Name
+			}
+			if target.PublicationState == "" {
+				target.PublicationState = string(normalizedPublicationState(record.Event.PublicationState))
+			}
+			targetState := normalizedPublicationState(record.Event.PublicationState)
+			if record.Event.Origin != domain.OriginLive || targetState == domain.PublicationStateWithheld {
+				appendUniqueImportReadinessReason(&target.BlockingReasons, "target event is not live/non-withheld")
+			} else if targetState != domain.PublicationStateReviewed && targetState != domain.PublicationStateProvisional {
+				appendUniqueImportReadinessReason(&target.BlockingReasons, "target event is not reviewed or provisional")
+			}
+		}
+
+		row, ok := evidenceByID[target.EvidenceID]
+		if !ok {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "evidence is not active")
+			continue
+		}
+		result := materialByEvidenceID[target.EvidenceID]
+		if !result.loaded {
+			result.loaded = true
+			result.material, result.err = buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, row, nil, "import_review_existing_target_readiness", reviewSourceIdentitySupporting, now)
+			materialByEvidenceID[target.EvidenceID] = result
+		}
+		if result.err != nil {
+			if isImportReviewCandidateMaterializationError(result.err) {
+				appendUniqueImportReadinessReason(&target.BlockingReasons, "candidate payload could not be materialized")
+				continue
+			}
+			return nil, result.err
+		}
+		if result.material.SourceAuthority != seedstore.SourceAuthoritySupporting {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "candidate is not a supporting source")
+		}
+		if len(target.SourceIdentityKeys) == 0 && len(result.material.SourceCtx.Identities.Keys()) == 0 {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "candidate has no stable source identity keys")
+		}
+	}
+	return out, nil
 }
 
 func normalizeEventReviewImportExistingEventTargets(targets []seedstore.EventReviewImportExistingEventTarget) []seedstore.EventReviewImportExistingEventTarget {

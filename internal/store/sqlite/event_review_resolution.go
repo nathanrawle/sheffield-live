@@ -1314,6 +1314,14 @@ func (s *Store) AcceptEventReviewSupportingSource(ctx context.Context, input see
 
 	now := time.Now().UTC()
 	selectedSourceKeys := normalizedImportReviewSourceIdentityKeys(input.SourceIdentityKeys)
+	identityStatus, err := loadImportReviewCandidateIdentityStatusTx(ctx, tx, cluster.ID, *evidence)
+	if err != nil {
+		return err
+	}
+	selectedSourceKeys, err = validateImportReviewSupportingSourceKeys(cluster.ID, evidence.EvidenceID, identityStatus, selectedSourceKeys)
+	if err != nil {
+		return err
+	}
 	var selectedSourceKeysArg []string
 	if len(selectedSourceKeys) > 0 {
 		selectedSourceKeysArg = selectedSourceKeys
@@ -1344,9 +1352,16 @@ func (s *Store) AcceptEventReviewSupportingSource(ctx context.Context, input see
 		return fmt.Errorf("target event %d publication state %q is not supported", input.TargetEventID, targetState)
 	}
 
+	stagedBases, err := validateImportReviewSupportingStagedIdentityTargets(cluster.ID, identityStatus, targetRecord.ID, selectedSourceKeys)
+	if err != nil {
+		return err
+	}
 	supportedBases, err := validateImportReviewSupportingTargetTx(ctx, tx, cluster, *evidence, material, targetRecord.ID, s.sourceMetadata)
 	if err != nil {
 		return err
+	}
+	for basis := range stagedBases {
+		supportedBases[basis] = true
 	}
 	if !supportedBases[input.TargetBasis] {
 		return fmt.Errorf("import review event review cluster %d target event %d is not supported by %s", cluster.ID, targetRecord.ID, input.TargetBasis)
@@ -1473,6 +1488,128 @@ func normalizedImportReviewSourceIdentityKeys(values []string) []string {
 		keys = append(keys, value)
 	}
 	return keys
+}
+
+func loadImportReviewCandidateIdentityStatusTx(ctx context.Context, q queryer, clusterID int64, evidence seedstore.EventReviewClusterEvidenceSummary) (seedstore.EventReviewImportCandidateIdentityStatus, error) {
+	evidenceIdentityKeys, err := loadEventReviewEvidenceIdentityKeySummariesTx(ctx, q, clusterID)
+	if err != nil {
+		return seedstore.EventReviewImportCandidateIdentityStatus{}, err
+	}
+	exactIdentityMatches, err := loadEventReviewClusterExactIdentityMatchSummariesTx(ctx, q, clusterID)
+	if err != nil {
+		return seedstore.EventReviewImportCandidateIdentityStatus{}, err
+	}
+	sourceIdentityLinks, err := loadEventReviewClusterSourceIdentityLinkSummariesTx(ctx, q, clusterID)
+	if err != nil {
+		return seedstore.EventReviewImportCandidateIdentityStatus{}, err
+	}
+	sourceIdentityChoices, err := loadEventReviewClusterSourceIdentityChoiceSummariesTx(ctx, q, clusterID)
+	if err != nil {
+		return seedstore.EventReviewImportCandidateIdentityStatus{}, err
+	}
+	exactMatchByKey := make(map[string]seedstore.EventReviewClusterExactIdentityMatchSummary, len(exactIdentityMatches))
+	for _, match := range exactIdentityMatches {
+		if key := strings.TrimSpace(match.NormalizedKey); key != "" {
+			exactMatchByKey[key] = match
+		}
+	}
+	sourceLinkByKey := make(map[string]seedstore.EventReviewClusterSourceIdentityLinkSummary, len(sourceIdentityLinks))
+	for _, link := range sourceIdentityLinks {
+		if link.SourceID > 0 && strings.TrimSpace(link.SourceIdentityKey) != "" {
+			sourceLinkByKey[importCandidateSourceIdentityKey(link.SourceID, link.SourceIdentityKey)] = link
+		}
+	}
+	sourceChoiceByKey := make(map[string]seedstore.EventReviewSourceIdentityChoice, len(sourceIdentityChoices))
+	for _, choice := range sourceIdentityChoices {
+		if choice.SourceID > 0 && strings.TrimSpace(choice.SourceIdentityKey) != "" {
+			sourceChoiceByKey[importCandidateSourceIdentityKey(choice.SourceID, choice.SourceIdentityKey)] = choice
+		}
+	}
+	statuses := []seedstore.EventReviewImportCandidateIdentityStatus{{
+		EvidenceID:          evidence.EvidenceID,
+		EvidenceFingerprint: evidence.EvidenceFingerprint,
+		SourceID:            evidence.SourceID,
+		SourceName:          evidence.SourceName,
+	}}
+	statuses = buildEventReviewCandidateIdentityStatuses(statuses, map[int64]int{evidence.EvidenceID: 0}, evidenceIdentityKeys, exactMatchByKey, sourceLinkByKey, sourceChoiceByKey)
+	if len(statuses) == 0 {
+		return seedstore.EventReviewImportCandidateIdentityStatus{}, nil
+	}
+	return statuses[0], nil
+}
+
+func validateImportReviewSupportingSourceKeys(clusterID, evidenceID int64, status seedstore.EventReviewImportCandidateIdentityStatus, submittedKeys []string) ([]string, error) {
+	choicesPresent := eventReviewImportSourceChoicesPresent(status.SourceKeys)
+	observed := make(map[string]seedstore.EventReviewImportCandidateSourceIdentityStatus, len(status.SourceKeys))
+	selected := make([]string, 0, len(status.SourceKeys))
+	for _, sourceKey := range status.SourceKeys {
+		key := strings.TrimSpace(sourceKey.SourceIdentityKey)
+		if key == "" {
+			continue
+		}
+		observed[key] = sourceKey
+		if sourceKey.ChoiceSelected {
+			selected = append(selected, key)
+		}
+	}
+	if len(submittedKeys) > 0 {
+		for _, key := range submittedKeys {
+			sourceKey, ok := observed[key]
+			if !ok {
+				return nil, fmt.Errorf("import review event review cluster %d source identity key %q is not observed for evidence %d", clusterID, key, evidenceID)
+			}
+			if choicesPresent && !sourceKey.ChoiceSelected {
+				return nil, fmt.Errorf("import review event review cluster %d source identity key %q is not selected for evidence %d", clusterID, key, evidenceID)
+			}
+		}
+		return submittedKeys, nil
+	}
+	if choicesPresent {
+		selected = normalizedImportReviewSourceIdentityKeys(selected)
+		if len(selected) == 0 {
+			return nil, fmt.Errorf("import review event review cluster %d evidence %d has no selected source identity keys", clusterID, evidenceID)
+		}
+		return selected, nil
+	}
+	return nil, nil
+}
+
+func validateImportReviewSupportingStagedIdentityTargets(clusterID int64, status seedstore.EventReviewImportCandidateIdentityStatus, targetEventID int64, selectedSourceKeys []string) (map[seedstore.EventReviewImportTargetBasis]bool, error) {
+	bases := make(map[seedstore.EventReviewImportTargetBasis]bool)
+	for _, exactKey := range status.ExactKeys {
+		if exactKey.LinkedEventID == nil {
+			continue
+		}
+		if *exactKey.LinkedEventID != targetEventID {
+			return nil, fmt.Errorf("import review event review cluster %d staged exact identity %q belongs to live event %d, not target event %d", clusterID, exactKey.NormalizedKey, *exactKey.LinkedEventID, targetEventID)
+		}
+		bases[seedstore.EventReviewImportTargetBasisExactIdentity] = true
+	}
+
+	selectedSet := make(map[string]struct{}, len(selectedSourceKeys))
+	for _, key := range selectedSourceKeys {
+		if key = strings.TrimSpace(key); key != "" {
+			selectedSet[key] = struct{}{}
+		}
+	}
+	choicesPresent := eventReviewImportSourceChoicesPresent(status.SourceKeys)
+	for _, sourceKey := range status.SourceKeys {
+		if sourceKey.LinkedEventID == nil && sourceKey.RawLinkedEventID != nil {
+			return nil, fmt.Errorf("import review event review cluster %d evidence %d source identity %q %s", clusterID, status.EvidenceID, sourceKey.SourceIdentityKey, eventReviewImportUnresolvedSourceLinkBlocker)
+		}
+		consider := len(selectedSet) == 0 && !choicesPresent
+		if _, ok := selectedSet[sourceKey.SourceIdentityKey]; ok {
+			consider = true
+		}
+		if !consider || sourceKey.LinkedEventID == nil {
+			continue
+		}
+		if *sourceKey.LinkedEventID != targetEventID {
+			return nil, fmt.Errorf("import review event review cluster %d staged source identity %q belongs to live event %d, not target event %d", clusterID, sourceKey.SourceIdentityKey, *sourceKey.LinkedEventID, targetEventID)
+		}
+		bases[seedstore.EventReviewImportTargetBasisSourceIdentity] = true
+	}
+	return bases, nil
 }
 
 func importReviewHardTargetBasesTx(ctx context.Context, tx interface {

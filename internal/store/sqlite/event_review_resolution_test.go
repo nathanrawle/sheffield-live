@@ -1375,6 +1375,30 @@ func TestResolveEventReviewClusterAppliesSelectedImportReviewNewListingFromMulti
 	`, unselectedLinkedEventID, fixture.sourceID, "unselected-import-review-key", "2026-05-15T09:35:00Z", "2026-05-15T09:35:00Z"); err != nil {
 		t.Fatalf("insert unselected linked source identity: %v", err)
 	}
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load selected multi-evidence readiness before resolve: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("selected multi-evidence readiness missing before resolve")
+	}
+	unselectedTarget := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, unselectedLinkedEventID, seedstore.EventReviewImportTargetBasisSourceIdentity)
+	if !hasString(unselectedTarget.BlockingReasons, "source identity is not selected") {
+		t.Fatalf("unselected source target blockers = %#v, want source identity not selected", unselectedTarget.BlockingReasons)
+	}
+	if err := st.AcceptEventReviewSupportingSource(context.Background(), seedstore.EventReviewAcceptSupportingSourceInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:         fixture.evidenceID,
+		TargetEventID:      unselectedLinkedEventID,
+		TargetBasis:        seedstore.EventReviewImportTargetBasisSourceIdentity,
+		SourceIdentityKeys: []string{"unselected-import-review-key"},
+	}); err == nil || !strings.Contains(err.Error(), "not selected for evidence") {
+		t.Fatalf("accept supporting with unselected source key error = %v, want not selected", err)
+	}
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
 
 	extraPayload := importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthoritySupporting), "Unselected Import Listing", fixture.venueText, "", fixture.start.Add(1*time.Hour), fixture.end.Add(1*time.Hour), "import-review-extra")
 	extraEvidenceID := insertEventReviewEvidenceOK(t, db, fixture.sourceID, nil, "import-review-extra-"+strconv.FormatInt(fixture.clusterID, 10), extraPayload)
@@ -1389,7 +1413,7 @@ func TestResolveEventReviewClusterAppliesSelectedImportReviewNewListingFromMulti
 
 	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
 
-	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	detail, ok, err = st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
 	if err != nil {
 		t.Fatalf("load resolved selected multi-evidence cluster: %v", err)
 	}
@@ -1616,6 +1640,23 @@ func TestAcceptEventReviewSupportingSourceAppliesExactIdentityTarget(t *testing.
 	}
 	if !hasString(detail.ImportReadiness.BlockingReasons, "candidate resolves to existing live event") {
 		t.Fatalf("new-listing blockers = %#v, want existing-event blocker", detail.ImportReadiness.BlockingReasons)
+	}
+
+	if err := st.AcceptEventReviewSupportingSource(context.Background(), seedstore.EventReviewAcceptSupportingSourceInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:         fixture.evidenceID,
+		TargetEventID:      targetID,
+		TargetBasis:        seedstore.EventReviewImportTargetBasisExactIdentity,
+		SourceIdentityKeys: []string{"tampered-source-key"},
+	}); err == nil || !strings.Contains(err.Error(), "not observed for evidence") {
+		t.Fatalf("accept supporting with tampered source key error = %v, want not observed", err)
+	}
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	if got := mustCount(t, db, "event_review_resolutions"); got != beforeResolutions {
+		t.Fatalf("event_review_resolutions rows after tampered key = %d, want %d", got, beforeResolutions)
 	}
 
 	if err := st.AcceptEventReviewSupportingSource(context.Background(), seedstore.EventReviewAcceptSupportingSourceInput{
@@ -2043,6 +2084,63 @@ func TestImportReviewReadinessBlocksDisagreeingHardTargets(t *testing.T) {
 	if !hasString(exactTarget.BlockingReasons, "hard target signals disagree") || !hasString(sourceTarget.BlockingReasons, "hard target signals disagree") {
 		t.Fatalf("target blockers exact=%#v source=%#v", exactTarget.BlockingReasons, sourceTarget.BlockingReasons)
 	}
+}
+
+func TestAcceptEventReviewSupportingSourceRejectsStagedHardTargetDisagreement(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	slugTargetID := mustInsertExactIdentityEvent(t, db, fixture.expectedSlug, "Slug Target", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	exactTargetID := mustInsertExactIdentityEvent(t, db, "resolver-disagreeing-exact-target", fixture.title, fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	exactKey, err := buildImportReviewExactIdentityKey(domain.Event{
+		Slug:             fixture.expectedSlug,
+		Name:             fixture.title,
+		VenueSlug:        "leadmill",
+		Start:            fixture.start,
+		Origin:           domain.OriginLive,
+		PublicationState: domain.PublicationStateReviewed,
+	})
+	if err != nil {
+		t.Fatalf("build exact key: %v", err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin exact identity tx: %v", err)
+	}
+	if err := ensureActiveExactIdentityTx(context.Background(), tx, exactTargetID, domain.Event{
+		Slug:             "resolver-disagreeing-exact-target",
+		Name:             fixture.title,
+		VenueSlug:        "leadmill",
+		Start:            fixture.start,
+		Origin:           domain.OriginLive,
+		LastChecked:      fixture.start.Add(-24 * time.Hour),
+		PublicationState: domain.PublicationStateReviewed,
+	}, 0, fixture.start.Add(-24*time.Hour)); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("ensure exact identity: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit exact identity tx: %v", err)
+	}
+	exactKeyID := insertEventReviewIdentityKeyOK(t, db, "resolver-disagreeing-exact-key-hash", seedstore.EventReviewIdentityKeyKindExact, exactKey)
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, exactKeyID, nil, seedstore.EventReviewEvidenceIdentityKeyRoleExact); err != nil {
+		t.Fatalf("insert exact identity key: %v", err)
+	}
+
+	if err := st.AcceptEventReviewSupportingSource(context.Background(), seedstore.EventReviewAcceptSupportingSourceInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:    fixture.evidenceID,
+		TargetEventID: slugTargetID,
+		TargetBasis:   seedstore.EventReviewImportTargetBasisSlug,
+	}); err == nil || !strings.Contains(err.Error(), "staged exact identity") {
+		t.Fatalf("accept supporting with staged exact disagreement error = %v, want staged exact identity", err)
+	}
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
 }
 
 func TestResolveEventReviewImportSeparateAndInsertCreatesNearTitleSeparations(t *testing.T) {

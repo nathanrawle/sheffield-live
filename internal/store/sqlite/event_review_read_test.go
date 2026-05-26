@@ -1149,6 +1149,24 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		}
 		malformedExactKeyID := insertEventReviewIdentityKeyOK(t, db, "malformed-exact-hash", seedstore.EventReviewIdentityKeyKindExact, "malformed-exact-key")
 		malformedSourceKeyID := insertEventReviewIdentityKeyOK(t, db, "malformed-source-hash", seedstore.EventReviewIdentityKeyKindSource, "malformed-source-key")
+		if _, err := db.Exec(`
+			INSERT INTO event_exact_identities (
+				event_id,
+				identity_key,
+				key_version,
+				venue_slug,
+				utc_start_at,
+				clean_title,
+				active,
+				created_at,
+				updated_at,
+				deactivated_at,
+				deactivated_reason,
+				repair_run_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, existingEventID, "malformed-exact-key", exactIdentityKeyVersion, "event-review-import-readiness-hall", "2026-05-10T19:00:00Z", "Import Readiness Existing", 1, "2026-05-12T09:10:00Z", "2026-05-12T09:10:00Z", nil, "", nil); err != nil {
+			t.Fatalf("insert malformed linked exact identity: %v", err)
+		}
 		if _, err := insertEventReviewEvidenceIdentityKey(t, db, evidenceID, malformedExactKeyID, nil, seedstore.EventReviewEvidenceIdentityKeyRoleExact); err != nil {
 			t.Fatalf("insert malformed exact evidence identity: %v", err)
 		}
@@ -1181,11 +1199,15 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		if status.ParseWarning == "" || len(status.ExactKeys) != 1 || len(status.SourceKeys) != 1 {
 			t.Fatalf("malformed candidate identity status = %#v", status)
 		}
-		if status.ExactKeys[0].NormalizedKey != "malformed-exact-key" || status.ExactKeys[0].LinkedEventID != nil {
+		if status.ExactKeys[0].NormalizedKey != "malformed-exact-key" || status.ExactKeys[0].LinkedEventID == nil || *status.ExactKeys[0].LinkedEventID != existingEventID {
 			t.Fatalf("malformed exact key = %#v", status.ExactKeys[0])
 		}
 		if status.SourceKeys[0].SourceIdentityKey != "malformed-source-key" || status.SourceKeys[0].LinkedEventID != nil {
 			t.Fatalf("malformed source key = %#v", status.SourceKeys[0])
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, evidenceID, existingEventID, seedstore.EventReviewImportTargetBasisExactIdentity)
+		if !hasString(target.BlockingReasons, "candidate payload could not be materialized") {
+			t.Fatalf("malformed exact target blockers = %#v, want materialization blocker", target.BlockingReasons)
 		}
 	})
 
@@ -1228,6 +1250,37 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		}
 		if !hasString(detail.ImportReadiness.ComparisonBlockingReasons, "canonical event is already set") || !hasString(detail.ImportReadiness.ComparisonBlockingReasons, "evidence already references existing event") {
 			t.Fatalf("blocked comparison blockers = %#v", detail.ImportReadiness.ComparisonBlockingReasons)
+		}
+	})
+
+	t.Run("withheld canonical existing target blocks", func(t *testing.T) {
+		insertLegacyEvent(t, db, "import-readiness-withheld-canonical", venueID, sourceID, domain.OriginLive)
+		withheldEventID := mustEventIDBySlug(t, db, "import-readiness-withheld-canonical")
+		if _, err := db.Exec(`
+			UPDATE events
+			SET publication_state = ?,
+				withheld_reason = ?
+			WHERE id = ?
+		`, string(domain.PublicationStateWithheld), "duplicate listing", withheldEventID); err != nil {
+			t.Fatalf("withhold canonical target: %v", err)
+		}
+
+		payload := importPayload("Withheld Existing Target", "event-review-import-ready", "Event Review Import Ready", "2026-05-10T19:00:00Z", "", "external-withheld-existing")
+		clusterID := stageImportCluster(t, string(seedstore.EventReviewClusterStatusOpen), &withheldEventID, seedstore.EventReviewConflictReasonIngestCandidate, []string{payload}, []*int64{&withheldEventID})
+		detail, ok, err := st.LoadEventReviewCluster(context.Background(), clusterID)
+		if err != nil {
+			t.Fatalf("load withheld canonical target cluster: %v", err)
+		}
+		if !ok || detail.ImportReadiness == nil {
+			t.Fatal("withheld canonical target readiness missing")
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, detail.Evidence[0].EvidenceID, withheldEventID, seedstore.EventReviewImportTargetBasisCanonicalEvent)
+		if !hasString(target.BlockingReasons, "target event is not live/non-withheld") {
+			t.Fatalf("withheld canonical target blockers = %#v, want target state blocker", target.BlockingReasons)
+		}
+		target = mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, detail.Evidence[0].EvidenceID, withheldEventID, seedstore.EventReviewImportTargetBasisEvidenceEvent)
+		if !hasString(target.BlockingReasons, "target event is not live/non-withheld") {
+			t.Fatalf("withheld evidence target blockers = %#v, want target state blocker", target.BlockingReasons)
 		}
 	})
 
