@@ -288,6 +288,9 @@ func terminalEvidenceOutcomeMatchesInputTx(ctx context.Context, q queryer, clust
 		if resolution.AppliedTitleSlugConflict != nil && titleSlugConflictResolutionReferencesEventID(*resolution.AppliedTitleSlugConflict, *input.EventID) {
 			return true, nil
 		}
+		if resolution.AppliedHistoricalKeepSeparate != nil && historicalDuplicateKeepSeparateResolutionReferencesEventID(*resolution.AppliedHistoricalKeepSeparate, *input.EventID) {
+			return true, nil
+		}
 		for _, action := range resolution.AppliedLiveActions {
 			if action.EventID == *input.EventID {
 				return true, nil
@@ -559,6 +562,9 @@ func terminalResolutionReferencesEventID(cluster seedstore.EventReviewCluster, r
 	if resolution.AppliedTitleSlugConflict != nil && titleSlugConflictResolutionReferencesEventID(*resolution.AppliedTitleSlugConflict, eventID) {
 		return true
 	}
+	if resolution.AppliedHistoricalKeepSeparate != nil && historicalDuplicateKeepSeparateResolutionReferencesEventID(*resolution.AppliedHistoricalKeepSeparate, eventID) {
+		return true
+	}
 	for _, action := range resolution.AppliedLiveActions {
 		if action.EventID == eventID {
 			return true
@@ -571,6 +577,15 @@ func titleSlugConflictResolutionReferencesEventID(resolution seedstore.EventRevi
 	return resolution.OldCanonicalEventID == eventID ||
 		resolution.SlugConflictEventID == eventID ||
 		resolution.SurvivingEventID == eventID
+}
+
+func historicalDuplicateKeepSeparateResolutionReferencesEventID(resolution seedstore.EventReviewResolutionAppliedHistoricalKeepSeparateSummary, eventID int64) bool {
+	for _, event := range resolution.KeptEvents {
+		if event.EventID == eventID {
+			return true
+		}
+	}
+	return false
 }
 
 func eventReviewOptionalInt64Equal(a, b *int64) bool {

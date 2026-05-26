@@ -413,6 +413,60 @@ func TestEventReviewReadModelsTitleRepairReadiness(t *testing.T) {
 	}
 }
 
+func TestEventReviewReadModelsHistoricalDuplicateReadiness(t *testing.T) {
+	st, db := openEventReviewSchemaStore(t)
+	defer st.Close()
+
+	fixture := seedHistoricalDuplicateResolutionFixture(t, db)
+	sourceID := mustEnsureSourceID(t, st, "Historical duplicate readiness alias source", "https://example.test/historical-duplicate-readiness")
+	venueID := lookupStoreVenueID(t, db, "leadmill")
+	insertLegacyEvent(t, db, "historical-duplicate-alias-owner", venueID, sourceID, domain.OriginLive)
+	aliasOwnerID := mustEventIDBySlug(t, db, "historical-duplicate-alias-owner")
+	if _, err := db.Exec(`
+		INSERT INTO slug_aliases (
+			alias_slug,
+			target_kind,
+			target_event_id,
+			target_venue_id,
+			repair_run_id,
+			reason,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)
+	`, "historical-duplicate-loser", string(seedstore.SlugAliasTargetKindEvent), aliasOwnerID, "readiness test", "2026-05-15T09:00:00Z", "2026-05-15T09:00:00Z"); err != nil {
+		t.Fatalf("insert slug alias conflict: %v", err)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load historical duplicate detail: %v", err)
+	}
+	if !ok {
+		t.Fatal("historical duplicate cluster load returned ok=false")
+	}
+	readiness := detail.HistoricalDuplicateReadiness
+	if readiness == nil {
+		t.Fatal("historical duplicate readiness = nil")
+	}
+	if readiness.CanResolveLiveActions {
+		t.Fatalf("can resolve live actions = true, want blocked; blockers=%#v", readiness.LiveActionBlockingReasons)
+	}
+	if !hasString(readiness.LiveActionBlockingReasons, "slug alias already points to a different event") {
+		t.Fatalf("live action blockers = %#v, want slug alias blocker", readiness.LiveActionBlockingReasons)
+	}
+	if !readiness.CanKeepAllSeparate || len(readiness.KeepSeparateBlockingReasons) != 0 {
+		t.Fatalf("keep-separate readiness = can=%v blockers=%#v, want eligible", readiness.CanKeepAllSeparate, readiness.KeepSeparateBlockingReasons)
+	}
+	if len(readiness.Events) != 2 {
+		t.Fatalf("readiness events = %#v, want 2", readiness.Events)
+	}
+	for _, event := range readiness.Events {
+		if !event.KeepEligible {
+			t.Fatalf("event readiness = %#v, want keep eligible", event)
+		}
+	}
+}
+
 func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 	st, db := openEventReviewSchemaStore(t)
 	defer st.Close()

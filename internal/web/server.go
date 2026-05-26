@@ -66,6 +66,7 @@ type EventReviewAdminStore interface {
 	ResolveEventReviewImportSeparateAndInsert(ctx context.Context, input store.EventReviewImportSeparateAndInsertInput) error
 	ResolveEventReviewImportAuthoritative(ctx context.Context, input store.EventReviewImportAuthoritativeInput) error
 	ResolveTitleRepairSlugConflict(ctx context.Context, input store.EventReviewTitleRepairSlugConflictInput) error
+	ResolveHistoricalDuplicateKeepSeparate(ctx context.Context, input store.EventReviewHistoricalDuplicateKeepSeparateInput) error
 	SupersedeEventReviewCluster(ctx context.Context, input store.EventReviewSupersedeInput) error
 }
 
@@ -128,59 +129,60 @@ type ServerDeps struct {
 }
 
 type PageData struct {
-	SiteName                                    string
-	PageTitle                                   string
-	MetaDescription                             string
-	Active                                      string
-	Content                                     template.HTML
-	Now                                         time.Time
-	Events                                      []domain.Event
-	EventGroups                                 []EventGroup
-	EventSections                               []EventSection
-	EventFilters                                EventFilters
-	EventFiltersApplied                         bool
-	EventDetail                                 EventDetailView
-	VenueNames                                  map[string]string
-	VenueAreas                                  map[string]string
-	Areas                                       []string
-	Event                                       domain.Event
-	EventSecondarySources                       []store.EventSecondarySourceInfo
-	EventGenres                                 []genre.Match
-	Venues                                      []domain.Venue
-	Venue                                       domain.Venue
-	VenueEvents                                 []domain.Event
-	VenueTimelineSections                       []VenueTimelineSection
-	EventReviewClusters                         []store.EventReviewClusterSummary
-	EventReviewHistoryRows                      []store.EventReviewClusterHistorySummary
-	EventReviewDetail                           store.EventReviewClusterDetail
-	EventReviewCanAcceptImportListing           bool
-	EventReviewCanAcceptSelectedImportCandidate bool
-	EventReviewCanAcceptSupportingSource        bool
-	EventReviewCanResolveAuthoritativeImport    bool
-	EventReviewCanSaveSourceIdentityChoices     bool
-	EventReviewCanResolveLiveActions            bool
-	EventReviewSourceIdentityChoices            []store.EventReviewImportCandidateSourceIdentityStatus
-	ProvisionalVenues                           []ProvisionalVenueRow
-	ProvisionalRooms                            []ProvisionalRoomRow
-	Room                                        domain.VenueRoom
-	RoomEvents                                  []domain.Event
-	ImportRunRows                               []ImportRunRow
-	ImportRunDetail                             ImportRunDetail
-	GenreRules                                  []genre.Rule
-	LatestImport                                *ingest.ImportRunSummary
-	HasImportHistory                            bool
-	HasImportRunDetail                          bool
-	HasImportRunEventReviewClusters             bool
-	HasEventReviewStorage                       bool
-	HasVenueAdmin                               bool
-	HasVenueAdminWrites                         bool
-	HasRoomAdmin                                bool
-	HasGenreConfiguration                       bool
-	AdminAuthenticated                          bool
-	CSRFToken                                   string
-	LoginNext                                   string
-	LoginError                                  string
-	Flash                                       string
+	SiteName                                       string
+	PageTitle                                      string
+	MetaDescription                                string
+	Active                                         string
+	Content                                        template.HTML
+	Now                                            time.Time
+	Events                                         []domain.Event
+	EventGroups                                    []EventGroup
+	EventSections                                  []EventSection
+	EventFilters                                   EventFilters
+	EventFiltersApplied                            bool
+	EventDetail                                    EventDetailView
+	VenueNames                                     map[string]string
+	VenueAreas                                     map[string]string
+	Areas                                          []string
+	Event                                          domain.Event
+	EventSecondarySources                          []store.EventSecondarySourceInfo
+	EventGenres                                    []genre.Match
+	Venues                                         []domain.Venue
+	Venue                                          domain.Venue
+	VenueEvents                                    []domain.Event
+	VenueTimelineSections                          []VenueTimelineSection
+	EventReviewClusters                            []store.EventReviewClusterSummary
+	EventReviewHistoryRows                         []store.EventReviewClusterHistorySummary
+	EventReviewDetail                              store.EventReviewClusterDetail
+	EventReviewCanAcceptImportListing              bool
+	EventReviewCanAcceptSelectedImportCandidate    bool
+	EventReviewCanAcceptSupportingSource           bool
+	EventReviewCanResolveAuthoritativeImport       bool
+	EventReviewCanSaveSourceIdentityChoices        bool
+	EventReviewCanResolveLiveActions               bool
+	EventReviewCanKeepHistoricalDuplicatesSeparate bool
+	EventReviewSourceIdentityChoices               []store.EventReviewImportCandidateSourceIdentityStatus
+	ProvisionalVenues                              []ProvisionalVenueRow
+	ProvisionalRooms                               []ProvisionalRoomRow
+	Room                                           domain.VenueRoom
+	RoomEvents                                     []domain.Event
+	ImportRunRows                                  []ImportRunRow
+	ImportRunDetail                                ImportRunDetail
+	GenreRules                                     []genre.Rule
+	LatestImport                                   *ingest.ImportRunSummary
+	HasImportHistory                               bool
+	HasImportRunDetail                             bool
+	HasImportRunEventReviewClusters                bool
+	HasEventReviewStorage                          bool
+	HasVenueAdmin                                  bool
+	HasVenueAdminWrites                            bool
+	HasRoomAdmin                                   bool
+	HasGenreConfiguration                          bool
+	AdminAuthenticated                             bool
+	CSRFToken                                      string
+	LoginNext                                      string
+	LoginError                                     string
+	Flash                                          string
 }
 
 type EventGroup struct {
@@ -2055,6 +2057,43 @@ func (s *Server) postAdminEventReviewDecision(w http.ResponseWriter, r *http.Req
 			return
 		}
 		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_historical_duplicate_keep_separate":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		keptEventIDs, err := parseEventReviewKeepSeparateEventIDs(r.Form["kept_event_id"])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canKeepHistoricalDuplicateEventReviewClusterSeparate(cluster) {
+			http.Error(w, "event review cluster is not eligible for historical duplicate keep-separate resolution", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.ResolveHistoricalDuplicateKeepSeparate(r.Context(), store.EventReviewHistoricalDuplicateKeepSeparateInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			KeptEventIDs: keptEventIDs,
+		}); err != nil {
+			s.logRequestError(r, "resolve historical duplicate keep separate", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
 	case "resolve_import_new_listing":
 		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
 		if err != nil || expectedVersion <= 0 {
@@ -2385,6 +2424,7 @@ func (s *Server) renderAdminEventReviewDetail(w http.ResponseWriter, r *http.Req
 	data.EventReviewCanSaveSourceIdentityChoices = canSaveEventReviewSourceIdentityChoices(cluster)
 	data.EventReviewSourceIdentityChoices = flattenEventReviewSourceIdentityChoiceStatuses(cluster)
 	data.EventReviewCanResolveLiveActions = canResolveHistoricalDuplicateEventReviewCluster(cluster)
+	data.EventReviewCanKeepHistoricalDuplicatesSeparate = canKeepHistoricalDuplicateEventReviewClusterSeparate(cluster)
 	if r.URL.Query().Get("source_identity_choices_saved") == "1" {
 		data.Flash = "Source identity choices saved."
 	}
@@ -2544,8 +2584,36 @@ func parseEventReviewSourceIdentityChoiceSelections(values []string) (map[eventR
 	return selected, nil
 }
 
+func parseEventReviewKeepSeparateEventIDs(values []string) ([]int64, error) {
+	ids := make([]int64, 0, len(values))
+	seen := make(map[int64]struct{}, len(values))
+	for _, value := range values {
+		id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil || id <= 0 {
+			return nil, errors.New("kept event id is invalid")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids, nil
+}
+
 func canResolveHistoricalDuplicateEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
-	return cluster.Summary.Status == store.EventReviewClusterStatusOpen && cluster.Summary.ConflictType == "historical_duplicate" && cluster.Summary.CanonicalEventID != nil && len(cluster.LiveActions) > 0
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen || cluster.Summary.ConflictType != "historical_duplicate" {
+		return false
+	}
+	if cluster.HistoricalDuplicateReadiness != nil {
+		return cluster.HistoricalDuplicateReadiness.CanResolveLiveActions
+	}
+	return cluster.Summary.CanonicalEventID != nil && len(cluster.LiveActions) > 0
+}
+
+func canKeepHistoricalDuplicateEventReviewClusterSeparate(cluster store.EventReviewClusterDetail) bool {
+	return cluster.Summary.Status == store.EventReviewClusterStatusOpen && cluster.Summary.ConflictType == "historical_duplicate" && cluster.HistoricalDuplicateReadiness != nil && cluster.HistoricalDuplicateReadiness.CanKeepAllSeparate
 }
 
 func canResolveTitleRepairEventReviewCluster(cluster store.EventReviewClusterDetail) bool {

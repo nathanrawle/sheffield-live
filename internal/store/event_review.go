@@ -602,6 +602,15 @@ type EventReviewResolutionAppliedLiveActionSummary struct {
 	Reason    string
 }
 
+type EventReviewResolutionAppliedHistoricalKeepSeparateSummary struct {
+	KeptEvents []EventReviewResolutionKeptHistoricalDuplicateEventSummary
+}
+
+type EventReviewResolutionKeptHistoricalDuplicateEventSummary struct {
+	EventID   int64
+	EventSlug string
+}
+
 type EventReviewResolutionAppliedTitleRepairSummary struct {
 	EventID  int64
 	OldTitle string
@@ -771,42 +780,44 @@ type EventReviewClusterSeparationSummary struct {
 }
 
 type EventReviewResolutionSummary struct {
-	ID                         int64
-	ClusterID                  int64
-	Status                     EventReviewResolutionStatus
-	DiscardReason              string
-	CanonicalEventID           *int64
-	RepairRunID                *int64
-	SupersededByClusterID      *int64
-	AppliedAutoResolution      *EventReviewResolutionAppliedAutoResolutionSummary
-	AppliedImportListing       *EventReviewResolutionAppliedImportListingSummary
-	AppliedSupportingSource    *EventReviewResolutionAppliedSupportingSourceSummary
-	AppliedAuthoritativeImport *EventReviewResolutionAppliedAuthoritativeImportSummary
-	AppliedSeparations         []EventReviewResolutionAppliedSeparationSummary
-	AppliedTitleRepair         *EventReviewResolutionAppliedTitleRepairSummary
-	AppliedTitleSlugConflict   *EventReviewResolutionAppliedTitleSlugConflictSummary
-	AppliedLiveActions         []EventReviewResolutionAppliedLiveActionSummary
-	SnapshotRaw                string
-	SnapshotParseWarning       string
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
+	ID                            int64
+	ClusterID                     int64
+	Status                        EventReviewResolutionStatus
+	DiscardReason                 string
+	CanonicalEventID              *int64
+	RepairRunID                   *int64
+	SupersededByClusterID         *int64
+	AppliedAutoResolution         *EventReviewResolutionAppliedAutoResolutionSummary
+	AppliedImportListing          *EventReviewResolutionAppliedImportListingSummary
+	AppliedSupportingSource       *EventReviewResolutionAppliedSupportingSourceSummary
+	AppliedAuthoritativeImport    *EventReviewResolutionAppliedAuthoritativeImportSummary
+	AppliedSeparations            []EventReviewResolutionAppliedSeparationSummary
+	AppliedTitleRepair            *EventReviewResolutionAppliedTitleRepairSummary
+	AppliedTitleSlugConflict      *EventReviewResolutionAppliedTitleSlugConflictSummary
+	AppliedHistoricalKeepSeparate *EventReviewResolutionAppliedHistoricalKeepSeparateSummary
+	AppliedLiveActions            []EventReviewResolutionAppliedLiveActionSummary
+	SnapshotRaw                   string
+	SnapshotParseWarning          string
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
 }
 
 type EventReviewClusterDetail struct {
-	Summary              EventReviewClusterSummary
-	Resolution           *EventReviewResolutionSummary
-	ImportReadiness      *EventReviewImportReadiness
-	TitleRepairReadiness *EventReviewTitleRepairReadiness
-	Evidence             []EventReviewClusterEvidenceSummary
-	ClusterIdentityKeys  []EventReviewClusterIdentityKeySummary
-	EvidenceIdentityKeys []EventReviewEvidenceIdentityKeySummary
-	SourceIdentityLinks  []EventReviewClusterSourceIdentityLinkSummary
-	ExactIdentityMatches []EventReviewClusterExactIdentityMatchSummary
-	Observations         []EventReviewClusterObservationSummary
-	Separations          []EventReviewClusterSeparationSummary
-	CanonicalChoices     []EventReviewClusterChoiceSummary
-	DraftChoices         []EventReviewClusterChoiceSummary
-	LiveActions          []EventReviewClusterLiveActionSummary
+	Summary                      EventReviewClusterSummary
+	Resolution                   *EventReviewResolutionSummary
+	ImportReadiness              *EventReviewImportReadiness
+	TitleRepairReadiness         *EventReviewTitleRepairReadiness
+	HistoricalDuplicateReadiness *EventReviewHistoricalDuplicateReadiness
+	Evidence                     []EventReviewClusterEvidenceSummary
+	ClusterIdentityKeys          []EventReviewClusterIdentityKeySummary
+	EvidenceIdentityKeys         []EventReviewEvidenceIdentityKeySummary
+	SourceIdentityLinks          []EventReviewClusterSourceIdentityLinkSummary
+	ExactIdentityMatches         []EventReviewClusterExactIdentityMatchSummary
+	Observations                 []EventReviewClusterObservationSummary
+	Separations                  []EventReviewClusterSeparationSummary
+	CanonicalChoices             []EventReviewClusterChoiceSummary
+	DraftChoices                 []EventReviewClusterChoiceSummary
+	LiveActions                  []EventReviewClusterLiveActionSummary
 }
 
 type EventReviewTitleRepairReadiness struct {
@@ -823,6 +834,24 @@ type EventReviewTitleRepairReadiness struct {
 	SlugConflictEventTitle          string
 	SlugConflictResolutionAvailable bool
 	SlugConflictBlockingReasons     []string
+}
+
+type EventReviewHistoricalDuplicateReadiness struct {
+	Events                      []EventReviewHistoricalDuplicateEventReadiness
+	CanResolveLiveActions       bool
+	LiveActionBlockingReasons   []string
+	CanKeepAllSeparate          bool
+	KeepSeparateBlockingReasons []string
+}
+
+type EventReviewHistoricalDuplicateEventReadiness struct {
+	EventID          int64
+	EventSlug        string
+	PublicationState string
+	Live             bool
+	Action           EventReviewLiveActionKind
+	KeepEligible     bool
+	BlockingReasons  []string
 }
 
 type EventReviewCanonicalChoice struct {
@@ -996,6 +1025,11 @@ type EventReviewTitleRepairSlugConflictInput struct {
 	SlugConflictEventID      int64
 	DraftTitle               string
 	DraftSlug                string
+}
+
+type EventReviewHistoricalDuplicateKeepSeparateInput struct {
+	EventReviewResolutionInput
+	KeptEventIDs []int64
 }
 
 type EventReviewDiscardInput struct {

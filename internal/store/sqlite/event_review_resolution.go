@@ -16,24 +16,25 @@ import (
 )
 
 type eventReviewResolutionSnapshot struct {
-	ClusterID                  int64                                                    `json:"cluster_id"`
-	ExpectedVersion            int                                                      `json:"expected_version"`
-	CurrentVersion             int                                                      `json:"current_version"`
-	CurrentStatus              seedstore.EventReviewClusterStatus                       `json:"current_status"`
-	TargetStatus               seedstore.EventReviewResolutionStatus                    `json:"target_status"`
-	DiscardReason              string                                                   `json:"discard_reason,omitempty"`
-	SupersededByClusterID      int64                                                    `json:"superseded_by_cluster_id,omitempty"`
-	CanonicalEventID           *int64                                                   `json:"canonical_event_id,omitempty"`
-	RepairRunID                *int64                                                   `json:"repair_run_id,omitempty"`
-	AppliedAutoResolution      *eventReviewResolutionAppliedAutoResolutionSnapshot      `json:"applied_auto_resolution,omitempty"`
-	AppliedImportListing       *eventReviewResolutionAppliedImportListingSnapshot       `json:"applied_import_listing,omitempty"`
-	AppliedSupportingSource    *eventReviewResolutionAppliedSupportingSourceSnapshot    `json:"applied_supporting_source,omitempty"`
-	AppliedAuthoritativeImport *eventReviewResolutionAppliedAuthoritativeImportSnapshot `json:"applied_authoritative_import,omitempty"`
-	AppliedSeparations         []eventReviewResolutionAppliedSeparationSnapshot         `json:"applied_separations,omitempty"`
-	AppliedTitleRepair         *eventReviewResolutionAppliedTitleRepairSnapshot         `json:"applied_title_repair,omitempty"`
-	AppliedTitleSlugConflict   *eventReviewResolutionAppliedTitleSlugConflictSnapshot   `json:"applied_title_slug_conflict,omitempty"`
-	AppliedLiveActions         []eventReviewResolutionAppliedLiveActionSnapshot         `json:"applied_live_actions,omitempty"`
-	RecordedAt                 string                                                   `json:"recorded_at"`
+	ClusterID                     int64                                                       `json:"cluster_id"`
+	ExpectedVersion               int                                                         `json:"expected_version"`
+	CurrentVersion                int                                                         `json:"current_version"`
+	CurrentStatus                 seedstore.EventReviewClusterStatus                          `json:"current_status"`
+	TargetStatus                  seedstore.EventReviewResolutionStatus                       `json:"target_status"`
+	DiscardReason                 string                                                      `json:"discard_reason,omitempty"`
+	SupersededByClusterID         int64                                                       `json:"superseded_by_cluster_id,omitempty"`
+	CanonicalEventID              *int64                                                      `json:"canonical_event_id,omitempty"`
+	RepairRunID                   *int64                                                      `json:"repair_run_id,omitempty"`
+	AppliedAutoResolution         *eventReviewResolutionAppliedAutoResolutionSnapshot         `json:"applied_auto_resolution,omitempty"`
+	AppliedImportListing          *eventReviewResolutionAppliedImportListingSnapshot          `json:"applied_import_listing,omitempty"`
+	AppliedSupportingSource       *eventReviewResolutionAppliedSupportingSourceSnapshot       `json:"applied_supporting_source,omitempty"`
+	AppliedAuthoritativeImport    *eventReviewResolutionAppliedAuthoritativeImportSnapshot    `json:"applied_authoritative_import,omitempty"`
+	AppliedSeparations            []eventReviewResolutionAppliedSeparationSnapshot            `json:"applied_separations,omitempty"`
+	AppliedTitleRepair            *eventReviewResolutionAppliedTitleRepairSnapshot            `json:"applied_title_repair,omitempty"`
+	AppliedTitleSlugConflict      *eventReviewResolutionAppliedTitleSlugConflictSnapshot      `json:"applied_title_slug_conflict,omitempty"`
+	AppliedHistoricalKeepSeparate *eventReviewResolutionAppliedHistoricalKeepSeparateSnapshot `json:"applied_historical_keep_separate,omitempty"`
+	AppliedLiveActions            []eventReviewResolutionAppliedLiveActionSnapshot            `json:"applied_live_actions,omitempty"`
+	RecordedAt                    string                                                      `json:"recorded_at"`
 }
 
 type eventReviewResolutionAppliedAutoResolutionSnapshot struct {
@@ -51,6 +52,15 @@ type eventReviewResolutionAppliedLiveActionSnapshot struct {
 	EventSlug string                              `json:"event_slug,omitempty"`
 	Action    seedstore.EventReviewLiveActionKind `json:"action"`
 	Reason    string                              `json:"reason,omitempty"`
+}
+
+type eventReviewResolutionAppliedHistoricalKeepSeparateSnapshot struct {
+	KeptEvents []eventReviewResolutionKeptHistoricalDuplicateEventSnapshot `json:"kept_events,omitempty"`
+}
+
+type eventReviewResolutionKeptHistoricalDuplicateEventSnapshot struct {
+	EventID   int64  `json:"event_id"`
+	EventSlug string `json:"event_slug,omitempty"`
 }
 
 type eventReviewResolutionAppliedTitleRepairSnapshot struct {
@@ -299,6 +309,112 @@ func (s *Store) ResolveEventReviewCluster(ctx context.Context, input seedstore.E
 	default:
 		return fmt.Errorf("event review cluster %d conflict type %q is not supported", cluster.ID, cluster.ConflictType)
 	}
+}
+
+func (s *Store) ResolveHistoricalDuplicateKeepSeparate(ctx context.Context, input seedstore.EventReviewHistoricalDuplicateKeepSeparateInput) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	cluster, tx, err := beginOpenEventReviewClusterTx(ctx, s.db, input.EventReviewResolutionInput)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if cluster.ConflictType != historicalDuplicateRepairConflictType {
+		return fmt.Errorf("event review cluster %d conflict type %q is not historical duplicate", cluster.ID, cluster.ConflictType)
+	}
+	evidence, err := loadEventReviewClusterEvidenceSummariesTx(ctx, tx, cluster.ID)
+	if err != nil {
+		return err
+	}
+	liveActions, err := loadEventReviewClusterLiveActionSummariesTx(ctx, tx, cluster.ID)
+	if err != nil {
+		return err
+	}
+	readiness, err := loadEventReviewHistoricalDuplicateReadinessTx(ctx, tx, seedstore.EventReviewClusterSummary{
+		ID:               cluster.ID,
+		Status:           cluster.Status,
+		Version:          cluster.Version,
+		ConflictType:     cluster.ConflictType,
+		ConflictReason:   cluster.ConflictReason,
+		CanonicalEventID: cluster.CanonicalEventID,
+	}, evidence, liveActions)
+	if err != nil {
+		return err
+	}
+	if readiness == nil || !readiness.CanKeepAllSeparate {
+		reasons := ""
+		if readiness != nil {
+			reasons = strings.Join(readiness.KeepSeparateBlockingReasons, "; ")
+		}
+		if reasons == "" {
+			reasons = "historical duplicate cluster is not eligible to keep separate"
+		}
+		return fmt.Errorf("historical duplicate event review cluster %d is not eligible to keep separate: %s", cluster.ID, reasons)
+	}
+
+	expectedIDs := historicalDuplicateReadinessEventIDs(readiness)
+	if len(input.KeptEventIDs) > 0 && !sameInt64Set(expectedIDs, input.KeptEventIDs) {
+		return fmt.Errorf("historical duplicate event review cluster %d kept event IDs do not match current cluster events", cluster.ID)
+	}
+	eventSlugs := make(map[int64]string, len(readiness.Events))
+	for _, event := range readiness.Events {
+		eventSlugs[event.EventID] = event.EventSlug
+	}
+
+	now := time.Now().UTC()
+	appliedSeparations := make([]eventReviewResolutionAppliedSeparationSnapshot, 0, len(expectedIDs)*(len(expectedIDs)-1)/2)
+	for i := 0; i < len(expectedIDs); i++ {
+		for j := i + 1; j < len(expectedIDs); j++ {
+			separation, err := insertEventReviewSeparationTx(ctx, tx,
+				eventReviewEventSeparationEndpoint(expectedIDs[i]),
+				eventReviewEventSeparationEndpoint(expectedIDs[j]),
+				"historical duplicate keep separate",
+				now,
+			)
+			if err != nil {
+				return err
+			}
+			appliedSeparations = append(appliedSeparations, separation)
+		}
+	}
+
+	keptEvents := make([]eventReviewResolutionKeptHistoricalDuplicateEventSnapshot, 0, len(expectedIDs))
+	for _, eventID := range expectedIDs {
+		keptEvents = append(keptEvents, eventReviewResolutionKeptHistoricalDuplicateEventSnapshot{
+			EventID:   eventID,
+			EventSlug: eventSlugs[eventID],
+		})
+	}
+	applied := &eventReviewResolutionAppliedHistoricalKeepSeparateSnapshot{KeptEvents: keptEvents}
+	snapshot, err := marshalEventReviewHistoricalDuplicateKeepSeparateResolutionSnapshot(cluster, appliedSeparations, applied, now)
+	if err != nil {
+		return err
+	}
+	if _, err := insertEventReviewResolutionTx(ctx, tx, cluster.ID, seedstore.EventReviewResolutionStatusResolved, snapshot, "", now); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE event_review_clusters
+		SET status = ?, version = version + 1, updated_at = ?
+		WHERE id = ?
+			AND version = ?
+			AND status = ?
+	`, string(seedstore.EventReviewClusterStatusResolved), formatRFC3339UTC(now), cluster.ID, cluster.Version, string(seedstore.EventReviewClusterStatusOpen))
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected != 1 {
+		return fmt.Errorf("event review cluster %d update was rejected", cluster.ID)
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ResolveTitleRepairSlugConflict(ctx context.Context, input seedstore.EventReviewTitleRepairSlugConflictInput) error {
@@ -2051,6 +2167,39 @@ func marshalEventReviewTitleSlugConflictResolutionSnapshot(cluster seedstore.Eve
 		return "", err
 	}
 	return string(data), nil
+}
+
+func marshalEventReviewHistoricalDuplicateKeepSeparateResolutionSnapshot(cluster seedstore.EventReviewCluster, appliedSeparations []eventReviewResolutionAppliedSeparationSnapshot, appliedHistoricalKeepSeparate *eventReviewResolutionAppliedHistoricalKeepSeparateSnapshot, now time.Time) (string, error) {
+	snapshot := eventReviewResolutionSnapshot{
+		ClusterID:                     cluster.ID,
+		ExpectedVersion:               cluster.Version,
+		CurrentVersion:                cluster.Version,
+		CurrentStatus:                 cluster.Status,
+		TargetStatus:                  seedstore.EventReviewResolutionStatusResolved,
+		CanonicalEventID:              cluster.CanonicalEventID,
+		AppliedSeparations:            appliedSeparations,
+		AppliedHistoricalKeepSeparate: appliedHistoricalKeepSeparate,
+		RecordedAt:                    formatRFC3339UTC(now),
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func sameInt64Set(a, b []int64) bool {
+	left := uniqueInt64s(a)
+	right := uniqueInt64s(b)
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func insertEventReviewResolutionTx(ctx context.Context, tx execer, clusterID int64, status seedstore.EventReviewResolutionStatus, snapshot, discardReason string, now time.Time) (int64, error) {

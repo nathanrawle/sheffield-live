@@ -3468,6 +3468,74 @@ func TestAdminEventReviewResolvePostsAndRedirects(t *testing.T) {
 	assertContains(t, queueRR.Body.String(), "Resolved event review cluster.")
 }
 
+func TestAdminEventReviewResolveHistoricalDuplicateKeepSeparatePostsAndRedirects(t *testing.T) {
+	stagingKey := "repair-queue-a"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "historical_duplicate",
+				ConflictReason:    "reason-a",
+				EvidenceCount:     2,
+			},
+			HistoricalDuplicateReadiness: &store.EventReviewHistoricalDuplicateReadiness{
+				CanKeepAllSeparate: true,
+				Events: []store.EventReviewHistoricalDuplicateEventReadiness{
+					{EventID: 88, EventSlug: "canonical-event", PublicationState: "reviewed", Live: true, KeepEligible: true},
+					{EventID: 90, EventSlug: "loser-event", PublicationState: "reviewed", Live: true, KeepEligible: true},
+				},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, "Keep historical duplicates separate")
+	assertContains(t, body, `name="action" value="resolve_historical_duplicate_keep_separate"`)
+	assertContains(t, body, `name="kept_event_id" value="88"`)
+	assertContains(t, body, `name="kept_event_id" value="90"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "3")
+	form.Set("action", "resolve_historical_duplicate_keep_separate")
+	form.Add("kept_event_id", "88")
+	form.Add("kept_event_id", "90")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !store.keepSeparateCalled {
+		t.Fatal("expected keep-separate store method to be called")
+	}
+	if got := store.keepSeparateInput; got.ClusterID != 41 || got.ExpectedVersion != 3 || len(got.KeptEventIDs) != 2 || got.KeptEventIDs[0] != 88 || got.KeptEventIDs[1] != 90 {
+		t.Fatalf("keep-separate input = %#v", got)
+	}
+}
+
 func TestAdminEventReviewResolveTitleRepairPostsAndRedirects(t *testing.T) {
 	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
 	stagingKey := "repair-queue-title"
@@ -7500,6 +7568,9 @@ type adminReviewEventReviewStoreStub struct {
 	resolveCalled               bool
 	resolveInput                store.EventReviewResolutionInput
 	resolveErr                  error
+	keepSeparateCalled          bool
+	keepSeparateInput           store.EventReviewHistoricalDuplicateKeepSeparateInput
+	keepSeparateErr             error
 	titleSlugConflictCalled     bool
 	titleSlugConflictInput      store.EventReviewTitleRepairSlugConflictInput
 	titleSlugConflictErr        error
@@ -7550,6 +7621,12 @@ func (s *adminReviewEventReviewStoreStub) ResolveEventReviewCluster(_ context.Co
 	return s.resolveErr
 }
 
+func (s *adminReviewEventReviewStoreStub) ResolveHistoricalDuplicateKeepSeparate(_ context.Context, input store.EventReviewHistoricalDuplicateKeepSeparateInput) error {
+	s.keepSeparateCalled = true
+	s.keepSeparateInput = input
+	return s.keepSeparateErr
+}
+
 func (s *adminReviewEventReviewStoreStub) ResolveTitleRepairSlugConflict(_ context.Context, input store.EventReviewTitleRepairSlugConflictInput) error {
 	s.titleSlugConflictCalled = true
 	s.titleSlugConflictInput = input
@@ -7594,6 +7671,9 @@ type eventReviewOnlyStoreStub struct {
 	resolveCalled               bool
 	resolveInput                store.EventReviewResolutionInput
 	resolveErr                  error
+	keepSeparateCalled          bool
+	keepSeparateInput           store.EventReviewHistoricalDuplicateKeepSeparateInput
+	keepSeparateErr             error
 	titleSlugConflictCalled     bool
 	titleSlugConflictInput      store.EventReviewTitleRepairSlugConflictInput
 	titleSlugConflictErr        error
@@ -7678,6 +7758,12 @@ func (s *eventReviewOnlyStoreStub) ResolveEventReviewCluster(_ context.Context, 
 	s.resolveCalled = true
 	s.resolveInput = input
 	return s.resolveErr
+}
+
+func (s *eventReviewOnlyStoreStub) ResolveHistoricalDuplicateKeepSeparate(_ context.Context, input store.EventReviewHistoricalDuplicateKeepSeparateInput) error {
+	s.keepSeparateCalled = true
+	s.keepSeparateInput = input
+	return s.keepSeparateErr
 }
 
 func (s *eventReviewOnlyStoreStub) ResolveTitleRepairSlugConflict(_ context.Context, input store.EventReviewTitleRepairSlugConflictInput) error {

@@ -341,6 +341,142 @@ func TestResolveEventReviewClusterAppliesHistoricalDuplicateLiveActions(t *testi
 	}
 }
 
+func TestResolveHistoricalDuplicateKeepSeparateRecordsSeparationsWithoutLiveMutation(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedHistoricalDuplicateResolutionFixture(t, db)
+	beforeRepairRuns := mustCount(t, db, "repair_runs")
+
+	if err := st.ResolveHistoricalDuplicateKeepSeparate(context.Background(), seedstore.EventReviewHistoricalDuplicateKeepSeparateInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		KeptEventIDs: []int64{fixture.canonicalID, fixture.loserID},
+	}); err != nil {
+		t.Fatalf("resolve historical duplicate keep separate: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	if got := mustCount(t, db, "repair_runs"); got != beforeRepairRuns {
+		t.Fatalf("repair_runs rows = %d, want %d", got, beforeRepairRuns)
+	}
+
+	var canonicalState, loserState string
+	if err := db.QueryRow(`SELECT publication_state FROM events WHERE id = ?`, fixture.canonicalID).Scan(&canonicalState); err != nil {
+		t.Fatalf("load canonical state: %v", err)
+	}
+	if err := db.QueryRow(`SELECT publication_state FROM events WHERE id = ?`, fixture.loserID).Scan(&loserState); err != nil {
+		t.Fatalf("load loser state: %v", err)
+	}
+	if canonicalState != string(domain.PublicationStateReviewed) || loserState != string(domain.PublicationStateReviewed) {
+		t.Fatalf("event states = canonical %q loser %q, want both reviewed", canonicalState, loserState)
+	}
+
+	var separationCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM event_review_separations
+		WHERE active = 1
+			AND endpoint_a_key = ?
+			AND endpoint_b_key = ?
+	`, seedstore.EventReviewSeparationEventEndpointKey(fixture.canonicalID), seedstore.EventReviewSeparationEventEndpointKey(fixture.loserID)).Scan(&separationCount); err != nil {
+		t.Fatalf("count event separations: %v", err)
+	}
+	if separationCount != 1 {
+		t.Fatalf("active event-event separations = %d, want 1", separationCount)
+	}
+
+	var snapshot string
+	if err := db.QueryRow(`SELECT snapshot FROM event_review_resolutions WHERE cluster_id = ?`, fixture.clusterID).Scan(&snapshot); err != nil {
+		t.Fatalf("load resolution snapshot: %v", err)
+	}
+	var got struct {
+		RepairRunID        *int64 `json:"repair_run_id"`
+		AppliedLiveActions []struct {
+			EventID int64 `json:"event_id"`
+		} `json:"applied_live_actions"`
+		AppliedSeparations            []map[string]any `json:"applied_separations"`
+		AppliedHistoricalKeepSeparate struct {
+			KeptEvents []struct {
+				EventID   int64  `json:"event_id"`
+				EventSlug string `json:"event_slug"`
+			} `json:"kept_events"`
+		} `json:"applied_historical_keep_separate"`
+	}
+	if err := json.Unmarshal([]byte(snapshot), &got); err != nil {
+		t.Fatalf("unmarshal keep-separate snapshot: %v", err)
+	}
+	if got.RepairRunID != nil {
+		t.Fatalf("repair run id = %v, want nil", *got.RepairRunID)
+	}
+	if len(got.AppliedLiveActions) != 0 {
+		t.Fatalf("applied live actions = %#v, want none", got.AppliedLiveActions)
+	}
+	if len(got.AppliedSeparations) != 1 {
+		t.Fatalf("applied separations = %d, want 1", len(got.AppliedSeparations))
+	}
+	if len(got.AppliedHistoricalKeepSeparate.KeptEvents) != 2 {
+		t.Fatalf("kept events = %#v, want 2", got.AppliedHistoricalKeepSeparate.KeptEvents)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil || !ok {
+		t.Fatalf("load resolved detail ok=%v err=%v", ok, err)
+	}
+	if detail.Resolution == nil || detail.Resolution.AppliedHistoricalKeepSeparate == nil || len(detail.Resolution.AppliedHistoricalKeepSeparate.KeptEvents) != 2 {
+		t.Fatalf("resolution keep-separate summary = %#v", detail.Resolution)
+	}
+}
+
+func TestResolveHistoricalDuplicateKeepSeparateUsesEvidenceEventsWhenNoCanonicalActionExists(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	sourceID := insertStoreTestSource(t, db)
+	venueID := lookupStoreVenueID(t, db, "leadmill")
+	insertLegacyEvent(t, db, "historical-duplicate-first-false-positive", venueID, sourceID, domain.OriginLive)
+	insertLegacyEvent(t, db, "historical-duplicate-second-false-positive", venueID, sourceID, domain.OriginLive)
+	firstID := mustEventIDBySlug(t, db, "historical-duplicate-first-false-positive")
+	secondID := mustEventIDBySlug(t, db, "historical-duplicate-second-false-positive")
+	clusterID := insertEventReviewClusterOK(t, db, string(seedstore.EventReviewClusterStatusOpen), nil, nil, nil)
+	if _, err := db.Exec(`UPDATE event_review_clusters SET conflict_type = ?, conflict_reason = ? WHERE id = ?`, "historical_duplicate", "multiple reviewed targets", clusterID); err != nil {
+		t.Fatalf("seed conflict metadata: %v", err)
+	}
+	firstEvidenceID := insertEventReviewEvidenceOK(t, db, sourceID, &firstID, "historical-duplicate-first-evidence", `{"role":"candidate"}`)
+	secondEvidenceID := insertEventReviewEvidenceOK(t, db, sourceID, &secondID, "historical-duplicate-second-evidence", `{"role":"candidate"}`)
+	insertEventReviewClusterEvidenceOK(t, db, clusterID, firstEvidenceID, true, time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC), nil, "first event")
+	insertEventReviewClusterEvidenceOK(t, db, clusterID, secondEvidenceID, true, time.Date(2026, time.May, 15, 11, 1, 0, 0, time.UTC), nil, "second event")
+
+	if err := st.ResolveHistoricalDuplicateKeepSeparate(context.Background(), seedstore.EventReviewHistoricalDuplicateKeepSeparateInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       clusterID,
+			ExpectedVersion: 1,
+		},
+		KeptEventIDs: []int64{firstID, secondID},
+	}); err != nil {
+		t.Fatalf("resolve evidence-only historical duplicate keep separate: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	var separationCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM event_review_separations
+		WHERE active = 1
+			AND endpoint_a_key = ?
+			AND endpoint_b_key = ?
+	`, seedstore.EventReviewSeparationEventEndpointKey(firstID), seedstore.EventReviewSeparationEventEndpointKey(secondID)).Scan(&separationCount); err != nil {
+		t.Fatalf("count event separations: %v", err)
+	}
+	if separationCount != 1 {
+		t.Fatalf("active event-event separations = %d, want 1", separationCount)
+	}
+}
+
 func TestResolveEventReviewClusterAppliesTitleRepairAndRefreshesExactIdentity(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()
@@ -1790,6 +1926,35 @@ func TestTerminalReplayMatchesTitleSlugConflictEventIDs(t *testing.T) {
 		t.Fatalf("terminal replay unrelated title slug conflict event: %v", err)
 	} else if matched {
 		t.Fatal("terminal replay matched unrelated title slug conflict event")
+	}
+}
+
+func TestTerminalReplayMatchesHistoricalDuplicateKeepSeparateEventIDs(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	firstID := int64(801)
+	secondID := int64(802)
+	cluster := seedstore.EventReviewCluster{ID: 1002, Status: seedstore.EventReviewClusterStatusResolved}
+	resolution := &seedstore.EventReviewResolutionSummary{
+		AppliedHistoricalKeepSeparate: &seedstore.EventReviewResolutionAppliedHistoricalKeepSeparateSummary{
+			KeptEvents: []seedstore.EventReviewResolutionKeptHistoricalDuplicateEventSummary{
+				{EventID: firstID, EventSlug: "historical-duplicate-first"},
+				{EventID: secondID, EventSlug: "historical-duplicate-second"},
+			},
+		},
+	}
+	for _, eventID := range []int64{firstID, secondID} {
+		if matched, err := terminalEvidenceOutcomeMatchesInputTx(context.Background(), db, cluster, resolution, seedstore.StageEventReviewEvidenceInput{EventID: int64Ptr(eventID)}); err != nil {
+			t.Fatalf("terminal replay historical duplicate keep-separate event %d: %v", eventID, err)
+		} else if !matched {
+			t.Fatalf("terminal replay did not match historical duplicate keep-separate event %d", eventID)
+		}
+	}
+	if matched, err := terminalEvidenceOutcomeMatchesInputTx(context.Background(), db, cluster, resolution, seedstore.StageEventReviewEvidenceInput{EventID: int64Ptr(899)}); err != nil {
+		t.Fatalf("terminal replay unrelated historical duplicate keep-separate event: %v", err)
+	} else if matched {
+		t.Fatal("terminal replay matched unrelated historical duplicate keep-separate event")
 	}
 }
 

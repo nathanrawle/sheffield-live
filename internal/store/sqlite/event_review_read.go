@@ -349,22 +349,27 @@ func (s *Store) LoadEventReviewCluster(ctx context.Context, id int64) (seedstore
 	if err != nil {
 		return seedstore.EventReviewClusterDetail{}, false, err
 	}
+	historicalDuplicateReadiness, err := loadEventReviewHistoricalDuplicateReadinessTx(ctx, tx, summary, evidence, liveActions)
+	if err != nil {
+		return seedstore.EventReviewClusterDetail{}, false, err
+	}
 
 	return seedstore.EventReviewClusterDetail{
-		Summary:              summary,
-		Resolution:           resolution,
-		ImportReadiness:      importReadiness,
-		TitleRepairReadiness: titleRepairReadiness,
-		Evidence:             evidence,
-		ClusterIdentityKeys:  clusterIdentityKeys,
-		EvidenceIdentityKeys: evidenceIdentityKeys,
-		SourceIdentityLinks:  sourceIdentityLinks,
-		ExactIdentityMatches: exactIdentityMatches,
-		Observations:         observations,
-		Separations:          separations,
-		CanonicalChoices:     canonicalChoices,
-		DraftChoices:         draftChoices,
-		LiveActions:          liveActions,
+		Summary:                      summary,
+		Resolution:                   resolution,
+		ImportReadiness:              importReadiness,
+		TitleRepairReadiness:         titleRepairReadiness,
+		HistoricalDuplicateReadiness: historicalDuplicateReadiness,
+		Evidence:                     evidence,
+		ClusterIdentityKeys:          clusterIdentityKeys,
+		EvidenceIdentityKeys:         evidenceIdentityKeys,
+		SourceIdentityLinks:          sourceIdentityLinks,
+		ExactIdentityMatches:         exactIdentityMatches,
+		Observations:                 observations,
+		Separations:                  separations,
+		CanonicalChoices:             canonicalChoices,
+		DraftChoices:                 draftChoices,
+		LiveActions:                  liveActions,
 	}, true, nil
 }
 
@@ -571,6 +576,17 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 				NewSlug:             parsed.AppliedTitleSlugConflict.NewSlug,
 			}
 		}
+		if parsed.AppliedHistoricalKeepSeparate != nil {
+			summary.AppliedHistoricalKeepSeparate = &seedstore.EventReviewResolutionAppliedHistoricalKeepSeparateSummary{
+				KeptEvents: make([]seedstore.EventReviewResolutionKeptHistoricalDuplicateEventSummary, 0, len(parsed.AppliedHistoricalKeepSeparate.KeptEvents)),
+			}
+			for _, event := range parsed.AppliedHistoricalKeepSeparate.KeptEvents {
+				summary.AppliedHistoricalKeepSeparate.KeptEvents = append(summary.AppliedHistoricalKeepSeparate.KeptEvents, seedstore.EventReviewResolutionKeptHistoricalDuplicateEventSummary{
+					EventID:   event.EventID,
+					EventSlug: event.EventSlug,
+				})
+			}
+		}
 		summary.AppliedLiveActions = make([]seedstore.EventReviewResolutionAppliedLiveActionSummary, 0, len(parsed.AppliedLiveActions))
 		for _, action := range parsed.AppliedLiveActions {
 			summary.AppliedLiveActions = append(summary.AppliedLiveActions, seedstore.EventReviewResolutionAppliedLiveActionSummary{
@@ -596,17 +612,18 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 }
 
 type eventReviewResolutionSnapshotParsed struct {
-	RepairRunID                *int64                                                       `json:"repair_run_id,omitempty"`
-	SupersededByClusterID      *int64                                                       `json:"superseded_by_cluster_id,omitempty"`
-	CanonicalEventID           *int64                                                       `json:"canonical_event_id,omitempty"`
-	AppliedAutoResolution      *eventReviewResolutionAppliedAutoResolutionSnapshotView      `json:"applied_auto_resolution,omitempty"`
-	AppliedImportListing       *eventReviewResolutionAppliedImportListingSnapshotView       `json:"applied_import_listing,omitempty"`
-	AppliedSupportingSource    *eventReviewResolutionAppliedSupportingSourceSnapshotView    `json:"applied_supporting_source,omitempty"`
-	AppliedAuthoritativeImport *eventReviewResolutionAppliedAuthoritativeImportSnapshotView `json:"applied_authoritative_import,omitempty"`
-	AppliedSeparations         []eventReviewResolutionAppliedSeparationSnapshotView         `json:"applied_separations,omitempty"`
-	AppliedTitleRepair         *eventReviewResolutionAppliedTitleRepairSnapshotView         `json:"applied_title_repair,omitempty"`
-	AppliedTitleSlugConflict   *eventReviewResolutionAppliedTitleSlugConflictSnapshotView   `json:"applied_title_slug_conflict,omitempty"`
-	AppliedLiveActions         []eventReviewResolutionAppliedLiveActionSnapshotView         `json:"applied_live_actions,omitempty"`
+	RepairRunID                   *int64                                                          `json:"repair_run_id,omitempty"`
+	SupersededByClusterID         *int64                                                          `json:"superseded_by_cluster_id,omitempty"`
+	CanonicalEventID              *int64                                                          `json:"canonical_event_id,omitempty"`
+	AppliedAutoResolution         *eventReviewResolutionAppliedAutoResolutionSnapshotView         `json:"applied_auto_resolution,omitempty"`
+	AppliedImportListing          *eventReviewResolutionAppliedImportListingSnapshotView          `json:"applied_import_listing,omitempty"`
+	AppliedSupportingSource       *eventReviewResolutionAppliedSupportingSourceSnapshotView       `json:"applied_supporting_source,omitempty"`
+	AppliedAuthoritativeImport    *eventReviewResolutionAppliedAuthoritativeImportSnapshotView    `json:"applied_authoritative_import,omitempty"`
+	AppliedSeparations            []eventReviewResolutionAppliedSeparationSnapshotView            `json:"applied_separations,omitempty"`
+	AppliedTitleRepair            *eventReviewResolutionAppliedTitleRepairSnapshotView            `json:"applied_title_repair,omitempty"`
+	AppliedTitleSlugConflict      *eventReviewResolutionAppliedTitleSlugConflictSnapshotView      `json:"applied_title_slug_conflict,omitempty"`
+	AppliedHistoricalKeepSeparate *eventReviewResolutionAppliedHistoricalKeepSeparateSnapshotView `json:"applied_historical_keep_separate,omitempty"`
+	AppliedLiveActions            []eventReviewResolutionAppliedLiveActionSnapshotView            `json:"applied_live_actions,omitempty"`
 }
 
 type eventReviewResolutionAppliedAutoResolutionSnapshotView struct {
@@ -667,6 +684,15 @@ type eventReviewResolutionAppliedLiveActionSnapshotView struct {
 	EventSlug string                              `json:"event_slug,omitempty"`
 	Action    seedstore.EventReviewLiveActionKind `json:"action"`
 	Reason    string                              `json:"reason,omitempty"`
+}
+
+type eventReviewResolutionAppliedHistoricalKeepSeparateSnapshotView struct {
+	KeptEvents []eventReviewResolutionKeptHistoricalDuplicateEventSnapshotView `json:"kept_events,omitempty"`
+}
+
+type eventReviewResolutionKeptHistoricalDuplicateEventSnapshotView struct {
+	EventID   int64  `json:"event_id"`
+	EventSlug string `json:"event_slug,omitempty"`
 }
 
 type eventReviewResolutionAppliedTitleRepairSnapshotView struct {
@@ -1719,6 +1745,198 @@ func loadEventReviewTitleRepairReadinessTx(ctx context.Context, q queryer, summa
 		readiness.Eligible = true
 	}
 	return readiness, nil
+}
+
+func loadEventReviewHistoricalDuplicateReadinessTx(ctx context.Context, q queryer, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary, liveActions []seedstore.EventReviewClusterLiveActionSummary) (*seedstore.EventReviewHistoricalDuplicateReadiness, error) {
+	if summary.ConflictType != historicalDuplicateRepairConflictType {
+		return nil, nil
+	}
+
+	readiness := &seedstore.EventReviewHistoricalDuplicateReadiness{}
+	actionByEventID := make(map[int64]seedstore.EventReviewClusterLiveActionSummary, len(liveActions))
+	eventIDs := make([]int64, 0, len(evidence)+len(liveActions)+1)
+	if summary.CanonicalEventID != nil {
+		eventIDs = append(eventIDs, *summary.CanonicalEventID)
+	}
+	for _, row := range evidence {
+		if row.EventID != nil {
+			eventIDs = append(eventIDs, *row.EventID)
+		}
+	}
+	for _, action := range liveActions {
+		eventIDs = append(eventIDs, action.EventID)
+		if action.EventID > 0 {
+			actionByEventID[action.EventID] = action
+		}
+	}
+	eventIDs = uniqueInt64s(eventIDs)
+
+	for _, eventID := range eventIDs {
+		eventReadiness := seedstore.EventReviewHistoricalDuplicateEventReadiness{EventID: eventID}
+		if action, ok := actionByEventID[eventID]; ok {
+			eventReadiness.Action = action.Action
+			eventReadiness.EventSlug = strings.TrimSpace(action.EventSlug)
+		}
+		record, ok, err := loadEventRecordByIDTx(ctx, q, eventID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			appendUniqueImportReadinessReason(&eventReadiness.BlockingReasons, "event is missing")
+			appendUniqueImportReadinessReason(&readiness.KeepSeparateBlockingReasons, "all events must exist")
+			readiness.Events = append(readiness.Events, eventReadiness)
+			continue
+		}
+		if eventReadiness.EventSlug == "" {
+			eventReadiness.EventSlug = strings.TrimSpace(record.Event.Slug)
+		}
+		state := normalizedPublicationState(record.Event.PublicationState)
+		eventReadiness.PublicationState = string(state)
+		eventReadiness.Live = isLiveNonWithheldEventRow(string(record.Event.Origin), string(record.Event.PublicationState))
+		if !eventReadiness.Live {
+			appendUniqueImportReadinessReason(&eventReadiness.BlockingReasons, "event is not live/non-withheld")
+		}
+		if state != domain.PublicationStateReviewed && state != domain.PublicationStateProvisional {
+			appendUniqueImportReadinessReason(&eventReadiness.BlockingReasons, "event is not reviewed or provisional")
+		}
+		eventReadiness.KeepEligible = len(eventReadiness.BlockingReasons) == 0
+		if !eventReadiness.KeepEligible {
+			appendUniqueImportReadinessReason(&readiness.KeepSeparateBlockingReasons, "all events must be live reviewed/provisional")
+		}
+		readiness.Events = append(readiness.Events, eventReadiness)
+	}
+
+	if summary.Status != seedstore.EventReviewClusterStatusOpen {
+		appendUniqueImportReadinessReason(&readiness.LiveActionBlockingReasons, "cluster is not open")
+		appendUniqueImportReadinessReason(&readiness.KeepSeparateBlockingReasons, "cluster is not open")
+	}
+	if len(eventIDs) < 2 {
+		appendUniqueImportReadinessReason(&readiness.KeepSeparateBlockingReasons, "at least two historical duplicate events are required")
+	}
+	liveActionBlockers, err := historicalDuplicateLiveActionBlockingReasonsTx(ctx, q, summary, liveActions)
+	if err != nil {
+		return nil, err
+	}
+	for _, reason := range liveActionBlockers {
+		appendUniqueImportReadinessReason(&readiness.LiveActionBlockingReasons, reason)
+	}
+	readiness.CanResolveLiveActions = len(readiness.LiveActionBlockingReasons) == 0
+	readiness.CanKeepAllSeparate = len(readiness.KeepSeparateBlockingReasons) == 0
+	return readiness, nil
+}
+
+func historicalDuplicateLiveActionBlockingReasonsTx(ctx context.Context, q queryer, summary seedstore.EventReviewClusterSummary, liveActions []seedstore.EventReviewClusterLiveActionSummary) ([]string, error) {
+	var blockers []string
+	appendBlocker := func(reason string) {
+		appendUniqueImportReadinessReason(&blockers, reason)
+	}
+	if summary.Status != seedstore.EventReviewClusterStatusOpen {
+		appendBlocker("cluster is not open")
+	}
+	if summary.CanonicalEventID == nil || *summary.CanonicalEventID <= 0 {
+		appendBlocker("canonical event is missing")
+	}
+	if len(liveActions) == 0 {
+		appendBlocker("no stored live actions")
+	}
+	if summary.CanonicalEventID == nil || *summary.CanonicalEventID <= 0 || len(liveActions) == 0 {
+		return blockers, nil
+	}
+
+	canonicalID := *summary.CanonicalEventID
+	canonicalRecord, ok, err := loadEventRecordByIDTx(ctx, q, canonicalID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		appendBlocker("canonical event is missing")
+	} else {
+		if !isLiveNonWithheldEventRow(string(canonicalRecord.Event.Origin), string(canonicalRecord.Event.PublicationState)) {
+			appendBlocker("canonical event is not live/non-withheld")
+		}
+		if normalizedPublicationState(canonicalRecord.Event.PublicationState) != domain.PublicationStateReviewed {
+			appendBlocker("canonical event is not reviewed")
+		}
+	}
+
+	seenEventIDs := make(map[int64]struct{}, len(liveActions))
+	keepCount := 0
+	withholdCount := 0
+	for _, action := range liveActions {
+		if action.EventID <= 0 {
+			appendBlocker("live action event is missing")
+			continue
+		}
+		if _, ok := seenEventIDs[action.EventID]; ok {
+			appendBlocker("duplicate live action event")
+			continue
+		}
+		seenEventIDs[action.EventID] = struct{}{}
+		if !action.Action.Valid() {
+			appendBlocker("unsupported live action")
+			continue
+		}
+		switch action.Action {
+		case seedstore.EventReviewLiveActionKindKeepSeparate:
+			keepCount++
+			if action.EventID != canonicalID {
+				appendBlocker("keep_separate action must target canonical event")
+			}
+		case seedstore.EventReviewLiveActionKindWithholdDuplicate:
+			withholdCount++
+			if action.EventID == canonicalID {
+				appendBlocker("withhold_duplicate action must target a non-canonical event")
+				continue
+			}
+			record, ok, err := loadEventRecordByIDTx(ctx, q, action.EventID)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				appendBlocker("withhold event is missing")
+				continue
+			}
+			state := normalizedPublicationState(record.Event.PublicationState)
+			if state == domain.PublicationStateWithheld {
+				if historicalDuplicateRepairCanonicalEventIDFromDB(ctx, q, action.EventID) != canonicalID {
+					appendBlocker("withhold event is already withheld to another canonical event")
+				}
+				continue
+			}
+			if record.Event.Origin != domain.OriginLive || (state != domain.PublicationStateProvisional && state != domain.PublicationStateReviewed) {
+				appendBlocker("withhold event is not provisional or reviewed live")
+				continue
+			}
+			if reason, reviewNeeded, err := historicalDuplicateRepairSourceLinkGuardTx(ctx, q, action.EventID, canonicalID); err != nil {
+				return nil, err
+			} else if reviewNeeded {
+				appendBlocker(reason)
+			}
+			if reason, reviewNeeded, err := historicalDuplicateRepairAliasConflictTx(ctx, q, record.Event.Slug, canonicalID); err != nil {
+				return nil, err
+			} else if reviewNeeded {
+				appendBlocker(reason)
+			}
+		}
+	}
+	if keepCount != 1 {
+		appendBlocker("exactly one keep_separate action for canonical event is required")
+	}
+	if withholdCount == 0 {
+		appendBlocker("at least one withhold_duplicate action is required")
+	}
+	return blockers, nil
+}
+
+func historicalDuplicateReadinessEventIDs(readiness *seedstore.EventReviewHistoricalDuplicateReadiness) []int64 {
+	if readiness == nil {
+		return nil
+	}
+	ids := make([]int64, 0, len(readiness.Events))
+	for _, event := range readiness.Events {
+		ids = append(ids, event.EventID)
+	}
+	return uniqueInt64s(ids)
 }
 
 type eventReviewImportCandidatePayload struct {
