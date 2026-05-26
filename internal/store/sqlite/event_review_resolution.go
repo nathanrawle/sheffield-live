@@ -1314,9 +1314,16 @@ func (s *Store) AcceptEventReviewSupportingSource(ctx context.Context, input see
 
 	now := time.Now().UTC()
 	selectedSourceKeys := normalizedImportReviewSourceIdentityKeys(input.SourceIdentityKeys)
-	identityStatus, err := loadImportReviewCandidateIdentityStatusTx(ctx, tx, cluster.ID, *evidence)
+	identityStatuses, err := loadImportReviewCandidateIdentityStatusesTx(ctx, tx, cluster.ID, activeEvidence)
 	if err != nil {
 		return err
+	}
+	if err := validateImportReviewSupportingSelectedEvidence(cluster.ID, evidence.EvidenceID, identityStatuses); err != nil {
+		return err
+	}
+	identityStatus, ok := importReviewCandidateIdentityStatusForEvidence(identityStatuses, evidence.EvidenceID)
+	if !ok {
+		return fmt.Errorf("import review event review cluster %d evidence %d identity status is missing", cluster.ID, evidence.EvidenceID)
 	}
 	selectedSourceKeys, err = validateImportReviewSupportingSourceKeys(cluster.ID, evidence.EvidenceID, identityStatus, selectedSourceKeys)
 	if err != nil {
@@ -1491,21 +1498,32 @@ func normalizedImportReviewSourceIdentityKeys(values []string) []string {
 }
 
 func loadImportReviewCandidateIdentityStatusTx(ctx context.Context, q queryer, clusterID int64, evidence seedstore.EventReviewClusterEvidenceSummary) (seedstore.EventReviewImportCandidateIdentityStatus, error) {
-	evidenceIdentityKeys, err := loadEventReviewEvidenceIdentityKeySummariesTx(ctx, q, clusterID)
+	statuses, err := loadImportReviewCandidateIdentityStatusesTx(ctx, q, clusterID, []seedstore.EventReviewClusterEvidenceSummary{evidence})
 	if err != nil {
 		return seedstore.EventReviewImportCandidateIdentityStatus{}, err
+	}
+	if len(statuses) == 0 {
+		return seedstore.EventReviewImportCandidateIdentityStatus{}, nil
+	}
+	return statuses[0], nil
+}
+
+func loadImportReviewCandidateIdentityStatusesTx(ctx context.Context, q queryer, clusterID int64, evidence []seedstore.EventReviewClusterEvidenceSummary) ([]seedstore.EventReviewImportCandidateIdentityStatus, error) {
+	evidenceIdentityKeys, err := loadEventReviewEvidenceIdentityKeySummariesTx(ctx, q, clusterID)
+	if err != nil {
+		return nil, err
 	}
 	exactIdentityMatches, err := loadEventReviewClusterExactIdentityMatchSummariesTx(ctx, q, clusterID)
 	if err != nil {
-		return seedstore.EventReviewImportCandidateIdentityStatus{}, err
+		return nil, err
 	}
 	sourceIdentityLinks, err := loadEventReviewClusterSourceIdentityLinkSummariesTx(ctx, q, clusterID)
 	if err != nil {
-		return seedstore.EventReviewImportCandidateIdentityStatus{}, err
+		return nil, err
 	}
 	sourceIdentityChoices, err := loadEventReviewClusterSourceIdentityChoiceSummariesTx(ctx, q, clusterID)
 	if err != nil {
-		return seedstore.EventReviewImportCandidateIdentityStatus{}, err
+		return nil, err
 	}
 	exactMatchByKey := make(map[string]seedstore.EventReviewClusterExactIdentityMatchSummary, len(exactIdentityMatches))
 	for _, match := range exactIdentityMatches {
@@ -1525,17 +1543,45 @@ func loadImportReviewCandidateIdentityStatusTx(ctx context.Context, q queryer, c
 			sourceChoiceByKey[importCandidateSourceIdentityKey(choice.SourceID, choice.SourceIdentityKey)] = choice
 		}
 	}
-	statuses := []seedstore.EventReviewImportCandidateIdentityStatus{{
-		EvidenceID:          evidence.EvidenceID,
-		EvidenceFingerprint: evidence.EvidenceFingerprint,
-		SourceID:            evidence.SourceID,
-		SourceName:          evidence.SourceName,
-	}}
-	statuses = buildEventReviewCandidateIdentityStatuses(statuses, map[int64]int{evidence.EvidenceID: 0}, evidenceIdentityKeys, exactMatchByKey, sourceLinkByKey, sourceChoiceByKey)
-	if len(statuses) == 0 {
-		return seedstore.EventReviewImportCandidateIdentityStatus{}, nil
+	statuses := make([]seedstore.EventReviewImportCandidateIdentityStatus, 0, len(evidence))
+	statusIndexByEvidenceID := make(map[int64]int, len(evidence))
+	for _, row := range evidence {
+		statusIndexByEvidenceID[row.EvidenceID] = len(statuses)
+		statuses = append(statuses, seedstore.EventReviewImportCandidateIdentityStatus{
+			EvidenceID:          row.EvidenceID,
+			EvidenceFingerprint: row.EvidenceFingerprint,
+			SourceID:            row.SourceID,
+			SourceName:          row.SourceName,
+		})
 	}
-	return statuses[0], nil
+	return buildEventReviewCandidateIdentityStatuses(statuses, statusIndexByEvidenceID, evidenceIdentityKeys, exactMatchByKey, sourceLinkByKey, sourceChoiceByKey), nil
+}
+
+func importReviewCandidateIdentityStatusForEvidence(statuses []seedstore.EventReviewImportCandidateIdentityStatus, evidenceID int64) (seedstore.EventReviewImportCandidateIdentityStatus, bool) {
+	for _, status := range statuses {
+		if status.EvidenceID == evidenceID {
+			return status, true
+		}
+	}
+	return seedstore.EventReviewImportCandidateIdentityStatus{}, false
+}
+
+func validateImportReviewSupportingSelectedEvidence(clusterID, evidenceID int64, statuses []seedstore.EventReviewImportCandidateIdentityStatus) error {
+	choicesPresent, selectedEvidenceIDs := importReviewSourceChoiceSelection(statuses)
+	if !choicesPresent {
+		return nil
+	}
+	switch len(selectedEvidenceIDs) {
+	case 0:
+		return fmt.Errorf("import review event review cluster %d has no selected source identity choices", clusterID)
+	case 1:
+		if _, ok := selectedEvidenceIDs[evidenceID]; ok {
+			return nil
+		}
+		return fmt.Errorf("import review event review cluster %d evidence %d is not selected by source identity choices", clusterID, evidenceID)
+	default:
+		return fmt.Errorf("import review event review cluster %d selected source identity choices span multiple candidates", clusterID)
+	}
 }
 
 func validateImportReviewSupportingSourceKeys(clusterID, evidenceID int64, status seedstore.EventReviewImportCandidateIdentityStatus, submittedKeys []string) ([]string, error) {

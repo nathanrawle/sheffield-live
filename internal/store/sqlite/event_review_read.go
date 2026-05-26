@@ -2689,34 +2689,53 @@ func applyEventReviewImportSourceChoiceBlockers(targets []seedstore.EventReviewI
 	if len(targets) == 0 || len(statuses) == 0 {
 		return targets
 	}
-	blockedEvidenceIDs := make(map[int64]struct{})
-	for _, status := range statuses {
-		if !eventReviewImportSourceChoicesPresent(status.SourceKeys) {
-			continue
-		}
-		selected := false
-		for _, sourceKey := range status.SourceKeys {
-			if sourceKey.ChoiceSelected {
-				selected = true
-				break
-			}
-		}
-		if !selected {
-			blockedEvidenceIDs[status.EvidenceID] = struct{}{}
-		}
-	}
-	if len(blockedEvidenceIDs) == 0 {
+	choicesPresent, selectedEvidenceIDs := importReviewSourceChoiceSelection(statuses)
+	if !choicesPresent {
 		return targets
 	}
+
+	blockAll := false
+	selectedEvidenceID := int64(0)
+	reason := "evidence is not selected by source identity choices"
+	switch len(selectedEvidenceIDs) {
+	case 0:
+		blockAll = true
+		reason = "no selected source identity choices"
+	case 1:
+		for evidenceID := range selectedEvidenceIDs {
+			selectedEvidenceID = evidenceID
+		}
+	default:
+		blockAll = true
+		reason = "selected source identity choices span multiple candidates"
+	}
+
 	out := make([]seedstore.EventReviewImportExistingEventTarget, len(targets))
 	copy(out, targets)
 	for i := range out {
-		if _, ok := blockedEvidenceIDs[out[i].EvidenceID]; !ok {
+		if !blockAll && out[i].EvidenceID == selectedEvidenceID {
 			continue
 		}
-		appendUniqueImportReadinessReason(&out[i].BlockingReasons, "no selected source identity choices")
+		appendUniqueImportReadinessReason(&out[i].BlockingReasons, reason)
 	}
 	return out
+}
+
+func importReviewSourceChoiceSelection(statuses []seedstore.EventReviewImportCandidateIdentityStatus) (bool, map[int64]struct{}) {
+	selectedEvidenceIDs := make(map[int64]struct{})
+	choicesPresent := false
+	for _, status := range statuses {
+		for _, sourceKey := range status.SourceKeys {
+			if sourceKey.ChoiceUpdatedAt == nil {
+				continue
+			}
+			choicesPresent = true
+			if sourceKey.ChoiceSelected {
+				selectedEvidenceIDs[status.EvidenceID] = struct{}{}
+			}
+		}
+	}
+	return choicesPresent, selectedEvidenceIDs
 }
 
 func applyEventReviewImportNearTitleHardTargetBlockersTx(ctx context.Context, tx interface {

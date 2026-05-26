@@ -1403,6 +1403,53 @@ func TestResolveEventReviewClusterAppliesSelectedImportReviewNewListingFromMulti
 	extraPayload := importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthoritySupporting), "Unselected Import Listing", fixture.venueText, "", fixture.start.Add(1*time.Hour), fixture.end.Add(1*time.Hour), "import-review-extra")
 	extraEvidenceID := insertEventReviewEvidenceOK(t, db, fixture.sourceID, nil, "import-review-extra-"+strconv.FormatInt(fixture.clusterID, 10), extraPayload)
 	insertEventReviewClusterEvidenceOK(t, db, fixture.clusterID, extraEvidenceID, true, fixture.start.Add(10*time.Minute), nil, "extra evidence")
+	extraTargetID := mustInsertExactIdentityEvent(t, db, "unselected-evidence-existing-target", "Unselected Import Listing", fixture.venueID, fixture.sourceID, fixture.start.Add(1*time.Hour), fixture.end.Add(1*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	extraExactKey := "unselected-evidence-existing-exact-key"
+	if _, err := db.Exec(`
+		INSERT INTO event_exact_identities (
+			event_id,
+			identity_key,
+			key_version,
+			venue_slug,
+			utc_start_at,
+			clean_title,
+			active,
+			created_at,
+			updated_at,
+			deactivated_at,
+			deactivated_reason,
+			repair_run_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, extraTargetID, extraExactKey, exactIdentityKeyVersion, "leadmill", formatRFC3339UTC(fixture.start.Add(1*time.Hour)), "Unselected Import Listing", 1, "2026-05-15T09:45:00Z", "2026-05-15T09:45:00Z", nil, "", nil); err != nil {
+		t.Fatalf("insert unselected evidence exact target identity: %v", err)
+	}
+	extraExactKeyID := insertEventReviewIdentityKeyOK(t, db, "unselected-evidence-existing-exact-hash", seedstore.EventReviewIdentityKeyKindExact, extraExactKey)
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, extraEvidenceID, extraExactKeyID, nil, seedstore.EventReviewEvidenceIdentityKeyRoleExact); err != nil {
+		t.Fatalf("insert unselected evidence exact key: %v", err)
+	}
+	detail, ok, err = st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load selected multi-evidence readiness with unselected existing target: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("selected multi-evidence readiness with unselected target missing")
+	}
+	extraTarget := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, extraEvidenceID, extraTargetID, seedstore.EventReviewImportTargetBasisExactIdentity)
+	if !hasString(extraTarget.BlockingReasons, "evidence is not selected by source identity choices") {
+		t.Fatalf("unselected evidence target blockers = %#v, want selected-evidence blocker", extraTarget.BlockingReasons)
+	}
+	if err := st.AcceptEventReviewSupportingSource(context.Background(), seedstore.EventReviewAcceptSupportingSourceInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:    extraEvidenceID,
+		TargetEventID: extraTargetID,
+		TargetBasis:   seedstore.EventReviewImportTargetBasisExactIdentity,
+	}); err == nil || !strings.Contains(err.Error(), "not selected by source identity choices") {
+		t.Fatalf("accept supporting with unselected evidence error = %v, want not selected", err)
+	}
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
 
 	if err := st.ResolveEventReviewCluster(context.Background(), seedstore.EventReviewResolutionInput{
 		ClusterID:       fixture.clusterID,
@@ -1515,8 +1562,8 @@ func TestResolveEventReviewClusterAppliesSelectedImportReviewNewListingFromMulti
 		}
 	}
 
-	if got := mustCount(t, db, "events"); got != beforeEvents+2 {
-		t.Fatalf("events rows = %d, want %d", got, beforeEvents+2)
+	if got := mustCount(t, db, "events"); got != beforeEvents+3 {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents+3)
 	}
 	if got := mustCount(t, db, "event_review_resolutions"); got != beforeResolutions+1 {
 		t.Fatalf("event_review_resolutions rows = %d, want %d", got, beforeResolutions+1)

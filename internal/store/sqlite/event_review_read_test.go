@@ -766,6 +766,29 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		if _, err := insertEventReviewSourceIdentityChoice(t, db, clusterID, sourceID, "selected-b", true, "selected b", time.Date(2026, time.May, 15, 9, 41, 0, 0, time.UTC)); err != nil {
 			t.Fatalf("insert selected candidate choice b: %v", err)
 		}
+		multiSelectedExactKey := "multi-evidence-selected-exact-key"
+		if _, err := db.Exec(`
+			INSERT INTO event_exact_identities (
+				event_id,
+				identity_key,
+				key_version,
+				venue_slug,
+				utc_start_at,
+				clean_title,
+				active,
+				created_at,
+				updated_at,
+				deactivated_at,
+				deactivated_reason,
+				repair_run_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, existingEventID, multiSelectedExactKey, exactIdentityKeyVersion, "event-review-import-readiness-hall", "2026-05-10T19:00:00Z", "Selected Choice A", 1, "2026-05-15T09:42:00Z", "2026-05-15T09:42:00Z", nil, "", nil); err != nil {
+			t.Fatalf("insert multi-evidence selected exact identity: %v", err)
+		}
+		multiSelectedExactKeyID := insertEventReviewIdentityKeyOK(t, db, "multi-evidence-selected-exact-hash", seedstore.EventReviewIdentityKeyKindExact, multiSelectedExactKey)
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, evidenceIDs[0], multiSelectedExactKeyID, nil, seedstore.EventReviewEvidenceIdentityKeyRoleExact); err != nil {
+			t.Fatalf("insert multi-evidence selected exact evidence identity: %v", err)
+		}
 
 		detail, ok, err := st.LoadEventReviewCluster(context.Background(), clusterID)
 		if err != nil {
@@ -786,6 +809,10 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		}
 		if len(selectedReadiness.SelectedSourceKeys) != 2 {
 			t.Fatalf("selected candidate selected source keys = %#v, want 2", selectedReadiness.SelectedSourceKeys)
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, evidenceIDs[0], existingEventID, seedstore.EventReviewImportTargetBasisExactIdentity)
+		if !hasString(target.BlockingReasons, "selected source identity choices span multiple candidates") {
+			t.Fatalf("multi-selected target blockers = %#v, want multi-selected blocker", target.BlockingReasons)
 		}
 	})
 
