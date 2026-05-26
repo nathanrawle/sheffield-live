@@ -62,6 +62,12 @@ type EventReviewAdminStore interface {
 	SetEventReviewSourceIdentityChoices(ctx context.Context, input store.SetEventReviewSourceIdentityChoicesInput) error
 	DiscardEventReviewCluster(ctx context.Context, input store.EventReviewDiscardInput) error
 	ResolveEventReviewCluster(ctx context.Context, input store.EventReviewResolutionInput) error
+	AcceptEventReviewSupportingSource(ctx context.Context, input store.EventReviewAcceptSupportingSourceInput) error
+	ResolveEventReviewImportSeparateAndInsert(ctx context.Context, input store.EventReviewImportSeparateAndInsertInput) error
+	ResolveEventReviewImportAuthoritative(ctx context.Context, input store.EventReviewImportAuthoritativeInput) error
+	ResolveTitleRepairSlugConflict(ctx context.Context, input store.EventReviewTitleRepairSlugConflictInput) error
+	ResolveHistoricalDuplicateKeepSeparate(ctx context.Context, input store.EventReviewHistoricalDuplicateKeepSeparateInput) error
+	ResolveHistoricalDuplicateWithActions(ctx context.Context, input store.EventReviewHistoricalDuplicateWithActionsInput) error
 	SupersedeEventReviewCluster(ctx context.Context, input store.EventReviewSupersedeInput) error
 }
 
@@ -124,57 +130,63 @@ type ServerDeps struct {
 }
 
 type PageData struct {
-	SiteName                                    string
-	PageTitle                                   string
-	MetaDescription                             string
-	Active                                      string
-	Content                                     template.HTML
-	Now                                         time.Time
-	Events                                      []domain.Event
-	EventGroups                                 []EventGroup
-	EventSections                               []EventSection
-	EventFilters                                EventFilters
-	EventFiltersApplied                         bool
-	EventDetail                                 EventDetailView
-	VenueNames                                  map[string]string
-	VenueAreas                                  map[string]string
-	Areas                                       []string
-	Event                                       domain.Event
-	EventSecondarySources                       []store.EventSecondarySourceInfo
-	EventGenres                                 []genre.Match
-	Venues                                      []domain.Venue
-	Venue                                       domain.Venue
-	VenueEvents                                 []domain.Event
-	VenueTimelineSections                       []VenueTimelineSection
-	EventReviewClusters                         []store.EventReviewClusterSummary
-	EventReviewHistoryRows                      []store.EventReviewClusterHistorySummary
-	EventReviewDetail                           store.EventReviewClusterDetail
-	EventReviewCanAcceptImportListing           bool
-	EventReviewCanAcceptSelectedImportCandidate bool
-	EventReviewCanSaveSourceIdentityChoices     bool
-	EventReviewCanResolveLiveActions            bool
-	EventReviewSourceIdentityChoices            []store.EventReviewImportCandidateSourceIdentityStatus
-	ProvisionalVenues                           []ProvisionalVenueRow
-	ProvisionalRooms                            []ProvisionalRoomRow
-	Room                                        domain.VenueRoom
-	RoomEvents                                  []domain.Event
-	ImportRunRows                               []ImportRunRow
-	ImportRunDetail                             ImportRunDetail
-	GenreRules                                  []genre.Rule
-	LatestImport                                *ingest.ImportRunSummary
-	HasImportHistory                            bool
-	HasImportRunDetail                          bool
-	HasImportRunEventReviewClusters             bool
-	HasEventReviewStorage                       bool
-	HasVenueAdmin                               bool
-	HasVenueAdminWrites                         bool
-	HasRoomAdmin                                bool
-	HasGenreConfiguration                       bool
-	AdminAuthenticated                          bool
-	CSRFToken                                   string
-	LoginNext                                   string
-	LoginError                                  string
-	Flash                                       string
+	SiteName                                         string
+	PageTitle                                        string
+	MetaDescription                                  string
+	Active                                           string
+	Content                                          template.HTML
+	Now                                              time.Time
+	Events                                           []domain.Event
+	EventGroups                                      []EventGroup
+	EventSections                                    []EventSection
+	EventFilters                                     EventFilters
+	EventFiltersApplied                              bool
+	EventDetail                                      EventDetailView
+	VenueNames                                       map[string]string
+	VenueAreas                                       map[string]string
+	Areas                                            []string
+	Event                                            domain.Event
+	EventSecondarySources                            []store.EventSecondarySourceInfo
+	EventGenres                                      []genre.Match
+	Venues                                           []domain.Venue
+	Venue                                            domain.Venue
+	VenueEvents                                      []domain.Event
+	VenueTimelineSections                            []VenueTimelineSection
+	EventReviewClusters                              []store.EventReviewClusterSummary
+	EventReviewHistoryRows                           []store.EventReviewClusterHistorySummary
+	EventReviewDetail                                store.EventReviewClusterDetail
+	EventReviewCanAcceptImportListing                bool
+	EventReviewCanAcceptSelectedImportCandidate      bool
+	EventReviewCanAcceptSupportingSource             bool
+	EventReviewCanResolveAuthoritativeImport         bool
+	EventReviewCanSaveSourceIdentityChoices          bool
+	EventReviewCanResolveLiveActions                 bool
+	EventReviewCanKeepHistoricalDuplicatesSeparate   bool
+	EventReviewCanOverrideHistoricalDuplicateActions bool
+	EventReviewHasTerminalAction                     bool
+	EventReviewUnsupportedConflictBlocker            string
+	EventReviewSourceIdentityChoices                 []store.EventReviewImportCandidateSourceIdentityStatus
+	ProvisionalVenues                                []ProvisionalVenueRow
+	ProvisionalRooms                                 []ProvisionalRoomRow
+	Room                                             domain.VenueRoom
+	RoomEvents                                       []domain.Event
+	ImportRunRows                                    []ImportRunRow
+	ImportRunDetail                                  ImportRunDetail
+	GenreRules                                       []genre.Rule
+	LatestImport                                     *ingest.ImportRunSummary
+	HasImportHistory                                 bool
+	HasImportRunDetail                               bool
+	HasImportRunEventReviewClusters                  bool
+	HasEventReviewStorage                            bool
+	HasVenueAdmin                                    bool
+	HasVenueAdminWrites                              bool
+	HasRoomAdmin                                     bool
+	HasGenreConfiguration                            bool
+	AdminAuthenticated                               bool
+	CSRFToken                                        string
+	LoginNext                                        string
+	LoginError                                       string
+	Flash                                            string
 }
 
 type EventGroup struct {
@@ -2049,6 +2061,89 @@ func (s *Server) postAdminEventReviewDecision(w http.ResponseWriter, r *http.Req
 			return
 		}
 		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_historical_duplicate_keep_separate":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		keptEventIDs, err := parseEventReviewKeepSeparateEventIDs(r.Form["kept_event_id"])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canKeepHistoricalDuplicateEventReviewClusterSeparate(cluster) {
+			http.Error(w, "event review cluster is not eligible for historical duplicate keep-separate resolution", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.ResolveHistoricalDuplicateKeepSeparate(r.Context(), store.EventReviewHistoricalDuplicateKeepSeparateInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			KeptEventIDs: keptEventIDs,
+		}); err != nil {
+			s.logRequestError(r, "resolve historical duplicate keep separate", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_historical_duplicate_actions":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		canonicalEventID := int64(0)
+		if canonicalText := strings.TrimSpace(r.FormValue("canonical_event_id")); canonicalText != "" {
+			canonicalEventID, err = strconv.ParseInt(canonicalText, 10, 64)
+			if err != nil || canonicalEventID <= 0 {
+				http.Error(w, "canonical event id is invalid", http.StatusBadRequest)
+				return
+			}
+		}
+		actions, err := parseEventReviewHistoricalDuplicateActions(r.Form)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canOverrideHistoricalDuplicateEventReviewClusterActions(cluster) {
+			http.Error(w, "event review cluster is not eligible for historical duplicate action override", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.ResolveHistoricalDuplicateWithActions(r.Context(), store.EventReviewHistoricalDuplicateWithActionsInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			CanonicalEventID: canonicalEventID,
+			Actions:          actions,
+		}); err != nil {
+			s.logRequestError(r, "resolve historical duplicate actions", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
 	case "resolve_import_new_listing":
 		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
 		if err != nil || expectedVersion <= 0 {
@@ -2107,6 +2202,162 @@ func (s *Server) postAdminEventReviewDecision(w http.ResponseWriter, r *http.Req
 			return
 		}
 		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_import_supporting_source":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		evidenceID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("evidence_id")), 10, 64)
+		if err != nil || evidenceID <= 0 {
+			http.Error(w, "evidence id is required", http.StatusBadRequest)
+			return
+		}
+		targetEventID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("target_event_id")), 10, 64)
+		if err != nil || targetEventID <= 0 {
+			http.Error(w, "target event id is required", http.StatusBadRequest)
+			return
+		}
+		targetBasis := store.EventReviewImportTargetBasis(strings.TrimSpace(r.FormValue("target_basis")))
+		if !targetBasis.Valid() {
+			http.Error(w, "supported target basis is required", http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canAcceptSupportingSourceEventReviewCluster(cluster) {
+			http.Error(w, "event review cluster is not eligible for supporting source resolution", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.AcceptEventReviewSupportingSource(r.Context(), store.EventReviewAcceptSupportingSourceInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			EvidenceID:         evidenceID,
+			TargetEventID:      targetEventID,
+			TargetBasis:        targetBasis,
+			SourceIdentityKeys: r.Form["source_identity_key"],
+		}); err != nil {
+			s.logRequestError(r, "accept import review supporting source", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_import_near_title_separate":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		evidenceID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("evidence_id")), 10, 64)
+		if err != nil || evidenceID <= 0 {
+			http.Error(w, "evidence id is required", http.StatusBadRequest)
+			return
+		}
+		targetEventID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("target_event_id")), 10, 64)
+		if err != nil || targetEventID <= 0 {
+			http.Error(w, "target event id is required", http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canAcceptSupportingSourceEventReviewCluster(cluster) {
+			http.Error(w, "event review cluster is not eligible for near-title separation", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.ResolveEventReviewImportSeparateAndInsert(r.Context(), store.EventReviewImportSeparateAndInsertInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			EvidenceID:         evidenceID,
+			NearTitleEventID:   targetEventID,
+			SourceIdentityKeys: r.Form["source_identity_key"],
+		}); err != nil {
+			s.logRequestError(r, "resolve import near-title separate", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_import_authoritative":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		evidenceID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("evidence_id")), 10, 64)
+		if err != nil || evidenceID <= 0 {
+			http.Error(w, "evidence id is required", http.StatusBadRequest)
+			return
+		}
+		var expectedTargetEventID int64
+		if value := strings.TrimSpace(r.FormValue("expected_target_event_id")); value != "" {
+			expectedTargetEventID, err = strconv.ParseInt(value, 10, 64)
+			if err != nil || expectedTargetEventID <= 0 {
+				http.Error(w, "expected target event id is invalid", http.StatusBadRequest)
+				return
+			}
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canResolveAuthoritativeImportEventReviewCluster(cluster, evidenceID) {
+			http.Error(w, "event review cluster is not eligible for authoritative import resolution", http.StatusBadRequest)
+			return
+		}
+		readinessTarget, ok := authoritativeImportTargetForEvidence(cluster, evidenceID)
+		if !ok {
+			http.Error(w, "authoritative import target is unavailable", http.StatusBadRequest)
+			return
+		}
+		if readinessTarget.EventID != nil {
+			if expectedTargetEventID <= 0 {
+				http.Error(w, "expected target event id is required", http.StatusBadRequest)
+				return
+			}
+			if expectedTargetEventID != *readinessTarget.EventID {
+				http.Error(w, "expected target event id does not match readiness target", http.StatusBadRequest)
+				return
+			}
+		}
+		if err := s.eventReviewStore.ResolveEventReviewImportAuthoritative(r.Context(), store.EventReviewImportAuthoritativeInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			EvidenceID:            evidenceID,
+			ExpectedTargetEventID: expectedTargetEventID,
+			SourceIdentityKeys:    r.Form["source_identity_key"],
+		}); err != nil {
+			s.logRequestError(r, "resolve import authoritative", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
 	case "resolve_title_repair":
 		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
 		if err != nil || expectedVersion <= 0 {
@@ -2132,6 +2383,52 @@ func (s *Server) postAdminEventReviewDecision(w http.ResponseWriter, r *http.Req
 			ExpectedVersion: expectedVersion,
 		}); err != nil {
 			s.logRequestError(r, "resolve title repair event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, "/admin/review?event_review_resolved=1", http.StatusSeeOther)
+	case "resolve_title_slug_conflict":
+		expectedVersion, err := strconv.Atoi(strings.TrimSpace(r.FormValue("expected_version")))
+		if err != nil || expectedVersion <= 0 {
+			http.Error(w, "expected version is required", http.StatusBadRequest)
+			return
+		}
+		originalCanonicalEventID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("original_canonical_event_id")), 10, 64)
+		if err != nil || originalCanonicalEventID <= 0 {
+			http.Error(w, "original canonical event id is required", http.StatusBadRequest)
+			return
+		}
+		slugConflictEventID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("slug_conflict_event_id")), 10, 64)
+		if err != nil || slugConflictEventID <= 0 {
+			http.Error(w, "slug conflict event id is required", http.StatusBadRequest)
+			return
+		}
+		cluster, ok, err := s.eventReviewStore.LoadEventReviewCluster(r.Context(), clusterID)
+		if err != nil {
+			s.logRequestError(r, "load event review cluster", err, "event_review_cluster_id", clusterID)
+			http.Error(w, "load event review cluster", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !canResolveTitleRepairSlugConflictEventReviewCluster(cluster) {
+			http.Error(w, "event review cluster is not eligible for title repair slug conflict resolution", http.StatusBadRequest)
+			return
+		}
+		if err := s.eventReviewStore.ResolveTitleRepairSlugConflict(r.Context(), store.EventReviewTitleRepairSlugConflictInput{
+			EventReviewResolutionInput: store.EventReviewResolutionInput{
+				ClusterID:       clusterID,
+				ExpectedVersion: expectedVersion,
+			},
+			Mode:                     store.EventReviewTitleRepairSlugConflictMode(strings.TrimSpace(r.FormValue("mode"))),
+			OriginalCanonicalEventID: originalCanonicalEventID,
+			SlugConflictEventID:      slugConflictEventID,
+			DraftTitle:               strings.TrimSpace(r.FormValue("draft_title")),
+			DraftSlug:                strings.TrimSpace(r.FormValue("draft_slug")),
+		}); err != nil {
+			s.logRequestError(r, "resolve title repair slug conflict event review cluster", err, "event_review_cluster_id", clusterID)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -2172,9 +2469,15 @@ func (s *Server) renderAdminEventReviewDetail(w http.ResponseWriter, r *http.Req
 	data.EventReviewDetail = cluster
 	data.EventReviewCanAcceptImportListing = canAcceptImportReviewEventReviewCluster(cluster)
 	data.EventReviewCanAcceptSelectedImportCandidate = canAcceptSelectedImportCandidateEventReviewCluster(cluster)
+	data.EventReviewCanAcceptSupportingSource = canAcceptSupportingSourceEventReviewCluster(cluster)
+	data.EventReviewCanResolveAuthoritativeImport = canResolveAnyAuthoritativeImportEventReviewCluster(cluster)
 	data.EventReviewCanSaveSourceIdentityChoices = canSaveEventReviewSourceIdentityChoices(cluster)
 	data.EventReviewSourceIdentityChoices = flattenEventReviewSourceIdentityChoiceStatuses(cluster)
 	data.EventReviewCanResolveLiveActions = canResolveHistoricalDuplicateEventReviewCluster(cluster)
+	data.EventReviewCanKeepHistoricalDuplicatesSeparate = canKeepHistoricalDuplicateEventReviewClusterSeparate(cluster)
+	data.EventReviewCanOverrideHistoricalDuplicateActions = canOverrideHistoricalDuplicateEventReviewClusterActions(cluster)
+	data.EventReviewHasTerminalAction = data.EventReviewCanAcceptImportListing || data.EventReviewCanAcceptSelectedImportCandidate || data.EventReviewCanAcceptSupportingSource || data.EventReviewCanResolveAuthoritativeImport || data.EventReviewCanResolveLiveActions || data.EventReviewCanKeepHistoricalDuplicatesSeparate || data.EventReviewCanOverrideHistoricalDuplicateActions || canResolveTitleRepairEventReviewCluster(cluster) || canResolveTitleRepairSlugConflictEventReviewCluster(cluster)
+	data.EventReviewUnsupportedConflictBlocker = eventReviewUnsupportedConflictBlocker(cluster)
 	if r.URL.Query().Get("source_identity_choices_saved") == "1" {
 		data.Flash = "Source identity choices saved."
 	}
@@ -2191,6 +2494,9 @@ func canAcceptImportReviewEventReviewCluster(cluster store.EventReviewClusterDet
 	}
 	readiness := cluster.ImportReadiness
 	if readiness == nil || !readiness.NewListingScope || len(readiness.Candidates) != 1 {
+		return false
+	}
+	if importReadinessHasExistingTargetForEvidence(readiness, readiness.Candidates[0].EvidenceID) {
 		return false
 	}
 	return readiness.Candidates[0].SourceAuthority == store.SourceAuthoritySupporting
@@ -2211,6 +2517,79 @@ func canAcceptSelectedImportCandidateEventReviewCluster(cluster store.EventRevie
 		return false
 	}
 	return true
+}
+
+func canAcceptSupportingSourceEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen {
+		return false
+	}
+	if cluster.Summary.ConflictType != store.EventReviewConflictTypeImportReview || cluster.Summary.ConflictReason != store.EventReviewConflictReasonIngestCandidate {
+		return false
+	}
+	readiness := cluster.ImportReadiness
+	if readiness == nil {
+		return false
+	}
+	for _, target := range readiness.ExistingEventTargets {
+		if len(target.BlockingReasons) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func canResolveAuthoritativeImportEventReviewCluster(cluster store.EventReviewClusterDetail, evidenceID int64) bool {
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen {
+		return false
+	}
+	if cluster.Summary.ConflictType != store.EventReviewConflictTypeImportReview || cluster.Summary.ConflictReason != store.EventReviewConflictReasonIngestCandidate {
+		return false
+	}
+	if cluster.ImportReadiness == nil {
+		return false
+	}
+	for _, target := range cluster.ImportReadiness.AuthoritativeTargets {
+		if target.EvidenceID == evidenceID && len(target.BlockingReasons) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func importReadinessHasExistingTargetForEvidence(readiness *store.EventReviewImportReadiness, evidenceID int64) bool {
+	if readiness == nil || evidenceID <= 0 {
+		return false
+	}
+	for _, target := range readiness.ExistingEventTargets {
+		if target.EvidenceID == evidenceID {
+			return true
+		}
+	}
+	return false
+}
+
+func canResolveAnyAuthoritativeImportEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
+	if cluster.ImportReadiness == nil {
+		return false
+	}
+	for _, target := range cluster.ImportReadiness.AuthoritativeTargets {
+		if canResolveAuthoritativeImportEventReviewCluster(cluster, target.EvidenceID) {
+			return true
+		}
+	}
+	return false
+}
+
+func authoritativeImportTargetForEvidence(cluster store.EventReviewClusterDetail, evidenceID int64) (store.EventReviewImportAuthoritativeTarget, bool) {
+	if cluster.ImportReadiness == nil {
+		return store.EventReviewImportAuthoritativeTarget{}, false
+	}
+	for _, target := range cluster.ImportReadiness.AuthoritativeTargets {
+		if target.EvidenceID == evidenceID && len(target.BlockingReasons) == 0 {
+			return target, true
+		}
+	}
+	return store.EventReviewImportAuthoritativeTarget{}, false
 }
 
 type eventReviewSourceIdentityChoiceKey struct {
@@ -2273,12 +2652,109 @@ func parseEventReviewSourceIdentityChoiceSelections(values []string) (map[eventR
 	return selected, nil
 }
 
+func parseEventReviewKeepSeparateEventIDs(values []string) ([]int64, error) {
+	ids := make([]int64, 0, len(values))
+	seen := make(map[int64]struct{}, len(values))
+	for _, value := range values {
+		id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil || id <= 0 {
+			return nil, errors.New("kept event id is invalid")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) < 2 {
+		return nil, errors.New("at least two kept event ids are required")
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids, nil
+}
+
+func parseEventReviewHistoricalDuplicateActions(form url.Values) ([]store.EventReviewHistoricalDuplicateActionInput, error) {
+	eventIDValues := form["historical_event_id"]
+	if len(eventIDValues) < 2 {
+		return nil, errors.New("at least two historical duplicate event ids are required")
+	}
+	seen := make(map[int64]struct{}, len(eventIDValues))
+	actions := make([]store.EventReviewHistoricalDuplicateActionInput, 0, len(eventIDValues))
+	for _, value := range eventIDValues {
+		eventID, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil || eventID <= 0 {
+			return nil, errors.New("historical duplicate event id is invalid")
+		}
+		if _, ok := seen[eventID]; ok {
+			return nil, errors.New("duplicate historical duplicate event id")
+		}
+		seen[eventID] = struct{}{}
+		action := store.EventReviewLiveActionKind(strings.TrimSpace(form.Get("historical_action_" + strconv.FormatInt(eventID, 10))))
+		if !action.Valid() {
+			return nil, errors.New("historical duplicate action is invalid")
+		}
+		actions = append(actions, store.EventReviewHistoricalDuplicateActionInput{
+			EventID: eventID,
+			Action:  action,
+		})
+	}
+	sort.Slice(actions, func(i, j int) bool { return actions[i].EventID < actions[j].EventID })
+	return actions, nil
+}
+
 func canResolveHistoricalDuplicateEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
-	return cluster.Summary.Status == store.EventReviewClusterStatusOpen && cluster.Summary.ConflictType == "historical_duplicate" && cluster.Summary.CanonicalEventID != nil && len(cluster.LiveActions) > 0
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen || cluster.Summary.ConflictType != "historical_duplicate" {
+		return false
+	}
+	if cluster.HistoricalDuplicateReadiness != nil {
+		return cluster.HistoricalDuplicateReadiness.CanResolveLiveActions
+	}
+	return cluster.Summary.CanonicalEventID != nil && len(cluster.LiveActions) > 0
+}
+
+func canKeepHistoricalDuplicateEventReviewClusterSeparate(cluster store.EventReviewClusterDetail) bool {
+	return cluster.Summary.Status == store.EventReviewClusterStatusOpen && cluster.Summary.ConflictType == "historical_duplicate" && cluster.HistoricalDuplicateReadiness != nil && cluster.HistoricalDuplicateReadiness.CanKeepAllSeparate
+}
+
+func canOverrideHistoricalDuplicateEventReviewClusterActions(cluster store.EventReviewClusterDetail) bool {
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen || cluster.Summary.ConflictType != "historical_duplicate" || cluster.HistoricalDuplicateReadiness == nil || len(cluster.HistoricalDuplicateReadiness.Events) < 2 {
+		return false
+	}
+	for _, event := range cluster.HistoricalDuplicateReadiness.Events {
+		if event.CanonicalEligible {
+			return true
+		}
+	}
+	return false
+}
+
+func eventReviewUnsupportedConflictBlocker(cluster store.EventReviewClusterDetail) string {
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen {
+		return ""
+	}
+	switch cluster.Summary.ConflictType {
+	case store.EventReviewConflictTypeImportReview:
+		if cluster.Summary.ConflictReason != store.EventReviewConflictReasonIngestCandidate {
+			return fmt.Sprintf("Unsupported import-review conflict reason %q.", cluster.Summary.ConflictReason)
+		}
+	case "title_repair", "historical_duplicate":
+		return ""
+	default:
+		conflictType := strings.TrimSpace(cluster.Summary.ConflictType)
+		if conflictType == "" {
+			conflictType = "(blank)"
+		}
+		return fmt.Sprintf("Unsupported conflict type %q.", conflictType)
+	}
+	return ""
 }
 
 func canResolveTitleRepairEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
 	return cluster.Summary.Status == store.EventReviewClusterStatusOpen && cluster.Summary.ConflictType == "title_repair" && cluster.TitleRepairReadiness != nil && cluster.TitleRepairReadiness.Eligible
+}
+
+func canResolveTitleRepairSlugConflictEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
+	return cluster.Summary.Status == store.EventReviewClusterStatusOpen && cluster.Summary.ConflictType == "title_repair" && cluster.TitleRepairReadiness != nil && cluster.TitleRepairReadiness.SlugConflictResolutionAvailable
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {

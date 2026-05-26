@@ -643,6 +643,38 @@ func TestAdminReviewSuppressesEventReviewResolveFormWhenNotApplicable(t *testing
 	}
 }
 
+func TestAdminEventReviewUnknownConflictShowsUnsupportedBlocker(t *testing.T) {
+	stagingKey := "repair-queue-unsupported"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                47,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "mystery_type",
+				ConflictReason:    "mystery_reason",
+				EvidenceCount:     1,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/47")
+	assertContains(t, body, "Unsupported cluster")
+	assertContains(t, body, `Unsupported conflict type &#34;mystery_type&#34;.`)
+	assertContains(t, body, "No terminal editorial action is currently available.")
+	assertContains(t, body, "Discard cluster")
+	assertContains(t, body, "Supersede cluster")
+	assertNotContains(t, body, `name="action" value="resolve_live_actions"`)
+	assertNotContains(t, body, `name="action" value="resolve_import_new_listing"`)
+	assertNotContains(t, body, `name="action" value="resolve_title_repair"`)
+}
+
 func TestAdminReviewRendersTitleRepairReadiness(t *testing.T) {
 	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
 	clusterID := int64(52)
@@ -734,22 +766,29 @@ func TestAdminReviewRendersTitleRepairReadiness(t *testing.T) {
 		{
 			name: "slug conflict",
 			readiness: &store.EventReviewTitleRepairReadiness{
-				CanonicalEventID:      88,
-				CurrentTitle:          "Legacy Event",
-				CurrentSlug:           "title-repair-current",
-				CurrentEventLive:      true,
-				DraftTitle:            "Conflict Title",
-				DraftSlug:             "title-repair-slug-conflict",
-				Eligible:              false,
-				BlockingReasons:       []string{"target slug already belongs to another live event"},
-				SlugConflictEventID:   int64Ptr(91),
-				SlugConflictEventSlug: "title-repair-slug-conflict",
+				CanonicalEventID:                88,
+				CurrentTitle:                    "Legacy Event",
+				CurrentSlug:                     "title-repair-current",
+				CurrentEventLive:                true,
+				DraftTitle:                      "Conflict Title",
+				DraftSlug:                       "title-repair-slug-conflict",
+				Eligible:                        false,
+				BlockingReasons:                 []string{"target slug already belongs to another live event"},
+				SlugConflictEventID:             int64Ptr(91),
+				SlugConflictEventSlug:           "title-repair-slug-conflict",
+				SlugConflictEventTitle:          "Slug Owner",
+				SlugConflictResolutionAvailable: true,
 			},
 			wantContains: []string{
 				"target slug already belongs to another live event",
 				`href="/admin/events/title-repair-slug-conflict"`,
 				"event #91",
+				"Slug Owner",
 				"title-repair-slug-conflict",
+				"Resolve slug conflict",
+				`name="action" value="resolve_title_slug_conflict"`,
+				`name="mode" value="merge_duplicate"`,
+				`name="mode" value="keep_separate_no_change"`,
 			},
 			wantNotContain: []string{
 				"Apply stored live actions",
@@ -2182,6 +2221,318 @@ func TestAdminEventReviewDetailAcceptsImportReviewNewListing(t *testing.T) {
 	}
 }
 
+func TestAdminEventReviewDetailAcceptsImportReviewSupportingSource(t *testing.T) {
+	startAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	reviewStore := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             74,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        6,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount:  1,
+				NewListingScope: true,
+				Candidates: []store.EventReviewImportCandidateSummary{{
+					EvidenceID:          303,
+					EvidenceFingerprint: "supporting-source-fingerprint",
+					SourceID:            42,
+					SourceName:          "Fixture source",
+					SourceURL:           "https://source.example.test/events",
+					SourceAuthority:     store.SourceAuthoritySupporting,
+					Title:               "Existing Target Title",
+					VenueSlug:           "leadmill",
+					StartAt:             &startAt,
+				}},
+				ExistingEventTargets: []store.EventReviewImportExistingEventTarget{{
+					EvidenceID:          303,
+					EvidenceFingerprint: "supporting-source-fingerprint",
+					EventID:             88,
+					EventSlug:           "existing-target-title",
+					EventTitle:          "Existing Target Title",
+					TargetBasis:         store.EventReviewImportTargetBasisExactIdentity,
+					ExactIdentityKeys:   []string{"exact-key"},
+					SourceIdentityKeys:  []string{"source-key"},
+				}},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(reviewStore))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/74", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, "Existing event targets")
+	assertNotContains(t, body, `name="action" value="resolve_import_new_listing"`)
+	assertContains(t, body, `name="action" value="resolve_import_supporting_source"`)
+	assertContains(t, body, `name="target_event_id" value="88"`)
+	assertContains(t, body, `name="target_basis" value="exact_identity"`)
+	assertContains(t, body, `name="source_identity_key" value="source-key"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "6")
+	form.Set("action", "resolve_import_supporting_source")
+	form.Set("evidence_id", "303")
+	form.Set("target_event_id", "88")
+	form.Set("target_basis", "exact_identity")
+	form.Add("source_identity_key", "source-key")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/74", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !reviewStore.acceptSupportingCalled {
+		t.Fatal("expected accept supporting source store method to be called")
+	}
+	if got := reviewStore.acceptSupportingInput; got.ClusterID != 74 || got.ExpectedVersion != 6 || got.EvidenceID != 303 || got.TargetEventID != 88 || got.TargetBasis != store.EventReviewImportTargetBasisExactIdentity || len(got.SourceIdentityKeys) != 1 || got.SourceIdentityKeys[0] != "source-key" {
+		t.Fatalf("accept supporting source input = %#v", got)
+	}
+}
+
+func TestAdminEventReviewDetailAcceptsImportReviewNearTitleSeparate(t *testing.T) {
+	startAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	reviewStore := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             76,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        7,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				Candidates: []store.EventReviewImportCandidateSummary{{
+					EvidenceID:          304,
+					EvidenceFingerprint: "near-title-fingerprint",
+					SourceID:            42,
+					SourceName:          "Fixture source",
+					SourceURL:           "https://source.example.test/events",
+					SourceAuthority:     store.SourceAuthoritySupporting,
+					Title:               "Existing Target + Support",
+					VenueSlug:           "leadmill",
+					StartAt:             &startAt,
+				}},
+				ExistingEventTargets: []store.EventReviewImportExistingEventTarget{{
+					EvidenceID:          304,
+					EvidenceFingerprint: "near-title-fingerprint",
+					EventID:             89,
+					EventSlug:           "existing-target-title",
+					EventTitle:          "Existing Target",
+					TargetBasis:         store.EventReviewImportTargetBasisNearTitle,
+					SourceIdentityKeys:  []string{"near-source-key"},
+				}},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(reviewStore))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/76", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, `name="action" value="resolve_import_supporting_source"`)
+	assertContains(t, body, `name="target_basis" value="near_title"`)
+	assertContains(t, body, `name="action" value="resolve_import_near_title_separate"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "7")
+	form.Set("action", "resolve_import_near_title_separate")
+	form.Set("evidence_id", "304")
+	form.Set("target_event_id", "89")
+	form.Add("source_identity_key", "near-source-key")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/76", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if !reviewStore.nearSeparateCalled {
+		t.Fatal("expected near-title separate store method to be called")
+	}
+	if got := reviewStore.nearSeparateInput; got.ClusterID != 76 || got.ExpectedVersion != 7 || got.EvidenceID != 304 || got.NearTitleEventID != 89 || len(got.SourceIdentityKeys) != 1 || got.SourceIdentityKeys[0] != "near-source-key" {
+		t.Fatalf("near-title separate input = %#v", got)
+	}
+}
+
+func TestAdminEventReviewDetailAppliesAuthoritativeImport(t *testing.T) {
+	startAt := time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC)
+	reviewStore := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             77,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        8,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				Candidates: []store.EventReviewImportCandidateSummary{{
+					EvidenceID:          305,
+					EvidenceFingerprint: "authoritative-fingerprint",
+					SourceID:            42,
+					SourceName:          "Fixture source",
+					SourceURL:           "https://source.example.test/events",
+					SourceAuthority:     store.SourceAuthorityAuthoritative,
+					Title:               "Authoritative Title",
+					VenueSlug:           "leadmill",
+					StartAt:             &startAt,
+				}},
+				AuthoritativeTargets: []store.EventReviewImportAuthoritativeTarget{{
+					EvidenceID:          305,
+					EvidenceFingerprint: "authoritative-fingerprint",
+					Result:              "inserted",
+				}},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(reviewStore))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/77", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, "Authoritative import candidates")
+	assertContains(t, body, `name="action" value="resolve_import_authoritative"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "8")
+	form.Set("action", "resolve_import_authoritative")
+	form.Set("evidence_id", "305")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/77", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if !reviewStore.authoritativeCalled {
+		t.Fatal("expected authoritative import store method to be called")
+	}
+	if got := reviewStore.authoritativeInput; got.ClusterID != 77 || got.ExpectedVersion != 8 || got.EvidenceID != 305 {
+		t.Fatalf("authoritative import input = %#v", got)
+	}
+}
+
+func TestAdminEventReviewDetailAppliesAuthoritativeImportWithExpectedTarget(t *testing.T) {
+	targetID := int64(909)
+	reviewStore := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             78,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        3,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				Candidates: []store.EventReviewImportCandidateSummary{{
+					EvidenceID:      306,
+					SourceAuthority: store.SourceAuthorityAuthoritative,
+					Title:           "Authoritative Update",
+				}},
+				AuthoritativeTargets: []store.EventReviewImportAuthoritativeTarget{{
+					EvidenceID:          306,
+					EvidenceFingerprint: "authoritative-update-fingerprint",
+					Result:              "updated",
+					EventID:             &targetID,
+					EventSlug:           "authoritative-update-target",
+					EventTitle:          "Existing Authoritative Target",
+					SourceIdentityKeys:  []string{"uid:authoritative-update"},
+				}},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(reviewStore))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/78", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, `name="expected_target_event_id" value="909"`)
+	assertContains(t, body, `name="source_identity_key" value="uid:authoritative-update"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "3")
+	form.Set("action", "resolve_import_authoritative")
+	form.Set("evidence_id", "306")
+	form.Set("expected_target_event_id", "909")
+	form.Add("source_identity_key", "uid:authoritative-update")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/78", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if got := reviewStore.authoritativeInput; got.ClusterID != 78 || got.ExpectedVersion != 3 || got.EvidenceID != 306 || got.ExpectedTargetEventID != targetID || len(got.SourceIdentityKeys) != 1 || got.SourceIdentityKeys[0] != "uid:authoritative-update" {
+		t.Fatalf("authoritative update input = %#v", got)
+	}
+}
+
 func TestAdminEventReviewDetailSavesSourceIdentityChoicesAndRedirects(t *testing.T) {
 	store := &eventReviewOnlyStoreStub{
 		detail: store.EventReviewClusterDetail{
@@ -3151,6 +3502,149 @@ func TestAdminEventReviewResolvePostsAndRedirects(t *testing.T) {
 	assertContains(t, queueRR.Body.String(), "Resolved event review cluster.")
 }
 
+func TestAdminEventReviewResolveHistoricalDuplicateKeepSeparatePostsAndRedirects(t *testing.T) {
+	stagingKey := "repair-queue-a"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "historical_duplicate",
+				ConflictReason:    "reason-a",
+				EvidenceCount:     2,
+			},
+			HistoricalDuplicateReadiness: &store.EventReviewHistoricalDuplicateReadiness{
+				CanKeepAllSeparate: true,
+				Events: []store.EventReviewHistoricalDuplicateEventReadiness{
+					{EventID: 88, EventSlug: "canonical-event", PublicationState: "reviewed", Live: true, KeepEligible: true},
+					{EventID: 90, EventSlug: "loser-event", PublicationState: "reviewed", Live: true, KeepEligible: true},
+				},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, "Keep historical duplicates separate")
+	assertContains(t, body, `name="action" value="resolve_historical_duplicate_keep_separate"`)
+	assertContains(t, body, `name="kept_event_id" value="88"`)
+	assertContains(t, body, `name="kept_event_id" value="90"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "3")
+	form.Set("action", "resolve_historical_duplicate_keep_separate")
+	form.Add("kept_event_id", "88")
+	form.Add("kept_event_id", "90")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !store.keepSeparateCalled {
+		t.Fatal("expected keep-separate store method to be called")
+	}
+	if got := store.keepSeparateInput; got.ClusterID != 41 || got.ExpectedVersion != 3 || len(got.KeptEventIDs) != 2 || got.KeptEventIDs[0] != 88 || got.KeptEventIDs[1] != 90 {
+		t.Fatalf("keep-separate input = %#v", got)
+	}
+}
+
+func TestAdminEventReviewResolveHistoricalDuplicateActionsPostsAndRedirects(t *testing.T) {
+	stagingKey := "repair-queue-a"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "historical_duplicate",
+				ConflictReason:    "reason-a",
+				CanonicalEventID:  int64Ptr(88),
+				EvidenceCount:     2,
+			},
+			HistoricalDuplicateReadiness: &store.EventReviewHistoricalDuplicateReadiness{
+				CanResolveLiveActions: true,
+				Events: []store.EventReviewHistoricalDuplicateEventReadiness{
+					{EventID: 88, EventSlug: "canonical-event", PublicationState: "reviewed", Live: true, Canonical: true, CanonicalEligible: true, Action: store.EventReviewLiveActionKindKeepSeparate, KeepEligible: true},
+					{EventID: 90, EventSlug: "loser-event", PublicationState: "provisional", Live: true, Action: store.EventReviewLiveActionKindWithholdDuplicate, KeepEligible: false, BlockingReasons: []string{"event is not live/non-withheld"}},
+				},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, "Override historical duplicate actions")
+	assertContains(t, body, `name="action" value="resolve_historical_duplicate_actions"`)
+	assertContains(t, body, `name="historical_event_id" value="88"`)
+	assertContains(t, body, `name="historical_action_90"`)
+	assertContains(t, body, `name="canonical_event_id" value="90"  disabled`)
+	assertContains(t, body, `<option value="keep_separate"  disabled>Keep separate</option>`)
+	assertContains(t, body, `<option value="withhold_duplicate" selected>Withhold duplicate</option>`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "3")
+	form.Set("action", "resolve_historical_duplicate_actions")
+	form.Set("canonical_event_id", "88")
+	form.Add("historical_event_id", "88")
+	form.Set("historical_action_88", "keep_separate")
+	form.Add("historical_event_id", "90")
+	form.Set("historical_action_90", "withhold_duplicate")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !store.overrideActionsCalled {
+		t.Fatal("expected override actions store method to be called")
+	}
+	if got := store.overrideActionsInput; got.ClusterID != 41 || got.ExpectedVersion != 3 || got.CanonicalEventID != 88 || len(got.Actions) != 2 || got.Actions[0].EventID != 88 || string(got.Actions[0].Action) != "keep_separate" || got.Actions[1].EventID != 90 || string(got.Actions[1].Action) != "withhold_duplicate" {
+		t.Fatalf("override actions input = %#v", got)
+	}
+}
+
 func TestAdminEventReviewResolveTitleRepairPostsAndRedirects(t *testing.T) {
 	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
 	stagingKey := "repair-queue-title"
@@ -3230,6 +3724,85 @@ func TestAdminEventReviewResolveTitleRepairPostsAndRedirects(t *testing.T) {
 	assertContains(t, queueRR.Body.String(), "Resolved event review cluster.")
 }
 
+func TestAdminEventReviewResolveTitleSlugConflictPostsAndRedirects(t *testing.T) {
+	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
+	stagingKey := "repair-queue-title-slug"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                 42,
+				Status:             store.EventReviewClusterStatusOpen,
+				Version:            5,
+				StagingKey:         &stagingKey,
+				StagingKeyVersion:  1,
+				ConflictType:       "title_repair",
+				ConflictReason:     "authoritative_slug_conflict",
+				CanonicalEventID:   int64Ptr(88),
+				CanonicalEventSlug: "title-repair-current",
+				DisplayTitle:       "Title Repair Current",
+				DisplayVenueSlug:   "title-repair-hall",
+				DisplayVenueName:   "Title Repair Hall",
+				DisplayStartAt:     &openTime,
+				EvidenceCount:      2,
+			},
+			TitleRepairReadiness: &store.EventReviewTitleRepairReadiness{
+				CanonicalEventID:                88,
+				CurrentTitle:                    "Legacy Event",
+				CurrentSlug:                     "title-repair-current",
+				CurrentEventLive:                true,
+				DraftTitle:                      "Updated Title",
+				DraftSlug:                       "title-repair-current-renamed",
+				Eligible:                        false,
+				BlockingReasons:                 []string{"target slug already belongs to another live event"},
+				SlugConflictEventID:             int64Ptr(91),
+				SlugConflictEventSlug:           "title-repair-current-renamed",
+				SlugConflictResolutionAvailable: true,
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/42", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	csrfToken := extractCSRFToken(t, getRR.Body.String())
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "5")
+	form.Set("action", "resolve_title_slug_conflict")
+	form.Set("mode", "keep_separate_no_change")
+	form.Set("original_canonical_event_id", "88")
+	form.Set("slug_conflict_event_id", "91")
+	form.Set("draft_title", "Updated Title")
+	form.Set("draft_slug", "title-repair-current-renamed")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/42", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !store.titleSlugConflictCalled {
+		t.Fatal("expected title slug conflict store method to be called")
+	}
+	if got := store.titleSlugConflictInput; got.ClusterID != 42 || got.ExpectedVersion != 5 || string(got.Mode) != "keep_separate_no_change" || got.OriginalCanonicalEventID != 88 || got.SlugConflictEventID != 91 || got.DraftTitle != "Updated Title" || got.DraftSlug != "title-repair-current-renamed" {
+		t.Fatalf("title slug conflict input = %#v", got)
+	}
+}
+
 func TestAdminEventReviewResolveLiveActionsRejectsTitleRepairCluster(t *testing.T) {
 	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
 	stagingKey := "repair-queue-title"
@@ -3304,6 +3877,8 @@ func TestAdminEventReviewResolveRejectsInvalidFormsAndCSRF(t *testing.T) {
 	}{
 		{name: "missing version", form: url.Values{"action": {"resolve_live_actions"}}, want: "expected version is required"},
 		{name: "invalid version", form: url.Values{"expected_version": {"not-a-number"}, "action": {"resolve_live_actions"}}, want: "expected version is required"},
+		{name: "historical keep separate missing kept events", form: url.Values{"expected_version": {"3"}, "action": {"resolve_historical_duplicate_keep_separate"}}, want: "at least two kept event ids are required"},
+		{name: "historical override missing events", form: url.Values{"expected_version": {"3"}, "action": {"resolve_historical_duplicate_actions"}}, want: "at least two historical duplicate event ids are required"},
 		{name: "unknown action", form: url.Values{"expected_version": {"3"}, "action": {"resolve"}}, want: "invalid event review action"},
 		{name: "title repair missing version", form: url.Values{"action": {"resolve_title_repair"}}, want: "expected version is required"},
 		{name: "title repair invalid version", form: url.Values{"expected_version": {"not-a-number"}, "action": {"resolve_title_repair"}}, want: "expected version is required"},
@@ -7104,6 +7679,24 @@ type adminReviewEventReviewStoreStub struct {
 	resolveCalled               bool
 	resolveInput                store.EventReviewResolutionInput
 	resolveErr                  error
+	keepSeparateCalled          bool
+	keepSeparateInput           store.EventReviewHistoricalDuplicateKeepSeparateInput
+	keepSeparateErr             error
+	overrideActionsCalled       bool
+	overrideActionsInput        store.EventReviewHistoricalDuplicateWithActionsInput
+	overrideActionsErr          error
+	titleSlugConflictCalled     bool
+	titleSlugConflictInput      store.EventReviewTitleRepairSlugConflictInput
+	titleSlugConflictErr        error
+	acceptSupportingCalled      bool
+	acceptSupportingInput       store.EventReviewAcceptSupportingSourceInput
+	acceptSupportingErr         error
+	nearSeparateCalled          bool
+	nearSeparateInput           store.EventReviewImportSeparateAndInsertInput
+	nearSeparateErr             error
+	authoritativeCalled         bool
+	authoritativeInput          store.EventReviewImportAuthoritativeInput
+	authoritativeErr            error
 	supersedeCalled             bool
 	supersedeInput              store.EventReviewSupersedeInput
 	supersedeErr                error
@@ -7142,6 +7735,42 @@ func (s *adminReviewEventReviewStoreStub) ResolveEventReviewCluster(_ context.Co
 	return s.resolveErr
 }
 
+func (s *adminReviewEventReviewStoreStub) ResolveHistoricalDuplicateKeepSeparate(_ context.Context, input store.EventReviewHistoricalDuplicateKeepSeparateInput) error {
+	s.keepSeparateCalled = true
+	s.keepSeparateInput = input
+	return s.keepSeparateErr
+}
+
+func (s *adminReviewEventReviewStoreStub) ResolveHistoricalDuplicateWithActions(_ context.Context, input store.EventReviewHistoricalDuplicateWithActionsInput) error {
+	s.overrideActionsCalled = true
+	s.overrideActionsInput = input
+	return s.overrideActionsErr
+}
+
+func (s *adminReviewEventReviewStoreStub) ResolveTitleRepairSlugConflict(_ context.Context, input store.EventReviewTitleRepairSlugConflictInput) error {
+	s.titleSlugConflictCalled = true
+	s.titleSlugConflictInput = input
+	return s.titleSlugConflictErr
+}
+
+func (s *adminReviewEventReviewStoreStub) AcceptEventReviewSupportingSource(_ context.Context, input store.EventReviewAcceptSupportingSourceInput) error {
+	s.acceptSupportingCalled = true
+	s.acceptSupportingInput = input
+	return s.acceptSupportingErr
+}
+
+func (s *adminReviewEventReviewStoreStub) ResolveEventReviewImportSeparateAndInsert(_ context.Context, input store.EventReviewImportSeparateAndInsertInput) error {
+	s.nearSeparateCalled = true
+	s.nearSeparateInput = input
+	return s.nearSeparateErr
+}
+
+func (s *adminReviewEventReviewStoreStub) ResolveEventReviewImportAuthoritative(_ context.Context, input store.EventReviewImportAuthoritativeInput) error {
+	s.authoritativeCalled = true
+	s.authoritativeInput = input
+	return s.authoritativeErr
+}
+
 func (s *adminReviewEventReviewStoreStub) SupersedeEventReviewCluster(_ context.Context, input store.EventReviewSupersedeInput) error {
 	s.supersedeCalled = true
 	s.supersedeInput = input
@@ -7162,6 +7791,24 @@ type eventReviewOnlyStoreStub struct {
 	resolveCalled               bool
 	resolveInput                store.EventReviewResolutionInput
 	resolveErr                  error
+	keepSeparateCalled          bool
+	keepSeparateInput           store.EventReviewHistoricalDuplicateKeepSeparateInput
+	keepSeparateErr             error
+	overrideActionsCalled       bool
+	overrideActionsInput        store.EventReviewHistoricalDuplicateWithActionsInput
+	overrideActionsErr          error
+	titleSlugConflictCalled     bool
+	titleSlugConflictInput      store.EventReviewTitleRepairSlugConflictInput
+	titleSlugConflictErr        error
+	acceptSupportingCalled      bool
+	acceptSupportingInput       store.EventReviewAcceptSupportingSourceInput
+	acceptSupportingErr         error
+	nearSeparateCalled          bool
+	nearSeparateInput           store.EventReviewImportSeparateAndInsertInput
+	nearSeparateErr             error
+	authoritativeCalled         bool
+	authoritativeInput          store.EventReviewImportAuthoritativeInput
+	authoritativeErr            error
 	supersedeCalled             bool
 	supersedeInput              store.EventReviewSupersedeInput
 	supersedeErr                error
@@ -7234,6 +7881,42 @@ func (s *eventReviewOnlyStoreStub) ResolveEventReviewCluster(_ context.Context, 
 	s.resolveCalled = true
 	s.resolveInput = input
 	return s.resolveErr
+}
+
+func (s *eventReviewOnlyStoreStub) ResolveHistoricalDuplicateKeepSeparate(_ context.Context, input store.EventReviewHistoricalDuplicateKeepSeparateInput) error {
+	s.keepSeparateCalled = true
+	s.keepSeparateInput = input
+	return s.keepSeparateErr
+}
+
+func (s *eventReviewOnlyStoreStub) ResolveHistoricalDuplicateWithActions(_ context.Context, input store.EventReviewHistoricalDuplicateWithActionsInput) error {
+	s.overrideActionsCalled = true
+	s.overrideActionsInput = input
+	return s.overrideActionsErr
+}
+
+func (s *eventReviewOnlyStoreStub) ResolveTitleRepairSlugConflict(_ context.Context, input store.EventReviewTitleRepairSlugConflictInput) error {
+	s.titleSlugConflictCalled = true
+	s.titleSlugConflictInput = input
+	return s.titleSlugConflictErr
+}
+
+func (s *eventReviewOnlyStoreStub) AcceptEventReviewSupportingSource(_ context.Context, input store.EventReviewAcceptSupportingSourceInput) error {
+	s.acceptSupportingCalled = true
+	s.acceptSupportingInput = input
+	return s.acceptSupportingErr
+}
+
+func (s *eventReviewOnlyStoreStub) ResolveEventReviewImportSeparateAndInsert(_ context.Context, input store.EventReviewImportSeparateAndInsertInput) error {
+	s.nearSeparateCalled = true
+	s.nearSeparateInput = input
+	return s.nearSeparateErr
+}
+
+func (s *eventReviewOnlyStoreStub) ResolveEventReviewImportAuthoritative(_ context.Context, input store.EventReviewImportAuthoritativeInput) error {
+	s.authoritativeCalled = true
+	s.authoritativeInput = input
+	return s.authoritativeErr
 }
 
 func (s *eventReviewOnlyStoreStub) SupersedeEventReviewCluster(_ context.Context, input store.EventReviewSupersedeInput) error {

@@ -333,14 +333,41 @@ func TestEventReviewReadModelsTitleRepairReadiness(t *testing.T) {
 	if conflictDetail.TitleRepairReadiness == nil {
 		t.Fatal("slug conflict readiness is nil")
 	}
-	if got := conflictDetail.TitleRepairReadiness; got.Eligible || got.SlugConflictEventID == nil || *got.SlugConflictEventID != slugConflictEventID || got.SlugConflictEventSlug != "title-repair-slug-conflict" {
+	if got := conflictDetail.TitleRepairReadiness; got.Eligible || !got.SlugConflictResolutionAvailable || got.SlugConflictEventID == nil || *got.SlugConflictEventID != slugConflictEventID || got.SlugConflictEventSlug != "title-repair-slug-conflict" {
 		t.Fatalf("slug conflict readiness = %#v", got)
+	}
+	if _, err := insertEventReviewSeparation(t, db,
+		seedstore.EventReviewSeparationEndpoint{
+			Kind:    seedstore.EventReviewSeparationEndpointKindEvent,
+			Key:     seedstore.EventReviewSeparationEventEndpointKey(conflictCanonicalID),
+			EventID: int64Ptr(conflictCanonicalID),
+		},
+		seedstore.EventReviewSeparationEndpoint{
+			Kind:    seedstore.EventReviewSeparationEndpointKindEvent,
+			Key:     seedstore.EventReviewSeparationEventEndpointKey(slugConflictEventID),
+			EventID: int64Ptr(slugConflictEventID),
+		},
+		true,
+		"title repair separated slug conflict",
+		time.Date(2026, time.May, 15, 10, 11, 30, 0, time.UTC),
+		time.Date(2026, time.May, 15, 10, 11, 30, 0, time.UTC)); err != nil {
+		t.Fatalf("insert title repair separation: %v", err)
+	}
+	separatedConflictDetail, ok, err := st.LoadEventReviewCluster(context.Background(), conflictClusterID)
+	if err != nil {
+		t.Fatalf("load separated slug conflict title repair cluster: %v", err)
+	}
+	if !ok {
+		t.Fatal("separated slug conflict title repair cluster load returned ok=false")
+	}
+	if got := separatedConflictDetail.TitleRepairReadiness; got == nil || got.SlugConflictResolutionAvailable || !hasString(got.BlockingReasons, "target slug conflict is already marked separate") {
+		t.Fatalf("separated slug conflict readiness = %#v", got)
 	}
 
 	authoritativeStagingKey := "title-repair-authoritative"
 	authoritativeClusterID := insertEventReviewClusterAt(t, db, string(seedstore.EventReviewClusterStatusOpen), &authoritativeStagingKey, eventTitleRepairStagingKeyVersion, &eligibleCanonicalID, eventTitleRepairConflictType, eventTitleRepairConflictReasonAuthoritativeSlugConflict, time.Date(2026, time.May, 15, 10, 12, 0, 0, time.UTC))
 	insertEventReviewDraftChoiceOK(t, db, authoritativeClusterID, "name", seedstore.EventReviewChoiceKindManual, nil, nil, "Authoritative Title", time.Date(2026, time.May, 15, 10, 13, 0, 0, time.UTC))
-	insertEventReviewDraftChoiceOK(t, db, authoritativeClusterID, "slug", seedstore.EventReviewChoiceKindManual, nil, nil, "authoritative-title", time.Date(2026, time.May, 15, 10, 14, 0, 0, time.UTC))
+	insertEventReviewDraftChoiceOK(t, db, authoritativeClusterID, "slug", seedstore.EventReviewChoiceKindManual, nil, nil, "title-repair-slug-conflict", time.Date(2026, time.May, 15, 10, 14, 0, 0, time.UTC))
 	authoritativeDetail, ok, err := st.LoadEventReviewCluster(context.Background(), authoritativeClusterID)
 	if err != nil {
 		t.Fatalf("load authoritative title repair cluster: %v", err)
@@ -351,7 +378,7 @@ func TestEventReviewReadModelsTitleRepairReadiness(t *testing.T) {
 	if authoritativeDetail.TitleRepairReadiness == nil {
 		t.Fatal("authoritative readiness is nil")
 	}
-	if got := authoritativeDetail.TitleRepairReadiness; got.Eligible || len(got.BlockingReasons) == 0 {
+	if got := authoritativeDetail.TitleRepairReadiness; got.Eligible || !got.SlugConflictResolutionAvailable || got.SlugConflictEventID == nil || *got.SlugConflictEventID != slugConflictEventID {
 		t.Fatalf("authoritative readiness = %#v", got)
 	}
 
@@ -383,6 +410,60 @@ func TestEventReviewReadModelsTitleRepairReadiness(t *testing.T) {
 	}
 	if nonTitleRepairDetail.TitleRepairReadiness != nil {
 		t.Fatalf("non-title-repair readiness = %#v, want nil", nonTitleRepairDetail.TitleRepairReadiness)
+	}
+}
+
+func TestEventReviewReadModelsHistoricalDuplicateReadiness(t *testing.T) {
+	st, db := openEventReviewSchemaStore(t)
+	defer st.Close()
+
+	fixture := seedHistoricalDuplicateResolutionFixture(t, db)
+	sourceID := mustEnsureSourceID(t, st, "Historical duplicate readiness alias source", "https://example.test/historical-duplicate-readiness")
+	venueID := lookupStoreVenueID(t, db, "leadmill")
+	insertLegacyEvent(t, db, "historical-duplicate-alias-owner", venueID, sourceID, domain.OriginLive)
+	aliasOwnerID := mustEventIDBySlug(t, db, "historical-duplicate-alias-owner")
+	if _, err := db.Exec(`
+		INSERT INTO slug_aliases (
+			alias_slug,
+			target_kind,
+			target_event_id,
+			target_venue_id,
+			repair_run_id,
+			reason,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)
+	`, "historical-duplicate-loser", string(seedstore.SlugAliasTargetKindEvent), aliasOwnerID, "readiness test", "2026-05-15T09:00:00Z", "2026-05-15T09:00:00Z"); err != nil {
+		t.Fatalf("insert slug alias conflict: %v", err)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load historical duplicate detail: %v", err)
+	}
+	if !ok {
+		t.Fatal("historical duplicate cluster load returned ok=false")
+	}
+	readiness := detail.HistoricalDuplicateReadiness
+	if readiness == nil {
+		t.Fatal("historical duplicate readiness = nil")
+	}
+	if readiness.CanResolveLiveActions {
+		t.Fatalf("can resolve live actions = true, want blocked; blockers=%#v", readiness.LiveActionBlockingReasons)
+	}
+	if !hasString(readiness.LiveActionBlockingReasons, "slug alias already points to a different event") {
+		t.Fatalf("live action blockers = %#v, want slug alias blocker", readiness.LiveActionBlockingReasons)
+	}
+	if !readiness.CanKeepAllSeparate || len(readiness.KeepSeparateBlockingReasons) != 0 {
+		t.Fatalf("keep-separate readiness = can=%v blockers=%#v, want eligible", readiness.CanKeepAllSeparate, readiness.KeepSeparateBlockingReasons)
+	}
+	if len(readiness.Events) != 2 {
+		t.Fatalf("readiness events = %#v, want 2", readiness.Events)
+	}
+	for _, event := range readiness.Events {
+		if !event.KeepEligible {
+			t.Fatalf("event readiness = %#v, want keep eligible", event)
+		}
 	}
 }
 
@@ -580,6 +661,65 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		}
 	})
 
+	t.Run("source choices without selection block existing targets", func(t *testing.T) {
+		payload := importPayload("No Selected Existing Target", "event-review-import-ready", "Event Review Import Ready", "2026-05-10T19:00:00Z", "", "no-selected-existing")
+		clusterID := stageImportCluster(t, string(seedstore.EventReviewClusterStatusOpen), nil, seedstore.EventReviewConflictReasonIngestCandidate, []string{payload}, nil)
+		var evidenceID int64
+		if err := db.QueryRow(`
+			SELECT e.id
+			FROM event_review_evidence e
+			JOIN event_review_cluster_evidence ce ON ce.evidence_id = e.id
+			WHERE ce.cluster_id = ?
+				AND ce.active = 1
+			ORDER BY ce.id
+			LIMIT 1
+		`, clusterID).Scan(&evidenceID); err != nil {
+			t.Fatalf("lookup no-selected existing evidence id: %v", err)
+		}
+		exactKey := "no-selected-existing-exact-key"
+		if _, err := db.Exec(`
+			INSERT INTO event_exact_identities (
+				event_id,
+				identity_key,
+				key_version,
+				venue_slug,
+				utc_start_at,
+				clean_title,
+				active,
+				created_at,
+				updated_at,
+				deactivated_at,
+				deactivated_reason,
+				repair_run_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, existingEventID, exactKey, exactIdentityKeyVersion, "event-review-import-readiness-hall", "2026-05-10T19:00:00Z", "No Selected Existing Target", 1, "2026-05-12T09:20:00Z", "2026-05-12T09:20:00Z", nil, "", nil); err != nil {
+			t.Fatalf("insert no-selected exact identity: %v", err)
+		}
+		exactKeyID := insertEventReviewIdentityKeyOK(t, db, "no-selected-existing-exact-hash", seedstore.EventReviewIdentityKeyKindExact, exactKey)
+		sourceKeyID := insertEventReviewIdentityKeyOK(t, db, "no-selected-existing-source-hash", seedstore.EventReviewIdentityKeyKindSource, "no-selected-existing-source")
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, evidenceID, exactKeyID, nil, seedstore.EventReviewEvidenceIdentityKeyRoleExact); err != nil {
+			t.Fatalf("insert no-selected exact evidence identity: %v", err)
+		}
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, evidenceID, sourceKeyID, &sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+			t.Fatalf("insert no-selected source evidence identity: %v", err)
+		}
+		if _, err := insertEventReviewSourceIdentityChoice(t, db, clusterID, sourceID, "no-selected-existing-source", false, "not selected", time.Date(2026, time.May, 15, 9, 35, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("insert no-selected source choice: %v", err)
+		}
+
+		detail, ok, err := st.LoadEventReviewCluster(context.Background(), clusterID)
+		if err != nil {
+			t.Fatalf("load no-selected existing target cluster: %v", err)
+		}
+		if !ok || detail.ImportReadiness == nil {
+			t.Fatal("no-selected existing target readiness missing")
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, evidenceID, existingEventID, seedstore.EventReviewImportTargetBasisExactIdentity)
+		if !hasString(target.BlockingReasons, "no selected source identity choices") {
+			t.Fatalf("no-selected exact target blockers = %#v, want source-choice blocker", target.BlockingReasons)
+		}
+	})
+
 	t.Run("selected candidate readiness spans multiple candidates", func(t *testing.T) {
 		payloadA := importPayload("Selected Choice A", "event-review-import-ready", "Event Review Import Ready", "2026-05-10T19:00:00Z", "", "selected-a")
 		payloadB := importPayload("Selected Choice B", "event-review-import-ready", "Event Review Import Ready", "2026-05-10T20:00:00Z", "", "selected-b")
@@ -626,6 +766,29 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		if _, err := insertEventReviewSourceIdentityChoice(t, db, clusterID, sourceID, "selected-b", true, "selected b", time.Date(2026, time.May, 15, 9, 41, 0, 0, time.UTC)); err != nil {
 			t.Fatalf("insert selected candidate choice b: %v", err)
 		}
+		multiSelectedExactKey := "multi-evidence-selected-exact-key"
+		if _, err := db.Exec(`
+			INSERT INTO event_exact_identities (
+				event_id,
+				identity_key,
+				key_version,
+				venue_slug,
+				utc_start_at,
+				clean_title,
+				active,
+				created_at,
+				updated_at,
+				deactivated_at,
+				deactivated_reason,
+				repair_run_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, existingEventID, multiSelectedExactKey, exactIdentityKeyVersion, "event-review-import-readiness-hall", "2026-05-10T19:00:00Z", "Selected Choice A", 1, "2026-05-15T09:42:00Z", "2026-05-15T09:42:00Z", nil, "", nil); err != nil {
+			t.Fatalf("insert multi-evidence selected exact identity: %v", err)
+		}
+		multiSelectedExactKeyID := insertEventReviewIdentityKeyOK(t, db, "multi-evidence-selected-exact-hash", seedstore.EventReviewIdentityKeyKindExact, multiSelectedExactKey)
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, evidenceIDs[0], multiSelectedExactKeyID, nil, seedstore.EventReviewEvidenceIdentityKeyRoleExact); err != nil {
+			t.Fatalf("insert multi-evidence selected exact evidence identity: %v", err)
+		}
 
 		detail, ok, err := st.LoadEventReviewCluster(context.Background(), clusterID)
 		if err != nil {
@@ -646,6 +809,10 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		}
 		if len(selectedReadiness.SelectedSourceKeys) != 2 {
 			t.Fatalf("selected candidate selected source keys = %#v, want 2", selectedReadiness.SelectedSourceKeys)
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, evidenceIDs[0], existingEventID, seedstore.EventReviewImportTargetBasisExactIdentity)
+		if !hasString(target.BlockingReasons, "selected source identity choices span multiple candidates") {
+			t.Fatalf("multi-selected target blockers = %#v, want multi-selected blocker", target.BlockingReasons)
 		}
 	})
 
@@ -1068,6 +1235,24 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		}
 		malformedExactKeyID := insertEventReviewIdentityKeyOK(t, db, "malformed-exact-hash", seedstore.EventReviewIdentityKeyKindExact, "malformed-exact-key")
 		malformedSourceKeyID := insertEventReviewIdentityKeyOK(t, db, "malformed-source-hash", seedstore.EventReviewIdentityKeyKindSource, "malformed-source-key")
+		if _, err := db.Exec(`
+			INSERT INTO event_exact_identities (
+				event_id,
+				identity_key,
+				key_version,
+				venue_slug,
+				utc_start_at,
+				clean_title,
+				active,
+				created_at,
+				updated_at,
+				deactivated_at,
+				deactivated_reason,
+				repair_run_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, existingEventID, "malformed-exact-key", exactIdentityKeyVersion, "event-review-import-readiness-hall", "2026-05-10T19:00:00Z", "Import Readiness Existing", 1, "2026-05-12T09:10:00Z", "2026-05-12T09:10:00Z", nil, "", nil); err != nil {
+			t.Fatalf("insert malformed linked exact identity: %v", err)
+		}
 		if _, err := insertEventReviewEvidenceIdentityKey(t, db, evidenceID, malformedExactKeyID, nil, seedstore.EventReviewEvidenceIdentityKeyRoleExact); err != nil {
 			t.Fatalf("insert malformed exact evidence identity: %v", err)
 		}
@@ -1100,11 +1285,15 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		if status.ParseWarning == "" || len(status.ExactKeys) != 1 || len(status.SourceKeys) != 1 {
 			t.Fatalf("malformed candidate identity status = %#v", status)
 		}
-		if status.ExactKeys[0].NormalizedKey != "malformed-exact-key" || status.ExactKeys[0].LinkedEventID != nil {
+		if status.ExactKeys[0].NormalizedKey != "malformed-exact-key" || status.ExactKeys[0].LinkedEventID == nil || *status.ExactKeys[0].LinkedEventID != existingEventID {
 			t.Fatalf("malformed exact key = %#v", status.ExactKeys[0])
 		}
 		if status.SourceKeys[0].SourceIdentityKey != "malformed-source-key" || status.SourceKeys[0].LinkedEventID != nil {
 			t.Fatalf("malformed source key = %#v", status.SourceKeys[0])
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, evidenceID, existingEventID, seedstore.EventReviewImportTargetBasisExactIdentity)
+		if !hasString(target.BlockingReasons, "candidate payload could not be materialized") {
+			t.Fatalf("malformed exact target blockers = %#v, want materialization blocker", target.BlockingReasons)
 		}
 	})
 
@@ -1147,6 +1336,37 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		}
 		if !hasString(detail.ImportReadiness.ComparisonBlockingReasons, "canonical event is already set") || !hasString(detail.ImportReadiness.ComparisonBlockingReasons, "evidence already references existing event") {
 			t.Fatalf("blocked comparison blockers = %#v", detail.ImportReadiness.ComparisonBlockingReasons)
+		}
+	})
+
+	t.Run("withheld canonical existing target blocks", func(t *testing.T) {
+		insertLegacyEvent(t, db, "import-readiness-withheld-canonical", venueID, sourceID, domain.OriginLive)
+		withheldEventID := mustEventIDBySlug(t, db, "import-readiness-withheld-canonical")
+		if _, err := db.Exec(`
+			UPDATE events
+			SET publication_state = ?,
+				withheld_reason = ?
+			WHERE id = ?
+		`, string(domain.PublicationStateWithheld), "duplicate listing", withheldEventID); err != nil {
+			t.Fatalf("withhold canonical target: %v", err)
+		}
+
+		payload := importPayload("Withheld Existing Target", "event-review-import-ready", "Event Review Import Ready", "2026-05-10T19:00:00Z", "", "external-withheld-existing")
+		clusterID := stageImportCluster(t, string(seedstore.EventReviewClusterStatusOpen), &withheldEventID, seedstore.EventReviewConflictReasonIngestCandidate, []string{payload}, []*int64{&withheldEventID})
+		detail, ok, err := st.LoadEventReviewCluster(context.Background(), clusterID)
+		if err != nil {
+			t.Fatalf("load withheld canonical target cluster: %v", err)
+		}
+		if !ok || detail.ImportReadiness == nil {
+			t.Fatal("withheld canonical target readiness missing")
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, detail.Evidence[0].EvidenceID, withheldEventID, seedstore.EventReviewImportTargetBasisCanonicalEvent)
+		if !hasString(target.BlockingReasons, "target event is not live/non-withheld") {
+			t.Fatalf("withheld canonical target blockers = %#v, want target state blocker", target.BlockingReasons)
+		}
+		target = mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, detail.Evidence[0].EvidenceID, withheldEventID, seedstore.EventReviewImportTargetBasisEvidenceEvent)
+		if !hasString(target.BlockingReasons, "target event is not live/non-withheld") {
+			t.Fatalf("withheld evidence target blockers = %#v, want target state blocker", target.BlockingReasons)
 		}
 	})
 

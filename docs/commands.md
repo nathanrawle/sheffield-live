@@ -114,7 +114,12 @@ Review behavior:
 - `action=save_source_identity_choices` stores source identity choices for eligible event-review clusters
 - `action=discard` discards an event-review cluster
 - `action=supersede` marks an event-review cluster as superseded by another cluster
-- eligible resolve actions publish one canonical public event
+- discard and supersede are administrative escape hatches; terminal editorial decisions are the eligible resolve actions shown on the detail page
+- eligible import-review resolve actions can insert a new listing, attach selected supporting evidence to one existing event, confirm a near-title same-event match, confirm a near-title false positive and insert a new listing with separations, or apply authoritative import semantics
+- eligible title-repair resolve actions can apply a simple repair, merge/update a slug-conflict duplicate, or keep a slug-conflict event separate without changing the title
+- eligible historical-duplicate resolve actions can apply stored live actions, override canonical/withhold actions, or keep all reviewed/provisional events separate with pairwise separations
+- unknown open conflict types show an unsupported-cluster blocker and remain non-resolvable until a producer and editorial policy exist
+- eligible resolve actions publish or update one canonical public event, or record a no-publish separation decision for false-positive duplicates
 - manual review resolution canonicalizes the selected venue to an existing venue when the evidence yields one unique match
 - new-cluster staging and non-authoritative singleton auto-promotion can create provisional venue rows immediately when venue evidence is uniquely new
 - open-cluster restaging can backfill a provisional venue row only when a previously evidence-less candidate is refreshed with usable raw venue evidence

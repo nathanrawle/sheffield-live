@@ -9,6 +9,7 @@ import (
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
 	"sheffield-live/internal/review"
+	seedstore "sheffield-live/internal/store"
 )
 
 type testDisabledNearSourceMetadata struct {
@@ -159,6 +160,97 @@ func TestSupportingSingletonNearTitleGuardBlocksPunctuationVariantDuplicate(t *t
 	}
 	if tier := nearTitleMatchTier("yellow-arch", incomingTitle, existingTitle); tier != nearTitleMatchTierVariant {
 		t.Fatalf("near title tier = %q, want %q", tier, nearTitleMatchTierVariant)
+	}
+}
+
+func TestSupportingSingletonNearTitleGuardSkipsSeparatedStagingEvidence(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path, testSupportingSourceMetadata{})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		existingTitle = "Jane Doe"
+		incomingTitle = "Jane Doe + The Openers"
+		startAt       = "2026-06-06T18:30:00Z"
+		endAt         = "2026-06-06T22:00:00Z"
+	)
+	sourceID := mustEnsureSourceID(t, st, testSupportingSourceName, testSupportingSourceURL)
+	existingSlug := mustLiveEventSlug(t, existingTitle, "yellow-arch", startAt)
+	incomingSlug := mustLiveEventSlug(t, incomingTitle, "yellow-arch", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, existingSlug, "yellow-arch", existingTitle, startAt, "Existing description.")
+	existingEventID := lookupEventIDBySlug(t, db, existingSlug)
+
+	input := ingest.ReviewStageClusterInput{
+		ImportRunID: 6060619,
+		Title:       incomingTitle,
+		SourceName:  testSupportingSourceName,
+		SourceURL:   testSupportingSourceURL,
+		Candidates: []review.CandidateInput{{
+			ExternalID:  "separated-jane-doe-openers",
+			Name:        incomingTitle,
+			VenueSlug:   "yellow-arch",
+			StartAt:     startAt,
+			EndAt:       endAt,
+			Genre:       "Live",
+			Status:      "Listed",
+			Description: "Supporting listing description.",
+			SourceName:  testSupportingSourceName,
+			SourceURL:   "https://fixture.example.test/listings/separated-jane-doe-openers",
+			CalendarURL: testSupportingSourceURL,
+		}},
+	}
+	evidenceInputs := ingest.ReviewStageClusterEventReviewEvidenceInputs(input)
+	if len(evidenceInputs) != 1 {
+		t.Fatalf("evidence inputs = %d, want 1", len(evidenceInputs))
+	}
+	evidenceID := insertEventReviewEvidenceOK(t, db, sourceID, nil, evidenceInputs[0].EvidenceFingerprint, evidenceInputs[0].Payload)
+	if _, err := insertEventReviewSeparation(t, db,
+		seedstore.EventReviewSeparationEndpoint{
+			Kind:    seedstore.EventReviewSeparationEndpointKindEvent,
+			Key:     seedstore.EventReviewSeparationEventEndpointKey(existingEventID),
+			EventID: int64Ptr(existingEventID),
+		},
+		seedstore.EventReviewSeparationEndpoint{
+			Kind:       seedstore.EventReviewSeparationEndpointKindEvidence,
+			Key:        eventReviewSeparationEndpointKeyEvidence(evidenceInputs[0].EvidenceFingerprint),
+			EvidenceID: int64Ptr(evidenceID),
+		},
+		true,
+		"near-title false positive before singleton staging",
+		time.Date(2026, time.June, 1, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, time.June, 1, 12, 0, 0, 0, time.UTC),
+	); err != nil {
+		t.Fatalf("insert near-title staging separation: %v", err)
+	}
+
+	beforeEvents := mustCount(t, db, "events")
+	slug, promoted, err := st.PromoteSingletonReviewClusterIfMissing(ctx, input)
+	if err != nil {
+		t.Fatalf("promote separated singleton review cluster: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	if slug != incomingSlug {
+		t.Fatalf("slug = %q, want %q", slug, incomingSlug)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEvents+1 {
+		t.Fatalf("events = %d, want %d", got, beforeEvents+1)
+	}
+	if _, ok := st.EventBySlug(incomingSlug); !ok {
+		t.Fatalf("incoming slug %q was not inserted", incomingSlug)
 	}
 }
 

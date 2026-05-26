@@ -21,11 +21,18 @@
 
 <section class="section-block">
   {{if eq .EventReviewDetail.Summary.Status "open"}}
-  <p class="notice">This cluster is open. You can discard it{{if .EventReviewCanAcceptImportListing}}, or accept the stored new listing{{end}}{{if .EventReviewCanAcceptSelectedImportCandidate}}, or accept the selected candidate{{end}}{{if and .EventReviewDetail.TitleRepairReadiness .EventReviewDetail.TitleRepairReadiness.Eligible}}, or apply the stored title repair{{else if .EventReviewCanResolveLiveActions}}, or apply its stored historical-duplicate live actions{{end}}.</p>
+  <p class="notice">This cluster is open. Discard and supersede are administrative escape hatches, not terminal editorial decisions. {{if .EventReviewHasTerminalAction}}Available terminal editorial actions include accepting import evidence, applying title repair, or resolving historical duplicate actions when their forms are shown below.{{else}}No terminal editorial action is currently available.{{end}}</p>
   {{else}}
   <p class="notice">This cluster is {{.EventReviewDetail.Summary.Status}} and read-only. Discard, resolve, and supersede actions are not available.</p>
   {{end}}
 </section>
+
+{{with .EventReviewUnsupportedConflictBlocker}}
+<section class="section-block">
+  <h2>Unsupported cluster</h2>
+  <p class="notice">{{.}} This cluster is intentionally non-resolvable until a producer and editorial policy exist for this conflict. Use discard or supersede only when that administrative outcome is correct.</p>
+</section>
+{{end}}
 
 <section class="section-block">
   <h2>Event summary</h2>
@@ -130,6 +137,125 @@
       </tbody>
     </table>
   </div>
+  {{if .ExistingEventTargets}}
+  <h3>Existing event targets</h3>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Evidence</th>
+          <th scope="col">Target event</th>
+          <th scope="col">Basis</th>
+          <th scope="col">Keys</th>
+          <th scope="col">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .ExistingEventTargets}}
+        <tr>
+          <th scope="row">evidence #{{.EvidenceID}}<br><small><code>{{.EvidenceFingerprint}}</code></small></th>
+          <td>
+            {{if .EventSlug}}<a href="/admin/events/{{.EventSlug}}">event #{{.EventID}}</a>{{else}}event #{{.EventID}}{{end}}
+            {{with .EventTitle}}<br><small>{{.}}</small>{{end}}
+            {{with .PublicationState}}<br><small>state <code>{{.}}</code></small>{{end}}
+            {{with .RawLinkedEventID}}<br><small>raw source link event #{{.}}</small>{{end}}
+            {{with .RawLinkedEventSlug}}<br><small><code>{{.}}</code></small>{{end}}
+            {{with .RawLinkedPublicationState}}<br><small>raw state <code>{{.}}</code></small>{{end}}
+          </td>
+          <td><code>{{.TargetBasis}}</code></td>
+          <td>
+            {{if .ExactIdentityKeys}}
+            <small>Exact</small>
+            <ul>{{range .ExactIdentityKeys}}<li><code>{{.}}</code></li>{{end}}</ul>
+            {{end}}
+            {{if .SourceIdentityKeys}}
+            <small>Source</small>
+            <ul>{{range .SourceIdentityKeys}}<li><code>{{.}}</code></li>{{end}}</ul>
+            {{end}}
+            {{if and (not .ExactIdentityKeys) (not .SourceIdentityKeys)}}&mdash;{{end}}
+          </td>
+          <td>
+            {{if .BlockingReasons}}
+            <ul>{{range .BlockingReasons}}<li>{{.}}</li>{{end}}</ul>
+            {{else if and (eq $.EventReviewDetail.Summary.Status "open") $.EventReviewCanAcceptSupportingSource}}
+            <form method="post" class="review-inline-form">
+              <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+              <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+              <input type="hidden" name="action" value="resolve_import_supporting_source">
+              <input type="hidden" name="evidence_id" value="{{.EvidenceID}}">
+              <input type="hidden" name="target_event_id" value="{{.EventID}}">
+              <input type="hidden" name="target_basis" value="{{.TargetBasis}}">
+              {{range .SourceIdentityKeys}}<input type="hidden" name="source_identity_key" value="{{.}}">{{end}}
+              <button type="submit" class="button">Accept as supporting source</button>
+            </form>
+            {{if eq .TargetBasis "near_title"}}
+            <form method="post" class="review-inline-form">
+              <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+              <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+              <input type="hidden" name="action" value="resolve_import_near_title_separate">
+              <input type="hidden" name="evidence_id" value="{{.EvidenceID}}">
+              <input type="hidden" name="target_event_id" value="{{.EventID}}">
+              {{range .SourceIdentityKeys}}<input type="hidden" name="source_identity_key" value="{{.}}">{{end}}
+              <button type="submit" class="button button-secondary">Confirm separate and insert</button>
+            </form>
+            {{end}}
+            {{else}}&mdash;{{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{if .AuthoritativeTargets}}
+  <h3>Authoritative import candidates</h3>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Evidence</th>
+          <th scope="col">Computed result</th>
+          <th scope="col">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .AuthoritativeTargets}}
+        <tr>
+          <th scope="row">evidence #{{.EvidenceID}}<br><small><code>{{.EvidenceFingerprint}}</code></small></th>
+          <td>
+            {{if .BlockingReasons}}
+            <ul>{{range .BlockingReasons}}<li>{{.}}</li>{{end}}</ul>
+            {{else if eq .Result "updated"}}
+            update {{with .EventID}}event #{{.}}{{end}}
+            {{with .EventSlug}}<br><small><code>{{.}}</code></small>{{end}}
+            {{with .EventTitle}}<br><small>{{.}}</small>{{end}}
+            {{else if eq .Result "inserted"}}
+            insert new reviewed event
+            {{else}}
+            &mdash;
+            {{end}}
+          </td>
+          <td>
+            {{if .BlockingReasons}}
+            &mdash;
+            {{else}}
+            <form method="post" class="review-inline-form">
+              <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+              <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+              <input type="hidden" name="action" value="resolve_import_authoritative">
+              <input type="hidden" name="evidence_id" value="{{.EvidenceID}}">
+              {{with .EventID}}<input type="hidden" name="expected_target_event_id" value="{{.}}">{{end}}
+              {{range .SourceIdentityKeys}}<input type="hidden" name="source_identity_key" value="{{.}}">{{end}}
+              <button type="submit" class="button">Apply authoritative import</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
   {{if or .CandidateComparisonScope (gt .CandidateCount 1)}}
   <h3>Normalized identity comparison</h3>
   <p class="notice">This comparison centers normalized title, venue, date, start, and exact identity values. It is read-only and does not imply the cluster can be accepted yet.</p>
@@ -568,7 +694,12 @@
     <div class="review-summary-row">
       <div class="review-summary-label">Slug conflict</div>
       <div class="review-summary-value">{{if .SlugConflictEventSlug}}<a href="/admin/events/{{.SlugConflictEventSlug}}">event #{{.SlugConflictEventID}}</a>{{else}}event #{{.SlugConflictEventID}}{{end}}</div>
-      <div class="review-summary-candidate">{{if .SlugConflictEventSlug}}{{.SlugConflictEventSlug}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">{{if .SlugConflictEventTitle}}{{.SlugConflictEventTitle}}{{else if .SlugConflictEventSlug}}{{.SlugConflictEventSlug}}{{else}}&mdash;{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Slug conflict slug</div>
+      <div class="review-summary-value">{{if .SlugConflictEventSlug}}{{.SlugConflictEventSlug}}{{else}}&mdash;{{end}}</div>
+      <div class="review-summary-candidate">resolution available: {{if .SlugConflictResolutionAvailable}}yes{{else}}no{{end}}</div>
     </div>
     {{end}}
   </div>
@@ -579,6 +710,31 @@
     <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
     <input type="hidden" name="action" value="resolve_title_repair">
     <button type="submit" class="button">Apply title repair</button>
+  </form>
+  {{end}}
+  {{if and (eq $.EventReviewDetail.Summary.Status "open") .SlugConflictResolutionAvailable}}
+  <h3>Resolve slug conflict</h3>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="resolve_title_slug_conflict">
+    <input type="hidden" name="mode" value="merge_duplicate">
+    <input type="hidden" name="original_canonical_event_id" value="{{.CanonicalEventID}}">
+    <input type="hidden" name="slug_conflict_event_id" value="{{.SlugConflictEventID}}">
+    <input type="hidden" name="draft_title" value="{{.DraftTitle}}">
+    <input type="hidden" name="draft_slug" value="{{.DraftSlug}}">
+    <button type="submit" class="button">Merge duplicate and apply title</button>
+  </form>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="resolve_title_slug_conflict">
+    <input type="hidden" name="mode" value="keep_separate_no_change">
+    <input type="hidden" name="original_canonical_event_id" value="{{.CanonicalEventID}}">
+    <input type="hidden" name="slug_conflict_event_id" value="{{.SlugConflictEventID}}">
+    <input type="hidden" name="draft_title" value="{{.DraftTitle}}">
+    <input type="hidden" name="draft_slug" value="{{.DraftSlug}}">
+    <button type="submit" class="button">Keep separate without title change</button>
   </form>
   {{end}}
 </section>
@@ -624,6 +780,67 @@
     <input type="hidden" name="expected_version" value="{{.EventReviewDetail.Summary.Version}}">
     <input type="hidden" name="action" value="resolve_live_actions">
     <button type="submit" class="button">Apply stored live actions</button>
+  </form>
+</section>
+{{end}}
+
+{{if .EventReviewCanKeepHistoricalDuplicatesSeparate}}
+<section class="section-block">
+  <h2>Keep historical duplicates separate</h2>
+  <p class="notice">Resolve this historical duplicate cluster as a false positive without changing any live event state.</p>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="resolve_historical_duplicate_keep_separate">
+    {{range .EventReviewDetail.HistoricalDuplicateReadiness.Events}}
+    <input type="hidden" name="kept_event_id" value="{{.EventID}}">
+    {{end}}
+    <button type="submit" class="button">Keep all separate</button>
+  </form>
+</section>
+{{end}}
+
+{{if .EventReviewCanOverrideHistoricalDuplicateActions}}
+<section class="section-block">
+  <h2>Override historical duplicate actions</h2>
+  <form method="post" class="review-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="expected_version" value="{{.EventReviewDetail.Summary.Version}}">
+    <input type="hidden" name="action" value="resolve_historical_duplicate_actions">
+    <div class="review-matrix-wrap">
+      <table class="review-matrix">
+        <thead>
+          <tr>
+            <th scope="col">Event</th>
+            <th scope="col">Canonical</th>
+            <th scope="col">Action</th>
+            <th scope="col">State</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .EventReviewDetail.HistoricalDuplicateReadiness.Events}}
+          <tr>
+            <th scope="row">
+              event #{{.EventID}}{{with .EventSlug}}<small>{{.}}</small>{{end}}
+              <input type="hidden" name="historical_event_id" value="{{.EventID}}">
+            </th>
+            <td><input type="radio" name="canonical_event_id" value="{{.EventID}}" {{if .Canonical}}checked{{end}} {{if not .CanonicalEligible}}disabled{{end}}></td>
+            <td>
+              <select name="historical_action_{{.EventID}}">
+                <option value="keep_separate" {{if and (eq .Action "keep_separate") .KeepEligible}}selected{{end}} {{if not .KeepEligible}}disabled{{end}}>Keep separate</option>
+                <option value="withhold_duplicate" {{if or (eq .Action "withhold_duplicate") (not .KeepEligible)}}selected{{end}}>Withhold duplicate</option>
+              </select>
+            </td>
+            <td>
+              {{blankValue .PublicationState}}
+              {{if .BlockingReasons}}<small>{{joinStrings .BlockingReasons "; "}}</small>{{end}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    <button type="submit" class="button">Apply chosen actions</button>
   </form>
 </section>
 {{end}}
@@ -696,6 +913,35 @@
       <div class="review-summary-candidate">{{blankValue .NewSlug}}</div>
     </div>
     {{end}}
+    {{with .AppliedTitleSlugConflict}}
+    <div class="review-summary-row">
+      <div class="review-summary-label">Resolved title slug conflict</div>
+      <div class="review-summary-value">{{.Mode}}</div>
+      <div class="review-summary-candidate">&nbsp;</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Original event</div>
+      <div class="review-summary-value">event #{{.OldCanonicalEventID}}</div>
+      <div class="review-summary-candidate">{{blankValue .OldSlug}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Slug conflict event</div>
+      <div class="review-summary-value">event #{{.SlugConflictEventID}}</div>
+      <div class="review-summary-candidate">survivor: {{if .SurvivingEventID}}event #{{.SurvivingEventID}}{{else}}&mdash;{{end}}</div>
+    </div>
+    <div class="review-summary-row">
+      <div class="review-summary-label">Proposed title</div>
+      <div class="review-summary-value">{{blankValue .NewTitle}}</div>
+      <div class="review-summary-candidate">{{blankValue .NewSlug}}</div>
+    </div>
+    {{end}}
+    {{with .AppliedHistoricalKeepSeparate}}
+    <div class="review-summary-row">
+      <div class="review-summary-label">Historical duplicate decision</div>
+      <div class="review-summary-value">kept separate</div>
+      <div class="review-summary-candidate">{{len .KeptEvents}} events</div>
+    </div>
+    {{end}}
     <div class="review-summary-row">
       <div class="review-summary-label">Superseded by</div>
       <div class="review-summary-value">{{with .SupersededByClusterID}}<a href="/admin/event-review/{{.}}">cluster #{{.}}</a>{{else}}&mdash;{{end}}</div>
@@ -728,6 +974,29 @@
         {{else}}
         <tr>
           <td colspan="3" class="empty-state">No applied live actions recorded.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{with .AppliedHistoricalKeepSeparate}}
+  <h3>Kept historical duplicate events</h3>
+  <div class="review-matrix-wrap">
+    <table class="review-matrix">
+      <thead>
+        <tr>
+          <th scope="col">Event</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .KeptEvents}}
+        <tr>
+          <th scope="row">event #{{.EventID}}{{with .EventSlug}}<small>{{.}}</small>{{end}}</th>
+        </tr>
+        {{else}}
+        <tr>
+          <td class="empty-state">No kept events recorded.</td>
         </tr>
         {{end}}
       </tbody>

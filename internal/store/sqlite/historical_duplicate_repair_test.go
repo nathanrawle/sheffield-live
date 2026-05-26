@@ -59,6 +59,46 @@ func TestRepairHistoricalDuplicateEventsDryRunDoesNotMutate(t *testing.T) {
 	}
 }
 
+func TestRepairHistoricalDuplicateEventsSkipsSeparatedFalsePositiveCluster(t *testing.T) {
+	ctx := context.Background()
+	st, db, sourceID := openHistoricalDuplicateRepairFixture(t)
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+	defer db.Close()
+
+	fixture := historicalDuplicateRepairSeedPair(t, db, sourceID, historicalDuplicateRepairSeedOptions{
+		targetName: "Separated False Positive",
+		loserName:  "Separated False Positive",
+	})
+	if _, err := insertEventReviewSeparation(t, db,
+		eventReviewEventSeparationEndpoint(fixture.targetID),
+		eventReviewEventSeparationEndpoint(fixture.loserID),
+		true,
+		"historical duplicate keep separate",
+		time.Date(2026, time.May, 15, 9, 0, 0, 0, time.UTC),
+		time.Date(2026, time.May, 15, 9, 0, 0, 0, time.UTC),
+	); err != nil {
+		t.Fatalf("insert event separation: %v", err)
+	}
+
+	report, err := st.RepairHistoricalDuplicateEvents(ctx, HistoricalDuplicateRepairOptions{Apply: true, NearWindow: historicalDuplicateRepairMaxWindow})
+	if err != nil {
+		t.Fatalf("apply repair: %v", err)
+	}
+	if report.AutoWithheld != 0 || report.EventReviewClustersCreated != 0 {
+		t.Fatalf("report auto_withheld=%d event_review_created=%d, want no mutation", report.AutoWithheld, report.EventReviewClustersCreated)
+	}
+	if len(report.Changes) != 1 || report.Changes[0].Result != "skipped" || report.Changes[0].Reason != "events already marked separate" {
+		t.Fatalf("changes = %#v, want separated skip", report.Changes)
+	}
+	if state, _, _, _ := mustLoadHistoricalDuplicateEventWithholdState(t, db, fixture.loserSlug); state != string(domain.PublicationStateProvisional) {
+		t.Fatalf("loser state = %q, want provisional", state)
+	}
+}
+
 func TestRepairHistoricalDuplicateEventsDryRunNormalizesWithheldStateAndExcludesItFromClusters(t *testing.T) {
 	ctx := context.Background()
 	st, db, sourceID := openHistoricalDuplicateRepairFixture(t)

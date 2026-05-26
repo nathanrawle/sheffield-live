@@ -2138,7 +2138,13 @@ func insertStoreTestSecondarySourceInfoRows(t *testing.T, db *sql.DB, eventID, s
 func insertStoreTestSource(t *testing.T, db *sql.DB) int64 {
 	t.Helper()
 
-	res, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, "Store test source", "https://example.test/store-test")
+	return insertStoreNamedSource(t, db, "Store test source", "https://example.test/store-test")
+}
+
+func insertStoreNamedSource(t *testing.T, db *sql.DB, name, url string) int64 {
+	t.Helper()
+
+	res, err := db.Exec(`INSERT INTO sources (name, url) VALUES (?, ?)`, name, url)
 	if err != nil {
 		t.Fatalf("insert store test source: %v", err)
 	}

@@ -313,6 +313,37 @@ func (s *Store) LoadEventReviewCluster(ctx context.Context, id int64) (seedstore
 		}
 	}
 	importReadiness := loadEventReviewImportReadinessTx(summary, evidence, evidenceIdentityKeys, exactIdentityMatches, sourceIdentityLinks, sourceIdentityChoices)
+	if importReadiness != nil {
+		structuralTargets, err := loadEventReviewImportStructuralTargetsTx(ctx, tx, s, summary, evidence)
+		if err != nil {
+			return seedstore.EventReviewClusterDetail{}, false, err
+		}
+		importReadiness.ExistingEventTargets = normalizeEventReviewImportExistingEventTargets(append(importReadiness.ExistingEventTargets, structuralTargets...))
+		importReadiness.ExistingEventTargets = applyEventReviewImportUnresolvedSourceLinkBlockers(importReadiness.ExistingEventTargets, importReadiness.CandidateIdentityStatuses)
+		nearTargets, err := loadEventReviewImportNearTitleTargetsTx(ctx, tx, s, summary, evidence, importReadiness.ExistingEventTargets)
+		if err != nil {
+			return seedstore.EventReviewClusterDetail{}, false, err
+		}
+		importReadiness.ExistingEventTargets = normalizeEventReviewImportExistingEventTargets(append(importReadiness.ExistingEventTargets, nearTargets...))
+		importReadiness.ExistingEventTargets = applyEventReviewImportUnresolvedSourceLinkBlockers(importReadiness.ExistingEventTargets, importReadiness.CandidateIdentityStatuses)
+		importReadiness.ExistingEventTargets = applyEventReviewImportSourceChoiceBlockers(importReadiness.ExistingEventTargets, importReadiness.CandidateIdentityStatuses)
+		importReadiness.ExistingEventTargets, err = applyEventReviewImportExistingTargetBlockersTx(ctx, tx, s, summary, evidence, importReadiness.ExistingEventTargets)
+		if err != nil {
+			return seedstore.EventReviewClusterDetail{}, false, err
+		}
+		importReadiness.ExistingEventTargets, err = applyEventReviewImportNearTitleHardTargetBlockersTx(ctx, tx, s, summary, evidence, importReadiness.ExistingEventTargets)
+		if err != nil {
+			return seedstore.EventReviewClusterDetail{}, false, err
+		}
+		importReadiness.ExistingEventTargets = normalizeEventReviewImportExistingEventTargets(importReadiness.ExistingEventTargets)
+		authoritativeTargets, err := loadEventReviewImportAuthoritativeTargetsTx(ctx, tx, s, summary, evidence, importReadiness.CandidateIdentityStatuses)
+		if err != nil {
+			return seedstore.EventReviewClusterDetail{}, false, err
+		}
+		importReadiness.AuthoritativeTargets = authoritativeTargets
+		assignSelectedCandidateExistingEventTargets(importReadiness)
+		finalizeEventReviewImportNewListingScope(importReadiness)
+	}
 	canonicalChoices, err := loadEventReviewClusterChoiceSummariesTx(ctx, tx, id, "event_review_canonical_choices")
 	if err != nil {
 		return seedstore.EventReviewClusterDetail{}, false, err
@@ -329,22 +360,27 @@ func (s *Store) LoadEventReviewCluster(ctx context.Context, id int64) (seedstore
 	if err != nil {
 		return seedstore.EventReviewClusterDetail{}, false, err
 	}
+	historicalDuplicateReadiness, err := loadEventReviewHistoricalDuplicateReadinessTx(ctx, tx, summary, evidence, liveActions)
+	if err != nil {
+		return seedstore.EventReviewClusterDetail{}, false, err
+	}
 
 	return seedstore.EventReviewClusterDetail{
-		Summary:              summary,
-		Resolution:           resolution,
-		ImportReadiness:      importReadiness,
-		TitleRepairReadiness: titleRepairReadiness,
-		Evidence:             evidence,
-		ClusterIdentityKeys:  clusterIdentityKeys,
-		EvidenceIdentityKeys: evidenceIdentityKeys,
-		SourceIdentityLinks:  sourceIdentityLinks,
-		ExactIdentityMatches: exactIdentityMatches,
-		Observations:         observations,
-		Separations:          separations,
-		CanonicalChoices:     canonicalChoices,
-		DraftChoices:         draftChoices,
-		LiveActions:          liveActions,
+		Summary:                      summary,
+		Resolution:                   resolution,
+		ImportReadiness:              importReadiness,
+		TitleRepairReadiness:         titleRepairReadiness,
+		HistoricalDuplicateReadiness: historicalDuplicateReadiness,
+		Evidence:                     evidence,
+		ClusterIdentityKeys:          clusterIdentityKeys,
+		EvidenceIdentityKeys:         evidenceIdentityKeys,
+		SourceIdentityLinks:          sourceIdentityLinks,
+		ExactIdentityMatches:         exactIdentityMatches,
+		Observations:                 observations,
+		Separations:                  separations,
+		CanonicalChoices:             canonicalChoices,
+		DraftChoices:                 draftChoices,
+		LiveActions:                  liveActions,
 	}, true, nil
 }
 
@@ -496,6 +532,40 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 			}
 			summary.AppliedImportListing = appliedImportListing
 		}
+		if parsed.AppliedSupportingSource != nil {
+			summary.AppliedSupportingSource = &seedstore.EventReviewResolutionAppliedSupportingSourceSummary{
+				EventID:        parsed.AppliedSupportingSource.EventID,
+				EventSlug:      parsed.AppliedSupportingSource.EventSlug,
+				Title:          parsed.AppliedSupportingSource.Title,
+				SourceID:       parsed.AppliedSupportingSource.SourceID,
+				SourceName:     parsed.AppliedSupportingSource.SourceName,
+				SourceURL:      parsed.AppliedSupportingSource.SourceURL,
+				EvidenceID:     parsed.AppliedSupportingSource.EvidenceID,
+				TargetBasis:    parsed.AppliedSupportingSource.TargetBasis,
+				PromotedReview: parsed.AppliedSupportingSource.PromotedReview,
+			}
+		}
+		if parsed.AppliedAuthoritativeImport != nil {
+			summary.AppliedAuthoritativeImport = &seedstore.EventReviewResolutionAppliedAuthoritativeImportSummary{
+				EventID:    parsed.AppliedAuthoritativeImport.EventID,
+				EventSlug:  parsed.AppliedAuthoritativeImport.EventSlug,
+				Title:      parsed.AppliedAuthoritativeImport.Title,
+				SourceID:   parsed.AppliedAuthoritativeImport.SourceID,
+				SourceName: parsed.AppliedAuthoritativeImport.SourceName,
+				SourceURL:  parsed.AppliedAuthoritativeImport.SourceURL,
+				EvidenceID: parsed.AppliedAuthoritativeImport.EvidenceID,
+				Result:     parsed.AppliedAuthoritativeImport.Result,
+			}
+		}
+		summary.AppliedSeparations = make([]seedstore.EventReviewResolutionAppliedSeparationSummary, 0, len(parsed.AppliedSeparations))
+		for _, separation := range parsed.AppliedSeparations {
+			summary.AppliedSeparations = append(summary.AppliedSeparations, seedstore.EventReviewResolutionAppliedSeparationSummary{
+				SeparationID: separation.SeparationID,
+				EndpointAKey: strings.TrimSpace(separation.EndpointAKey),
+				EndpointBKey: strings.TrimSpace(separation.EndpointBKey),
+				Reason:       strings.TrimSpace(separation.Reason),
+			})
+		}
 		if parsed.AppliedTitleRepair != nil {
 			summary.AppliedTitleRepair = &seedstore.EventReviewResolutionAppliedTitleRepairSummary{
 				EventID:  parsed.AppliedTitleRepair.EventID,
@@ -503,6 +573,29 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 				NewTitle: parsed.AppliedTitleRepair.NewTitle,
 				OldSlug:  parsed.AppliedTitleRepair.OldSlug,
 				NewSlug:  parsed.AppliedTitleRepair.NewSlug,
+			}
+		}
+		if parsed.AppliedTitleSlugConflict != nil {
+			summary.AppliedTitleSlugConflict = &seedstore.EventReviewResolutionAppliedTitleSlugConflictSummary{
+				Mode:                parsed.AppliedTitleSlugConflict.Mode,
+				OldCanonicalEventID: parsed.AppliedTitleSlugConflict.OldCanonicalEventID,
+				SlugConflictEventID: parsed.AppliedTitleSlugConflict.SlugConflictEventID,
+				SurvivingEventID:    parsed.AppliedTitleSlugConflict.SurvivingEventID,
+				OldTitle:            parsed.AppliedTitleSlugConflict.OldTitle,
+				NewTitle:            parsed.AppliedTitleSlugConflict.NewTitle,
+				OldSlug:             parsed.AppliedTitleSlugConflict.OldSlug,
+				NewSlug:             parsed.AppliedTitleSlugConflict.NewSlug,
+			}
+		}
+		if parsed.AppliedHistoricalKeepSeparate != nil {
+			summary.AppliedHistoricalKeepSeparate = &seedstore.EventReviewResolutionAppliedHistoricalKeepSeparateSummary{
+				KeptEvents: make([]seedstore.EventReviewResolutionKeptHistoricalDuplicateEventSummary, 0, len(parsed.AppliedHistoricalKeepSeparate.KeptEvents)),
+			}
+			for _, event := range parsed.AppliedHistoricalKeepSeparate.KeptEvents {
+				summary.AppliedHistoricalKeepSeparate.KeptEvents = append(summary.AppliedHistoricalKeepSeparate.KeptEvents, seedstore.EventReviewResolutionKeptHistoricalDuplicateEventSummary{
+					EventID:   event.EventID,
+					EventSlug: event.EventSlug,
+				})
 			}
 		}
 		summary.AppliedLiveActions = make([]seedstore.EventReviewResolutionAppliedLiveActionSummary, 0, len(parsed.AppliedLiveActions))
@@ -530,13 +623,18 @@ func loadEventReviewClusterResolutionTx(ctx context.Context, q queryer, clusterI
 }
 
 type eventReviewResolutionSnapshotParsed struct {
-	RepairRunID           *int64                                                  `json:"repair_run_id,omitempty"`
-	SupersededByClusterID *int64                                                  `json:"superseded_by_cluster_id,omitempty"`
-	CanonicalEventID      *int64                                                  `json:"canonical_event_id,omitempty"`
-	AppliedAutoResolution *eventReviewResolutionAppliedAutoResolutionSnapshotView `json:"applied_auto_resolution,omitempty"`
-	AppliedImportListing  *eventReviewResolutionAppliedImportListingSnapshotView  `json:"applied_import_listing,omitempty"`
-	AppliedTitleRepair    *eventReviewResolutionAppliedTitleRepairSnapshotView    `json:"applied_title_repair,omitempty"`
-	AppliedLiveActions    []eventReviewResolutionAppliedLiveActionSnapshotView    `json:"applied_live_actions,omitempty"`
+	RepairRunID                   *int64                                                          `json:"repair_run_id,omitempty"`
+	SupersededByClusterID         *int64                                                          `json:"superseded_by_cluster_id,omitempty"`
+	CanonicalEventID              *int64                                                          `json:"canonical_event_id,omitempty"`
+	AppliedAutoResolution         *eventReviewResolutionAppliedAutoResolutionSnapshotView         `json:"applied_auto_resolution,omitempty"`
+	AppliedImportListing          *eventReviewResolutionAppliedImportListingSnapshotView          `json:"applied_import_listing,omitempty"`
+	AppliedSupportingSource       *eventReviewResolutionAppliedSupportingSourceSnapshotView       `json:"applied_supporting_source,omitempty"`
+	AppliedAuthoritativeImport    *eventReviewResolutionAppliedAuthoritativeImportSnapshotView    `json:"applied_authoritative_import,omitempty"`
+	AppliedSeparations            []eventReviewResolutionAppliedSeparationSnapshotView            `json:"applied_separations,omitempty"`
+	AppliedTitleRepair            *eventReviewResolutionAppliedTitleRepairSnapshotView            `json:"applied_title_repair,omitempty"`
+	AppliedTitleSlugConflict      *eventReviewResolutionAppliedTitleSlugConflictSnapshotView      `json:"applied_title_slug_conflict,omitempty"`
+	AppliedHistoricalKeepSeparate *eventReviewResolutionAppliedHistoricalKeepSeparateSnapshotView `json:"applied_historical_keep_separate,omitempty"`
+	AppliedLiveActions            []eventReviewResolutionAppliedLiveActionSnapshotView            `json:"applied_live_actions,omitempty"`
 }
 
 type eventReviewResolutionAppliedAutoResolutionSnapshotView struct {
@@ -562,11 +660,50 @@ type eventReviewResolutionAppliedImportListingSnapshotView struct {
 	EvidenceID int64  `json:"evidence_id,omitempty"`
 }
 
+type eventReviewResolutionAppliedSupportingSourceSnapshotView struct {
+	EventID        int64                                  `json:"event_id"`
+	EventSlug      string                                 `json:"event_slug,omitempty"`
+	Title          string                                 `json:"title,omitempty"`
+	SourceID       int64                                  `json:"source_id,omitempty"`
+	SourceName     string                                 `json:"source_name,omitempty"`
+	SourceURL      string                                 `json:"source_url,omitempty"`
+	EvidenceID     int64                                  `json:"evidence_id,omitempty"`
+	TargetBasis    seedstore.EventReviewImportTargetBasis `json:"target_basis,omitempty"`
+	PromotedReview bool                                   `json:"promoted_review,omitempty"`
+}
+
+type eventReviewResolutionAppliedSeparationSnapshotView struct {
+	SeparationID int64  `json:"separation_id,omitempty"`
+	EndpointAKey string `json:"endpoint_a_key,omitempty"`
+	EndpointBKey string `json:"endpoint_b_key,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type eventReviewResolutionAppliedAuthoritativeImportSnapshotView struct {
+	EventID    int64  `json:"event_id"`
+	EventSlug  string `json:"event_slug,omitempty"`
+	Title      string `json:"title,omitempty"`
+	SourceID   int64  `json:"source_id,omitempty"`
+	SourceName string `json:"source_name,omitempty"`
+	SourceURL  string `json:"source_url,omitempty"`
+	EvidenceID int64  `json:"evidence_id,omitempty"`
+	Result     string `json:"result,omitempty"`
+}
+
 type eventReviewResolutionAppliedLiveActionSnapshotView struct {
 	EventID   int64                               `json:"event_id"`
 	EventSlug string                              `json:"event_slug,omitempty"`
 	Action    seedstore.EventReviewLiveActionKind `json:"action"`
 	Reason    string                              `json:"reason,omitempty"`
+}
+
+type eventReviewResolutionAppliedHistoricalKeepSeparateSnapshotView struct {
+	KeptEvents []eventReviewResolutionKeptHistoricalDuplicateEventSnapshotView `json:"kept_events,omitempty"`
+}
+
+type eventReviewResolutionKeptHistoricalDuplicateEventSnapshotView struct {
+	EventID   int64  `json:"event_id"`
+	EventSlug string `json:"event_slug,omitempty"`
 }
 
 type eventReviewResolutionAppliedTitleRepairSnapshotView struct {
@@ -575,6 +712,17 @@ type eventReviewResolutionAppliedTitleRepairSnapshotView struct {
 	NewTitle string `json:"new_title,omitempty"`
 	OldSlug  string `json:"old_slug,omitempty"`
 	NewSlug  string `json:"new_slug,omitempty"`
+}
+
+type eventReviewResolutionAppliedTitleSlugConflictSnapshotView struct {
+	Mode                seedstore.EventReviewTitleRepairSlugConflictMode `json:"mode"`
+	OldCanonicalEventID int64                                            `json:"old_canonical_event_id,omitempty"`
+	SlugConflictEventID int64                                            `json:"slug_conflict_event_id,omitempty"`
+	SurvivingEventID    int64                                            `json:"surviving_event_id,omitempty"`
+	OldTitle            string                                           `json:"old_title,omitempty"`
+	NewTitle            string                                           `json:"new_title,omitempty"`
+	OldSlug             string                                           `json:"old_slug,omitempty"`
+	NewSlug             string                                           `json:"new_slug,omitempty"`
 }
 
 func scanEventReviewClusterSummaryRow(scanner interface {
@@ -973,16 +1121,20 @@ type eventReviewClusterObservationSummaryRow struct {
 }
 
 type eventReviewClusterSourceIdentityLinkRow struct {
-	sourceID          int64
-	sourceName        string
-	sourceURL         string
-	sourceIdentityKey string
-	evidenceCount     int64
-	linkedEventID     sql.NullInt64
-	linkedEventSlug   string
-	linkedEventTitle  string
-	authoritative     int
-	linkUpdatedAt     sql.NullString
+	sourceID                  int64
+	sourceName                string
+	sourceURL                 string
+	sourceIdentityKey         string
+	evidenceCount             int64
+	linkedEventID             sql.NullInt64
+	linkedEventSlug           string
+	linkedEventTitle          string
+	rawLinkedEventID          sql.NullInt64
+	rawLinkedEventSlug        string
+	rawLinkedPublicationState string
+	resolvedFromWithheld      int
+	authoritative             int
+	linkUpdatedAt             sql.NullString
 }
 
 type eventReviewClusterExactIdentityMatchRow struct {
@@ -1166,9 +1318,18 @@ func loadEventReviewClusterSourceIdentityLinkSummariesTx(ctx context.Context, q 
 			COALESCE(s.url, ''),
 			i.normalized_key,
 			COUNT(DISTINCT e.id),
-			l.event_id,
+			ev.id,
 			COALESCE(ev.slug, ''),
 			COALESCE(ev.name, ''),
+			linked_ev.id,
+			COALESCE(linked_ev.slug, ''),
+			COALESCE(linked_ev.publication_state, ''),
+			CASE
+				WHEN linked_ev.id IS NOT NULL
+					AND ev.id IS NOT NULL
+					AND linked_ev.id <> ev.id THEN 1
+				ELSE 0
+			END,
 			COALESCE(l.is_authoritative, 0),
 			l.updated_at
 		FROM event_review_cluster_evidence ce
@@ -1178,7 +1339,15 @@ func loadEventReviewClusterSourceIdentityLinkSummariesTx(ctx context.Context, q 
 		LEFT JOIN sources s ON s.id = eik.source_id
 		LEFT JOIN event_source_links l ON l.source_id = eik.source_id
 			AND l.source_event_key = i.normalized_key
-		LEFT JOIN events ev ON ev.id = l.event_id
+		LEFT JOIN events linked_ev ON linked_ev.id = l.event_id
+		LEFT JOIN events canonical_ev ON canonical_ev.id = linked_ev.canonical_event_id
+		LEFT JOIN events ev ON ev.id = CASE
+			WHEN linked_ev.origin = ? AND TRIM(COALESCE(linked_ev.publication_state, '')) <> ? THEN linked_ev.id
+			WHEN canonical_ev.id IS NOT NULL
+				AND canonical_ev.origin = ?
+				AND TRIM(COALESCE(canonical_ev.publication_state, '')) <> ? THEN canonical_ev.id
+			ELSE NULL
+		END
 		WHERE ce.cluster_id = ?
 			AND ce.active = 1
 			AND eik.source_id IS NOT NULL
@@ -1188,13 +1357,16 @@ func loadEventReviewClusterSourceIdentityLinkSummariesTx(ctx context.Context, q 
 			COALESCE(s.name, ''),
 			COALESCE(s.url, ''),
 			i.normalized_key,
-			l.event_id,
+			ev.id,
 			ev.slug,
 			ev.name,
+			linked_ev.id,
+			linked_ev.slug,
+			linked_ev.publication_state,
 			l.is_authoritative,
 			l.updated_at
 		ORDER BY COALESCE(s.name, ''), eik.source_id, i.normalized_key, COALESCE(ev.slug, ''), COALESCE(ev.name, ''), COALESCE(l.event_id, 0)
-	`, clusterID, string(seedstore.EventReviewIdentityKeyKindSource))
+	`, string(domain.OriginLive), string(domain.PublicationStateWithheld), string(domain.OriginLive), string(domain.PublicationStateWithheld), clusterID, string(seedstore.EventReviewIdentityKeyKindSource))
 	if err != nil {
 		return nil, err
 	}
@@ -1212,6 +1384,10 @@ func loadEventReviewClusterSourceIdentityLinkSummariesTx(ctx context.Context, q 
 			&row.linkedEventID,
 			&row.linkedEventSlug,
 			&row.linkedEventTitle,
+			&row.rawLinkedEventID,
+			&row.rawLinkedEventSlug,
+			&row.rawLinkedPublicationState,
+			&row.resolvedFromWithheld,
 			&row.authoritative,
 			&row.linkUpdatedAt,
 		); err != nil {
@@ -1376,17 +1552,23 @@ func (r eventReviewClusterObservationSummaryRow) toSummary() seedstore.EventRevi
 
 func (r eventReviewClusterSourceIdentityLinkRow) toSummary() seedstore.EventReviewClusterSourceIdentityLinkSummary {
 	summary := seedstore.EventReviewClusterSourceIdentityLinkSummary{
-		SourceID:          r.sourceID,
-		SourceName:        strings.TrimSpace(r.sourceName),
-		SourceURL:         strings.TrimSpace(r.sourceURL),
-		SourceIdentityKey: strings.TrimSpace(r.sourceIdentityKey),
-		EvidenceCount:     int(r.evidenceCount),
-		LinkedEventSlug:   strings.TrimSpace(r.linkedEventSlug),
-		LinkedEventTitle:  strings.TrimSpace(r.linkedEventTitle),
-		Authoritative:     r.authoritative != 0,
+		SourceID:                  r.sourceID,
+		SourceName:                strings.TrimSpace(r.sourceName),
+		SourceURL:                 strings.TrimSpace(r.sourceURL),
+		SourceIdentityKey:         strings.TrimSpace(r.sourceIdentityKey),
+		EvidenceCount:             int(r.evidenceCount),
+		LinkedEventSlug:           strings.TrimSpace(r.linkedEventSlug),
+		LinkedEventTitle:          strings.TrimSpace(r.linkedEventTitle),
+		RawLinkedEventSlug:        strings.TrimSpace(r.rawLinkedEventSlug),
+		RawLinkedPublicationState: strings.TrimSpace(r.rawLinkedPublicationState),
+		ResolvedFromWithheld:      r.resolvedFromWithheld != 0,
+		Authoritative:             r.authoritative != 0,
 	}
 	if r.linkedEventID.Valid {
 		summary.LinkedEventID = &r.linkedEventID.Int64
+	}
+	if r.rawLinkedEventID.Valid {
+		summary.RawLinkedEventID = &r.rawLinkedEventID.Int64
 	}
 	if r.linkUpdatedAt.Valid {
 		if parsed, err := parseRFC3339UTC(r.linkUpdatedAt.String); err == nil {
@@ -1528,16 +1710,19 @@ func loadEventReviewTitleRepairReadinessTx(ctx context.Context, q queryer, summa
 		readiness.BlockingReasons = append(readiness.BlockingReasons, "draft slug is required")
 	}
 
+	supportedConflictReason := false
 	switch summary.ConflictReason {
 	case eventTitleRepairConflictReasonSupportingCleanTitle:
+		supportedConflictReason = true
 	case eventTitleRepairConflictReasonAuthoritativeSlugConflict:
-		readiness.BlockingReasons = append(readiness.BlockingReasons, "authoritative slug conflict resolution is not implemented")
+		supportedConflictReason = true
 	case "":
 		readiness.BlockingReasons = append(readiness.BlockingReasons, "unsupported title repair conflict reason")
 	default:
 		readiness.BlockingReasons = append(readiness.BlockingReasons, "unsupported title repair conflict reason: "+summary.ConflictReason)
 	}
 
+	baseBlockingReasons := len(readiness.BlockingReasons)
 	if readiness.DraftSlug != "" && readiness.CurrentSlug != "" && readiness.DraftSlug != readiness.CurrentSlug {
 		conflict, ok, err := loadEventReviewTitleRepairEventBySlugTx(ctx, q, readiness.DraftSlug)
 		if err != nil {
@@ -1546,7 +1731,24 @@ func loadEventReviewTitleRepairReadinessTx(ctx context.Context, q queryer, summa
 		if ok && isLiveNonWithheldEventRow(conflict.origin, conflict.publicationState) && (summary.CanonicalEventID == nil || conflict.id != *summary.CanonicalEventID) {
 			readiness.SlugConflictEventID = &conflict.id
 			readiness.SlugConflictEventSlug = strings.TrimSpace(conflict.slug)
-			readiness.BlockingReasons = append(readiness.BlockingReasons, "target slug already belongs to another live event")
+			readiness.SlugConflictEventTitle = strings.TrimSpace(conflict.name)
+			separated := false
+			if summary.CanonicalEventID != nil && *summary.CanonicalEventID > 0 {
+				separated, err = hasActiveEventReviewSeparationBetweenKeysTx(ctx, q, seedstore.EventReviewSeparationEventEndpointKey(*summary.CanonicalEventID), seedstore.EventReviewSeparationEventEndpointKey(conflict.id))
+				if err != nil {
+					return nil, err
+				}
+			}
+			if separated {
+				reason := "target slug conflict is already marked separate"
+				readiness.BlockingReasons = append(readiness.BlockingReasons, reason)
+				readiness.SlugConflictBlockingReasons = append(readiness.SlugConflictBlockingReasons, reason)
+			} else {
+				readiness.BlockingReasons = append(readiness.BlockingReasons, "target slug already belongs to another live event")
+				if supportedConflictReason && baseBlockingReasons == 0 {
+					readiness.SlugConflictResolutionAvailable = true
+				}
+			}
 		}
 	}
 
@@ -1554,6 +1756,202 @@ func loadEventReviewTitleRepairReadinessTx(ctx context.Context, q queryer, summa
 		readiness.Eligible = true
 	}
 	return readiness, nil
+}
+
+func loadEventReviewHistoricalDuplicateReadinessTx(ctx context.Context, q queryer, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary, liveActions []seedstore.EventReviewClusterLiveActionSummary) (*seedstore.EventReviewHistoricalDuplicateReadiness, error) {
+	if summary.ConflictType != historicalDuplicateRepairConflictType {
+		return nil, nil
+	}
+
+	readiness := &seedstore.EventReviewHistoricalDuplicateReadiness{}
+	actionByEventID := make(map[int64]seedstore.EventReviewClusterLiveActionSummary, len(liveActions))
+	eventIDs := make([]int64, 0, len(evidence)+len(liveActions)+1)
+	if summary.CanonicalEventID != nil {
+		eventIDs = append(eventIDs, *summary.CanonicalEventID)
+	}
+	for _, row := range evidence {
+		if row.EventID != nil {
+			eventIDs = append(eventIDs, *row.EventID)
+		}
+	}
+	for _, action := range liveActions {
+		eventIDs = append(eventIDs, action.EventID)
+		if action.EventID > 0 {
+			actionByEventID[action.EventID] = action
+		}
+	}
+	eventIDs = uniqueInt64s(eventIDs)
+
+	for _, eventID := range eventIDs {
+		eventReadiness := seedstore.EventReviewHistoricalDuplicateEventReadiness{EventID: eventID}
+		if summary.CanonicalEventID != nil && *summary.CanonicalEventID == eventID {
+			eventReadiness.Canonical = true
+		}
+		if action, ok := actionByEventID[eventID]; ok {
+			eventReadiness.Action = action.Action
+			eventReadiness.EventSlug = strings.TrimSpace(action.EventSlug)
+		}
+		record, ok, err := loadEventRecordByIDTx(ctx, q, eventID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			appendUniqueImportReadinessReason(&eventReadiness.BlockingReasons, "event is missing")
+			appendUniqueImportReadinessReason(&readiness.KeepSeparateBlockingReasons, "all events must exist")
+			readiness.Events = append(readiness.Events, eventReadiness)
+			continue
+		}
+		if eventReadiness.EventSlug == "" {
+			eventReadiness.EventSlug = strings.TrimSpace(record.Event.Slug)
+		}
+		state := normalizedPublicationState(record.Event.PublicationState)
+		eventReadiness.PublicationState = string(state)
+		eventReadiness.Live = isLiveNonWithheldEventRow(string(record.Event.Origin), string(record.Event.PublicationState))
+		eventReadiness.CanonicalEligible = eventReadiness.Live && state == domain.PublicationStateReviewed
+		if !eventReadiness.Live {
+			appendUniqueImportReadinessReason(&eventReadiness.BlockingReasons, "event is not live/non-withheld")
+		}
+		if state != domain.PublicationStateReviewed && state != domain.PublicationStateProvisional {
+			appendUniqueImportReadinessReason(&eventReadiness.BlockingReasons, "event is not reviewed or provisional")
+		}
+		eventReadiness.KeepEligible = len(eventReadiness.BlockingReasons) == 0
+		if !eventReadiness.KeepEligible {
+			appendUniqueImportReadinessReason(&readiness.KeepSeparateBlockingReasons, "all events must be live reviewed/provisional")
+		}
+		readiness.Events = append(readiness.Events, eventReadiness)
+	}
+
+	if summary.Status != seedstore.EventReviewClusterStatusOpen {
+		appendUniqueImportReadinessReason(&readiness.LiveActionBlockingReasons, "cluster is not open")
+		appendUniqueImportReadinessReason(&readiness.KeepSeparateBlockingReasons, "cluster is not open")
+	}
+	if len(eventIDs) < 2 {
+		appendUniqueImportReadinessReason(&readiness.KeepSeparateBlockingReasons, "at least two historical duplicate events are required")
+	}
+	liveActionBlockers, err := historicalDuplicateLiveActionBlockingReasonsTx(ctx, q, summary, liveActions)
+	if err != nil {
+		return nil, err
+	}
+	for _, reason := range liveActionBlockers {
+		appendUniqueImportReadinessReason(&readiness.LiveActionBlockingReasons, reason)
+	}
+	readiness.CanResolveLiveActions = len(readiness.LiveActionBlockingReasons) == 0
+	readiness.CanKeepAllSeparate = len(readiness.KeepSeparateBlockingReasons) == 0
+	return readiness, nil
+}
+
+func historicalDuplicateLiveActionBlockingReasonsTx(ctx context.Context, q queryer, summary seedstore.EventReviewClusterSummary, liveActions []seedstore.EventReviewClusterLiveActionSummary) ([]string, error) {
+	var blockers []string
+	appendBlocker := func(reason string) {
+		appendUniqueImportReadinessReason(&blockers, reason)
+	}
+	if summary.Status != seedstore.EventReviewClusterStatusOpen {
+		appendBlocker("cluster is not open")
+	}
+	if summary.CanonicalEventID == nil || *summary.CanonicalEventID <= 0 {
+		appendBlocker("canonical event is missing")
+	}
+	if len(liveActions) == 0 {
+		appendBlocker("no stored live actions")
+	}
+	if summary.CanonicalEventID == nil || *summary.CanonicalEventID <= 0 || len(liveActions) == 0 {
+		return blockers, nil
+	}
+
+	canonicalID := *summary.CanonicalEventID
+	canonicalRecord, ok, err := loadEventRecordByIDTx(ctx, q, canonicalID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		appendBlocker("canonical event is missing")
+	} else {
+		if !isLiveNonWithheldEventRow(string(canonicalRecord.Event.Origin), string(canonicalRecord.Event.PublicationState)) {
+			appendBlocker("canonical event is not live/non-withheld")
+		}
+		if normalizedPublicationState(canonicalRecord.Event.PublicationState) != domain.PublicationStateReviewed {
+			appendBlocker("canonical event is not reviewed")
+		}
+	}
+
+	seenEventIDs := make(map[int64]struct{}, len(liveActions))
+	keepCount := 0
+	withholdCount := 0
+	for _, action := range liveActions {
+		if action.EventID <= 0 {
+			appendBlocker("live action event is missing")
+			continue
+		}
+		if _, ok := seenEventIDs[action.EventID]; ok {
+			appendBlocker("duplicate live action event")
+			continue
+		}
+		seenEventIDs[action.EventID] = struct{}{}
+		if !action.Action.Valid() {
+			appendBlocker("unsupported live action")
+			continue
+		}
+		switch action.Action {
+		case seedstore.EventReviewLiveActionKindKeepSeparate:
+			keepCount++
+			if action.EventID != canonicalID {
+				appendBlocker("keep_separate action must target canonical event")
+			}
+		case seedstore.EventReviewLiveActionKindWithholdDuplicate:
+			withholdCount++
+			if action.EventID == canonicalID {
+				appendBlocker("withhold_duplicate action must target a non-canonical event")
+				continue
+			}
+			record, ok, err := loadEventRecordByIDTx(ctx, q, action.EventID)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				appendBlocker("withhold event is missing")
+				continue
+			}
+			state := normalizedPublicationState(record.Event.PublicationState)
+			if state == domain.PublicationStateWithheld {
+				if historicalDuplicateRepairCanonicalEventIDFromDB(ctx, q, action.EventID) != canonicalID {
+					appendBlocker("withhold event is already withheld to another canonical event")
+				}
+				continue
+			}
+			if record.Event.Origin != domain.OriginLive || (state != domain.PublicationStateProvisional && state != domain.PublicationStateReviewed) {
+				appendBlocker("withhold event is not provisional or reviewed live")
+				continue
+			}
+			if reason, reviewNeeded, err := historicalDuplicateRepairSourceLinkGuardTx(ctx, q, action.EventID, canonicalID); err != nil {
+				return nil, err
+			} else if reviewNeeded {
+				appendBlocker(reason)
+			}
+			if reason, reviewNeeded, err := historicalDuplicateRepairAliasConflictTx(ctx, q, record.Event.Slug, canonicalID); err != nil {
+				return nil, err
+			} else if reviewNeeded {
+				appendBlocker(reason)
+			}
+		}
+	}
+	if keepCount != 1 {
+		appendBlocker("exactly one keep_separate action for canonical event is required")
+	}
+	if withholdCount == 0 {
+		appendBlocker("at least one withhold_duplicate action is required")
+	}
+	return blockers, nil
+}
+
+func historicalDuplicateReadinessEventIDs(readiness *seedstore.EventReviewHistoricalDuplicateReadiness) []int64 {
+	if readiness == nil {
+		return nil
+	}
+	ids := make([]int64, 0, len(readiness.Events))
+	for _, event := range readiness.Events {
+		ids = append(ids, event.EventID)
+	}
+	return uniqueInt64s(ids)
 }
 
 type eventReviewImportCandidatePayload struct {
@@ -1966,8 +2364,773 @@ func loadEventReviewImportReadinessTx(summary seedstore.EventReviewClusterSummar
 	}
 	readiness.IdentityRows, readiness.RawRows, readiness.ComparisonBlockingReasons, readiness.CandidateComparisonScope = buildEventReviewImportComparisonReadiness(summary, readiness.Candidates, comparisonCandidates)
 	readiness.CandidateIdentityStatuses = buildEventReviewCandidateIdentityStatuses(candidateStatuses, candidateStatusIndex, evidenceIdentityKeys, exactMatchByKey, sourceLinkByKey, sourceChoiceByKey)
+	readiness.ExistingEventTargets = normalizeEventReviewImportExistingEventTargets(buildEventReviewImportExistingEventTargets(summary, readiness.Candidates, readiness.CandidateIdentityStatuses))
 	readiness.SelectedCandidateReadiness = buildEventReviewSelectedCandidateReadiness(summary, readiness.Candidates, readiness.CandidateIdentityStatuses)
 	return readiness
+}
+
+func buildEventReviewImportExistingEventTargets(summary seedstore.EventReviewClusterSummary, candidates []seedstore.EventReviewImportCandidateSummary, statuses []seedstore.EventReviewImportCandidateIdentityStatus) []seedstore.EventReviewImportExistingEventTarget {
+	type targetKey struct {
+		evidenceID int64
+		eventID    int64
+		basis      seedstore.EventReviewImportTargetBasis
+	}
+	candidateAuthorityByEvidenceID := make(map[int64]seedstore.SourceAuthority, len(candidates))
+	for _, candidate := range candidates {
+		candidateAuthorityByEvidenceID[candidate.EvidenceID] = candidate.SourceAuthority
+	}
+	targets := make(map[targetKey]*seedstore.EventReviewImportExistingEventTarget)
+	addTarget := func(target seedstore.EventReviewImportExistingEventTarget) {
+		if target.EvidenceID <= 0 || target.EventID <= 0 || !target.TargetBasis.Valid() {
+			return
+		}
+		key := targetKey{evidenceID: target.EvidenceID, eventID: target.EventID, basis: target.TargetBasis}
+		existing := targets[key]
+		if existing == nil {
+			target.SourceIdentityKeys = normalizedImportReadinessStrings(target.SourceIdentityKeys)
+			target.ExactIdentityKeys = normalizedImportReadinessStrings(target.ExactIdentityKeys)
+			target.BlockingReasons = normalizedImportReadinessStrings(target.BlockingReasons)
+			targets[key] = &target
+			return
+		}
+		existing.SourceIdentityKeys = normalizedImportReadinessStrings(append(existing.SourceIdentityKeys, target.SourceIdentityKeys...))
+		existing.ExactIdentityKeys = normalizedImportReadinessStrings(append(existing.ExactIdentityKeys, target.ExactIdentityKeys...))
+		existing.BlockingReasons = normalizedImportReadinessStrings(append(existing.BlockingReasons, target.BlockingReasons...))
+		if existing.EventSlug == "" {
+			existing.EventSlug = target.EventSlug
+		}
+		if existing.EventTitle == "" {
+			existing.EventTitle = target.EventTitle
+		}
+	}
+
+	for _, candidate := range candidates {
+		if candidate.EventID != nil {
+			addTarget(seedstore.EventReviewImportExistingEventTarget{
+				EvidenceID:          candidate.EvidenceID,
+				EvidenceFingerprint: candidate.EvidenceFingerprint,
+				EventID:             *candidate.EventID,
+				EventSlug:           candidate.EventSlug,
+				TargetBasis:         seedstore.EventReviewImportTargetBasisEvidenceEvent,
+			})
+		}
+		if summary.CanonicalEventID != nil {
+			addTarget(seedstore.EventReviewImportExistingEventTarget{
+				EvidenceID:          candidate.EvidenceID,
+				EvidenceFingerprint: candidate.EvidenceFingerprint,
+				EventID:             *summary.CanonicalEventID,
+				EventSlug:           summary.CanonicalEventSlug,
+				EventTitle:          summary.DisplayTitle,
+				TargetBasis:         seedstore.EventReviewImportTargetBasisCanonicalEvent,
+			})
+		}
+	}
+
+	for _, status := range statuses {
+		sourceChoicesPresent := eventReviewImportSourceChoicesPresent(status.SourceKeys)
+		for _, exactKey := range status.ExactKeys {
+			if exactKey.LinkedEventID == nil {
+				continue
+			}
+			addTarget(seedstore.EventReviewImportExistingEventTarget{
+				EvidenceID:          status.EvidenceID,
+				EvidenceFingerprint: status.EvidenceFingerprint,
+				EventID:             *exactKey.LinkedEventID,
+				EventSlug:           exactKey.LinkedEventSlug,
+				EventTitle:          exactKey.LinkedEventTitle,
+				TargetBasis:         seedstore.EventReviewImportTargetBasisExactIdentity,
+				ExactIdentityKeys:   []string{exactKey.NormalizedKey},
+			})
+		}
+		for _, sourceKey := range status.SourceKeys {
+			if sourceKey.LinkedEventID == nil {
+				continue
+			}
+			var blockingReasons []string
+			if sourceChoicesPresent && !sourceKey.ChoiceSelected {
+				blockingReasons = append(blockingReasons, "source identity is not selected")
+			}
+			addTarget(seedstore.EventReviewImportExistingEventTarget{
+				EvidenceID:                status.EvidenceID,
+				EvidenceFingerprint:       status.EvidenceFingerprint,
+				EventID:                   *sourceKey.LinkedEventID,
+				EventSlug:                 sourceKey.LinkedEventSlug,
+				EventTitle:                sourceKey.LinkedEventTitle,
+				TargetBasis:               seedstore.EventReviewImportTargetBasisSourceIdentity,
+				SourceIdentityKeys:        []string{sourceKey.SourceIdentityKey},
+				RawLinkedEventID:          sourceKey.RawLinkedEventID,
+				RawLinkedEventSlug:        sourceKey.RawLinkedEventSlug,
+				RawLinkedPublicationState: sourceKey.RawLinkedPublicationState,
+				ResolvedFromWithheld:      sourceKey.ResolvedFromWithheld,
+				BlockingReasons:           blockingReasons,
+			})
+		}
+	}
+
+	out := make([]seedstore.EventReviewImportExistingEventTarget, 0, len(targets))
+	for _, target := range targets {
+		if candidateAuthorityByEvidenceID[target.EvidenceID] != "" &&
+			candidateAuthorityByEvidenceID[target.EvidenceID] != seedstore.SourceAuthoritySupporting {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "candidate is not a supporting source")
+		}
+		out = append(out, *target)
+	}
+	return applyEventReviewImportUnresolvedSourceLinkBlockers(out, statuses)
+}
+
+func eventReviewImportSourceChoicesPresent(sourceKeys []seedstore.EventReviewImportCandidateSourceIdentityStatus) bool {
+	for _, sourceKey := range sourceKeys {
+		if sourceKey.ChoiceUpdatedAt != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func applyEventReviewImportExistingTargetBlockersTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, s *Store, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary, targets []seedstore.EventReviewImportExistingEventTarget) ([]seedstore.EventReviewImportExistingEventTarget, error) {
+	if len(targets) == 0 {
+		return targets, nil
+	}
+	cluster := seedstore.EventReviewCluster{
+		ID:               summary.ID,
+		Status:           summary.Status,
+		Version:          summary.Version,
+		CanonicalEventID: summary.CanonicalEventID,
+		ConflictType:     summary.ConflictType,
+		ConflictReason:   summary.ConflictReason,
+	}
+	evidenceByID := make(map[int64]seedstore.EventReviewClusterEvidenceSummary, len(evidence))
+	for _, row := range evidence {
+		evidenceByID[row.EvidenceID] = row
+	}
+	type materialResult struct {
+		material importReviewCandidateMaterial
+		err      error
+		loaded   bool
+	}
+	materialByEvidenceID := make(map[int64]materialResult, len(evidence))
+	out := make([]seedstore.EventReviewImportExistingEventTarget, len(targets))
+	copy(out, targets)
+	now := time.Now().UTC()
+	for i := range out {
+		target := &out[i]
+		record, ok, err := loadEventRecordByIDTx(ctx, tx, target.EventID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "target event is missing")
+		} else {
+			if target.EventSlug == "" {
+				target.EventSlug = record.Event.Slug
+			}
+			if target.EventTitle == "" {
+				target.EventTitle = record.Event.Name
+			}
+			if target.PublicationState == "" {
+				target.PublicationState = string(normalizedPublicationState(record.Event.PublicationState))
+			}
+			targetState := normalizedPublicationState(record.Event.PublicationState)
+			if record.Event.Origin != domain.OriginLive || targetState == domain.PublicationStateWithheld {
+				appendUniqueImportReadinessReason(&target.BlockingReasons, "target event is not live/non-withheld")
+			} else if targetState != domain.PublicationStateReviewed && targetState != domain.PublicationStateProvisional {
+				appendUniqueImportReadinessReason(&target.BlockingReasons, "target event is not reviewed or provisional")
+			}
+		}
+
+		row, ok := evidenceByID[target.EvidenceID]
+		if !ok {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "evidence is not active")
+			continue
+		}
+		result := materialByEvidenceID[target.EvidenceID]
+		if !result.loaded {
+			result.loaded = true
+			result.material, result.err = buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, row, nil, "import_review_existing_target_readiness", reviewSourceIdentitySupporting, now)
+			materialByEvidenceID[target.EvidenceID] = result
+		}
+		if result.err != nil {
+			if isImportReviewCandidateMaterializationError(result.err) {
+				appendUniqueImportReadinessReason(&target.BlockingReasons, "candidate payload could not be materialized")
+				continue
+			}
+			return nil, result.err
+		}
+		if result.material.SourceAuthority != seedstore.SourceAuthoritySupporting {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "candidate is not a supporting source")
+		}
+		if len(target.SourceIdentityKeys) == 0 && len(result.material.SourceCtx.Identities.Keys()) == 0 {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "candidate has no stable source identity keys")
+		}
+	}
+	return out, nil
+}
+
+func normalizeEventReviewImportExistingEventTargets(targets []seedstore.EventReviewImportExistingEventTarget) []seedstore.EventReviewImportExistingEventTarget {
+	type targetKey struct {
+		evidenceID int64
+		eventID    int64
+		basis      seedstore.EventReviewImportTargetBasis
+	}
+	merged := make(map[targetKey]*seedstore.EventReviewImportExistingEventTarget, len(targets))
+	for _, target := range targets {
+		if target.EvidenceID <= 0 || target.EventID <= 0 || !target.TargetBasis.Valid() {
+			continue
+		}
+		key := targetKey{evidenceID: target.EvidenceID, eventID: target.EventID, basis: target.TargetBasis}
+		existing := merged[key]
+		if existing == nil {
+			target.SourceIdentityKeys = normalizedImportReadinessStrings(target.SourceIdentityKeys)
+			target.ExactIdentityKeys = normalizedImportReadinessStrings(target.ExactIdentityKeys)
+			target.BlockingReasons = normalizedImportReadinessStrings(target.BlockingReasons)
+			merged[key] = &target
+			continue
+		}
+		existing.SourceIdentityKeys = normalizedImportReadinessStrings(append(existing.SourceIdentityKeys, target.SourceIdentityKeys...))
+		existing.ExactIdentityKeys = normalizedImportReadinessStrings(append(existing.ExactIdentityKeys, target.ExactIdentityKeys...))
+		existing.BlockingReasons = normalizedImportReadinessStrings(append(existing.BlockingReasons, target.BlockingReasons...))
+		if existing.EventSlug == "" {
+			existing.EventSlug = target.EventSlug
+		}
+		if existing.EventTitle == "" {
+			existing.EventTitle = target.EventTitle
+		}
+		if existing.PublicationState == "" {
+			existing.PublicationState = target.PublicationState
+		}
+		if existing.RawLinkedEventID == nil {
+			existing.RawLinkedEventID = target.RawLinkedEventID
+		}
+		if existing.RawLinkedEventSlug == "" {
+			existing.RawLinkedEventSlug = target.RawLinkedEventSlug
+		}
+		if existing.RawLinkedPublicationState == "" {
+			existing.RawLinkedPublicationState = target.RawLinkedPublicationState
+		}
+		if target.ResolvedFromWithheld {
+			existing.ResolvedFromWithheld = true
+		}
+	}
+
+	hardEventIDsByEvidence := make(map[int64]map[int64]struct{})
+	for _, target := range merged {
+		if target.TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+			continue
+		}
+		if hardEventIDsByEvidence[target.EvidenceID] == nil {
+			hardEventIDsByEvidence[target.EvidenceID] = make(map[int64]struct{})
+		}
+		hardEventIDsByEvidence[target.EvidenceID][target.EventID] = struct{}{}
+	}
+	for _, target := range merged {
+		if target.TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+			continue
+		}
+		if len(hardEventIDsByEvidence[target.EvidenceID]) > 1 {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "hard target signals disagree")
+		}
+	}
+
+	out := make([]seedstore.EventReviewImportExistingEventTarget, 0, len(merged))
+	for _, target := range merged {
+		out = append(out, *target)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].EvidenceID != out[j].EvidenceID {
+			return out[i].EvidenceID < out[j].EvidenceID
+		}
+		if len(out[i].BlockingReasons) == 0 && len(out[j].BlockingReasons) > 0 {
+			return true
+		}
+		if len(out[i].BlockingReasons) > 0 && len(out[j].BlockingReasons) == 0 {
+			return false
+		}
+		if out[i].EventID != out[j].EventID {
+			return out[i].EventID < out[j].EventID
+		}
+		return out[i].TargetBasis < out[j].TargetBasis
+	})
+	return out
+}
+
+const eventReviewImportUnresolvedSourceLinkBlocker = "source identity links to non-live or withheld event without live canonical"
+
+func applyEventReviewImportUnresolvedSourceLinkBlockers(targets []seedstore.EventReviewImportExistingEventTarget, statuses []seedstore.EventReviewImportCandidateIdentityStatus) []seedstore.EventReviewImportExistingEventTarget {
+	if len(targets) == 0 || len(statuses) == 0 {
+		return targets
+	}
+	blockedEvidenceIDs := make(map[int64]struct{})
+	for _, status := range statuses {
+		for _, sourceKey := range status.SourceKeys {
+			if sourceKey.LinkedEventID == nil && sourceKey.RawLinkedEventID != nil {
+				blockedEvidenceIDs[status.EvidenceID] = struct{}{}
+				break
+			}
+		}
+	}
+	if len(blockedEvidenceIDs) == 0 {
+		return targets
+	}
+	out := make([]seedstore.EventReviewImportExistingEventTarget, len(targets))
+	copy(out, targets)
+	for i := range out {
+		if _, ok := blockedEvidenceIDs[out[i].EvidenceID]; !ok {
+			continue
+		}
+		appendUniqueImportReadinessReason(&out[i].BlockingReasons, eventReviewImportUnresolvedSourceLinkBlocker)
+	}
+	return out
+}
+
+func applyEventReviewImportSourceChoiceBlockers(targets []seedstore.EventReviewImportExistingEventTarget, statuses []seedstore.EventReviewImportCandidateIdentityStatus) []seedstore.EventReviewImportExistingEventTarget {
+	if len(targets) == 0 || len(statuses) == 0 {
+		return targets
+	}
+	choicesPresent, selectedEvidenceIDs := importReviewSourceChoiceSelection(statuses)
+	if !choicesPresent {
+		return targets
+	}
+
+	blockAll := false
+	selectedEvidenceID := int64(0)
+	reason := "evidence is not selected by source identity choices"
+	switch len(selectedEvidenceIDs) {
+	case 0:
+		blockAll = true
+		reason = "no selected source identity choices"
+	case 1:
+		for evidenceID := range selectedEvidenceIDs {
+			selectedEvidenceID = evidenceID
+		}
+	default:
+		blockAll = true
+		reason = "selected source identity choices span multiple candidates"
+	}
+
+	out := make([]seedstore.EventReviewImportExistingEventTarget, len(targets))
+	copy(out, targets)
+	for i := range out {
+		if !blockAll && out[i].EvidenceID == selectedEvidenceID {
+			continue
+		}
+		appendUniqueImportReadinessReason(&out[i].BlockingReasons, reason)
+	}
+	return out
+}
+
+func importReviewSourceChoiceSelection(statuses []seedstore.EventReviewImportCandidateIdentityStatus) (bool, map[int64]struct{}) {
+	selectedEvidenceIDs := make(map[int64]struct{})
+	choicesPresent := false
+	for _, status := range statuses {
+		for _, sourceKey := range status.SourceKeys {
+			if sourceKey.ChoiceUpdatedAt == nil {
+				continue
+			}
+			choicesPresent = true
+			if sourceKey.ChoiceSelected {
+				selectedEvidenceIDs[status.EvidenceID] = struct{}{}
+			}
+		}
+	}
+	return choicesPresent, selectedEvidenceIDs
+}
+
+func applyEventReviewImportNearTitleHardTargetBlockersTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, s *Store, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary, targets []seedstore.EventReviewImportExistingEventTarget) ([]seedstore.EventReviewImportExistingEventTarget, error) {
+	if len(targets) == 0 ||
+		summary.Status != seedstore.EventReviewClusterStatusOpen ||
+		summary.ConflictType != seedstore.EventReviewConflictTypeImportReview ||
+		summary.ConflictReason != seedstore.EventReviewConflictReasonIngestCandidate {
+		return targets, nil
+	}
+	hardTargetEvidenceIDs := make(map[int64]struct{})
+	for _, target := range targets {
+		if target.TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+			continue
+		}
+		hardTargetEvidenceIDs[target.EvidenceID] = struct{}{}
+	}
+	if len(hardTargetEvidenceIDs) == 0 {
+		return targets, nil
+	}
+
+	evidenceByID := make(map[int64]seedstore.EventReviewClusterEvidenceSummary, len(evidence))
+	for _, row := range evidence {
+		evidenceByID[row.EvidenceID] = row
+	}
+	cluster := seedstore.EventReviewCluster{
+		ID:               summary.ID,
+		Status:           summary.Status,
+		Version:          summary.Version,
+		CanonicalEventID: summary.CanonicalEventID,
+		ConflictType:     summary.ConflictType,
+		ConflictReason:   summary.ConflictReason,
+	}
+	type materialResult struct {
+		material importReviewCandidateMaterial
+		err      error
+		loaded   bool
+	}
+	materialByEvidenceID := make(map[int64]materialResult, len(hardTargetEvidenceIDs))
+	out := make([]seedstore.EventReviewImportExistingEventTarget, len(targets))
+	copy(out, targets)
+	now := time.Now().UTC()
+	for evidenceID := range hardTargetEvidenceIDs {
+		row, ok := evidenceByID[evidenceID]
+		if !ok {
+			continue
+		}
+		result := materialByEvidenceID[evidenceID]
+		if !result.loaded {
+			result.loaded = true
+			result.material, result.err = buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, row, nil, "import_review_near_title_hard_target_readiness", reviewSourceIdentitySupporting, now)
+			materialByEvidenceID[evidenceID] = result
+		}
+		if result.err != nil {
+			if isImportReviewCandidateMaterializationError(result.err) {
+				continue
+			}
+			return nil, result.err
+		}
+		nearMatches, _, err := supportingNearTitleGuardMatchesForEvidenceTx(ctx, tx, result.material.Event, row, s.sourceMetadata)
+		if err != nil {
+			return nil, err
+		}
+		if len(nearMatches) == 0 {
+			continue
+		}
+		reason := "near-title target is ambiguous"
+		var nearTargetID int64
+		if len(nearMatches) == 1 {
+			reason = "near-title target disagrees with hard target"
+			nearTargetID = nearMatches[0].record.ID
+		}
+		for i := range out {
+			if out[i].EvidenceID != evidenceID || out[i].TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+				continue
+			}
+			if nearTargetID > 0 && out[i].EventID == nearTargetID {
+				continue
+			}
+			appendUniqueImportReadinessReason(&out[i].BlockingReasons, reason)
+		}
+	}
+	return out, nil
+}
+
+func assignSelectedCandidateExistingEventTargets(readiness *seedstore.EventReviewImportReadiness) {
+	if readiness == nil || readiness.SelectedCandidateReadiness == nil {
+		return
+	}
+	readiness.SelectedCandidateReadiness.ExistingEventTargets = nil
+	for _, target := range readiness.ExistingEventTargets {
+		if target.EvidenceID == readiness.SelectedCandidateReadiness.EvidenceID {
+			readiness.SelectedCandidateReadiness.ExistingEventTargets = append(readiness.SelectedCandidateReadiness.ExistingEventTargets, target)
+		}
+	}
+}
+
+func finalizeEventReviewImportNewListingScope(readiness *seedstore.EventReviewImportReadiness) {
+	if readiness == nil || !readiness.NewListingScope {
+		return
+	}
+	targetEvidenceID := int64(0)
+	if len(readiness.Candidates) == 1 {
+		targetEvidenceID = readiness.Candidates[0].EvidenceID
+	}
+	for _, target := range readiness.ExistingEventTargets {
+		if targetEvidenceID > 0 && target.EvidenceID != targetEvidenceID {
+			continue
+		}
+		readiness.NewListingScope = false
+		if target.TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+			appendUniqueImportReadinessReason(&readiness.BlockingReasons, "candidate matches existing live event by near title")
+			return
+		}
+		if len(target.BlockingReasons) > 0 {
+			appendUniqueImportReadinessReason(&readiness.BlockingReasons, "candidate existing-event target requires review")
+			return
+		}
+		appendUniqueImportReadinessReason(&readiness.BlockingReasons, "candidate resolves to existing live event")
+		return
+	}
+}
+
+func loadEventReviewImportStructuralTargetsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, s *Store, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary) ([]seedstore.EventReviewImportExistingEventTarget, error) {
+	if summary.Status != seedstore.EventReviewClusterStatusOpen ||
+		summary.ConflictType != seedstore.EventReviewConflictTypeImportReview ||
+		summary.ConflictReason != seedstore.EventReviewConflictReasonIngestCandidate {
+		return nil, nil
+	}
+	now := time.Now().UTC()
+	cluster := seedstore.EventReviewCluster{
+		ID:               summary.ID,
+		Status:           summary.Status,
+		Version:          summary.Version,
+		CanonicalEventID: summary.CanonicalEventID,
+		ConflictType:     summary.ConflictType,
+		ConflictReason:   summary.ConflictReason,
+	}
+	targets := make([]seedstore.EventReviewImportExistingEventTarget, 0)
+	for _, row := range evidence {
+		material, err := buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, row, nil, "import_review_structural_readiness", reviewSourceIdentitySupporting, now)
+		if err != nil {
+			continue
+		}
+		blockingReasons := []string(nil)
+		if material.SourceAuthority != seedstore.SourceAuthoritySupporting {
+			blockingReasons = append(blockingReasons, "candidate is not a supporting source")
+		}
+		if record, ok, err := loadLiveEventRecordBySlugTx(ctx, tx, material.Event.Slug); err != nil {
+			return nil, err
+		} else if ok {
+			targets = append(targets, seedstore.EventReviewImportExistingEventTarget{
+				EvidenceID:          row.EvidenceID,
+				EvidenceFingerprint: row.EvidenceFingerprint,
+				EventID:             record.ID,
+				EventSlug:           record.Event.Slug,
+				EventTitle:          record.Event.Name,
+				PublicationState:    string(record.Event.PublicationState),
+				TargetBasis:         seedstore.EventReviewImportTargetBasisSlug,
+				BlockingReasons:     append([]string(nil), blockingReasons...),
+			})
+		}
+		if records, err := loadLiveEventRecordsByFingerprintTx(ctx, tx, material.Event.Name, material.Event.VenueSlug, material.Event.Start); err != nil {
+			return nil, err
+		} else if len(records) == 1 {
+			record := records[0]
+			targets = append(targets, seedstore.EventReviewImportExistingEventTarget{
+				EvidenceID:          row.EvidenceID,
+				EvidenceFingerprint: row.EvidenceFingerprint,
+				EventID:             record.ID,
+				EventSlug:           record.Event.Slug,
+				EventTitle:          record.Event.Name,
+				PublicationState:    string(record.Event.PublicationState),
+				TargetBasis:         seedstore.EventReviewImportTargetBasisExactTitleVenueStart,
+				BlockingReasons:     append([]string(nil), blockingReasons...),
+			})
+		}
+	}
+	return targets, nil
+}
+
+func loadEventReviewImportAuthoritativeTargetsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, s *Store, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary, statuses []seedstore.EventReviewImportCandidateIdentityStatus) ([]seedstore.EventReviewImportAuthoritativeTarget, error) {
+	if summary.Status != seedstore.EventReviewClusterStatusOpen ||
+		summary.ConflictType != seedstore.EventReviewConflictTypeImportReview ||
+		summary.ConflictReason != seedstore.EventReviewConflictReasonIngestCandidate {
+		return nil, nil
+	}
+	now := time.Now().UTC()
+	cluster := seedstore.EventReviewCluster{
+		ID:               summary.ID,
+		Status:           summary.Status,
+		Version:          summary.Version,
+		CanonicalEventID: summary.CanonicalEventID,
+		ConflictType:     summary.ConflictType,
+		ConflictReason:   summary.ConflictReason,
+	}
+	statusByEvidenceID := make(map[int64]seedstore.EventReviewImportCandidateIdentityStatus, len(statuses))
+	for _, status := range statuses {
+		statusByEvidenceID[status.EvidenceID] = status
+	}
+	targets := make([]seedstore.EventReviewImportAuthoritativeTarget, 0)
+	for _, row := range evidence {
+		material, err := buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, row, nil, "import_review_authoritative_readiness", reviewSourceIdentityAuthoritative, now)
+		if err != nil {
+			continue
+		}
+		if material.SourceAuthority != seedstore.SourceAuthorityAuthoritative {
+			continue
+		}
+		target := seedstore.EventReviewImportAuthoritativeTarget{
+			EvidenceID:          row.EvidenceID,
+			EvidenceFingerprint: row.EvidenceFingerprint,
+		}
+		status := statusByEvidenceID[row.EvidenceID]
+		effectiveSourceKeys, blocker := importReviewAuthoritativeEffectiveSourceKeys(row.EvidenceID, status, material.SourceCtx, statuses)
+		target.SourceIdentityKeys = effectiveSourceKeys
+		if blocker != "" {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, blocker)
+			targets = append(targets, target)
+			continue
+		}
+		if len(effectiveSourceKeys) > 0 {
+			material, err = buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, row, effectiveSourceKeys, "import_review_authoritative_readiness", reviewSourceIdentityAuthoritative, now)
+			if err != nil {
+				appendUniqueImportReadinessReason(&target.BlockingReasons, "authoritative source identity keys could not be materialized")
+				targets = append(targets, target)
+				continue
+			}
+			if material.SourceAuthority != seedstore.SourceAuthorityAuthoritative {
+				appendUniqueImportReadinessReason(&target.BlockingReasons, "candidate is not an authoritative source")
+				targets = append(targets, target)
+				continue
+			}
+		}
+		applySourceCtx := material.SourceCtx
+		applySourceCtx.SourceName = firstNonEmptyImportReviewText(row.SourceName, material.SourceCtx.SourceName)
+		applySourceCtx.SourceURL = firstNonEmptyImportReviewText(row.SourceURL, material.SourceCtx.SourceURL)
+		sourceID := row.SourceID
+		if resolvedSourceID, ok, err := loadSourceIDByNameURLTx(ctx, tx, applySourceCtx.SourceName, applySourceCtx.SourceURL); err != nil {
+			return nil, err
+		} else if ok {
+			sourceID = resolvedSourceID
+		}
+		if record, ok, ambiguous, err := resolveLiveEventRecordBySourceIdentitiesTx(ctx, tx, sourceID, applySourceCtx.Identities); err != nil {
+			return nil, err
+		} else if ambiguous {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "authoritative source identities resolve ambiguously")
+			targets = append(targets, target)
+			continue
+		} else if ok {
+			setAuthoritativeReadinessUpdateTarget(&target, record)
+			targets = append(targets, target)
+			continue
+		}
+		if record, ok, ambiguous, err := uniqueLiveEventMatchForEventTx(ctx, tx, material.Event); err != nil {
+			return nil, err
+		} else if ambiguous {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "authoritative identity target is ambiguous")
+			targets = append(targets, target)
+			continue
+		} else if ok {
+			setAuthoritativeReadinessUpdateTarget(&target, record)
+			targets = append(targets, target)
+			continue
+		}
+		if near, _, err := guardedNearLiveEventMatchForEventTx(ctx, tx, material.Event, s.sourceMetadata); err != nil {
+			return nil, err
+		} else if len(near) > 1 {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "authoritative near-title target is ambiguous")
+			targets = append(targets, target)
+			continue
+		} else if len(near) == 1 {
+			setAuthoritativeReadinessUpdateTarget(&target, near[0])
+			targets = append(targets, target)
+			continue
+		}
+		if _, ok, err := loadEventRecordBySlugTx(ctx, tx, material.Event.Slug); err != nil {
+			return nil, err
+		} else if ok {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, "authoritative event slug already exists but is not eligible")
+			targets = append(targets, target)
+			continue
+		}
+		target.Result = "inserted"
+		targets = append(targets, target)
+	}
+	sort.SliceStable(targets, func(i, j int) bool {
+		if targets[i].EvidenceID != targets[j].EvidenceID {
+			return targets[i].EvidenceID < targets[j].EvidenceID
+		}
+		return targets[i].Result < targets[j].Result
+	})
+	return targets, nil
+}
+
+func setAuthoritativeReadinessUpdateTarget(target *seedstore.EventReviewImportAuthoritativeTarget, record eventRecord) {
+	target.Result = "updated"
+	eventID := record.ID
+	target.EventID = &eventID
+	target.EventSlug = record.Event.Slug
+	target.EventTitle = record.Event.Name
+}
+
+func loadEventReviewImportNearTitleTargetsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, s *Store, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary, hardTargets []seedstore.EventReviewImportExistingEventTarget) ([]seedstore.EventReviewImportExistingEventTarget, error) {
+	if summary.Status != seedstore.EventReviewClusterStatusOpen ||
+		summary.ConflictType != seedstore.EventReviewConflictTypeImportReview ||
+		summary.ConflictReason != seedstore.EventReviewConflictReasonIngestCandidate {
+		return nil, nil
+	}
+	hardTargetByEvidenceID := make(map[int64]struct{}, len(hardTargets))
+	for _, target := range hardTargets {
+		if eventReviewImportTargetSuppressesNearTitle(target) {
+			hardTargetByEvidenceID[target.EvidenceID] = struct{}{}
+		}
+	}
+	now := time.Now().UTC()
+	targets := make([]seedstore.EventReviewImportExistingEventTarget, 0)
+	for _, row := range evidence {
+		if _, ok := hardTargetByEvidenceID[row.EvidenceID]; ok {
+			continue
+		}
+		if row.EventID != nil {
+			continue
+		}
+		material, err := buildImportReviewCandidateMaterialTx(ctx, tx, s, seedstore.EventReviewCluster{
+			ID:               summary.ID,
+			Status:           summary.Status,
+			Version:          summary.Version,
+			CanonicalEventID: summary.CanonicalEventID,
+			ConflictType:     summary.ConflictType,
+			ConflictReason:   summary.ConflictReason,
+		}, row, nil, "import_review_near_title_readiness", reviewSourceIdentitySupporting, now)
+		if err != nil {
+			continue
+		}
+		nearMatches, _, err := supportingNearTitleGuardMatchesForEvidenceTx(ctx, tx, material.Event, row, s.sourceMetadata)
+		if err != nil {
+			return nil, err
+		}
+		if len(nearMatches) != 1 {
+			continue
+		}
+		target := nearMatches[0].record
+		targets = append(targets, seedstore.EventReviewImportExistingEventTarget{
+			EvidenceID:          row.EvidenceID,
+			EvidenceFingerprint: row.EvidenceFingerprint,
+			EventID:             target.ID,
+			EventSlug:           target.Event.Slug,
+			EventTitle:          target.Event.Name,
+			PublicationState:    string(target.Event.PublicationState),
+			TargetBasis:         seedstore.EventReviewImportTargetBasisNearTitle,
+		})
+	}
+	return targets, nil
+}
+
+func eventReviewImportTargetSuppressesNearTitle(target seedstore.EventReviewImportExistingEventTarget) bool {
+	if target.TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+		return false
+	}
+	if target.TargetBasis == seedstore.EventReviewImportTargetBasisSourceIdentity &&
+		len(target.BlockingReasons) == 1 &&
+		target.BlockingReasons[0] == "source identity is not selected" {
+		return false
+	}
+	return true
+}
+
+func normalizedImportReadinessStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func buildEventReviewCandidateIdentityStatuses(statuses []seedstore.EventReviewImportCandidateIdentityStatus, indexByEvidenceID map[int64]int, evidenceIdentityKeys []seedstore.EventReviewEvidenceIdentityKeySummary, exactMatchByKey map[string]seedstore.EventReviewClusterExactIdentityMatchSummary, sourceLinkByKey map[string]seedstore.EventReviewClusterSourceIdentityLinkSummary, sourceChoiceByKey map[string]seedstore.EventReviewSourceIdentityChoice) []seedstore.EventReviewImportCandidateIdentityStatus {
@@ -2032,6 +3195,10 @@ func buildEventReviewCandidateIdentityStatuses(statuses []seedstore.EventReviewI
 				rowStatus.LinkedEventID = link.LinkedEventID
 				rowStatus.LinkedEventSlug = link.LinkedEventSlug
 				rowStatus.LinkedEventTitle = link.LinkedEventTitle
+				rowStatus.RawLinkedEventID = link.RawLinkedEventID
+				rowStatus.RawLinkedEventSlug = link.RawLinkedEventSlug
+				rowStatus.RawLinkedPublicationState = link.RawLinkedPublicationState
+				rowStatus.ResolvedFromWithheld = link.ResolvedFromWithheld
 				rowStatus.Authoritative = link.Authoritative
 			}
 			if choice, ok := sourceChoiceByKey[key]; ok {

@@ -125,6 +125,11 @@ When an event-review cluster resolves:
 - canonical-backed non-authoritative duplicate resolution updates the matched live event row in place and recomputes the live slug
 - canonical-backed in-place resolution fails if the recomputed slug already belongs to a different event
 - non-canonical publish paths still use slug-based upsert semantics
+- supporting import evidence can resolve as a source for one existing live event rather than inserting a duplicate when all hard target signals agree
+- near-title false positives create durable separations before inserting a separate reviewed event
+- title-repair and historical-duplicate false positives record event-event separations so the same relation is not restaged as an unresolved conflict
+- historical duplicate action overrides validate the submitted canonical and withhold choices before mutating live events
+- unsupported conflict types are visible in admin detail but do not get terminal resolver forms until a producer and policy are added
 
 When a singleton auto-promotes without review:
 

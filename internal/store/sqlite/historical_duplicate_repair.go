@@ -818,6 +818,17 @@ func (s *Store) analyzeHistoricalDuplicateCluster(ctx context.Context, cluster h
 		decision.change.Reason = "cluster contains fewer than two events"
 		return decision, nil
 	}
+	allSeparated, err := historicalDuplicateRepairClusterAllEventPairsSeparatedTx(ctx, s.db, cluster)
+	if err != nil {
+		return historicalDuplicateClusterDecision{}, err
+	}
+	if allSeparated {
+		decision.mode = "skip"
+		decision.change.Result = "skipped"
+		decision.change.Reason = "events already marked separate"
+		decision.change.Candidates = historicalDuplicateRepairCandidates(cluster, -1, window)
+		return decision, nil
+	}
 
 	tiers := historicalDuplicateRepairClusterEvidenceTiers(cluster, window)
 	decision.change.EvidenceTiers = tiers
@@ -1366,11 +1377,6 @@ func withholdHistoricalDuplicateEventTx(ctx context.Context, tx interface {
 	if currentPublicationState != domain.PublicationStateProvisional && currentPublicationState != domain.PublicationStateReviewed {
 		return "", fmt.Errorf("loser event %d is not provisional", loserID)
 	}
-	if opts.DetachLoserSourceLinks {
-		if err := detachHistoricalDuplicateLoserSourceLinksTx(ctx, tx, loserID); err != nil {
-			return "", err
-		}
-	}
 	if reason, reviewNeeded, err := historicalDuplicateRepairSourceLinkGuardTx(ctx, tx, loserID, canonicalID); err != nil {
 		return "", err
 	} else if reviewNeeded {
@@ -1380,6 +1386,11 @@ func withholdHistoricalDuplicateEventTx(ctx context.Context, tx interface {
 		return "", err
 	} else if reviewNeeded {
 		return "", errors.New(reason)
+	}
+	if opts.DetachLoserSourceLinks {
+		if err := detachHistoricalDuplicateLoserSourceLinksTx(ctx, tx, loserID); err != nil {
+			return "", err
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -1538,6 +1549,27 @@ func historicalDuplicateRepairAliasConflictTx(ctx context.Context, tx queryer, a
 	default:
 		return "", false, nil
 	}
+}
+
+func historicalDuplicateRepairClusterAllEventPairsSeparatedTx(ctx context.Context, q queryer, cluster historicalDuplicateCluster) (bool, error) {
+	if len(cluster.events) < 2 {
+		return false, nil
+	}
+	for i := 0; i < len(cluster.events); i++ {
+		for j := i + 1; j < len(cluster.events); j++ {
+			separated, err := hasActiveEventReviewSeparationBetweenKeysTx(ctx, q,
+				seedstore.EventReviewSeparationEventEndpointKey(cluster.events[i].record.ID),
+				seedstore.EventReviewSeparationEventEndpointKey(cluster.events[j].record.ID),
+			)
+			if err != nil {
+				return false, err
+			}
+			if !separated {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }
 
 func historicalDuplicateRepairStagingKey(cluster historicalDuplicateCluster) string {

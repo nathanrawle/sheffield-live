@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,6 +16,7 @@ import (
 )
 
 type eventReviewClusterAutoResolutionCandidate struct {
+	EvidenceID      int64
 	SourceID        int64
 	Candidate       review.Candidate
 	CandidateInput  review.CandidateInput
@@ -230,7 +233,8 @@ func parseEventReviewClusterAutoResolutionCandidate(row seedstore.EventReviewClu
 	}
 
 	return eventReviewClusterAutoResolutionCandidate{
-		SourceID: row.SourceID,
+		EvidenceID: row.EvidenceID,
+		SourceID:   row.SourceID,
 		Candidate: review.Candidate{
 			ExternalID:       candidateInput.ExternalID,
 			Name:             candidateInput.Name,
@@ -316,6 +320,21 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 	}
 	sourceCtx := reviewSourceIdentityContextForCandidateInput(mode, selected.SourceName, selected.SourceURL, "", "", "", selected.CandidateInput, "event_review_canonical_exact_match")
 
+	targetRecord, ok, err := loadEventRecordByIDTx(ctx, tx, *cluster.CanonicalEventID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("event %d not found", *cluster.CanonicalEventID)
+	}
+	compatibleEvidenceEventIDs, err := canonicalExactAutoResolutionEvidenceEventIDsCompatibleTx(ctx, tx, targetRecord, candidates, now)
+	if err != nil {
+		return nil, err
+	}
+	if !compatibleEvidenceEventIDs {
+		return nil, nil
+	}
+
 	if selected.SourceAuthority == seedstore.SourceAuthorityAuthoritative {
 		writeResult, err := ensureEventSourceLinkForSourceIdentityContextTx(ctx, tx, *cluster.CanonicalEventID, selected.SourceID, sourceCtx, sourceLinkAuthorityAuthoritative, sourceLinkConflictPolicyNoMove, now)
 		if err != nil {
@@ -325,13 +344,6 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 			return nil, nil
 		}
 
-		targetRecord, ok, err := loadEventRecordByIDTx(ctx, tx, *cluster.CanonicalEventID)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, fmt.Errorf("event %d not found", *cluster.CanonicalEventID)
-		}
 		incoming := event
 		incoming.SourceName = sourceCtx.SourceName
 		incoming.SourceURL = sourceCtx.SourceURL
@@ -340,11 +352,15 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 		}
 	}
 
-	if err := markEventReviewedTx(ctx, tx, *cluster.CanonicalEventID); err != nil {
+	recordSupportingProvenance := selected.SourceAuthority != seedstore.SourceAuthorityAuthoritative
+	targetRecord, ok, err = applyCanonicalExactAutoResolutionProvenanceTx(ctx, tx, targetRecord, candidates, scope, now, recordSupportingProvenance)
+	if err != nil || !ok {
 		return nil, err
 	}
-
-	targetRecord, ok, err := loadEventRecordByIDTx(ctx, tx, *cluster.CanonicalEventID)
+	if err := markEventReviewedTx(ctx, tx, targetRecord.ID); err != nil {
+		return nil, err
+	}
+	targetRecord, ok, err = loadEventRecordByIDTx(ctx, tx, targetRecord.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +376,7 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 		SourceURL:     sourceCtx.SourceURL,
 		EvidenceCount: len(candidates),
 	}
-	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, &applied, nil, nil, nil, now)
+	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, &applied, nil, nil, nil, nil, nil, nil, now)
 	if err != nil {
 		return nil, err
 	}
@@ -392,6 +408,139 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 		Version:            cluster.Version + 1,
 		Applied:            applied,
 	}, nil
+}
+
+func applyCanonicalExactAutoResolutionProvenanceTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, targetRecord eventRecord, candidates []eventReviewClusterAutoResolutionCandidate, scope seedstore.ObservationRunScope, now time.Time, recordSupportingProvenance bool) (eventRecord, bool, error) {
+	type supportingProvenanceCandidate struct {
+		candidate eventReviewClusterAutoResolutionCandidate
+		incoming  domain.Event
+		sourceCtx reviewSourceIdentityContext
+	}
+	matchingCandidates := make([]review.Candidate, 0, len(candidates))
+	supportingProvenanceCandidates := make([]supportingProvenanceCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		incoming, ok, err := eventReviewClusterAutoResolutionEvent(candidate, now)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if !ok || !eventReviewAutoResolutionEventsExactMatch(incoming, targetRecord.Event) {
+			continue
+		}
+		compatibleEvidenceEventID, err := eventReviewEvidenceEventIDCompatibleWithCanonicalTx(ctx, tx, candidate.EvidenceID, targetRecord.ID)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if !compatibleEvidenceEventID {
+			return eventRecord{}, false, nil
+		}
+		if !recordSupportingProvenance || candidate.SourceAuthority != seedstore.SourceAuthoritySupporting {
+			continue
+		}
+		matchingCandidates = append(matchingCandidates, candidate.Candidate)
+		sourceCtx := reviewSourceIdentityContextForCandidateInput(reviewSourceIdentitySupporting, candidate.SourceName, candidate.SourceURL, "", "", "", candidate.CandidateInput, "event_review_canonical_exact_match")
+		resolvedID, found, ambiguous, err := resolveLiveEventIDBySourceIdentitiesTx(ctx, tx, candidate.SourceID, sourceCtx.Identities)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if ambiguous || (found && resolvedID != targetRecord.ID) {
+			return eventRecord{}, false, nil
+		}
+		supportingProvenanceCandidates = append(supportingProvenanceCandidates, supportingProvenanceCandidate{
+			candidate: candidate,
+			incoming:  incoming,
+			sourceCtx: sourceCtx,
+		})
+	}
+
+	for _, candidate := range candidates {
+		incoming, ok, err := eventReviewClusterAutoResolutionEvent(candidate, now)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if !ok || !eventReviewAutoResolutionEventsExactMatch(incoming, targetRecord.Event) {
+			continue
+		}
+		targetEventID := targetRecord.ID
+		if err := fillEventReviewEvidenceEventIDTx(ctx, tx, candidate.EvidenceID, &targetEventID, now); err != nil {
+			return eventRecord{}, false, err
+		}
+	}
+
+	if !recordSupportingProvenance {
+		updatedRecord, ok, err := loadEventRecordByIDTx(ctx, tx, targetRecord.ID)
+		if err != nil || !ok {
+			return eventRecord{}, ok, err
+		}
+		return updatedRecord, true, nil
+	}
+
+	for _, item := range supportingProvenanceCandidates {
+		writeResult, err := ensureEventSourceLinkForSourceIdentityContextTx(ctx, tx, targetRecord.ID, item.candidate.SourceID, item.sourceCtx, sourceLinkAuthoritySupporting, sourceLinkConflictPolicyNoMove, now)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if writeResult.Ambiguous {
+			return eventRecord{}, false, fmt.Errorf("canonical exact supporting source identity is ambiguous: %s", writeResult.Reason)
+		}
+		incoming := item.incoming
+		incoming.SourceName = item.sourceCtx.SourceName
+		incoming.SourceURL = item.sourceCtx.SourceURL
+		if err := recordEventObservationsForSourceIdentityContextTx(ctx, tx, scope, item.candidate.SourceID, item.sourceCtx, seedstore.SourceAuthoritySupporting, targetRecord, incoming); err != nil {
+			return eventRecord{}, false, err
+		}
+	}
+
+	updatedRecord, ok, err := loadEventRecordByIDTx(ctx, tx, targetRecord.ID)
+	if err != nil || !ok {
+		return eventRecord{}, ok, err
+	}
+	if err := upsertEventSecondarySourceInfoTx(ctx, tx, updatedRecord.ID, primarySourceIdentity(updatedRecord.Event), reviewCandidatesMatchingEvent(matchingCandidates, updatedRecord.Event), now); err != nil {
+		return eventRecord{}, false, err
+	}
+	if err := refreshEventGenresFromStoredDescriptionsTx(ctx, tx, updatedRecord.ID, updatedRecord.Event.Description, now); err != nil {
+		return eventRecord{}, false, err
+	}
+	updatedRecord, ok, err = loadEventRecordByIDTx(ctx, tx, targetRecord.ID)
+	if err != nil || !ok {
+		return eventRecord{}, ok, err
+	}
+	return updatedRecord, true, nil
+}
+
+func eventReviewEvidenceEventIDCompatibleWithCanonicalTx(ctx context.Context, q queryer, evidenceID, canonicalEventID int64) (bool, error) {
+	var existingEventID sql.NullInt64
+	switch err := q.QueryRowContext(ctx, `
+		SELECT event_id
+		FROM event_review_evidence
+		WHERE id = ?
+	`, evidenceID).Scan(&existingEventID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, err
+	default:
+		return !existingEventID.Valid || existingEventID.Int64 == canonicalEventID, nil
+	}
+}
+
+func canonicalExactAutoResolutionEvidenceEventIDsCompatibleTx(ctx context.Context, q queryer, targetRecord eventRecord, candidates []eventReviewClusterAutoResolutionCandidate, now time.Time) (bool, error) {
+	for _, candidate := range candidates {
+		incoming, ok, err := eventReviewClusterAutoResolutionEvent(candidate, now)
+		if err != nil {
+			return false, err
+		}
+		if !ok || !eventReviewAutoResolutionEventsExactMatch(incoming, targetRecord.Event) {
+			continue
+		}
+		compatible, err := eventReviewEvidenceEventIDCompatibleWithCanonicalTx(ctx, q, candidate.EvidenceID, targetRecord.ID)
+		if err != nil || !compatible {
+			return compatible, err
+		}
+	}
+	return true, nil
 }
 
 func autoResolveEventReviewClusterUnanimousDuplicateTx(ctx context.Context, tx interface {
@@ -461,7 +610,7 @@ func autoResolveEventReviewClusterUnanimousDuplicateTx(ctx context.Context, tx i
 		SourceURL:     sourceCtx.SourceURL,
 		EvidenceCount: len(candidates),
 	}
-	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, &appliedSnapshot, nil, nil, nil, now)
+	snapshot, err := marshalEventReviewResolutionSnapshot(cluster, seedstore.EventReviewResolutionStatusResolved, "", nil, nil, &appliedSnapshot, nil, nil, nil, nil, nil, nil, now)
 	if err != nil {
 		return nil, err
 	}

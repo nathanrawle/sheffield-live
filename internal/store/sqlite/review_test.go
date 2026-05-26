@@ -1138,6 +1138,72 @@ func TestRepairEventTitlesFromReportStagesSupportingReviewWhenCleanDuplicateExis
 	}
 }
 
+func TestRepairEventTitlesFromReportSkipsSeparatedSupportingSlugConflict(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path, testSupportingSourceMetadata{})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+
+	const (
+		startAt      = "2026-05-10T18:30:00Z"
+		cleanStartAt = "2026-05-11T18:30:00Z"
+		dirty        = "Late Junction at The Leadmill"
+		clean        = "Late Junction"
+	)
+	sourceID := mustEnsureSourceID(t, st, testSupportingSourceName, testSupportingSourceURL)
+	dirtySlug := mustLiveEventSlug(t, dirty, "leadmill", startAt)
+	cleanSlug := mustLiveEventSlug(t, clean, "leadmill", startAt)
+	mustInsertRepairLegacyEvent(t, db, sourceID, dirtySlug, "leadmill", dirty, startAt, "Dirty duplicate.")
+	mustInsertRepairLegacyEvent(t, db, sourceID, cleanSlug, "leadmill", clean, cleanStartAt, "Clean duplicate at another time.")
+	dirtyID := mustEventIDBySlug(t, db, dirtySlug)
+	cleanID := mustEventIDBySlug(t, db, cleanSlug)
+	if _, err := insertEventReviewSeparation(t, db,
+		seedstore.EventReviewSeparationEndpoint{
+			Kind:    seedstore.EventReviewSeparationEndpointKindEvent,
+			Key:     seedstore.EventReviewSeparationEventEndpointKey(dirtyID),
+			EventID: int64Ptr(dirtyID),
+		},
+		seedstore.EventReviewSeparationEndpoint{
+			Kind:    seedstore.EventReviewSeparationEndpointKindEvent,
+			Key:     seedstore.EventReviewSeparationEventEndpointKey(cleanID),
+			EventID: int64Ptr(cleanID),
+		},
+		true,
+		"title repair separated slug conflict",
+		time.Date(2026, time.May, 15, 10, 0, 0, 0, time.UTC),
+		time.Date(2026, time.May, 15, 10, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("insert title repair separation: %v", err)
+	}
+
+	repair, err := st.RepairEventTitlesFromReport(ctx, mustSupportingReviewCatalog(t), supportingTitleRepairReport(startAt, dirty), true)
+	if err != nil {
+		t.Fatalf("repair event titles: %v", err)
+	}
+	if got, want := repair.EventReviewClustersCreated, 0; got != want {
+		t.Fatalf("event review clusters created = %d, want %d", got, want)
+	}
+	if got := mustCount(t, db, "event_review_clusters"); got != 0 {
+		t.Fatalf("event review clusters = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 0 {
+		t.Fatalf("repair runs = %d, want 0", got)
+	}
+	if len(repair.Changes) != 1 || repair.Changes[0].Result != "skipped" || repair.Changes[0].Reason != "target slug conflict is already marked separate" {
+		t.Fatalf("repair changes = %#v", repair.Changes)
+	}
+}
+
 func TestRepairEventTitlesFromReportSharesOneRepairRunAcrossMultipleStages(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")

@@ -7,6 +7,7 @@ import (
 
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
+	seedstore "sheffield-live/internal/store"
 )
 
 const (
@@ -51,6 +52,57 @@ func supportingNearTitleGuardMatchesTx(ctx context.Context, q queryer, event dom
 		return nil, true, nil
 	}
 	return matches, true, nil
+}
+
+func supportingNearTitleGuardMatchesForEvidenceTx(ctx context.Context, q queryer, event domain.Event, evidence seedstore.EventReviewClusterEvidenceSummary, sourceMetadata ingest.SourceMetadataLookup) ([]nearTitleGuardMatch, bool, error) {
+	return supportingNearTitleGuardMatchesForEvidenceFingerprintTx(ctx, q, event, evidence.EvidenceFingerprint, evidence.EventID, sourceMetadata)
+}
+
+func supportingNearTitleGuardMatchesForEvidenceFingerprintTx(ctx context.Context, q queryer, event domain.Event, evidenceFingerprint string, eventID *int64, sourceMetadata ingest.SourceMetadataLookup) ([]nearTitleGuardMatch, bool, error) {
+	matches, checked, err := supportingNearTitleGuardMatchesTx(ctx, q, event, sourceMetadata)
+	if err != nil || !checked || len(matches) == 0 {
+		return matches, checked, err
+	}
+	filtered := make([]nearTitleGuardMatch, 0, len(matches))
+	evidenceFingerprint = strings.TrimSpace(evidenceFingerprint)
+	evidenceKey := ""
+	if evidenceFingerprint != "" {
+		evidenceKey = eventReviewSeparationEndpointKeyEvidence(evidenceFingerprint)
+	}
+	for _, match := range matches {
+		if evidenceKey != "" {
+			separated, err := hasActiveEventReviewSeparationBetweenKeysTx(ctx, q, seedstore.EventReviewSeparationEventEndpointKey(match.record.ID), evidenceKey)
+			if err != nil {
+				return nil, checked, err
+			}
+			if separated {
+				continue
+			}
+		}
+		if eventID != nil {
+			separated, err := hasActiveEventReviewSeparationBetweenKeysTx(ctx, q, seedstore.EventReviewSeparationEventEndpointKey(match.record.ID), seedstore.EventReviewSeparationEventEndpointKey(*eventID))
+			if err != nil {
+				return nil, checked, err
+			}
+			if separated {
+				continue
+			}
+		}
+		filtered = append(filtered, match)
+	}
+	return filtered, checked, nil
+}
+
+func hasActiveEventReviewSeparationBetweenKeysTx(ctx context.Context, q queryer, a, b string) (bool, error) {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" || a == b {
+		return false, nil
+	}
+	return hasActiveEventReviewSeparationAmongKeysTx(ctx, q, eventReviewClusterEndpointSet{
+		a: {},
+		b: {},
+	})
 }
 
 func nearTitleMatchTier(venueSlug, incomingTitle, existingTitle string) string {

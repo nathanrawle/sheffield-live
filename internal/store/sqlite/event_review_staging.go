@@ -718,7 +718,8 @@ func (s *Store) promoteNonAuthoritativeSingletonReviewClusterIfMissing(ctx conte
 		return record.Event.Slug, true, nil
 	}
 
-	if near, _, err := supportingNearTitleGuardMatchesTx(ctx, tx, event, s.sourceMetadata); err != nil {
+	evidenceFingerprint := singletonReviewStageEvidenceFingerprint(input)
+	if near, _, err := supportingNearTitleGuardMatchesForEvidenceFingerprintTx(ctx, tx, event, evidenceFingerprint, nil, s.sourceMetadata); err != nil {
 		return "", false, err
 	} else if len(near) > 0 {
 		if err := tx.Rollback(); err != nil {
@@ -846,6 +847,14 @@ func (s *Store) FinalizeOpenEventReviewClusterRestage(ctx context.Context, clust
 		return nil, err
 	}
 	return resolution, nil
+}
+
+func singletonReviewStageEvidenceFingerprint(input ingest.ReviewStageClusterInput) string {
+	evidenceInputs := ingest.ReviewStageClusterEventReviewEvidenceInputs(input)
+	if len(evidenceInputs) != 1 {
+		return ""
+	}
+	return strings.TrimSpace(evidenceInputs[0].EvidenceFingerprint)
 }
 
 func singletonResolvedEventFromReviewStageClusterInput(input ingest.ReviewStageClusterInput, publishedAt time.Time) (domain.Event, error) {
@@ -1170,7 +1179,7 @@ func stageTerminalEventReviewEvidenceTx(ctx context.Context, tx interface {
 	if err != nil {
 		return result, err
 	}
-	existingMaterialMatches := existingFound && eventReviewEvidenceMaterialMatchesInput(existingEvidence, input)
+	existingMaterialMatches := existingFound && terminalEventReviewEvidenceMaterialMatchesInput(existingEvidence, input, terminalCluster, terminalResolution)
 	exactReplay := existingMaterialMatches && terminalOutcomeMatches
 	compatibleFresh := !existingFound && terminalOutcomeMatches
 	successorRequired := !terminalOutcomeMatches || (existingFound && !existingMaterialMatches)

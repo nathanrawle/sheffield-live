@@ -225,6 +225,15 @@ func (s *Store) repairAuthoritativeEventTitle(ctx context.Context, cluster inges
 	if conflict, ok, err := loadEventRecordBySlugTx(ctx, tx, incoming.Slug); err != nil {
 		return EventTitleRepairChange{}, err
 	} else if ok && conflict.ID != record.ID {
+		separated, err := hasActiveEventReviewSeparationBetweenKeysTx(ctx, tx, seedstore.EventReviewSeparationEventEndpointKey(record.ID), seedstore.EventReviewSeparationEventEndpointKey(conflict.ID))
+		if err != nil {
+			return EventTitleRepairChange{}, err
+		}
+		if separated {
+			change.Result = "skipped"
+			change.Reason = "target slug conflict is already marked separate"
+			return change, nil
+		}
 		if !eventRecordHasResolvedIdentity(conflict, incoming) {
 			change.Result = "skipped"
 			change.Reason = "target slug already belongs to another event"
@@ -328,6 +337,23 @@ func (s *Store) stageSupportingEventTitleRepair(ctx context.Context, cluster ing
 		change.Reason = "matched event has authoritative source link"
 		return change, nil
 	}
+	var conflict *eventRecord
+	if conflictRecord, ok, err := loadEventRecordBySlugTx(ctx, tx, incoming.Slug); err != nil {
+		return EventTitleRepairChange{}, err
+	} else if ok && conflictRecord.ID != record.ID {
+		separated, err := hasActiveEventReviewSeparationBetweenKeysTx(ctx, tx, seedstore.EventReviewSeparationEventEndpointKey(record.ID), seedstore.EventReviewSeparationEventEndpointKey(conflictRecord.ID))
+		if err != nil {
+			return EventTitleRepairChange{}, err
+		}
+		if separated {
+			change.Result = "skipped"
+			change.Reason = "target slug conflict is already marked separate"
+			return change, nil
+		}
+		if eventRecordHasResolvedIdentity(conflictRecord, incoming) {
+			conflict = &conflictRecord
+		}
+	}
 	if !apply {
 		change.Result = "would_create_event_review"
 		return change, nil
@@ -347,12 +373,6 @@ func (s *Store) stageSupportingEventTitleRepair(ctx context.Context, cluster ing
 		return EventTitleRepairChange{}, errors.New("event title repair source not found")
 	}
 
-	var conflict *eventRecord
-	if conflictRecord, ok, err := loadEventRecordBySlugTx(ctx, s.db, incoming.Slug); err != nil {
-		return EventTitleRepairChange{}, err
-	} else if ok && conflictRecord.ID != record.ID && eventRecordHasResolvedIdentity(conflictRecord, incoming) {
-		conflict = &conflictRecord
-	}
 	stageInput, err := buildEventTitleRepairClusterInput(ctx, s.db, cluster, record, incoming, sourceID, reviewGroupAuthoritativeLink{}, eventTitleRepairConflictReasonSupportingCleanTitle, conflict, now)
 	if err != nil {
 		return EventTitleRepairChange{}, err
