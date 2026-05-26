@@ -1796,6 +1796,7 @@ func loadEventReviewHistoricalDuplicateReadinessTx(ctx context.Context, q querye
 		state := normalizedPublicationState(record.Event.PublicationState)
 		eventReadiness.PublicationState = string(state)
 		eventReadiness.Live = isLiveNonWithheldEventRow(string(record.Event.Origin), string(record.Event.PublicationState))
+		eventReadiness.CanonicalEligible = eventReadiness.Live && state == domain.PublicationStateReviewed
 		if !eventReadiness.Live {
 			appendUniqueImportReadinessReason(&eventReadiness.BlockingReasons, "event is not live/non-withheld")
 		}

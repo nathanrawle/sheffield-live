@@ -3554,7 +3554,7 @@ func TestAdminEventReviewResolveHistoricalDuplicateActionsPostsAndRedirects(t *t
 			HistoricalDuplicateReadiness: &store.EventReviewHistoricalDuplicateReadiness{
 				CanResolveLiveActions: true,
 				Events: []store.EventReviewHistoricalDuplicateEventReadiness{
-					{EventID: 88, EventSlug: "canonical-event", PublicationState: "reviewed", Live: true, Canonical: true, Action: store.EventReviewLiveActionKindKeepSeparate, KeepEligible: true},
+					{EventID: 88, EventSlug: "canonical-event", PublicationState: "reviewed", Live: true, Canonical: true, CanonicalEligible: true, Action: store.EventReviewLiveActionKindKeepSeparate, KeepEligible: true},
 					{EventID: 90, EventSlug: "loser-event", PublicationState: "provisional", Live: true, Action: store.EventReviewLiveActionKindWithholdDuplicate, KeepEligible: true},
 				},
 			},
@@ -3577,6 +3577,7 @@ func TestAdminEventReviewResolveHistoricalDuplicateActionsPostsAndRedirects(t *t
 	assertContains(t, body, `name="action" value="resolve_historical_duplicate_actions"`)
 	assertContains(t, body, `name="historical_event_id" value="88"`)
 	assertContains(t, body, `name="historical_action_90"`)
+	assertContains(t, body, `name="canonical_event_id" value="90"  disabled`)
 	csrfToken := extractCSRFToken(t, body)
 
 	form := url.Values{}

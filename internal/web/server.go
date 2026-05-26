@@ -2698,7 +2698,15 @@ func canKeepHistoricalDuplicateEventReviewClusterSeparate(cluster store.EventRev
 }
 
 func canOverrideHistoricalDuplicateEventReviewClusterActions(cluster store.EventReviewClusterDetail) bool {
-	return cluster.Summary.Status == store.EventReviewClusterStatusOpen && cluster.Summary.ConflictType == "historical_duplicate" && cluster.HistoricalDuplicateReadiness != nil && len(cluster.HistoricalDuplicateReadiness.Events) >= 2
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen || cluster.Summary.ConflictType != "historical_duplicate" || cluster.HistoricalDuplicateReadiness == nil || len(cluster.HistoricalDuplicateReadiness.Events) < 2 {
+		return false
+	}
+	for _, event := range cluster.HistoricalDuplicateReadiness.Events {
+		if event.CanonicalEligible {
+			return true
+		}
+	}
+	return false
 }
 
 func canResolveTitleRepairEventReviewCluster(cluster store.EventReviewClusterDetail) bool {

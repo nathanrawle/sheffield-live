@@ -845,14 +845,15 @@ type EventReviewHistoricalDuplicateReadiness struct {
 }
 
 type EventReviewHistoricalDuplicateEventReadiness struct {
-	EventID          int64
-	EventSlug        string
-	PublicationState string
-	Live             bool
-	Canonical        bool
-	Action           EventReviewLiveActionKind
-	KeepEligible     bool
-	BlockingReasons  []string
+	EventID           int64
+	EventSlug         string
+	PublicationState  string
+	Live              bool
+	Canonical         bool
+	CanonicalEligible bool
+	Action            EventReviewLiveActionKind
+	KeepEligible      bool
+	BlockingReasons   []string
 }
 
 type EventReviewCanonicalChoice struct {

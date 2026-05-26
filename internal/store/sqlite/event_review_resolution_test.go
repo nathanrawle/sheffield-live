@@ -228,6 +228,7 @@ type historicalDuplicateResolutionFixture struct {
 	clusterID   int64
 	canonicalID int64
 	loserID     int64
+	sourceID    int64
 }
 
 type titleRepairResolutionFixture struct {
@@ -678,6 +679,63 @@ func TestResolveHistoricalDuplicateWithActionsRejectsInvalidActionSets(t *testin
 				t.Fatalf("event_review_resolutions rows = %d, want 0", got)
 			}
 		})
+	}
+}
+
+func TestResolveHistoricalDuplicateWithActionsPreflightsSourceLinkGuardBeforeDetach(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedHistoricalDuplicateResolutionFixture(t, db)
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			source_id,
+			event_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?)
+	`, fixture.sourceID, fixture.loserID, "uid:override-source-conflict", 1, "2026-05-12T09:00:00Z", "2026-05-12T09:00:00Z"); err != nil {
+		t.Fatalf("insert loser source link: %v", err)
+	}
+
+	err := st.ResolveHistoricalDuplicateWithActions(context.Background(), seedstore.EventReviewHistoricalDuplicateWithActionsInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		CanonicalEventID: fixture.canonicalID,
+		Actions: []seedstore.EventReviewHistoricalDuplicateActionInput{
+			{EventID: fixture.canonicalID, Action: seedstore.EventReviewLiveActionKindKeepSeparate},
+			{EventID: fixture.loserID, Action: seedstore.EventReviewLiveActionKindWithholdDuplicate},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "authoritative source identity does not resolve to canonical") {
+		t.Fatalf("resolve override error = %v, want source-link guard", err)
+	}
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	if got := mustCount(t, db, "event_review_resolutions"); got != 0 {
+		t.Fatalf("event_review_resolutions rows = %d, want 0", got)
+	}
+	if got := mustCount(t, db, "repair_runs"); got != 0 {
+		t.Fatalf("repair_runs rows = %d, want 0", got)
+	}
+	var linkCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM event_source_links WHERE event_id = ?`, fixture.loserID).Scan(&linkCount); err != nil {
+		t.Fatalf("count loser source links: %v", err)
+	}
+	if linkCount != 1 {
+		t.Fatalf("loser source links = %d, want 1", linkCount)
+	}
+	var loserState string
+	var loserCanonical sql.NullInt64
+	if err := db.QueryRow(`SELECT publication_state, canonical_event_id FROM events WHERE id = ?`, fixture.loserID).Scan(&loserState, &loserCanonical); err != nil {
+		t.Fatalf("load loser state: %v", err)
+	}
+	if loserState == string(domain.PublicationStateWithheld) || loserCanonical.Valid {
+		t.Fatalf("loser state=%q canonical=%v, want not withheld with no canonical", loserState, loserCanonical)
 	}
 }
 
@@ -1147,6 +1205,7 @@ func seedHistoricalDuplicateResolutionFixture(t *testing.T, db *sql.DB) historic
 		clusterID:   clusterID,
 		canonicalID: canonicalID,
 		loserID:     loserID,
+		sourceID:    sourceID,
 	}
 }
 

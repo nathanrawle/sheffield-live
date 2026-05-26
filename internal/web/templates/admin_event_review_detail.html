@@ -817,14 +817,17 @@
               event #{{.EventID}}{{with .EventSlug}}<small>{{.}}</small>{{end}}
               <input type="hidden" name="historical_event_id" value="{{.EventID}}">
             </th>
-            <td><input type="radio" name="canonical_event_id" value="{{.EventID}}" {{if .Canonical}}checked{{end}}></td>
+            <td><input type="radio" name="canonical_event_id" value="{{.EventID}}" {{if .Canonical}}checked{{end}} {{if not .CanonicalEligible}}disabled{{end}}></td>
             <td>
               <select name="historical_action_{{.EventID}}">
-                <option value="keep_separate" {{if eq .Action "keep_separate"}}selected{{end}}>Keep separate</option>
-                <option value="withhold_duplicate" {{if eq .Action "withhold_duplicate"}}selected{{end}}>Withhold duplicate</option>
+                <option value="keep_separate" {{if eq .Action "keep_separate"}}selected{{end}} {{if not .KeepEligible}}disabled{{end}}>Keep separate</option>
+                <option value="withhold_duplicate" {{if or (eq .Action "withhold_duplicate") (not .KeepEligible)}}selected{{end}} {{if not .KeepEligible}}disabled{{end}}>Withhold duplicate</option>
               </select>
             </td>
-            <td>{{blankValue .PublicationState}}</td>
+            <td>
+              {{blankValue .PublicationState}}
+              {{if .BlockingReasons}}<small>{{joinStrings .BlockingReasons "; "}}</small>{{end}}
+            </td>
           </tr>
           {{end}}
         </tbody>

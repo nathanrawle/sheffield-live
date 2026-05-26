@@ -1377,11 +1377,6 @@ func withholdHistoricalDuplicateEventTx(ctx context.Context, tx interface {
 	if currentPublicationState != domain.PublicationStateProvisional && currentPublicationState != domain.PublicationStateReviewed {
 		return "", fmt.Errorf("loser event %d is not provisional", loserID)
 	}
-	if opts.DetachLoserSourceLinks {
-		if err := detachHistoricalDuplicateLoserSourceLinksTx(ctx, tx, loserID); err != nil {
-			return "", err
-		}
-	}
 	if reason, reviewNeeded, err := historicalDuplicateRepairSourceLinkGuardTx(ctx, tx, loserID, canonicalID); err != nil {
 		return "", err
 	} else if reviewNeeded {
@@ -1391,6 +1386,11 @@ func withholdHistoricalDuplicateEventTx(ctx context.Context, tx interface {
 		return "", err
 	} else if reviewNeeded {
 		return "", errors.New(reason)
+	}
+	if opts.DetachLoserSourceLinks {
+		if err := detachHistoricalDuplicateLoserSourceLinksTx(ctx, tx, loserID); err != nil {
+			return "", err
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `
