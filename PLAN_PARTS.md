@@ -9,7 +9,7 @@
 | title-repair-slug-conflict | Resolve title-repair slug conflicts by merge/update or keep-separate. | reviewed | top-level session | top-level session | 019e6180-3a23-7083-b03d-4c057ce6638d | `005_TITLE_REPAIR_SLUG_CONFLICT_PLAN.md` |
 | historical-duplicate-keep-separate | Add all-keep false-positive resolution for historical duplicate clusters. | reviewed | top-level session | top-level session | 019e6180-3a23-7083-b03d-4c057ce6638d | `006_HISTORICAL_DUPLICATE_KEEP_SEPARATE_PLAN.md` |
 | historical-duplicate-action-override | Allow manual historical duplicate live-action override with validation. | reviewed | top-level session | top-level session | 019e6180-3a23-7083-b03d-4c057ce6638d | `007_HISTORICAL_DUPLICATE_ACTION_OVERRIDE_PLAN.md` |
-| unsupported-cluster-docs | Rolling docs checkpoint and unsupported-cluster blocker cleanup after shipped milestones. | implemented | top-level session | top-level session |  | `008_UNSUPPORTED_CLUSTER_DOCS_PLAN.md` |
+| unsupported-cluster-docs | Rolling docs checkpoint and unsupported-cluster blocker cleanup after shipped milestones. | reviewed | top-level session | top-level session | 019e6180-3a23-7083-b03d-4c057ce6638d | `008_UNSUPPORTED_CLUSTER_DOCS_PLAN.md` |
 
 ## Status Values
 
