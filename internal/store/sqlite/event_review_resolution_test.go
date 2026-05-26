@@ -2734,8 +2734,8 @@ func TestResolveEventReviewImportAuthoritativeValidatesSourceIdentityKeys(t *tes
 			EvidenceID:         fixture.evidenceID,
 			SourceIdentityKeys: []string{"tampered-authoritative-key"},
 		})
-		if err == nil || !strings.Contains(err.Error(), "not observed for evidence") {
-			t.Fatalf("authoritative with unobserved source key error = %v, want not observed", err)
+		if err == nil || !strings.Contains(err.Error(), "do not match evidence") {
+			t.Fatalf("authoritative with unobserved source key error = %v, want key mismatch", err)
 		}
 		assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
 	})
@@ -2776,8 +2776,8 @@ func TestResolveEventReviewImportAuthoritativeValidatesSourceIdentityKeys(t *tes
 			EvidenceID:         fixture.evidenceID,
 			SourceIdentityKeys: []string{"authoritative-unselected-source"},
 		})
-		if err == nil || !strings.Contains(err.Error(), "not selected for evidence") {
-			t.Fatalf("authoritative with unselected source key error = %v, want not selected", err)
+		if err == nil || !strings.Contains(err.Error(), "do not match evidence") {
+			t.Fatalf("authoritative with unselected source key error = %v, want key mismatch", err)
 		}
 		assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
 	})
@@ -2818,8 +2818,8 @@ func TestResolveEventReviewImportAuthoritativeValidatesSourceIdentityKeys(t *tes
 			EvidenceID:         fixture.evidenceID,
 			SourceIdentityKeys: []string{"forged-authoritative-source"},
 		})
-		if err == nil || !strings.Contains(err.Error(), "not observed for evidence") {
-			t.Fatalf("authoritative forged source key error = %v, want not observed", err)
+		if err == nil || !strings.Contains(err.Error(), "do not match evidence") {
+			t.Fatalf("authoritative forged source key error = %v, want key mismatch", err)
 		}
 		assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
 		if got := mustCount(t, db, "events"); got != beforeEvents {
@@ -2875,7 +2875,6 @@ func TestResolveEventReviewImportAuthoritativeUsesSourceIdentityBeforeTitleMatch
 		},
 		EvidenceID:            fixture.evidenceID,
 		ExpectedTargetEventID: targetID,
-		SourceIdentityKeys:    []string{sourceKey},
 	}); err != nil {
 		t.Fatalf("resolve authoritative source update: %v", err)
 	}
@@ -2907,6 +2906,109 @@ func TestResolveEventReviewImportAuthoritativeUsesSourceIdentityBeforeTitleMatch
 	}
 	if got := detail.Resolution.AppliedAuthoritativeImport; got.EventID != targetID || got.Result != "updated" {
 		t.Fatalf("applied authoritative update = %#v", got)
+	}
+}
+
+func TestResolveEventReviewImportAuthoritativeUsesSelectedChoiceReadinessTarget(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	incomingTitle := "Authoritative Selected Choice"
+	payloadExternalID := "authoritative-payload-target-source"
+	if _, err := db.Exec(`
+		UPDATE event_review_evidence
+		SET payload = ?
+		WHERE id = ?
+	`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthorityAuthoritative), incomingTitle, fixture.venueText, "", fixture.start, fixture.end, payloadExternalID), fixture.evidenceID); err != nil {
+		t.Fatalf("update selected authoritative payload: %v", err)
+	}
+	payloadSourceKey, ok := ingest.SourceIdentityKey(payloadExternalID)
+	if !ok {
+		t.Fatalf("source identity key for %q was rejected", payloadExternalID)
+	}
+	selectedSourceKey, ok := ingest.SourceIdentityKey("authoritative-selected-choice-target")
+	if !ok {
+		t.Fatal("source identity key for selected authoritative target was rejected")
+	}
+	selectedKeyID := insertEventReviewIdentityKeyOK(t, db, "authoritative-selected-choice-target-hash", seedstore.EventReviewIdentityKeyKindSource, selectedSourceKey)
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, selectedKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert selected authoritative evidence key: %v", err)
+	}
+	if _, err := insertEventReviewSourceIdentityChoice(t, db, fixture.clusterID, fixture.sourceID, selectedSourceKey, true, "selected authoritative source", fixture.start.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("insert selected authoritative source choice: %v", err)
+	}
+
+	payloadTargetID := mustInsertExactIdentityEvent(t, db, "authoritative-payload-choice-target", "Payload Choice Target", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	selectedTargetID := mustInsertExactIdentityEvent(t, db, "authoritative-selected-choice-target", "Selected Choice Target", fixture.venueID, fixture.sourceID, fixture.start.Add(4*time.Hour), fixture.end.Add(4*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	for _, row := range []struct {
+		eventID int64
+		key     string
+	}{
+		{eventID: payloadTargetID, key: payloadSourceKey},
+		{eventID: selectedTargetID, key: selectedSourceKey},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO event_source_links (
+				event_id,
+				source_id,
+				source_event_key,
+				is_authoritative,
+				created_at,
+				updated_at
+			) VALUES (?, ?, ?, 1, ?, ?)
+		`, row.eventID, fixture.sourceID, row.key, formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+			t.Fatalf("insert authoritative choice source link: %v", err)
+		}
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load selected authoritative readiness: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("selected authoritative readiness missing")
+	}
+	readinessTarget := mustImportAuthoritativeTarget(t, detail.ImportReadiness.AuthoritativeTargets, fixture.evidenceID)
+	if readinessTarget.EventID == nil || *readinessTarget.EventID != selectedTargetID || readinessTarget.Result != "updated" {
+		t.Fatalf("selected authoritative target = %#v, want selected target %d", readinessTarget, selectedTargetID)
+	}
+	if got := readinessTarget.SourceIdentityKeys; len(got) != 1 || got[0] != selectedSourceKey {
+		t.Fatalf("selected authoritative source keys = %#v, want [%q]", got, selectedSourceKey)
+	}
+	if len(readinessTarget.BlockingReasons) != 0 {
+		t.Fatalf("selected authoritative blockers = %#v, want none", readinessTarget.BlockingReasons)
+	}
+
+	beforeEvents := mustCount(t, db, "events")
+	if err := st.ResolveEventReviewImportAuthoritative(context.Background(), seedstore.EventReviewImportAuthoritativeInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:            fixture.evidenceID,
+		ExpectedTargetEventID: selectedTargetID,
+		SourceIdentityKeys:    readinessTarget.SourceIdentityKeys,
+	}); err != nil {
+		t.Fatalf("resolve selected authoritative target: %v", err)
+	}
+	if got := mustCount(t, db, "events"); got != beforeEvents {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents)
+	}
+	var selectedTitle string
+	if err := db.QueryRow(`SELECT name FROM events WHERE id = ?`, selectedTargetID).Scan(&selectedTitle); err != nil {
+		t.Fatalf("load selected authoritative target title: %v", err)
+	}
+	if selectedTitle != incomingTitle {
+		t.Fatalf("selected target title = %q, want %q", selectedTitle, incomingTitle)
+	}
+	var payloadTitle string
+	if err := db.QueryRow(`SELECT name FROM events WHERE id = ?`, payloadTargetID).Scan(&payloadTitle); err != nil {
+		t.Fatalf("load payload authoritative target title: %v", err)
+	}
+	if payloadTitle != "Payload Choice Target" {
+		t.Fatalf("payload target title = %q, want unchanged", payloadTitle)
 	}
 }
 
@@ -2962,8 +3064,7 @@ func TestResolveEventReviewImportAuthoritativeRejectsAmbiguousSourceIdentity(t *
 			ClusterID:       fixture.clusterID,
 			ExpectedVersion: 1,
 		},
-		EvidenceID:         fixture.evidenceID,
-		SourceIdentityKeys: []string{sourceKeyA, sourceKeyB},
+		EvidenceID: fixture.evidenceID,
 	})
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("resolve ambiguous authoritative source error = %v, want ambiguous", err)
@@ -2978,6 +3079,91 @@ func TestResolveEventReviewImportAuthoritativeRejectsAmbiguousSourceIdentity(t *
 	}
 	if evidenceEventID.Valid {
 		t.Fatalf("ambiguous authoritative evidence event id = %d, want NULL", evidenceEventID.Int64)
+	}
+}
+
+func TestResolveEventReviewImportAuthoritativeRejectsSubmittedSubsetOfAmbiguousSourceKeys(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	if _, err := db.Exec(`
+		UPDATE event_review_evidence
+		SET payload = ?
+		WHERE id = ?
+	`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthorityAuthoritative), "Authoritative Subset Ambiguous", fixture.venueText, "", fixture.start, fixture.end, "authoritative-subset-a"), fixture.evidenceID); err != nil {
+		t.Fatalf("update authoritative subset payload: %v", err)
+	}
+	sourceKeyA, ok := ingest.SourceIdentityKey("authoritative-subset-a")
+	if !ok {
+		t.Fatal("source identity key for authoritative-subset-a was rejected")
+	}
+	sourceKeyB, ok := ingest.SourceIdentityKey("authoritative-subset-b")
+	if !ok {
+		t.Fatal("source identity key for authoritative-subset-b was rejected")
+	}
+	sourceKeyBID := insertEventReviewIdentityKeyOK(t, db, "authoritative-subset-b-hash", seedstore.EventReviewIdentityKeyKindSource, sourceKeyB)
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, sourceKeyBID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert subset authoritative source key b: %v", err)
+	}
+	targetAID := mustInsertExactIdentityEvent(t, db, "authoritative-subset-a", "Authoritative Subset A", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	targetBID := mustInsertExactIdentityEvent(t, db, "authoritative-subset-b", "Authoritative Subset B", fixture.venueID, fixture.sourceID, fixture.start.Add(4*time.Hour), fixture.end.Add(4*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	for _, row := range []struct {
+		eventID int64
+		key     string
+	}{
+		{eventID: targetAID, key: sourceKeyA},
+		{eventID: targetBID, key: sourceKeyB},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO event_source_links (
+				event_id,
+				source_id,
+				source_event_key,
+				is_authoritative,
+				created_at,
+				updated_at
+			) VALUES (?, ?, ?, 1, ?, ?)
+		`, row.eventID, fixture.sourceID, row.key, formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+			t.Fatalf("insert subset authoritative source link: %v", err)
+		}
+	}
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load subset authoritative readiness: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("subset authoritative readiness missing")
+	}
+	readinessTarget := mustImportAuthoritativeTarget(t, detail.ImportReadiness.AuthoritativeTargets, fixture.evidenceID)
+	if !hasString(readinessTarget.BlockingReasons, "authoritative source identities resolve ambiguously") {
+		t.Fatalf("subset authoritative blockers = %#v, want source ambiguity", readinessTarget.BlockingReasons)
+	}
+	submittedKeys := make([]string, 0, len(readinessTarget.SourceIdentityKeys))
+	for _, key := range readinessTarget.SourceIdentityKeys {
+		if key != sourceKeyB {
+			submittedKeys = append(submittedKeys, key)
+		}
+	}
+	if len(submittedKeys) == len(readinessTarget.SourceIdentityKeys) {
+		t.Fatalf("readiness source keys = %#v, want staged key %q", readinessTarget.SourceIdentityKeys, sourceKeyB)
+	}
+	beforeEvents := mustCount(t, db, "events")
+	err = st.ResolveEventReviewImportAuthoritative(context.Background(), seedstore.EventReviewImportAuthoritativeInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:         fixture.evidenceID,
+		SourceIdentityKeys: submittedKeys,
+	})
+	if err == nil || !strings.Contains(err.Error(), "do not match evidence") {
+		t.Fatalf("resolve subset authoritative source error = %v, want key mismatch", err)
+	}
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	if got := mustCount(t, db, "events"); got != beforeEvents {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents)
 	}
 }
 
@@ -3022,7 +3208,6 @@ func TestResolveEventReviewImportAuthoritativeRejectsExpectedTargetMismatchWitho
 		},
 		EvidenceID:            fixture.evidenceID,
 		ExpectedTargetEventID: expectedTargetID,
-		SourceIdentityKeys:    []string{sourceKey},
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not match expected event") {
 		t.Fatalf("resolve authoritative target mismatch error = %v, want expected mismatch", err)
@@ -3437,6 +3622,17 @@ func mustImportExistingTarget(t *testing.T, targets []seedstore.EventReviewImpor
 	}
 	t.Fatalf("target evidence=%d event=%d basis=%s not found in %#v", evidenceID, eventID, basis, targets)
 	return seedstore.EventReviewImportExistingEventTarget{}
+}
+
+func mustImportAuthoritativeTarget(t *testing.T, targets []seedstore.EventReviewImportAuthoritativeTarget, evidenceID int64) seedstore.EventReviewImportAuthoritativeTarget {
+	t.Helper()
+	for _, target := range targets {
+		if target.EvidenceID == evidenceID {
+			return target
+		}
+	}
+	t.Fatalf("authoritative target evidence=%d not found in %#v", evidenceID, targets)
+	return seedstore.EventReviewImportAuthoritativeTarget{}
 }
 
 func seedTitleRepairResolutionFixture(t *testing.T, db *sql.DB) titleRepairResolutionFixture {

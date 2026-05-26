@@ -336,7 +336,7 @@ func (s *Store) LoadEventReviewCluster(ctx context.Context, id int64) (seedstore
 			return seedstore.EventReviewClusterDetail{}, false, err
 		}
 		importReadiness.ExistingEventTargets = normalizeEventReviewImportExistingEventTargets(importReadiness.ExistingEventTargets)
-		authoritativeTargets, err := loadEventReviewImportAuthoritativeTargetsTx(ctx, tx, s, summary, evidence)
+		authoritativeTargets, err := loadEventReviewImportAuthoritativeTargetsTx(ctx, tx, s, summary, evidence, importReadiness.CandidateIdentityStatuses)
 		if err != nil {
 			return seedstore.EventReviewClusterDetail{}, false, err
 		}
@@ -2925,7 +2925,7 @@ func loadEventReviewImportStructuralTargetsTx(ctx context.Context, tx interface 
 func loadEventReviewImportAuthoritativeTargetsTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, s *Store, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary) ([]seedstore.EventReviewImportAuthoritativeTarget, error) {
+}, s *Store, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary, statuses []seedstore.EventReviewImportCandidateIdentityStatus) ([]seedstore.EventReviewImportAuthoritativeTarget, error) {
 	if summary.Status != seedstore.EventReviewClusterStatusOpen ||
 		summary.ConflictType != seedstore.EventReviewConflictTypeImportReview ||
 		summary.ConflictReason != seedstore.EventReviewConflictReasonIngestCandidate {
@@ -2940,6 +2940,10 @@ func loadEventReviewImportAuthoritativeTargetsTx(ctx context.Context, tx interfa
 		ConflictType:     summary.ConflictType,
 		ConflictReason:   summary.ConflictReason,
 	}
+	statusByEvidenceID := make(map[int64]seedstore.EventReviewImportCandidateIdentityStatus, len(statuses))
+	for _, status := range statuses {
+		statusByEvidenceID[status.EvidenceID] = status
+	}
 	targets := make([]seedstore.EventReviewImportAuthoritativeTarget, 0)
 	for _, row := range evidence {
 		material, err := buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, row, nil, "import_review_authoritative_readiness", reviewSourceIdentityAuthoritative, now)
@@ -2952,7 +2956,27 @@ func loadEventReviewImportAuthoritativeTargetsTx(ctx context.Context, tx interfa
 		target := seedstore.EventReviewImportAuthoritativeTarget{
 			EvidenceID:          row.EvidenceID,
 			EvidenceFingerprint: row.EvidenceFingerprint,
-			SourceIdentityKeys:  normalizedImportReadinessStrings(material.SourceCtx.Identities.Keys()),
+		}
+		status := statusByEvidenceID[row.EvidenceID]
+		effectiveSourceKeys, blocker := importReviewAuthoritativeEffectiveSourceKeys(row.EvidenceID, status, material.SourceCtx, statuses)
+		target.SourceIdentityKeys = effectiveSourceKeys
+		if blocker != "" {
+			appendUniqueImportReadinessReason(&target.BlockingReasons, blocker)
+			targets = append(targets, target)
+			continue
+		}
+		if len(effectiveSourceKeys) > 0 {
+			material, err = buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, row, effectiveSourceKeys, "import_review_authoritative_readiness", reviewSourceIdentityAuthoritative, now)
+			if err != nil {
+				appendUniqueImportReadinessReason(&target.BlockingReasons, "authoritative source identity keys could not be materialized")
+				targets = append(targets, target)
+				continue
+			}
+			if material.SourceAuthority != seedstore.SourceAuthorityAuthoritative {
+				appendUniqueImportReadinessReason(&target.BlockingReasons, "candidate is not an authoritative source")
+				targets = append(targets, target)
+				continue
+			}
 		}
 		applySourceCtx := material.SourceCtx
 		applySourceCtx.SourceName = firstNonEmptyImportReviewText(row.SourceName, material.SourceCtx.SourceName)
