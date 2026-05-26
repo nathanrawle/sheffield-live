@@ -320,6 +320,21 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 	}
 	sourceCtx := reviewSourceIdentityContextForCandidateInput(mode, selected.SourceName, selected.SourceURL, "", "", "", selected.CandidateInput, "event_review_canonical_exact_match")
 
+	targetRecord, ok, err := loadEventRecordByIDTx(ctx, tx, *cluster.CanonicalEventID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("event %d not found", *cluster.CanonicalEventID)
+	}
+	compatibleEvidenceEventIDs, err := canonicalExactAutoResolutionEvidenceEventIDsCompatibleTx(ctx, tx, targetRecord, candidates, now)
+	if err != nil {
+		return nil, err
+	}
+	if !compatibleEvidenceEventIDs {
+		return nil, nil
+	}
+
 	if selected.SourceAuthority == seedstore.SourceAuthorityAuthoritative {
 		writeResult, err := ensureEventSourceLinkForSourceIdentityContextTx(ctx, tx, *cluster.CanonicalEventID, selected.SourceID, sourceCtx, sourceLinkAuthorityAuthoritative, sourceLinkConflictPolicyNoMove, now)
 		if err != nil {
@@ -329,13 +344,6 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 			return nil, nil
 		}
 
-		targetRecord, ok, err := loadEventRecordByIDTx(ctx, tx, *cluster.CanonicalEventID)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, fmt.Errorf("event %d not found", *cluster.CanonicalEventID)
-		}
 		incoming := event
 		incoming.SourceName = sourceCtx.SourceName
 		incoming.SourceURL = sourceCtx.SourceURL
@@ -344,13 +352,6 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 		}
 	}
 
-	targetRecord, ok, err := loadEventRecordByIDTx(ctx, tx, *cluster.CanonicalEventID)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, fmt.Errorf("event %d not found", *cluster.CanonicalEventID)
-	}
 	recordSupportingProvenance := selected.SourceAuthority != seedstore.SourceAuthorityAuthoritative
 	targetRecord, ok, err = applyCanonicalExactAutoResolutionProvenanceTx(ctx, tx, targetRecord, candidates, scope, now, recordSupportingProvenance)
 	if err != nil || !ok {
@@ -515,6 +516,23 @@ func eventReviewEvidenceEventIDCompatibleWithCanonicalTx(ctx context.Context, q 
 	default:
 		return !existingEventID.Valid || existingEventID.Int64 == canonicalEventID, nil
 	}
+}
+
+func canonicalExactAutoResolutionEvidenceEventIDsCompatibleTx(ctx context.Context, q queryer, targetRecord eventRecord, candidates []eventReviewClusterAutoResolutionCandidate, now time.Time) (bool, error) {
+	for _, candidate := range candidates {
+		incoming, ok, err := eventReviewClusterAutoResolutionEvent(candidate, now)
+		if err != nil {
+			return false, err
+		}
+		if !ok || !eventReviewAutoResolutionEventsExactMatch(incoming, targetRecord.Event) {
+			continue
+		}
+		compatible, err := eventReviewEvidenceEventIDCompatibleWithCanonicalTx(ctx, q, candidate.EvidenceID, targetRecord.ID)
+		if err != nil || !compatible {
+			return compatible, err
+		}
+	}
+	return true, nil
 }
 
 func autoResolveEventReviewClusterUnanimousDuplicateTx(ctx context.Context, tx interface {

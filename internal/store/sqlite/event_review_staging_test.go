@@ -1945,6 +1945,101 @@ func TestCanonicalExactBlocksConflictingEvidenceEventID(t *testing.T) {
 	}
 }
 
+func TestCanonicalExactAuthoritativeBlocksConflictingEvidenceEventIDWithoutPartialWrites(t *testing.T) {
+	ctx := context.Background()
+	st, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	sourceID := insertStoreNamedSource(t, db, "Authoritative conflict source", "https://authoritative-conflict.example.test/listing")
+	venueID := lookupStoreVenueID(t, db, "leadmill")
+	insertLegacyEvent(t, db, "authoritative-conflicting-evidence-canonical-leadmill-20260510190000", venueID, sourceID, domain.OriginLive)
+	canonicalEventID := lookupEventIDBySlug(t, db, "authoritative-conflicting-evidence-canonical-leadmill-20260510190000")
+	if _, err := db.Exec(`
+		UPDATE events
+		SET publication_state = ?
+		WHERE id = ?
+	`, string(domain.PublicationStateProvisional), canonicalEventID); err != nil {
+		t.Fatalf("mark authoritative conflicting canonical event provisional: %v", err)
+	}
+	insertLegacyEvent(t, db, "authoritative-conflicting-evidence-other-leadmill-20260510190000", venueID, sourceID, domain.OriginLive)
+	otherEventID := lookupEventIDBySlug(t, db, "authoritative-conflicting-evidence-other-leadmill-20260510190000")
+
+	identityKey := "authoritative-conflicting-evidence"
+	identityHash := buildEventReviewIdentityKeyHash(seedstore.EventReviewIdentityKeyKindExact, eventReviewIdentityKeyVersion, identityKey)
+	identityKeyID := insertEventReviewIdentityKeyOK(t, db, identityHash, seedstore.EventReviewIdentityKeyKindExact, identityKey)
+	clusterID := insertEventReviewClusterOK(t, db, string(seedstore.EventReviewClusterStatusOpen), nil, nil, &canonicalEventID)
+	if _, err := insertEventReviewClusterIdentityKey(t, db, clusterID, identityKeyID, true, time.Date(2026, time.May, 15, 10, 0, 0, 0, time.UTC), nil); err != nil {
+		t.Fatalf("insert authoritative conflicting identity link: %v", err)
+	}
+
+	runID := mustCreateImportRun(t, st, "authoritative conflicting canonical exact")
+	result, err := st.StageEventReviewEvidence(ctx, seedstore.StageEventReviewEvidenceInput{
+		RunRef:              seedstore.EventReviewRunRef{Kind: seedstore.EventReviewRunKindImport, ID: runID},
+		SourceID:            sourceID,
+		SourceName:          "Authoritative conflict source",
+		SourceURL:           "https://authoritative-conflict.example.test/listing",
+		SourceAuthority:     seedstore.SourceAuthorityAuthoritative,
+		EventID:             &otherEventID,
+		EvidenceFingerprint: "authoritative-conflicting-evidence-fingerprint",
+		Payload: `{
+			"source_authority":"authoritative",
+			"source_name":"Authoritative conflict source",
+			"source_url":"https://authoritative-conflict.example.test/listing",
+			"candidate_external_id":"authoritative-conflicting-evidence",
+			"candidate_title":"Legacy Event",
+			"candidate_venue_slug":"leadmill",
+			"candidate_start_at":"2026-05-10T19:00:00Z",
+			"candidate_end_at":"2026-05-10T22:00:00Z",
+			"candidate_genre":"Indie",
+			"candidate_status":"Listed",
+			"candidate_description":"Legacy event"
+		}`,
+		ExactIdentityKeys: []string{identityKey},
+		StagingKey:        eventReviewTestStagingKey("authoritative-conflicting-evidence-fingerprint"),
+		StagingKeyVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("stage authoritative conflicting canonical exact evidence: %v", err)
+	}
+	beforeObservations := mustCount(t, db, "event_source_attribute_observations")
+	resolution, err := st.FinalizeOpenEventReviewClusterRestage(ctx, result.ClusterID, []int64{result.EvidenceID})
+	if err != nil {
+		t.Fatalf("finalize authoritative conflicting canonical exact cluster: %v", err)
+	}
+	if resolution != nil {
+		t.Fatalf("authoritative conflicting canonical exact resolution = %#v, want nil", resolution)
+	}
+	assertEventReviewClusterState(t, db, clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	var publicationState string
+	if err := db.QueryRow(`SELECT publication_state FROM events WHERE id = ?`, canonicalEventID).Scan(&publicationState); err != nil {
+		t.Fatalf("load authoritative conflicting canonical publication state: %v", err)
+	}
+	if publicationState != string(domain.PublicationStateProvisional) {
+		t.Fatalf("authoritative conflicting canonical publication state = %q, want %q", publicationState, domain.PublicationStateProvisional)
+	}
+	var linkedEventID sql.NullInt64
+	if err := db.QueryRow(`SELECT event_id FROM event_review_evidence WHERE id = ?`, result.EvidenceID).Scan(&linkedEventID); err != nil {
+		t.Fatalf("load authoritative conflicting evidence event_id: %v", err)
+	}
+	if !linkedEventID.Valid || linkedEventID.Int64 != otherEventID {
+		t.Fatalf("authoritative conflicting evidence event_id = %#v, want %d", linkedEventID, otherEventID)
+	}
+	var sourceLinkCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM event_source_links
+		WHERE source_id = ? AND source_event_key = ?
+	`, sourceID, "uid:authoritative-conflicting-evidence").Scan(&sourceLinkCount); err != nil {
+		t.Fatalf("count authoritative conflicting source links: %v", err)
+	}
+	if sourceLinkCount != 0 {
+		t.Fatalf("authoritative conflicting source links = %d, want 0", sourceLinkCount)
+	}
+	if got := mustCount(t, db, "event_source_attribute_observations"); got != beforeObservations {
+		t.Fatalf("event_source_attribute_observations = %d, want %d", got, beforeObservations)
+	}
+}
+
 func TestStageEventReviewEvidenceDoesNotAutoResolveCanonicalFieldMismatch(t *testing.T) {
 	ctx := context.Background()
 	st, db := openEventReviewSchemaStore(t)
