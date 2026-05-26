@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -342,10 +344,6 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 		}
 	}
 
-	if err := markEventReviewedTx(ctx, tx, *cluster.CanonicalEventID); err != nil {
-		return nil, err
-	}
-
 	targetRecord, ok, err := loadEventRecordByIDTx(ctx, tx, *cluster.CanonicalEventID)
 	if err != nil {
 		return nil, err
@@ -357,6 +355,16 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 	targetRecord, ok, err = applyCanonicalExactAutoResolutionProvenanceTx(ctx, tx, targetRecord, candidates, scope, now, recordSupportingProvenance)
 	if err != nil || !ok {
 		return nil, err
+	}
+	if err := markEventReviewedTx(ctx, tx, targetRecord.ID); err != nil {
+		return nil, err
+	}
+	targetRecord, ok, err = loadEventRecordByIDTx(ctx, tx, targetRecord.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("event %d not found", *cluster.CanonicalEventID)
 	}
 	applied := eventReviewResolutionAppliedAutoResolutionSnapshot{
 		EventID:       targetRecord.ID,
@@ -419,6 +427,13 @@ func applyCanonicalExactAutoResolutionProvenanceTx(ctx context.Context, tx inter
 		}
 		if !ok || !eventReviewAutoResolutionEventsExactMatch(incoming, targetRecord.Event) {
 			continue
+		}
+		compatibleEvidenceEventID, err := eventReviewEvidenceEventIDCompatibleWithCanonicalTx(ctx, tx, candidate.EvidenceID, targetRecord.ID)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if !compatibleEvidenceEventID {
+			return eventRecord{}, false, nil
 		}
 		if !recordSupportingProvenance || candidate.SourceAuthority != seedstore.SourceAuthoritySupporting {
 			continue
@@ -484,6 +499,22 @@ func applyCanonicalExactAutoResolutionProvenanceTx(ctx context.Context, tx inter
 		return eventRecord{}, ok, err
 	}
 	return updatedRecord, true, nil
+}
+
+func eventReviewEvidenceEventIDCompatibleWithCanonicalTx(ctx context.Context, q queryer, evidenceID, canonicalEventID int64) (bool, error) {
+	var existingEventID sql.NullInt64
+	switch err := q.QueryRowContext(ctx, `
+		SELECT event_id
+		FROM event_review_evidence
+		WHERE id = ?
+	`, evidenceID).Scan(&existingEventID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, err
+	default:
+		return !existingEventID.Valid || existingEventID.Int64 == canonicalEventID, nil
+	}
 }
 
 func autoResolveEventReviewClusterUnanimousDuplicateTx(ctx context.Context, tx interface {
