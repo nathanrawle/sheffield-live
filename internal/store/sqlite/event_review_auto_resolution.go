@@ -353,7 +353,8 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 	if !ok {
 		return nil, fmt.Errorf("event %d not found", *cluster.CanonicalEventID)
 	}
-	targetRecord, ok, err = applyCanonicalExactAutoResolutionProvenanceTx(ctx, tx, targetRecord, candidates, scope, now)
+	recordSupportingProvenance := selected.SourceAuthority != seedstore.SourceAuthorityAuthoritative
+	targetRecord, ok, err = applyCanonicalExactAutoResolutionProvenanceTx(ctx, tx, targetRecord, candidates, scope, now, recordSupportingProvenance)
 	if err != nil || !ok {
 		return nil, err
 	}
@@ -403,8 +404,41 @@ func autoResolveEventReviewClusterCanonicalExactMatchTx(ctx context.Context, tx 
 func applyCanonicalExactAutoResolutionProvenanceTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, targetRecord eventRecord, candidates []eventReviewClusterAutoResolutionCandidate, scope seedstore.ObservationRunScope, now time.Time) (eventRecord, bool, error) {
+}, targetRecord eventRecord, candidates []eventReviewClusterAutoResolutionCandidate, scope seedstore.ObservationRunScope, now time.Time, recordSupportingProvenance bool) (eventRecord, bool, error) {
+	type supportingProvenanceCandidate struct {
+		candidate eventReviewClusterAutoResolutionCandidate
+		incoming  domain.Event
+		sourceCtx reviewSourceIdentityContext
+	}
 	matchingCandidates := make([]review.Candidate, 0, len(candidates))
+	supportingProvenanceCandidates := make([]supportingProvenanceCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		incoming, ok, err := eventReviewClusterAutoResolutionEvent(candidate, now)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if !ok || !eventReviewAutoResolutionEventsExactMatch(incoming, targetRecord.Event) {
+			continue
+		}
+		if !recordSupportingProvenance || candidate.SourceAuthority != seedstore.SourceAuthoritySupporting {
+			continue
+		}
+		matchingCandidates = append(matchingCandidates, candidate.Candidate)
+		sourceCtx := reviewSourceIdentityContextForCandidateInput(reviewSourceIdentitySupporting, candidate.SourceName, candidate.SourceURL, "", "", "", candidate.CandidateInput, "event_review_canonical_exact_match")
+		resolvedID, found, ambiguous, err := resolveLiveEventIDBySourceIdentitiesTx(ctx, tx, candidate.SourceID, sourceCtx.Identities)
+		if err != nil {
+			return eventRecord{}, false, err
+		}
+		if ambiguous || (found && resolvedID != targetRecord.ID) {
+			return eventRecord{}, false, nil
+		}
+		supportingProvenanceCandidates = append(supportingProvenanceCandidates, supportingProvenanceCandidate{
+			candidate: candidate,
+			incoming:  incoming,
+			sourceCtx: sourceCtx,
+		})
+	}
+
 	for _, candidate := range candidates {
 		incoming, ok, err := eventReviewClusterAutoResolutionEvent(candidate, now)
 		if err != nil {
@@ -417,22 +451,20 @@ func applyCanonicalExactAutoResolutionProvenanceTx(ctx context.Context, tx inter
 		if err := fillEventReviewEvidenceEventIDTx(ctx, tx, candidate.EvidenceID, &targetEventID, now); err != nil {
 			return eventRecord{}, false, err
 		}
-		if candidate.SourceAuthority != seedstore.SourceAuthoritySupporting {
-			continue
-		}
-		matchingCandidates = append(matchingCandidates, candidate.Candidate)
+	}
 
-		sourceCtx := reviewSourceIdentityContextForCandidateInput(reviewSourceIdentitySupporting, candidate.SourceName, candidate.SourceURL, "", "", "", candidate.CandidateInput, "event_review_canonical_exact_match")
-		writeResult, err := ensureEventSourceLinkForSourceIdentityContextTx(ctx, tx, targetRecord.ID, candidate.SourceID, sourceCtx, sourceLinkAuthoritySupporting, sourceLinkConflictPolicyNoMove, now)
+	for _, item := range supportingProvenanceCandidates {
+		writeResult, err := ensureEventSourceLinkForSourceIdentityContextTx(ctx, tx, targetRecord.ID, item.candidate.SourceID, item.sourceCtx, sourceLinkAuthoritySupporting, sourceLinkConflictPolicyNoMove, now)
 		if err != nil {
 			return eventRecord{}, false, err
 		}
 		if writeResult.Ambiguous {
-			return eventRecord{}, false, nil
+			return eventRecord{}, false, fmt.Errorf("canonical exact supporting source identity is ambiguous: %s", writeResult.Reason)
 		}
-		incoming.SourceName = sourceCtx.SourceName
-		incoming.SourceURL = sourceCtx.SourceURL
-		if err := recordEventObservationsForSourceIdentityContextTx(ctx, tx, scope, candidate.SourceID, sourceCtx, seedstore.SourceAuthoritySupporting, targetRecord, incoming); err != nil {
+		incoming := item.incoming
+		incoming.SourceName = item.sourceCtx.SourceName
+		incoming.SourceURL = item.sourceCtx.SourceURL
+		if err := recordEventObservationsForSourceIdentityContextTx(ctx, tx, scope, item.candidate.SourceID, item.sourceCtx, seedstore.SourceAuthoritySupporting, targetRecord, incoming); err != nil {
 			return eventRecord{}, false, err
 		}
 	}
