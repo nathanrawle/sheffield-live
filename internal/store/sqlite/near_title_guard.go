@@ -7,6 +7,7 @@ import (
 
 	"sheffield-live/internal/domain"
 	"sheffield-live/internal/ingest"
+	seedstore "sheffield-live/internal/store"
 )
 
 const (
@@ -51,6 +52,47 @@ func supportingNearTitleGuardMatchesTx(ctx context.Context, q queryer, event dom
 		return nil, true, nil
 	}
 	return matches, true, nil
+}
+
+func supportingNearTitleGuardMatchesForEvidenceTx(ctx context.Context, q queryer, event domain.Event, evidence seedstore.EventReviewClusterEvidenceSummary, sourceMetadata ingest.SourceMetadataLookup) ([]nearTitleGuardMatch, bool, error) {
+	matches, checked, err := supportingNearTitleGuardMatchesTx(ctx, q, event, sourceMetadata)
+	if err != nil || !checked || len(matches) == 0 {
+		return matches, checked, err
+	}
+	filtered := make([]nearTitleGuardMatch, 0, len(matches))
+	evidenceKey := eventReviewSeparationEndpointKeyEvidence(evidence.EvidenceFingerprint)
+	for _, match := range matches {
+		separated, err := hasActiveEventReviewSeparationBetweenKeysTx(ctx, q, seedstore.EventReviewSeparationEventEndpointKey(match.record.ID), evidenceKey)
+		if err != nil {
+			return nil, checked, err
+		}
+		if separated {
+			continue
+		}
+		if evidence.EventID != nil {
+			separated, err = hasActiveEventReviewSeparationBetweenKeysTx(ctx, q, seedstore.EventReviewSeparationEventEndpointKey(match.record.ID), seedstore.EventReviewSeparationEventEndpointKey(*evidence.EventID))
+			if err != nil {
+				return nil, checked, err
+			}
+			if separated {
+				continue
+			}
+		}
+		filtered = append(filtered, match)
+	}
+	return filtered, checked, nil
+}
+
+func hasActiveEventReviewSeparationBetweenKeysTx(ctx context.Context, q queryer, a, b string) (bool, error) {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" || a == b {
+		return false, nil
+	}
+	return hasActiveEventReviewSeparationAmongKeysTx(ctx, q, eventReviewClusterEndpointSet{
+		a: {},
+		b: {},
+	})
 }
 
 func nearTitleMatchTier(venueSlug, incomingTitle, existingTitle string) string {

@@ -430,6 +430,7 @@ type EventReviewImportReadiness struct {
 	PayloadWarnings            []string
 	Candidates                 []EventReviewImportCandidateSummary
 	ExistingEventTargets       []EventReviewImportExistingEventTarget
+	AuthoritativeTargets       []EventReviewImportAuthoritativeTarget
 	CandidateIdentityStatuses  []EventReviewImportCandidateIdentityStatus
 	SelectedCandidateReadiness *EventReviewImportSelectedCandidateReadiness
 	IdentityRows               []EventReviewImportIdentityRow
@@ -497,6 +498,17 @@ type EventReviewImportExistingEventTarget struct {
 	BlockingReasons           []string
 }
 
+type EventReviewImportAuthoritativeTarget struct {
+	EvidenceID          int64
+	EvidenceFingerprint string
+	Result              string
+	EventID             *int64
+	EventSlug           string
+	EventTitle          string
+	SourceIdentityKeys  []string
+	BlockingReasons     []string
+}
+
 type EventReviewImportCandidateExactIdentityStatus struct {
 	NormalizedKey    string
 	IdentityKeyHash  string
@@ -506,16 +518,20 @@ type EventReviewImportCandidateExactIdentityStatus struct {
 }
 
 type EventReviewImportCandidateSourceIdentityStatus struct {
-	SourceID          int64
-	SourceName        string
-	SourceIdentityKey string
-	LinkedEventID     *int64
-	LinkedEventSlug   string
-	LinkedEventTitle  string
-	Authoritative     bool
-	ChoiceSelected    bool
-	ChoiceReason      string
-	ChoiceUpdatedAt   *time.Time
+	SourceID                  int64
+	SourceName                string
+	SourceIdentityKey         string
+	LinkedEventID             *int64
+	LinkedEventSlug           string
+	LinkedEventTitle          string
+	RawLinkedEventID          *int64
+	RawLinkedEventSlug        string
+	RawLinkedPublicationState string
+	ResolvedFromWithheld      bool
+	Authoritative             bool
+	ChoiceSelected            bool
+	ChoiceReason              string
+	ChoiceUpdatedAt           *time.Time
 }
 
 type EventReviewImportCandidateIdentityStatus struct {
@@ -671,16 +687,20 @@ type EventReviewEvidenceIdentityKeySummary struct {
 }
 
 type EventReviewClusterSourceIdentityLinkSummary struct {
-	SourceID          int64
-	SourceName        string
-	SourceURL         string
-	SourceIdentityKey string
-	EvidenceCount     int
-	LinkedEventID     *int64
-	LinkedEventSlug   string
-	LinkedEventTitle  string
-	Authoritative     bool
-	LinkUpdatedAt     *time.Time
+	SourceID                  int64
+	SourceName                string
+	SourceURL                 string
+	SourceIdentityKey         string
+	EvidenceCount             int
+	LinkedEventID             *int64
+	LinkedEventSlug           string
+	LinkedEventTitle          string
+	RawLinkedEventID          *int64
+	RawLinkedEventSlug        string
+	RawLinkedPublicationState string
+	ResolvedFromWithheld      bool
+	Authoritative             bool
+	LinkUpdatedAt             *time.Time
 }
 
 type EventReviewClusterExactIdentityMatchSummary struct {

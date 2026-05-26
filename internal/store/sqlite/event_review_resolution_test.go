@@ -1031,11 +1031,16 @@ func TestAcceptEventReviewSupportingSourceAppliesExactIdentityTarget(t *testing.
 	if !ok || detail.ImportReadiness == nil {
 		t.Fatal("open import review cluster missing readiness")
 	}
-	if len(detail.ImportReadiness.ExistingEventTargets) != 1 {
-		t.Fatalf("existing event targets = %#v, want one target", detail.ImportReadiness.ExistingEventTargets)
+	var exactTarget *seedstore.EventReviewImportExistingEventTarget
+	for i := range detail.ImportReadiness.ExistingEventTargets {
+		target := &detail.ImportReadiness.ExistingEventTargets[i]
+		if target.EventID == targetID && target.TargetBasis == seedstore.EventReviewImportTargetBasisExactIdentity {
+			exactTarget = target
+			break
+		}
 	}
-	if target := detail.ImportReadiness.ExistingEventTargets[0]; target.EventID != targetID || target.TargetBasis != seedstore.EventReviewImportTargetBasisExactIdentity || len(target.ExactIdentityKeys) != 1 || target.ExactIdentityKeys[0] != exactKey {
-		t.Fatalf("existing event target = %#v", target)
+	if exactTarget == nil || len(exactTarget.ExactIdentityKeys) != 1 || exactTarget.ExactIdentityKeys[0] != exactKey || len(exactTarget.BlockingReasons) != 0 {
+		t.Fatalf("exact existing event target = %#v; all targets = %#v", exactTarget, detail.ImportReadiness.ExistingEventTargets)
 	}
 
 	if err := st.AcceptEventReviewSupportingSource(context.Background(), seedstore.EventReviewAcceptSupportingSourceInput{
@@ -1124,6 +1129,125 @@ func TestAcceptEventReviewSupportingSourceAppliesExactIdentityTarget(t *testing.
 	}
 }
 
+func TestAcceptEventReviewSupportingSourceResolvesSourceLinkThroughCanonicalTarget(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	canonicalID := mustInsertExactIdentityEvent(t, db, "source-link-canonical-target", "Canonical Source Target", fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	rawLinkedID := mustInsertExactIdentityEvent(t, db, "source-link-withheld-raw", "Withheld Raw Source Target", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	if _, err := db.Exec(`
+		UPDATE events
+		SET publication_state = ?,
+			canonical_event_id = ?
+		WHERE id = ?
+	`, string(domain.PublicationStateWithheld), canonicalID, rawLinkedID); err != nil {
+		t.Fatalf("withhold raw linked event: %v", err)
+	}
+	sourceKey, ok := ingest.SourceIdentityKey(fixture.externalID)
+	if !ok {
+		t.Fatalf("source identity key for %q was rejected", fixture.externalID)
+	}
+	sourceKeyID := insertEventReviewIdentityKeyOK(t, db, "canonical-source-link-key-hash", seedstore.EventReviewIdentityKeyKindSource, sourceKey)
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, sourceKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert source identity evidence key: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, rawLinkedID, fixture.sourceID, sourceKey, formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+		t.Fatalf("insert raw source link: %v", err)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load source canonical target cluster: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("source canonical target cluster missing readiness")
+	}
+	target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, canonicalID, seedstore.EventReviewImportTargetBasisSourceIdentity)
+	if target.RawLinkedEventID == nil || *target.RawLinkedEventID != rawLinkedID || target.RawLinkedEventSlug != "source-link-withheld-raw" || target.RawLinkedPublicationState != string(domain.PublicationStateWithheld) || !target.ResolvedFromWithheld {
+		t.Fatalf("source canonical readiness target = %#v", target)
+	}
+	if len(target.BlockingReasons) != 0 {
+		t.Fatalf("source canonical target blockers = %#v", target.BlockingReasons)
+	}
+
+	if err := st.AcceptEventReviewSupportingSource(context.Background(), seedstore.EventReviewAcceptSupportingSourceInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		EvidenceID:         fixture.evidenceID,
+		TargetEventID:      canonicalID,
+		TargetBasis:        seedstore.EventReviewImportTargetBasisSourceIdentity,
+		SourceIdentityKeys: []string{sourceKey},
+	}); err != nil {
+		t.Fatalf("accept source canonical supporting source: %v", err)
+	}
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+}
+
+func TestImportReviewReadinessResolvesNonLiveSourceLinkThroughCanonicalTarget(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	canonicalID := mustInsertExactIdentityEvent(t, db, "non-live-source-link-canonical-target", "Non-live Canonical Source Target", fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	rawLinkedID := mustInsertExactIdentityEvent(t, db, "non-live-source-link-raw", "Non-live Raw Source Target", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginSeed)
+	if _, err := db.Exec(`
+		UPDATE events
+		SET canonical_event_id = ?
+		WHERE id = ?
+	`, canonicalID, rawLinkedID); err != nil {
+		t.Fatalf("set non-live raw canonical: %v", err)
+	}
+	sourceKey, ok := ingest.SourceIdentityKey("non-live-source-link")
+	if !ok {
+		t.Fatal("source identity key for non-live-source-link was rejected")
+	}
+	sourceKeyID := insertEventReviewIdentityKeyOK(t, db, "non-live-source-link-key-hash", seedstore.EventReviewIdentityKeyKindSource, sourceKey)
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, sourceKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert non-live source identity evidence key: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, rawLinkedID, fixture.sourceID, sourceKey, formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+		t.Fatalf("insert non-live source link: %v", err)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load non-live source canonical target cluster: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("non-live source canonical target cluster missing readiness")
+	}
+	target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, canonicalID, seedstore.EventReviewImportTargetBasisSourceIdentity)
+	if target.RawLinkedEventID == nil || *target.RawLinkedEventID != rawLinkedID || target.RawLinkedPublicationState != string(domain.PublicationStateReviewed) || !target.ResolvedFromWithheld {
+		t.Fatalf("non-live source canonical readiness target = %#v", target)
+	}
+	if len(target.BlockingReasons) != 0 {
+		t.Fatalf("non-live source canonical target blockers = %#v", target.BlockingReasons)
+	}
+}
+
 func TestAcceptEventReviewSupportingSourceAppliesNearTitleTarget(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()
@@ -1181,6 +1305,121 @@ func TestAcceptEventReviewSupportingSourceAppliesNearTitleTarget(t *testing.T) {
 	}
 	if got := detail.Resolution.AppliedSupportingSource; got.EventID != targetID || got.TargetBasis != seedstore.EventReviewImportTargetBasisNearTitle {
 		t.Fatalf("near-title applied supporting source = %#v", got)
+	}
+}
+
+func TestImportReviewReadinessExposesSlugAndExactTitleTargets(t *testing.T) {
+	t.Run("slug", func(t *testing.T) {
+		_, db := openEventReviewSchemaStore(t)
+		defer db.Close()
+
+		st := mustStoreFromDB(t, db)
+		fixture := seedImportReviewResolutionFixture(t, db)
+		targetID := mustInsertExactIdentityEvent(t, db, fixture.expectedSlug, "Slug Owner", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+		detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+		if err != nil {
+			t.Fatalf("load slug target cluster: %v", err)
+		}
+		if !ok || detail.ImportReadiness == nil {
+			t.Fatal("slug target cluster missing readiness")
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, targetID, seedstore.EventReviewImportTargetBasisSlug)
+		if len(target.BlockingReasons) != 0 {
+			t.Fatalf("slug target blockers = %#v", target.BlockingReasons)
+		}
+	})
+
+	t.Run("exact title venue start", func(t *testing.T) {
+		_, db := openEventReviewSchemaStore(t)
+		defer db.Close()
+
+		st := mustStoreFromDB(t, db)
+		fixture := seedImportReviewResolutionFixture(t, db)
+		targetID := mustInsertExactIdentityEvent(t, db, "manual-exact-title-target", fixture.title, fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+		detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+		if err != nil {
+			t.Fatalf("load exact title target cluster: %v", err)
+		}
+		if !ok || detail.ImportReadiness == nil {
+			t.Fatal("exact title target cluster missing readiness")
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, targetID, seedstore.EventReviewImportTargetBasisExactTitleVenueStart)
+		if len(target.BlockingReasons) != 0 {
+			t.Fatalf("exact title target blockers = %#v", target.BlockingReasons)
+		}
+	})
+}
+
+func TestImportReviewReadinessBlocksDisagreeingHardTargets(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	exactTargetID := mustInsertExactIdentityEvent(t, db, "disagreeing-exact-target", fixture.title, fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	sourceTargetID := mustInsertExactIdentityEvent(t, db, "disagreeing-source-target", "Disagreeing Source Target", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	exactKey, err := buildImportReviewExactIdentityKey(domain.Event{
+		Slug:             fixture.expectedSlug,
+		Name:             fixture.title,
+		VenueSlug:        "leadmill",
+		Start:            fixture.start,
+		Origin:           domain.OriginLive,
+		PublicationState: domain.PublicationStateReviewed,
+	})
+	if err != nil {
+		t.Fatalf("build exact key: %v", err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin exact identity tx: %v", err)
+	}
+	if err := ensureActiveExactIdentityTx(context.Background(), tx, exactTargetID, domain.Event{
+		Slug:             "disagreeing-exact-target",
+		Name:             fixture.title,
+		VenueSlug:        "leadmill",
+		Start:            fixture.start,
+		Origin:           domain.OriginLive,
+		LastChecked:      fixture.start.Add(-24 * time.Hour),
+		PublicationState: domain.PublicationStateReviewed,
+	}, 0, fixture.start.Add(-24*time.Hour)); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("ensure exact identity: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit exact identity tx: %v", err)
+	}
+	exactKeyID := insertEventReviewIdentityKeyOK(t, db, "disagreeing-exact-key-hash", seedstore.EventReviewIdentityKeyKindExact, exactKey)
+	sourceKeyID := insertEventReviewIdentityKeyOK(t, db, "disagreeing-source-key-hash", seedstore.EventReviewIdentityKeyKindSource, fixture.externalID)
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, exactKeyID, nil, seedstore.EventReviewEvidenceIdentityKeyRoleExact); err != nil {
+		t.Fatalf("insert exact identity key: %v", err)
+	}
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, sourceKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert source identity key: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, sourceTargetID, fixture.sourceID, fixture.externalID, formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+		t.Fatalf("insert source link: %v", err)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load disagreeing targets cluster: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("disagreeing targets cluster missing readiness")
+	}
+	exactTarget := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, exactTargetID, seedstore.EventReviewImportTargetBasisExactIdentity)
+	sourceTarget := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, sourceTargetID, seedstore.EventReviewImportTargetBasisSourceIdentity)
+	if !hasString(exactTarget.BlockingReasons, "hard target signals disagree") || !hasString(sourceTarget.BlockingReasons, "hard target signals disagree") {
+		t.Fatalf("target blockers exact=%#v source=%#v", exactTarget.BlockingReasons, sourceTarget.BlockingReasons)
 	}
 }
 
@@ -1274,6 +1513,82 @@ func TestResolveEventReviewImportSeparateAndInsertCreatesNearTitleSeparations(t 
 	}
 	if len(detail.Resolution.AppliedSeparations) != 2 {
 		t.Fatalf("applied separations = %#v, want 2", detail.Resolution.AppliedSeparations)
+	}
+}
+
+func TestImportReviewNearTitleReadinessSkipsSeparatedTarget(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	incomingTitle := "Jane Doe + The Openers"
+	if _, err := db.Exec(`
+		UPDATE event_review_evidence
+		SET payload = ?
+		WHERE id = ?
+	`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthoritySupporting), incomingTitle, fixture.venueText, "", fixture.start, fixture.end, "near-title-separated-readiness"), fixture.evidenceID); err != nil {
+		t.Fatalf("update separated near-title payload: %v", err)
+	}
+	targetID := mustInsertExactIdentityEvent(t, db, "near-title-separated-target", "Jane Doe", fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	if _, err := insertEventReviewSeparation(t, db,
+		seedstore.EventReviewSeparationEndpoint{
+			Kind:    seedstore.EventReviewSeparationEndpointKindEvent,
+			Key:     seedstore.EventReviewSeparationEventEndpointKey(targetID),
+			EventID: int64Ptr(targetID),
+		},
+		seedstore.EventReviewSeparationEndpoint{
+			Kind:       seedstore.EventReviewSeparationEndpointKindEvidence,
+			Key:        eventReviewSeparationEndpointKeyEvidence(fmt.Sprintf("import-review-%d", fixture.clusterID)),
+			EvidenceID: int64Ptr(fixture.evidenceID),
+		},
+		true,
+		"near-title false positive",
+		fixture.start.Add(-time.Hour),
+		fixture.start.Add(-time.Hour),
+	); err != nil {
+		t.Fatalf("insert near-title separation: %v", err)
+	}
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load separated near-title cluster: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("separated near-title cluster missing readiness")
+	}
+	for _, target := range detail.ImportReadiness.ExistingEventTargets {
+		if target.TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle && target.EventID == targetID {
+			t.Fatalf("near-title target should be suppressed by separation: %#v", target)
+		}
+	}
+}
+
+func TestTerminalReplayDoesNotMatchSeparatedOldNearTitleTarget(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	venueID := lookupStoreVenueID(t, db, "leadmill")
+	sourceID := insertStoreTestSource(t, db)
+	oldTargetID := mustInsertExactIdentityEvent(t, db, "terminal-replay-old-near-target", "Old Near Target", venueID, sourceID, time.Date(2026, time.May, 22, 19, 0, 0, 0, time.UTC), time.Date(2026, time.May, 22, 21, 0, 0, 0, time.UTC), time.Date(2026, time.May, 21, 19, 0, 0, 0, time.UTC), domain.OriginLive)
+	newEventID := mustInsertExactIdentityEvent(t, db, "terminal-replay-new-import", "New Import", venueID, sourceID, time.Date(2026, time.May, 22, 20, 0, 0, 0, time.UTC), time.Date(2026, time.May, 22, 22, 0, 0, 0, time.UTC), time.Date(2026, time.May, 21, 20, 0, 0, 0, time.UTC), domain.OriginLive)
+	cluster := seedstore.EventReviewCluster{ID: 999, Status: seedstore.EventReviewClusterStatusResolved}
+	resolution := &seedstore.EventReviewResolutionSummary{
+		AppliedImportListing: &seedstore.EventReviewResolutionAppliedImportListingSummary{EventID: newEventID},
+		AppliedSeparations: []seedstore.EventReviewResolutionAppliedSeparationSummary{{
+			EndpointAKey: seedstore.EventReviewSeparationEventEndpointKey(oldTargetID),
+			EndpointBKey: seedstore.EventReviewSeparationEventEndpointKey(newEventID),
+		}},
+	}
+	if matched, err := terminalEvidenceOutcomeMatchesInputTx(context.Background(), db, cluster, resolution, seedstore.StageEventReviewEvidenceInput{EventID: int64Ptr(oldTargetID)}); err != nil {
+		t.Fatalf("terminal replay old target: %v", err)
+	} else if matched {
+		t.Fatal("terminal replay matched old separated near-title target, want false")
+	}
+	if matched, err := terminalEvidenceOutcomeMatchesInputTx(context.Background(), db, cluster, resolution, seedstore.StageEventReviewEvidenceInput{EventID: int64Ptr(newEventID)}); err != nil {
+		t.Fatalf("terminal replay new target: %v", err)
+	} else if !matched {
+		t.Fatal("terminal replay did not match resolved imported event")
 	}
 }
 
@@ -1908,6 +2223,17 @@ func importReviewResolutionPayload(t *testing.T, sourceName, sourceURL, calendar
 		t.Fatalf("marshal import review payload: %v", err)
 	}
 	return string(payload)
+}
+
+func mustImportExistingTarget(t *testing.T, targets []seedstore.EventReviewImportExistingEventTarget, evidenceID, eventID int64, basis seedstore.EventReviewImportTargetBasis) seedstore.EventReviewImportExistingEventTarget {
+	t.Helper()
+	for _, target := range targets {
+		if target.EvidenceID == evidenceID && target.EventID == eventID && target.TargetBasis == basis {
+			return target
+		}
+	}
+	t.Fatalf("target evidence=%d event=%d basis=%s not found in %#v", evidenceID, eventID, basis, targets)
+	return seedstore.EventReviewImportExistingEventTarget{}
 }
 
 func seedTitleRepairResolutionFixture(t *testing.T, db *sql.DB) titleRepairResolutionFixture {

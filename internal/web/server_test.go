@@ -2374,6 +2374,11 @@ func TestAdminEventReviewDetailAppliesAuthoritativeImport(t *testing.T) {
 					VenueSlug:           "leadmill",
 					StartAt:             &startAt,
 				}},
+				AuthoritativeTargets: []store.EventReviewImportAuthoritativeTarget{{
+					EvidenceID:          305,
+					EvidenceFingerprint: "authoritative-fingerprint",
+					Result:              "inserted",
+				}},
 			},
 		},
 	}
@@ -2414,6 +2419,76 @@ func TestAdminEventReviewDetailAppliesAuthoritativeImport(t *testing.T) {
 	}
 	if got := reviewStore.authoritativeInput; got.ClusterID != 77 || got.ExpectedVersion != 8 || got.EvidenceID != 305 {
 		t.Fatalf("authoritative import input = %#v", got)
+	}
+}
+
+func TestAdminEventReviewDetailAppliesAuthoritativeImportWithExpectedTarget(t *testing.T) {
+	targetID := int64(909)
+	reviewStore := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:             78,
+				Status:         store.EventReviewClusterStatusOpen,
+				Version:        3,
+				ConflictType:   store.EventReviewConflictTypeImportReview,
+				ConflictReason: store.EventReviewConflictReasonIngestCandidate,
+				EvidenceCount:  1,
+			},
+			ImportReadiness: &store.EventReviewImportReadiness{
+				CandidateCount: 1,
+				Candidates: []store.EventReviewImportCandidateSummary{{
+					EvidenceID:      306,
+					SourceAuthority: store.SourceAuthorityAuthoritative,
+					Title:           "Authoritative Update",
+				}},
+				AuthoritativeTargets: []store.EventReviewImportAuthoritativeTarget{{
+					EvidenceID:          306,
+					EvidenceFingerprint: "authoritative-update-fingerprint",
+					Result:              "updated",
+					EventID:             &targetID,
+					EventSlug:           "authoritative-update-target",
+					EventTitle:          "Existing Authoritative Target",
+					SourceIdentityKeys:  []string{"uid:authoritative-update"},
+				}},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(reviewStore))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/78", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, `name="expected_target_event_id" value="909"`)
+	assertContains(t, body, `name="source_identity_key" value="uid:authoritative-update"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "3")
+	form.Set("action", "resolve_import_authoritative")
+	form.Set("evidence_id", "306")
+	form.Set("expected_target_event_id", "909")
+	form.Add("source_identity_key", "uid:authoritative-update")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/78", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if got := reviewStore.authoritativeInput; got.ClusterID != 78 || got.ExpectedVersion != 3 || got.EvidenceID != 306 || got.ExpectedTargetEventID != targetID || len(got.SourceIdentityKeys) != 1 || got.SourceIdentityKeys[0] != "uid:authoritative-update" {
+		t.Fatalf("authoritative update input = %#v", got)
 	}
 }
 

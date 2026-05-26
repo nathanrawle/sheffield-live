@@ -1428,12 +1428,10 @@ func resolvedLiveEventIDForSourceLinkRow(row sourceLinkRow) (int64, bool, bool) 
 	if isLiveNonWithheldEventRow(row.origin, row.publicationState) {
 		return row.eventID, true, false
 	}
-	if strings.EqualFold(strings.TrimSpace(row.publicationState), string(domain.PublicationStateWithheld)) {
-		if row.canonicalEventID.Valid && row.canonicalEventID.Int64 > 0 &&
-			row.canonicalEventID.Int64 != row.eventID &&
-			isLiveNonWithheldEventRow(row.canonicalOrigin.String, row.canonicalState.String) {
-			return row.canonicalEventID.Int64, true, false
-		}
+	if row.canonicalEventID.Valid && row.canonicalEventID.Int64 > 0 &&
+		row.canonicalEventID.Int64 != row.eventID &&
+		isLiveNonWithheldEventRow(row.canonicalOrigin.String, row.canonicalState.String) {
+		return row.canonicalEventID.Int64, true, false
 	}
 	return 0, false, true
 }

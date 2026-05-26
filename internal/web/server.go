@@ -2239,6 +2239,21 @@ func (s *Server) postAdminEventReviewDecision(w http.ResponseWriter, r *http.Req
 			http.Error(w, "event review cluster is not eligible for authoritative import resolution", http.StatusBadRequest)
 			return
 		}
+		readinessTarget, ok := authoritativeImportTargetForEvidence(cluster, evidenceID)
+		if !ok {
+			http.Error(w, "authoritative import target is unavailable", http.StatusBadRequest)
+			return
+		}
+		if readinessTarget.EventID != nil {
+			if expectedTargetEventID <= 0 {
+				http.Error(w, "expected target event id is required", http.StatusBadRequest)
+				return
+			}
+			if expectedTargetEventID != *readinessTarget.EventID {
+				http.Error(w, "expected target event id does not match readiness target", http.StatusBadRequest)
+				return
+			}
+		}
 		if err := s.eventReviewStore.ResolveEventReviewImportAuthoritative(r.Context(), store.EventReviewImportAuthoritativeInput{
 			EventReviewResolutionInput: store.EventReviewResolutionInput{
 				ClusterID:       clusterID,
@@ -2369,7 +2384,15 @@ func canAcceptSupportingSourceEventReviewCluster(cluster store.EventReviewCluste
 		return false
 	}
 	readiness := cluster.ImportReadiness
-	return readiness != nil && len(readiness.ExistingEventTargets) > 0
+	if readiness == nil {
+		return false
+	}
+	for _, target := range readiness.ExistingEventTargets {
+		if len(target.BlockingReasons) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func canResolveAuthoritativeImportEventReviewCluster(cluster store.EventReviewClusterDetail, evidenceID int64) bool {
@@ -2382,8 +2405,8 @@ func canResolveAuthoritativeImportEventReviewCluster(cluster store.EventReviewCl
 	if cluster.ImportReadiness == nil {
 		return false
 	}
-	for _, candidate := range cluster.ImportReadiness.Candidates {
-		if candidate.EvidenceID == evidenceID && candidate.SourceAuthority == store.SourceAuthorityAuthoritative {
+	for _, target := range cluster.ImportReadiness.AuthoritativeTargets {
+		if target.EvidenceID == evidenceID && len(target.BlockingReasons) == 0 {
 			return true
 		}
 	}
@@ -2394,12 +2417,24 @@ func canResolveAnyAuthoritativeImportEventReviewCluster(cluster store.EventRevie
 	if cluster.ImportReadiness == nil {
 		return false
 	}
-	for _, candidate := range cluster.ImportReadiness.Candidates {
-		if canResolveAuthoritativeImportEventReviewCluster(cluster, candidate.EvidenceID) {
+	for _, target := range cluster.ImportReadiness.AuthoritativeTargets {
+		if canResolveAuthoritativeImportEventReviewCluster(cluster, target.EvidenceID) {
 			return true
 		}
 	}
 	return false
+}
+
+func authoritativeImportTargetForEvidence(cluster store.EventReviewClusterDetail, evidenceID int64) (store.EventReviewImportAuthoritativeTarget, bool) {
+	if cluster.ImportReadiness == nil {
+		return store.EventReviewImportAuthoritativeTarget{}, false
+	}
+	for _, target := range cluster.ImportReadiness.AuthoritativeTargets {
+		if target.EvidenceID == evidenceID && len(target.BlockingReasons) == 0 {
+			return target, true
+		}
+	}
+	return store.EventReviewImportAuthoritativeTarget{}, false
 }
 
 type eventReviewSourceIdentityChoiceKey struct {

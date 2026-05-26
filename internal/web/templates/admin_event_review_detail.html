@@ -150,6 +150,10 @@
           <td>
             {{if .EventSlug}}<a href="/admin/events/{{.EventSlug}}">event #{{.EventID}}</a>{{else}}event #{{.EventID}}{{end}}
             {{with .EventTitle}}<br><small>{{.}}</small>{{end}}
+            {{with .PublicationState}}<br><small>state <code>{{.}}</code></small>{{end}}
+            {{with .RawLinkedEventID}}<br><small>raw source link event #{{.}}</small>{{end}}
+            {{with .RawLinkedEventSlug}}<br><small><code>{{.}}</code></small>{{end}}
+            {{with .RawLinkedPublicationState}}<br><small>raw state <code>{{.}}</code></small>{{end}}
           </td>
           <td><code>{{.TargetBasis}}</code></td>
           <td>
@@ -164,7 +168,9 @@
             {{if and (not .ExactIdentityKeys) (not .SourceIdentityKeys)}}&mdash;{{end}}
           </td>
           <td>
-            {{if and (eq $.EventReviewDetail.Summary.Status "open") $.EventReviewCanAcceptSupportingSource}}
+            {{if .BlockingReasons}}
+            <ul>{{range .BlockingReasons}}<li>{{.}}</li>{{end}}</ul>
+            {{else if and (eq $.EventReviewDetail.Summary.Status "open") $.EventReviewCanAcceptSupportingSource}}
             <form method="post" class="review-inline-form">
               <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
               <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
@@ -194,38 +200,50 @@
     </table>
   </div>
   {{end}}
-  {{if $.EventReviewCanResolveAuthoritativeImport}}
+  {{if .AuthoritativeTargets}}
   <h3>Authoritative import candidates</h3>
   <div class="review-matrix-wrap">
     <table class="review-matrix">
       <thead>
         <tr>
           <th scope="col">Evidence</th>
-          <th scope="col">Candidate</th>
+          <th scope="col">Computed result</th>
           <th scope="col">Action</th>
         </tr>
       </thead>
       <tbody>
-        {{range .Candidates}}
-        {{if eq .SourceAuthority "authoritative"}}
+        {{range .AuthoritativeTargets}}
         <tr>
           <th scope="row">evidence #{{.EvidenceID}}<br><small><code>{{.EvidenceFingerprint}}</code></small></th>
           <td>
-            {{if .Title}}<strong>{{.Title}}</strong>{{else}}&mdash;{{end}}
-            {{if .VenueSlug}}<br><small>venue <code>{{.VenueSlug}}</code></small>{{end}}
-            {{with .StartAt}}<br><small>{{dateShortPtr .}} {{timeShortPtr .}}</small>{{end}}
+            {{if .BlockingReasons}}
+            <ul>{{range .BlockingReasons}}<li>{{.}}</li>{{end}}</ul>
+            {{else if eq .Result "updated"}}
+            update {{with .EventID}}event #{{.}}{{end}}
+            {{with .EventSlug}}<br><small><code>{{.}}</code></small>{{end}}
+            {{with .EventTitle}}<br><small>{{.}}</small>{{end}}
+            {{else if eq .Result "inserted"}}
+            insert new reviewed event
+            {{else}}
+            &mdash;
+            {{end}}
           </td>
           <td>
+            {{if .BlockingReasons}}
+            &mdash;
+            {{else}}
             <form method="post" class="review-inline-form">
               <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
               <input type="hidden" name="expected_version" value="{{$.EventReviewDetail.Summary.Version}}">
               <input type="hidden" name="action" value="resolve_import_authoritative">
               <input type="hidden" name="evidence_id" value="{{.EvidenceID}}">
+              {{with .EventID}}<input type="hidden" name="expected_target_event_id" value="{{.}}">{{end}}
+              {{range .SourceIdentityKeys}}<input type="hidden" name="source_identity_key" value="{{.}}">{{end}}
               <button type="submit" class="button">Apply authoritative import</button>
             </form>
+            {{end}}
           </td>
         </tr>
-        {{end}}
         {{end}}
       </tbody>
     </table>

@@ -621,7 +621,7 @@ func applyImportReviewListingEvidenceTx(ctx context.Context, tx interface {
 	} else if ok {
 		return fmt.Errorf("import review event review cluster %d source identities already belong to live event %d", cluster.ID, record.ID)
 	}
-	if near, _, err := guardedNearLiveEventMatchForEventTx(ctx, tx, event, s.sourceMetadata); err != nil {
+	if near, _, err := supportingNearTitleGuardMatchesForEvidenceTx(ctx, tx, event, evidence, s.sourceMetadata); err != nil {
 		return err
 	} else if len(near) > 0 {
 		return fmt.Errorf("import review event review cluster %d matches an existing live event too closely", cluster.ID)
@@ -986,7 +986,7 @@ func validateImportReviewSupportingTargetTx(ctx context.Context, tx interface {
 	if err != nil {
 		return nil, err
 	}
-	if near, _, err := supportingNearTitleGuardMatchesTx(ctx, tx, material.Event, sourceMetadata); err != nil {
+	if near, _, err := supportingNearTitleGuardMatchesForEvidenceTx(ctx, tx, material.Event, evidence, sourceMetadata); err != nil {
 		return nil, err
 	} else if len(near) > 0 {
 		if len(near) > 1 {
@@ -1079,7 +1079,7 @@ func (s *Store) ResolveEventReviewImportSeparateAndInsert(ctx context.Context, i
 	if len(hardBases) > 0 {
 		return fmt.Errorf("import review event review cluster %d has hard target signals; use supporting-source attachment instead", cluster.ID)
 	}
-	nearMatches, _, err := supportingNearTitleGuardMatchesTx(ctx, tx, material.Event, s.sourceMetadata)
+	nearMatches, _, err := supportingNearTitleGuardMatchesForEvidenceTx(ctx, tx, material.Event, *evidence, s.sourceMetadata)
 	if err != nil {
 		return err
 	}
