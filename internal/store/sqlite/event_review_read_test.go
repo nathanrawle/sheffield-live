@@ -661,6 +661,65 @@ func TestEventReviewReadModelsImportReadiness(t *testing.T) {
 		}
 	})
 
+	t.Run("source choices without selection block existing targets", func(t *testing.T) {
+		payload := importPayload("No Selected Existing Target", "event-review-import-ready", "Event Review Import Ready", "2026-05-10T19:00:00Z", "", "no-selected-existing")
+		clusterID := stageImportCluster(t, string(seedstore.EventReviewClusterStatusOpen), nil, seedstore.EventReviewConflictReasonIngestCandidate, []string{payload}, nil)
+		var evidenceID int64
+		if err := db.QueryRow(`
+			SELECT e.id
+			FROM event_review_evidence e
+			JOIN event_review_cluster_evidence ce ON ce.evidence_id = e.id
+			WHERE ce.cluster_id = ?
+				AND ce.active = 1
+			ORDER BY ce.id
+			LIMIT 1
+		`, clusterID).Scan(&evidenceID); err != nil {
+			t.Fatalf("lookup no-selected existing evidence id: %v", err)
+		}
+		exactKey := "no-selected-existing-exact-key"
+		if _, err := db.Exec(`
+			INSERT INTO event_exact_identities (
+				event_id,
+				identity_key,
+				key_version,
+				venue_slug,
+				utc_start_at,
+				clean_title,
+				active,
+				created_at,
+				updated_at,
+				deactivated_at,
+				deactivated_reason,
+				repair_run_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, existingEventID, exactKey, exactIdentityKeyVersion, "event-review-import-readiness-hall", "2026-05-10T19:00:00Z", "No Selected Existing Target", 1, "2026-05-12T09:20:00Z", "2026-05-12T09:20:00Z", nil, "", nil); err != nil {
+			t.Fatalf("insert no-selected exact identity: %v", err)
+		}
+		exactKeyID := insertEventReviewIdentityKeyOK(t, db, "no-selected-existing-exact-hash", seedstore.EventReviewIdentityKeyKindExact, exactKey)
+		sourceKeyID := insertEventReviewIdentityKeyOK(t, db, "no-selected-existing-source-hash", seedstore.EventReviewIdentityKeyKindSource, "no-selected-existing-source")
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, evidenceID, exactKeyID, nil, seedstore.EventReviewEvidenceIdentityKeyRoleExact); err != nil {
+			t.Fatalf("insert no-selected exact evidence identity: %v", err)
+		}
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, evidenceID, sourceKeyID, &sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+			t.Fatalf("insert no-selected source evidence identity: %v", err)
+		}
+		if _, err := insertEventReviewSourceIdentityChoice(t, db, clusterID, sourceID, "no-selected-existing-source", false, "not selected", time.Date(2026, time.May, 15, 9, 35, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("insert no-selected source choice: %v", err)
+		}
+
+		detail, ok, err := st.LoadEventReviewCluster(context.Background(), clusterID)
+		if err != nil {
+			t.Fatalf("load no-selected existing target cluster: %v", err)
+		}
+		if !ok || detail.ImportReadiness == nil {
+			t.Fatal("no-selected existing target readiness missing")
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, evidenceID, existingEventID, seedstore.EventReviewImportTargetBasisExactIdentity)
+		if !hasString(target.BlockingReasons, "no selected source identity choices") {
+			t.Fatalf("no-selected exact target blockers = %#v, want source-choice blocker", target.BlockingReasons)
+		}
+	})
+
 	t.Run("selected candidate readiness spans multiple candidates", func(t *testing.T) {
 		payloadA := importPayload("Selected Choice A", "event-review-import-ready", "Event Review Import Ready", "2026-05-10T19:00:00Z", "", "selected-a")
 		payloadB := importPayload("Selected Choice B", "event-review-import-ready", "Event Review Import Ready", "2026-05-10T20:00:00Z", "", "selected-b")

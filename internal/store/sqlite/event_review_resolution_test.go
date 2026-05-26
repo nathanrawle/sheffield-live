@@ -2011,6 +2011,45 @@ func TestImportReviewReadinessExposesSlugAndExactTitleTargets(t *testing.T) {
 			t.Fatalf("exact title target blockers = %#v", target.BlockingReasons)
 		}
 	})
+
+	t.Run("hard target blocks on near-title disagreement", func(t *testing.T) {
+		_, db := openEventReviewSchemaStore(t)
+		defer db.Close()
+
+		st := mustStoreFromDB(t, db)
+		fixture := seedImportReviewResolutionFixture(t, db)
+		incomingTitle := "Jane Doe + The Openers"
+		if _, err := db.Exec(`
+			UPDATE event_review_evidence
+			SET payload = ?
+			WHERE id = ?
+		`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthoritySupporting), incomingTitle, fixture.venueText, "", fixture.start, fixture.end, "near-title-hidden-hard-target"), fixture.evidenceID); err != nil {
+			t.Fatalf("update near-title hard-target payload: %v", err)
+		}
+		slug, err := buildLiveEventSlug(incomingTitle, "leadmill", fixture.start)
+		if err != nil {
+			t.Fatalf("build hard target slug: %v", err)
+		}
+		hardTargetID := mustInsertExactIdentityEvent(t, db, slug, "Slug Owner", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+		nearTargetID := mustInsertExactIdentityEvent(t, db, "near-title-hidden-hard-target", "Jane Doe", fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+
+		detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+		if err != nil {
+			t.Fatalf("load near-title hard-target cluster: %v", err)
+		}
+		if !ok || detail.ImportReadiness == nil {
+			t.Fatal("near-title hard-target readiness missing")
+		}
+		target := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, hardTargetID, seedstore.EventReviewImportTargetBasisSlug)
+		if !hasString(target.BlockingReasons, "near-title target disagrees with hard target") {
+			t.Fatalf("hard target blockers = %#v, want near-title disagreement", target.BlockingReasons)
+		}
+		for _, target := range detail.ImportReadiness.ExistingEventTargets {
+			if target.EventID == nearTargetID && target.TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+				t.Fatalf("near-title target should remain hidden while hard targets exist: %#v", target)
+			}
+		}
+	})
 }
 
 func TestImportReviewReadinessBlocksDisagreeingHardTargets(t *testing.T) {

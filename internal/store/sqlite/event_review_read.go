@@ -326,7 +326,12 @@ func (s *Store) LoadEventReviewCluster(ctx context.Context, id int64) (seedstore
 		}
 		importReadiness.ExistingEventTargets = normalizeEventReviewImportExistingEventTargets(append(importReadiness.ExistingEventTargets, nearTargets...))
 		importReadiness.ExistingEventTargets = applyEventReviewImportUnresolvedSourceLinkBlockers(importReadiness.ExistingEventTargets, importReadiness.CandidateIdentityStatuses)
+		importReadiness.ExistingEventTargets = applyEventReviewImportSourceChoiceBlockers(importReadiness.ExistingEventTargets, importReadiness.CandidateIdentityStatuses)
 		importReadiness.ExistingEventTargets, err = applyEventReviewImportExistingTargetBlockersTx(ctx, tx, s, summary, evidence, importReadiness.ExistingEventTargets)
+		if err != nil {
+			return seedstore.EventReviewClusterDetail{}, false, err
+		}
+		importReadiness.ExistingEventTargets, err = applyEventReviewImportNearTitleHardTargetBlockersTx(ctx, tx, s, summary, evidence, importReadiness.ExistingEventTargets)
 		if err != nil {
 			return seedstore.EventReviewClusterDetail{}, false, err
 		}
@@ -2678,6 +2683,125 @@ func applyEventReviewImportUnresolvedSourceLinkBlockers(targets []seedstore.Even
 		appendUniqueImportReadinessReason(&out[i].BlockingReasons, eventReviewImportUnresolvedSourceLinkBlocker)
 	}
 	return out
+}
+
+func applyEventReviewImportSourceChoiceBlockers(targets []seedstore.EventReviewImportExistingEventTarget, statuses []seedstore.EventReviewImportCandidateIdentityStatus) []seedstore.EventReviewImportExistingEventTarget {
+	if len(targets) == 0 || len(statuses) == 0 {
+		return targets
+	}
+	blockedEvidenceIDs := make(map[int64]struct{})
+	for _, status := range statuses {
+		if !eventReviewImportSourceChoicesPresent(status.SourceKeys) {
+			continue
+		}
+		selected := false
+		for _, sourceKey := range status.SourceKeys {
+			if sourceKey.ChoiceSelected {
+				selected = true
+				break
+			}
+		}
+		if !selected {
+			blockedEvidenceIDs[status.EvidenceID] = struct{}{}
+		}
+	}
+	if len(blockedEvidenceIDs) == 0 {
+		return targets
+	}
+	out := make([]seedstore.EventReviewImportExistingEventTarget, len(targets))
+	copy(out, targets)
+	for i := range out {
+		if _, ok := blockedEvidenceIDs[out[i].EvidenceID]; !ok {
+			continue
+		}
+		appendUniqueImportReadinessReason(&out[i].BlockingReasons, "no selected source identity choices")
+	}
+	return out
+}
+
+func applyEventReviewImportNearTitleHardTargetBlockersTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, s *Store, summary seedstore.EventReviewClusterSummary, evidence []seedstore.EventReviewClusterEvidenceSummary, targets []seedstore.EventReviewImportExistingEventTarget) ([]seedstore.EventReviewImportExistingEventTarget, error) {
+	if len(targets) == 0 ||
+		summary.Status != seedstore.EventReviewClusterStatusOpen ||
+		summary.ConflictType != seedstore.EventReviewConflictTypeImportReview ||
+		summary.ConflictReason != seedstore.EventReviewConflictReasonIngestCandidate {
+		return targets, nil
+	}
+	hardTargetEvidenceIDs := make(map[int64]struct{})
+	for _, target := range targets {
+		if target.TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+			continue
+		}
+		hardTargetEvidenceIDs[target.EvidenceID] = struct{}{}
+	}
+	if len(hardTargetEvidenceIDs) == 0 {
+		return targets, nil
+	}
+
+	evidenceByID := make(map[int64]seedstore.EventReviewClusterEvidenceSummary, len(evidence))
+	for _, row := range evidence {
+		evidenceByID[row.EvidenceID] = row
+	}
+	cluster := seedstore.EventReviewCluster{
+		ID:               summary.ID,
+		Status:           summary.Status,
+		Version:          summary.Version,
+		CanonicalEventID: summary.CanonicalEventID,
+		ConflictType:     summary.ConflictType,
+		ConflictReason:   summary.ConflictReason,
+	}
+	type materialResult struct {
+		material importReviewCandidateMaterial
+		err      error
+		loaded   bool
+	}
+	materialByEvidenceID := make(map[int64]materialResult, len(hardTargetEvidenceIDs))
+	out := make([]seedstore.EventReviewImportExistingEventTarget, len(targets))
+	copy(out, targets)
+	now := time.Now().UTC()
+	for evidenceID := range hardTargetEvidenceIDs {
+		row, ok := evidenceByID[evidenceID]
+		if !ok {
+			continue
+		}
+		result := materialByEvidenceID[evidenceID]
+		if !result.loaded {
+			result.loaded = true
+			result.material, result.err = buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, row, nil, "import_review_near_title_hard_target_readiness", reviewSourceIdentitySupporting, now)
+			materialByEvidenceID[evidenceID] = result
+		}
+		if result.err != nil {
+			if isImportReviewCandidateMaterializationError(result.err) {
+				continue
+			}
+			return nil, result.err
+		}
+		nearMatches, _, err := supportingNearTitleGuardMatchesForEvidenceTx(ctx, tx, result.material.Event, row, s.sourceMetadata)
+		if err != nil {
+			return nil, err
+		}
+		if len(nearMatches) == 0 {
+			continue
+		}
+		reason := "near-title target is ambiguous"
+		var nearTargetID int64
+		if len(nearMatches) == 1 {
+			reason = "near-title target disagrees with hard target"
+			nearTargetID = nearMatches[0].record.ID
+		}
+		for i := range out {
+			if out[i].EvidenceID != evidenceID || out[i].TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+				continue
+			}
+			if nearTargetID > 0 && out[i].EventID == nearTargetID {
+				continue
+			}
+			appendUniqueImportReadinessReason(&out[i].BlockingReasons, reason)
+		}
+	}
+	return out, nil
 }
 
 func assignSelectedCandidateExistingEventTargets(readiness *seedstore.EventReviewImportReadiness) {
