@@ -83,6 +83,34 @@ func replaceEventSourceImagesTx(ctx context.Context, tx interface {
 	return upsertEventSourceImagesTx(ctx, tx, eventID, primary, candidates, now)
 }
 
+func syncEventSourceImagesTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, eventID int64, primary reviewGroupAuthoritativeLink, candidates []review.Candidate, now time.Time) error {
+	if eventID <= 0 {
+		return errors.New("event source image event ID is required")
+	}
+	currentSourceIDs := make(map[int64]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		sourceName, sourceURL, authoritativeMatchURL := eventSourceImageCandidateSource(candidate)
+		if sourceName == "" || sourceURL == "" {
+			continue
+		}
+		if sourceName == primary.SourceName && authoritativeMatchURL == primary.SourceURL {
+			continue
+		}
+		sourceID, err := ensureSourceTx(ctx, tx, sourceName, sourceURL)
+		if err != nil {
+			return err
+		}
+		currentSourceIDs[sourceID] = struct{}{}
+	}
+	if err := deleteEventSourceImagesExceptSourcesTx(ctx, tx, eventID, currentSourceIDs); err != nil {
+		return err
+	}
+	return upsertEventSourceImagesTx(ctx, tx, eventID, primary, candidates, now)
+}
+
 func upsertEventSourceImagesTx(ctx context.Context, tx interface {
 	execer
 	queryer
@@ -226,6 +254,22 @@ func deleteEventSourceImageForEventSourceTx(ctx context.Context, tx execer, even
 		WHERE event_id = ?
 			AND source_id = ?
 	`, eventID, sourceID)
+	return err
+}
+
+func deleteEventSourceImagesExceptSourcesTx(ctx context.Context, tx execer, eventID int64, sourceIDs map[int64]struct{}) error {
+	if eventID <= 0 {
+		return errors.New("event source image event ID is required")
+	}
+	if len(sourceIDs) == 0 {
+		return deleteEventSourceImagesForEventTx(ctx, tx, eventID)
+	}
+	keep := sortedInt64Keys(sourceIDs)
+	_, err := tx.ExecContext(ctx, `
+		DELETE FROM event_source_images
+		WHERE event_id = ?
+			AND source_id NOT IN (`+placeholders(len(keep))+`)
+	`, append([]any{eventID}, int64SliceToAny(keep)...)...)
 	return err
 }
 

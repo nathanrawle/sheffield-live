@@ -261,7 +261,9 @@ func eventDetailImageViews(event domain.Event, sourceImages []seedstore.EventIma
 		views[i].Position = i
 		views[i].Active = i == 0
 		views[i].SlideLabel = fmt.Sprintf("Show image %d", i+1)
-		if views[i].Loading == "" {
+		if i == 0 {
+			views[i].Loading = "eager"
+		} else if views[i].Loading == "" {
 			views[i].Loading = "lazy"
 		}
 	}

@@ -1993,7 +1993,7 @@ func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 			return err
 		}
 	}
-	return upsertEventSourceImagesTx(ctx, tx, eventID, primary, candidates, now)
+	return syncEventSourceImagesTx(ctx, tx, eventID, primary, candidates, now)
 }
 
 func primarySourceIdentity(event domain.Event) reviewGroupAuthoritativeLink {

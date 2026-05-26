@@ -7114,6 +7114,100 @@ func TestSQLiteEventDetailUsesSingleSupportingImageWithoutCarousel(t *testing.T)
 	assertNotContains(t, body, `data-event-carousel`)
 }
 
+func TestSQLiteEventDetailRendersSourceOnlyCarouselWithEagerFirstSlide(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlitestore.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	primarySourceID := mustInsertAdminSource(t, db, "Primary listings", "https://example.test/primary-source-only")
+	mustInsertAdminEvent(
+		t,
+		db,
+		primarySourceID,
+		"source-only-carousel",
+		"leadmill",
+		"Source Only Carousel",
+		fixtureLocalTime(2026, time.May, 11, 19, 30),
+		fixtureLocalTime(2026, time.May, 11, 22, 30),
+		"Source-only carousel description.",
+	)
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, "source-only-carousel").Scan(&eventID); err != nil {
+		t.Fatalf("lookup event id: %v", err)
+	}
+	alphaSourceID := mustInsertAdminSource(t, db, "Alpha mirror", "https://example.test/alpha-source-only")
+	bravoSourceID := mustInsertAdminSource(t, db, "Bravo mirror", "https://example.test/bravo-source-only")
+	now := "2026-04-21T10:00:00Z"
+	for _, row := range []struct {
+		sourceID       int64
+		identityKey    string
+		imageURL       string
+		imageSourceURL string
+		alt            string
+		focusX         int
+		focusY         int
+	}{
+		{
+			sourceID:       alphaSourceID,
+			identityKey:    "url:https://example.test/alpha-source-only",
+			imageURL:       "/media/events/alpha-source-only.jpg",
+			imageSourceURL: "https://images.example.test/alpha-source-only.jpg",
+			alt:            "Alpha source poster",
+			focusX:         10,
+			focusY:         90,
+		},
+		{
+			sourceID:       bravoSourceID,
+			identityKey:    "url:https://example.test/bravo-source-only",
+			imageURL:       "/media/events/bravo-source-only.jpg",
+			imageSourceURL: "https://images.example.test/bravo-source-only.jpg",
+			alt:            "Bravo source poster",
+			focusX:         80,
+			focusY:         20,
+		},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO event_source_images (
+				event_id,
+				source_id,
+				source_identity_key,
+				image_url,
+				image_source_url,
+				image_alt,
+				image_width,
+				image_height,
+				image_focus_x,
+				image_focus_y,
+				first_seen_at,
+				last_seen_at,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, eventID, row.sourceID, row.identityKey, row.imageURL, row.imageSourceURL, row.alt, 1200, 800, row.focusX, row.focusY, now, now, now); err != nil {
+			t.Fatalf("insert event source image: %v", err)
+		}
+	}
+
+	server, err := NewServer(testServerDeps(st))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/events/source-only-carousel")
+	assertContains(t, body, `<figure class="event-detail-media event-detail-carousel" data-event-carousel aria-label="Event images">`)
+	assertContains(t, body, `<img class="event-detail-carousel-slide is-active" src="/media/events/alpha-source-only.jpg" alt="Alpha source poster" style="--image-focus-x: 10%; --image-focus-y: 90%;" loading="eager" decoding="async" data-carousel-slide="0">`)
+	assertContains(t, body, `<img class="event-detail-carousel-slide" src="/media/events/bravo-source-only.jpg" alt="Bravo source poster" style="--image-focus-x: 80%; --image-focus-y: 20%;" loading="lazy" decoding="async" data-carousel-slide="1" hidden aria-hidden="true">`)
+}
+
 func TestVenueDetailShowsEmptyState(t *testing.T) {
 	server := mustFixtureServer(t)
 	body := renderPath(t, server, "/venues/empty-room")
