@@ -140,6 +140,11 @@ Open `/admin/review` in the browser for the event-review cluster queue.
 - when venue writes are available, `/admin/venues/{slug}` lets you save provisional venue fields in place and then use the separate validate action to remove the venue from the queue
 - when venue writes are unavailable, `/admin/venues/{slug}` remains read-only and hides save/validate controls
 - cluster resolution publishes one canonical public event when the selected event-review action is eligible
+- discard and supersede are administrative escape hatches, while eligible resolve forms are terminal editorial decisions
+- import-review resolve forms can insert new listings, attach supporting evidence to an existing event, resolve authoritative imports, or record near-title false positives before inserting a separate listing
+- title-repair resolve forms can apply simple repairs, merge/update slug conflicts, or keep the slug-conflict event separate
+- historical-duplicate resolve forms can apply or override canonical/withhold actions, or record all-kept false positives as pairwise event separations
+- unsupported open conflict types show a blocker and no terminal resolve form
 - manual resolution reuses an existing venue when the selected evidence yields one unique match, otherwise it creates a provisional venue in the same transaction if staging or singleton auto-promotion did not already do so
 - ambiguous venue evidence fails closed and leaves the cluster unresolved
 - singleton auto-promotion can now create a provisional venue row immediately for a uniquely new venue

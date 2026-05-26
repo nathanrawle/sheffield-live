@@ -31,7 +31,7 @@ Each record shows provenance and freshness. Live browsing should make the source
 
 Admin review exists for curated publication control. Event-review clusters are the active review model; legacy review groups are historical schema only and are not part of active editorial workflow. Clusters expose field-level choices, a canonical draft summary, persisted defaults, provenance, and any live canonical context needed to compare ingest evidence with the public event record.
 
-Resolving an event-review cluster publishes or updates exactly one canonical public event when publication is appropriate. Discarding a cluster does not publish anything. Superseding a cluster records that newer active evidence has replaced the older open review path.
+Resolving an event-review cluster publishes or updates exactly one canonical public event when publication is appropriate, or records a durable no-publish separation decision when the correct editorial decision is "these are distinct events." Discarding a cluster does not publish anything. Superseding a cluster records that newer active evidence has replaced the older open review path. Discard and supersede are administrative escape hatches rather than terminal editorial decisions.
 
 Eligible singleton imports may still auto-publish before review when they are the first matching live event seen. Supporting-source first-seen publishes are stored internally as provisional until a review or authoritative update confirms them, unless a supporting-only near-title guard keeps the candidate in review. Duplicate staging has two closed-history auto-resolution paths: exact canonical duplicate auto-resolution against an existing live event, and unanimous staged-duplicate auto-resolution when every staged candidate agrees on the canonical fields.
 
@@ -71,6 +71,16 @@ Secondary-source evidence follows these retention rules:
 - a non-authoritative secondary-source row is replaced only when the same source/event identity supplies a new non-empty value
 - authoritative cluster resolution can reconcile the secondary-source rows supplied with that authoritative decision
 - inferred event genres use the canonical description plus persisted secondary-source descriptions, so absence of a source in one later non-authoritative review is not treated as genre evidence retraction
+
+Manual event-review resolution currently supports these terminal editorial decisions:
+
+- import evidence can insert a new listing when no live target conflicts exist
+- import evidence can be accepted as a supporting source for one existing reviewed or provisional event when exact identity, source identity, canonical/evidence target, slug, exact title/venue/start, or near-title evidence safely agree
+- near-title false positives can record both event/evidence and event/event separations before inserting the incoming listing as a separate event
+- authoritative import evidence uses source identity before slug or title matching, and can update an existing event or insert a new one
+- title repair can apply a simple title/slug update, merge/update a slug-conflict duplicate while preserving the slug-owning event, or record that the slug-conflict event is separate
+- historical duplicate review can apply stored live actions, override the chosen canonical/withhold actions with the same mutation guards, or keep all reviewed/provisional events separate with pairwise event separations
+- unsupported conflict types stay open with an explicit blocker and no terminal resolver until the project has both a producer and an editorial policy for that conflict
 
 Cluster evidence follows these audit rules:
 

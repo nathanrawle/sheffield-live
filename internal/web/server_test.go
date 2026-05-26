@@ -643,6 +643,38 @@ func TestAdminReviewSuppressesEventReviewResolveFormWhenNotApplicable(t *testing
 	}
 }
 
+func TestAdminEventReviewUnknownConflictShowsUnsupportedBlocker(t *testing.T) {
+	stagingKey := "repair-queue-unsupported"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                47,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "mystery_type",
+				ConflictReason:    "mystery_reason",
+				EvidenceCount:     1,
+			},
+		},
+	}
+	server, err := NewServer(testServerDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	body := renderPath(t, server, "/admin/event-review/47")
+	assertContains(t, body, "Unsupported cluster")
+	assertContains(t, body, `Unsupported conflict type &#34;mystery_type&#34;.`)
+	assertContains(t, body, "No terminal editorial action is currently available.")
+	assertContains(t, body, "Discard cluster")
+	assertContains(t, body, "Supersede cluster")
+	assertNotContains(t, body, `name="action" value="resolve_live_actions"`)
+	assertNotContains(t, body, `name="action" value="resolve_import_new_listing"`)
+	assertNotContains(t, body, `name="action" value="resolve_title_repair"`)
+}
+
 func TestAdminReviewRendersTitleRepairReadiness(t *testing.T) {
 	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
 	clusterID := int64(52)

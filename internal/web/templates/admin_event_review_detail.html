@@ -21,11 +21,18 @@
 
 <section class="section-block">
   {{if eq .EventReviewDetail.Summary.Status "open"}}
-  <p class="notice">This cluster is open. You can discard it{{if .EventReviewCanAcceptImportListing}}, or accept the stored new listing{{end}}{{if .EventReviewCanAcceptSelectedImportCandidate}}, or accept the selected candidate{{end}}{{if .EventReviewCanAcceptSupportingSource}}, or accept a supporting source for an existing event{{end}}{{if and .EventReviewDetail.TitleRepairReadiness .EventReviewDetail.TitleRepairReadiness.Eligible}}, or apply the stored title repair{{else if and .EventReviewDetail.TitleRepairReadiness .EventReviewDetail.TitleRepairReadiness.SlugConflictResolutionAvailable}}, or resolve its title slug conflict{{else if .EventReviewCanResolveLiveActions}}, or apply its stored historical-duplicate live actions{{end}}{{if .EventReviewCanKeepHistoricalDuplicatesSeparate}}, or keep all historical-duplicate events separate{{end}}.</p>
+  <p class="notice">This cluster is open. Discard and supersede are administrative escape hatches, not terminal editorial decisions. {{if .EventReviewHasTerminalAction}}Available terminal editorial actions include accepting import evidence, applying title repair, or resolving historical duplicate actions when their forms are shown below.{{else}}No terminal editorial action is currently available.{{end}}</p>
   {{else}}
   <p class="notice">This cluster is {{.EventReviewDetail.Summary.Status}} and read-only. Discard, resolve, and supersede actions are not available.</p>
   {{end}}
 </section>
+
+{{with .EventReviewUnsupportedConflictBlocker}}
+<section class="section-block">
+  <h2>Unsupported cluster</h2>
+  <p class="notice">{{.}} This cluster is intentionally non-resolvable until a producer and editorial policy exist for this conflict. Use discard or supersede only when that administrative outcome is correct.</p>
+</section>
+{{end}}
 
 <section class="section-block">
   <h2>Event summary</h2>

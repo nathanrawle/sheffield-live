@@ -163,6 +163,8 @@ type PageData struct {
 	EventReviewCanResolveLiveActions                 bool
 	EventReviewCanKeepHistoricalDuplicatesSeparate   bool
 	EventReviewCanOverrideHistoricalDuplicateActions bool
+	EventReviewHasTerminalAction                     bool
+	EventReviewUnsupportedConflictBlocker            string
 	EventReviewSourceIdentityChoices                 []store.EventReviewImportCandidateSourceIdentityStatus
 	ProvisionalVenues                                []ProvisionalVenueRow
 	ProvisionalRooms                                 []ProvisionalRoomRow
@@ -2474,6 +2476,8 @@ func (s *Server) renderAdminEventReviewDetail(w http.ResponseWriter, r *http.Req
 	data.EventReviewCanResolveLiveActions = canResolveHistoricalDuplicateEventReviewCluster(cluster)
 	data.EventReviewCanKeepHistoricalDuplicatesSeparate = canKeepHistoricalDuplicateEventReviewClusterSeparate(cluster)
 	data.EventReviewCanOverrideHistoricalDuplicateActions = canOverrideHistoricalDuplicateEventReviewClusterActions(cluster)
+	data.EventReviewHasTerminalAction = data.EventReviewCanAcceptImportListing || data.EventReviewCanAcceptSelectedImportCandidate || data.EventReviewCanAcceptSupportingSource || data.EventReviewCanResolveAuthoritativeImport || data.EventReviewCanResolveLiveActions || data.EventReviewCanKeepHistoricalDuplicatesSeparate || data.EventReviewCanOverrideHistoricalDuplicateActions || canResolveTitleRepairEventReviewCluster(cluster) || canResolveTitleRepairSlugConflictEventReviewCluster(cluster)
+	data.EventReviewUnsupportedConflictBlocker = eventReviewUnsupportedConflictBlocker(cluster)
 	if r.URL.Query().Get("source_identity_choices_saved") == "1" {
 		data.Flash = "Source identity choices saved."
 	}
@@ -2707,6 +2711,27 @@ func canOverrideHistoricalDuplicateEventReviewClusterActions(cluster store.Event
 		}
 	}
 	return false
+}
+
+func eventReviewUnsupportedConflictBlocker(cluster store.EventReviewClusterDetail) string {
+	if cluster.Summary.Status != store.EventReviewClusterStatusOpen {
+		return ""
+	}
+	switch cluster.Summary.ConflictType {
+	case store.EventReviewConflictTypeImportReview:
+		if cluster.Summary.ConflictReason != store.EventReviewConflictReasonIngestCandidate {
+			return fmt.Sprintf("Unsupported import-review conflict reason %q.", cluster.Summary.ConflictReason)
+		}
+	case "title_repair", "historical_duplicate":
+		return ""
+	default:
+		conflictType := strings.TrimSpace(cluster.Summary.ConflictType)
+		if conflictType == "" {
+			conflictType = "(blank)"
+		}
+		return fmt.Sprintf("Unsupported conflict type %q.", conflictType)
+	}
+	return ""
 }
 
 func canResolveTitleRepairEventReviewCluster(cluster store.EventReviewClusterDetail) bool {
