@@ -385,11 +385,12 @@ func backfillEventSourceImagesFromReviewCandidatesTx(ctx context.Context, tx int
 		JOIN review_groups g ON g.id = c.group_id
 		JOIN events target ON target.id = c.canonical_event_id
 		WHERE c.canonical_event_id IS NOT NULL
+			AND g.status = ?
 			AND TRIM(c.image_url) <> ''
 			AND target.origin = ?
 			AND target.publication_state <> ?
 		ORDER BY c.group_id, c.position, c.id
-	`, string(domain.OriginLive), string(domain.PublicationStateWithheld))
+	`, review.StatusResolved, string(domain.OriginLive), string(domain.PublicationStateWithheld))
 	if err != nil {
 		return err
 	}

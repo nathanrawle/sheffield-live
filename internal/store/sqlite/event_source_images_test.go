@@ -273,6 +273,48 @@ func TestOpenBackfillsEventSourceImagesFromResolvedClusterCanonicalEvent(t *test
 	}
 }
 
+func TestOpenBackfillsEventSourceImagesOnlyFromResolvedReviewCandidates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+
+	db := mustRawDB(t, path)
+	canonicalSourceID := insertMediaCleanupSource(t, db, "Primary candidate source", "https://example.test/primary-candidate-backfill")
+	eventID := insertEventSourceImageTestEventWithSource(t, db, "source-image-candidate-backfill", canonicalSourceID)
+	openGroupID := insertReviewGroupForEventSourceImageBackfill(t, db, "Open candidate backfill", review.StatusOpen)
+	insertReviewCandidateForEventSourceImageBackfill(t, db, openGroupID, eventID, "Open mirror", "https://example.test/open-candidate-backfill", "/media/events/open-candidate-backfill.jpg")
+	resolvedGroupID := insertReviewGroupForEventSourceImageBackfill(t, db, "Resolved candidate backfill", review.StatusResolved)
+	insertReviewCandidateForEventSourceImageBackfill(t, db, resolvedGroupID, eventID, "Resolved mirror", "https://example.test/resolved-candidate-backfill", "/media/events/resolved-candidate-backfill.jpg")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	images, err := st.EventSourceImagesByEventSlug(context.Background(), "source-image-candidate-backfill")
+	if err != nil {
+		t.Fatalf("load backfilled candidate source images: %v", err)
+	}
+	if len(images) != 1 {
+		t.Fatalf("backfilled candidate images = %d, want 1", len(images))
+	}
+	if got, want := images[0].ImageURL, "/media/events/resolved-candidate-backfill.jpg"; got != want {
+		t.Fatalf("backfilled candidate image = %q, want %q", got, want)
+	}
+	if got, want := images[0].SourceName, "Resolved mirror"; got != want {
+		t.Fatalf("backfilled candidate source = %q, want %q", got, want)
+	}
+}
+
 func insertEventSourceImageTestEvent(t *testing.T, db *sql.DB, slug string) int64 {
 	t.Helper()
 	sourceID := insertMediaCleanupSource(t, db, "Canonical source "+slug, "https://example.test/"+slug+"/canonical")
@@ -318,5 +360,60 @@ func insertEventSourceImageRow(t *testing.T, db *sql.DB, eventID, sourceID int64
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, eventID, sourceID, identityKey, imageURL, imageSourceURL, alt, width, height, focusX, focusY, now, now, now); err != nil {
 		t.Fatalf("insert event source image: %v", err)
+	}
+}
+
+func insertReviewGroupForEventSourceImageBackfill(t *testing.T, db *sql.DB, title, status string) int64 {
+	t.Helper()
+	when := formatRFC3339UTC(time.Date(2026, time.May, 1, 10, 0, 0, 0, time.UTC))
+	res, err := db.Exec(`
+		INSERT INTO review_groups (
+			title,
+			source_name,
+			source_url,
+			status,
+			notes,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, title, "Fixture reviews", "https://example.test/reviews", status, "", when, when)
+	if err != nil {
+		t.Fatalf("insert review group: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("review group id: %v", err)
+	}
+	return id
+}
+
+func insertReviewCandidateForEventSourceImageBackfill(t *testing.T, db *sql.DB, groupID, eventID int64, sourceName, sourceURL, imageURL string) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO review_candidates (
+			group_id,
+			position,
+			external_id,
+			name,
+			venue_slug,
+			start_at,
+			end_at,
+			genre,
+			status,
+			description,
+			source_name,
+			source_url,
+			provenance,
+			canonical_event_id,
+			image_url,
+			image_source_url,
+			image_alt,
+			image_width,
+			image_height,
+			image_focus_x,
+			image_focus_y
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, groupID, 1, sourceURL, "Candidate Backfill", "leadmill", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Candidate description", sourceName, sourceURL, "fixture", eventID, imageURL, sourceURL+"/image.jpg", "Candidate poster", 1200, 800, 30, 70); err != nil {
+		t.Fatalf("insert review candidate: %v", err)
 	}
 }
