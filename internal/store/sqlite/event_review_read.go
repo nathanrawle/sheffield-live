@@ -3034,7 +3034,7 @@ func loadEventReviewImportNearTitleTargetsTx(ctx context.Context, tx interface {
 	}
 	hardTargetByEvidenceID := make(map[int64]struct{}, len(hardTargets))
 	for _, target := range hardTargets {
-		if target.TargetBasis != seedstore.EventReviewImportTargetBasisNearTitle {
+		if eventReviewImportTargetSuppressesNearTitle(target) {
 			hardTargetByEvidenceID[target.EvidenceID] = struct{}{}
 		}
 	}
@@ -3077,6 +3077,18 @@ func loadEventReviewImportNearTitleTargetsTx(ctx context.Context, tx interface {
 		})
 	}
 	return targets, nil
+}
+
+func eventReviewImportTargetSuppressesNearTitle(target seedstore.EventReviewImportExistingEventTarget) bool {
+	if target.TargetBasis == seedstore.EventReviewImportTargetBasisNearTitle {
+		return false
+	}
+	if target.TargetBasis == seedstore.EventReviewImportTargetBasisSourceIdentity &&
+		len(target.BlockingReasons) == 1 &&
+		target.BlockingReasons[0] == "source identity is not selected" {
+		return false
+	}
+	return true
 }
 
 func normalizedImportReadinessStrings(values []string) []string {

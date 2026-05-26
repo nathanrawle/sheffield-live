@@ -2018,6 +2018,66 @@ func TestAcceptEventReviewSupportingSourceAppliesNearTitleTarget(t *testing.T) {
 	}
 }
 
+func TestImportReviewNearTitleReadinessIgnoresUnselectedSourceTargets(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedImportReviewResolutionFixture(t, db)
+	incomingTitle := "Jane Doe + The Openers"
+	if _, err := db.Exec(`
+		UPDATE event_review_evidence
+		SET payload = ?
+		WHERE id = ?
+	`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthoritySupporting), incomingTitle, fixture.venueText, "", fixture.start, fixture.end, "near-title-selected-with-unselected-source"), fixture.evidenceID); err != nil {
+		t.Fatalf("update near-title selected payload: %v", err)
+	}
+	selectedKeyID := insertEventReviewIdentityKeyOK(t, db, "near-title-selected-ready-source-hash", seedstore.EventReviewIdentityKeyKindSource, "near-title-selected-ready-source")
+	unselectedKeyID := insertEventReviewIdentityKeyOK(t, db, "near-title-unselected-linked-source-hash", seedstore.EventReviewIdentityKeyKindSource, "near-title-unselected-linked-source")
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, selectedKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert near-title selected source evidence key: %v", err)
+	}
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, unselectedKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert near-title unselected source evidence key: %v", err)
+	}
+	if _, err := insertEventReviewSourceIdentityChoice(t, db, fixture.clusterID, fixture.sourceID, "near-title-selected-ready-source", true, "selected", fixture.start.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("insert near-title selected source choice: %v", err)
+	}
+	if _, err := insertEventReviewSourceIdentityChoice(t, db, fixture.clusterID, fixture.sourceID, "near-title-unselected-linked-source", false, "not selected", fixture.start.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("insert near-title unselected source choice: %v", err)
+	}
+	unselectedTargetID := mustInsertExactIdentityEvent(t, db, "near-title-unselected-linked-target", "Unselected Source Target", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+	if _, err := db.Exec(`
+		INSERT INTO event_source_links (
+			event_id,
+			source_id,
+			source_event_key,
+			is_authoritative,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, 1, ?, ?)
+	`, unselectedTargetID, fixture.sourceID, "near-title-unselected-linked-source", formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+		t.Fatalf("insert near-title unselected source link: %v", err)
+	}
+	nearTargetID := mustInsertExactIdentityEvent(t, db, "near-title-selected-near-target", "Jane Doe", fixture.venueID, fixture.sourceID, fixture.start, fixture.end, fixture.start.Add(-24*time.Hour), domain.OriginLive)
+
+	detail, ok, err := st.LoadEventReviewCluster(context.Background(), fixture.clusterID)
+	if err != nil {
+		t.Fatalf("load near-title selected/unselected readiness: %v", err)
+	}
+	if !ok || detail.ImportReadiness == nil {
+		t.Fatal("near-title selected/unselected readiness missing")
+	}
+	sourceTarget := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, unselectedTargetID, seedstore.EventReviewImportTargetBasisSourceIdentity)
+	if !hasString(sourceTarget.BlockingReasons, "source identity is not selected") {
+		t.Fatalf("unselected source target blockers = %#v, want not-selected blocker", sourceTarget.BlockingReasons)
+	}
+	nearTarget := mustImportExistingTarget(t, detail.ImportReadiness.ExistingEventTargets, fixture.evidenceID, nearTargetID, seedstore.EventReviewImportTargetBasisNearTitle)
+	if len(nearTarget.BlockingReasons) != 0 {
+		t.Fatalf("near-title target blockers = %#v, want none", nearTarget.BlockingReasons)
+	}
+}
+
 func TestImportReviewReadinessExposesSlugAndExactTitleTargets(t *testing.T) {
 	t.Run("slug", func(t *testing.T) {
 		_, db := openEventReviewSchemaStore(t)
