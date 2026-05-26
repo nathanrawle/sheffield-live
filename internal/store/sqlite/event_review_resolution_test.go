@@ -2711,6 +2711,130 @@ func TestResolveEventReviewImportAuthoritativeInsertsNewEvent(t *testing.T) {
 	}
 }
 
+func TestResolveEventReviewImportAuthoritativeValidatesSourceIdentityKeys(t *testing.T) {
+	t.Run("unobserved source key", func(t *testing.T) {
+		_, db := openEventReviewSchemaStore(t)
+		defer db.Close()
+
+		st := mustStoreFromDB(t, db)
+		fixture := seedImportReviewResolutionFixture(t, db)
+		if _, err := db.Exec(`
+			UPDATE event_review_evidence
+			SET payload = ?
+			WHERE id = ?
+		`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthorityAuthoritative), "Authoritative Tampered", fixture.venueText, "", fixture.start, fixture.end, "authoritative-tampered"), fixture.evidenceID); err != nil {
+			t.Fatalf("update authoritative tampered payload: %v", err)
+		}
+
+		err := st.ResolveEventReviewImportAuthoritative(context.Background(), seedstore.EventReviewImportAuthoritativeInput{
+			EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+				ClusterID:       fixture.clusterID,
+				ExpectedVersion: 1,
+			},
+			EvidenceID:         fixture.evidenceID,
+			SourceIdentityKeys: []string{"tampered-authoritative-key"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "not observed for evidence") {
+			t.Fatalf("authoritative with unobserved source key error = %v, want not observed", err)
+		}
+		assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	})
+
+	t.Run("unselected source key", func(t *testing.T) {
+		_, db := openEventReviewSchemaStore(t)
+		defer db.Close()
+
+		st := mustStoreFromDB(t, db)
+		fixture := seedImportReviewResolutionFixture(t, db)
+		if _, err := db.Exec(`
+			UPDATE event_review_evidence
+			SET payload = ?
+			WHERE id = ?
+		`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthorityAuthoritative), "Authoritative Choice", fixture.venueText, "", fixture.start, fixture.end, "authoritative-choice"), fixture.evidenceID); err != nil {
+			t.Fatalf("update authoritative choice payload: %v", err)
+		}
+		selectedKeyID := insertEventReviewIdentityKeyOK(t, db, "authoritative-selected-source-hash", seedstore.EventReviewIdentityKeyKindSource, "authoritative-selected-source")
+		unselectedKeyID := insertEventReviewIdentityKeyOK(t, db, "authoritative-unselected-source-hash", seedstore.EventReviewIdentityKeyKindSource, "authoritative-unselected-source")
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, selectedKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+			t.Fatalf("insert authoritative selected source key: %v", err)
+		}
+		if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, unselectedKeyID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+			t.Fatalf("insert authoritative unselected source key: %v", err)
+		}
+		if _, err := insertEventReviewSourceIdentityChoice(t, db, fixture.clusterID, fixture.sourceID, "authoritative-selected-source", true, "selected", fixture.start.Add(-2*time.Hour)); err != nil {
+			t.Fatalf("insert authoritative selected source choice: %v", err)
+		}
+		if _, err := insertEventReviewSourceIdentityChoice(t, db, fixture.clusterID, fixture.sourceID, "authoritative-unselected-source", false, "not selected", fixture.start.Add(-2*time.Hour)); err != nil {
+			t.Fatalf("insert authoritative unselected source choice: %v", err)
+		}
+
+		err := st.ResolveEventReviewImportAuthoritative(context.Background(), seedstore.EventReviewImportAuthoritativeInput{
+			EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+				ClusterID:       fixture.clusterID,
+				ExpectedVersion: 1,
+			},
+			EvidenceID:         fixture.evidenceID,
+			SourceIdentityKeys: []string{"authoritative-unselected-source"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "not selected for evidence") {
+			t.Fatalf("authoritative with unselected source key error = %v, want not selected", err)
+		}
+		assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	})
+
+	t.Run("forged insert update source key", func(t *testing.T) {
+		_, db := openEventReviewSchemaStore(t)
+		defer db.Close()
+
+		st := mustStoreFromDB(t, db)
+		fixture := seedImportReviewResolutionFixture(t, db)
+		if _, err := db.Exec(`
+			UPDATE event_review_evidence
+			SET payload = ?
+			WHERE id = ?
+		`, importReviewResolutionPayload(t, fixture.sourceName, fixture.sourceURL, fixture.calendarURL, string(seedstore.SourceAuthorityAuthoritative), "Authoritative Forged Insert", fixture.venueText, "", fixture.start, fixture.end, "authoritative-forged-insert"), fixture.evidenceID); err != nil {
+			t.Fatalf("update authoritative forged payload: %v", err)
+		}
+		targetID := mustInsertExactIdentityEvent(t, db, "authoritative-forged-target", "Forged Target", fixture.venueID, fixture.sourceID, fixture.start.Add(2*time.Hour), fixture.end.Add(2*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
+		if _, err := db.Exec(`
+			INSERT INTO event_source_links (
+				event_id,
+				source_id,
+				source_event_key,
+				is_authoritative,
+				created_at,
+				updated_at
+			) VALUES (?, ?, ?, 1, ?, ?)
+		`, targetID, fixture.sourceID, "forged-authoritative-source", formatRFC3339UTC(fixture.start.Add(-24*time.Hour)), formatRFC3339UTC(fixture.start.Add(-24*time.Hour))); err != nil {
+			t.Fatalf("insert forged authoritative source link: %v", err)
+		}
+		beforeEvents := mustCount(t, db, "events")
+
+		err := st.ResolveEventReviewImportAuthoritative(context.Background(), seedstore.EventReviewImportAuthoritativeInput{
+			EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+				ClusterID:       fixture.clusterID,
+				ExpectedVersion: 1,
+			},
+			EvidenceID:         fixture.evidenceID,
+			SourceIdentityKeys: []string{"forged-authoritative-source"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "not observed for evidence") {
+			t.Fatalf("authoritative forged source key error = %v, want not observed", err)
+		}
+		assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+		if got := mustCount(t, db, "events"); got != beforeEvents {
+			t.Fatalf("events rows after forged authoritative key = %d, want %d", got, beforeEvents)
+		}
+		var title string
+		if err := db.QueryRow(`SELECT name FROM events WHERE id = ?`, targetID).Scan(&title); err != nil {
+			t.Fatalf("load forged authoritative target title: %v", err)
+		}
+		if title != "Forged Target" {
+			t.Fatalf("forged target title = %q, want unchanged", title)
+		}
+	})
+}
+
 func TestResolveEventReviewImportAuthoritativeUsesSourceIdentityBeforeTitleMatching(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()
@@ -2803,6 +2927,14 @@ func TestResolveEventReviewImportAuthoritativeRejectsAmbiguousSourceIdentity(t *
 	targetBID := mustInsertExactIdentityEvent(t, db, "authoritative-ambiguous-b", "Authoritative Ambiguous B", fixture.venueID, fixture.sourceID, fixture.start.Add(4*time.Hour), fixture.end.Add(4*time.Hour), fixture.start.Add(-24*time.Hour), domain.OriginLive)
 	sourceKeyA := "uid:authoritative-ambiguous-a"
 	sourceKeyB := "uid:authoritative-ambiguous-b"
+	sourceKeyAID := insertEventReviewIdentityKeyOK(t, db, "authoritative-ambiguous-a-hash", seedstore.EventReviewIdentityKeyKindSource, sourceKeyA)
+	sourceKeyBID := insertEventReviewIdentityKeyOK(t, db, "authoritative-ambiguous-b-hash", seedstore.EventReviewIdentityKeyKindSource, sourceKeyB)
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, sourceKeyAID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert ambiguous authoritative source key a: %v", err)
+	}
+	if _, err := insertEventReviewEvidenceIdentityKey(t, db, fixture.evidenceID, sourceKeyBID, &fixture.sourceID, seedstore.EventReviewEvidenceIdentityKeyRoleObserved); err != nil {
+		t.Fatalf("insert ambiguous authoritative source key b: %v", err)
+	}
 	for _, row := range []struct {
 		eventID int64
 		key     string

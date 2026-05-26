@@ -1620,6 +1620,32 @@ func validateImportReviewSupportingSourceKeys(clusterID, evidenceID int64, statu
 	return nil, nil
 }
 
+func validateImportReviewAuthoritativeSourceKeys(clusterID, evidenceID int64, status seedstore.EventReviewImportCandidateIdentityStatus, sourceCtx reviewSourceIdentityContext, submittedKeys []string) ([]string, error) {
+	if eventReviewImportSourceChoicesPresent(status.SourceKeys) {
+		return validateImportReviewSupportingSourceKeys(clusterID, evidenceID, status, submittedKeys)
+	}
+	if len(submittedKeys) == 0 {
+		return nil, nil
+	}
+	allowed := make(map[string]struct{})
+	for _, key := range sourceCtx.Identities.Keys() {
+		if key = strings.TrimSpace(key); key != "" {
+			allowed[key] = struct{}{}
+		}
+	}
+	for _, sourceKey := range status.SourceKeys {
+		if key := strings.TrimSpace(sourceKey.SourceIdentityKey); key != "" {
+			allowed[key] = struct{}{}
+		}
+	}
+	for _, key := range submittedKeys {
+		if _, ok := allowed[key]; !ok {
+			return nil, fmt.Errorf("import review event review cluster %d authoritative source identity key %q is not observed for evidence %d", clusterID, key, evidenceID)
+		}
+	}
+	return submittedKeys, nil
+}
+
 func validateImportReviewSupportingStagedIdentityTargets(clusterID int64, status seedstore.EventReviewImportCandidateIdentityStatus, targetEventID int64, selectedSourceKeys []string) (map[seedstore.EventReviewImportTargetBasis]bool, error) {
 	bases := make(map[seedstore.EventReviewImportTargetBasis]bool)
 	for _, exactKey := range status.ExactKeys {
@@ -2097,18 +2123,39 @@ func (s *Store) ResolveEventReviewImportAuthoritative(ctx context.Context, input
 		return fmt.Errorf("event review cluster %d evidence %d already references event %d", cluster.ID, input.EvidenceID, *evidence.EventID)
 	}
 
-	now := time.Now().UTC()
-	selectedSourceKeys := normalizedImportReviewSourceIdentityKeys(input.SourceIdentityKeys)
-	var selectedSourceKeysArg []string
-	if len(selectedSourceKeys) > 0 {
-		selectedSourceKeysArg = selectedSourceKeys
+	identityStatuses, err := loadImportReviewCandidateIdentityStatusesTx(ctx, tx, cluster.ID, activeEvidence)
+	if err != nil {
+		return err
 	}
-	material, err := buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, *evidence, selectedSourceKeysArg, "import_review_authoritative_apply", reviewSourceIdentityAuthoritative, now)
+	if err := validateImportReviewSupportingSelectedEvidence(cluster.ID, evidence.EvidenceID, identityStatuses); err != nil {
+		return err
+	}
+	identityStatus, ok := importReviewCandidateIdentityStatusForEvidence(identityStatuses, evidence.EvidenceID)
+	if !ok {
+		return fmt.Errorf("import review event review cluster %d evidence %d identity status is missing", cluster.ID, evidence.EvidenceID)
+	}
+
+	now := time.Now().UTC()
+	material, err := buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, *evidence, nil, "import_review_authoritative_apply", reviewSourceIdentityAuthoritative, now)
 	if err != nil {
 		return err
 	}
 	if material.SourceAuthority != seedstore.SourceAuthorityAuthoritative {
 		return fmt.Errorf("import review event review cluster %d requires an authoritative candidate", cluster.ID)
+	}
+	selectedSourceKeys := normalizedImportReviewSourceIdentityKeys(input.SourceIdentityKeys)
+	selectedSourceKeys, err = validateImportReviewAuthoritativeSourceKeys(cluster.ID, evidence.EvidenceID, identityStatus, material.SourceCtx, selectedSourceKeys)
+	if err != nil {
+		return err
+	}
+	if len(selectedSourceKeys) > 0 {
+		material, err = buildImportReviewCandidateMaterialTx(ctx, tx, s, cluster, *evidence, selectedSourceKeys, "import_review_authoritative_apply", reviewSourceIdentityAuthoritative, now)
+		if err != nil {
+			return err
+		}
+		if material.SourceAuthority != seedstore.SourceAuthorityAuthoritative {
+			return fmt.Errorf("import review event review cluster %d requires an authoritative candidate", cluster.ID)
+		}
 	}
 
 	summary, ok, err := loadEventReviewClusterSummaryByIDTx(ctx, tx, cluster.ID)
