@@ -849,6 +849,7 @@ type EventReviewHistoricalDuplicateEventReadiness struct {
 	EventSlug        string
 	PublicationState string
 	Live             bool
+	Canonical        bool
 	Action           EventReviewLiveActionKind
 	KeepEligible     bool
 	BlockingReasons  []string
@@ -1030,6 +1031,18 @@ type EventReviewTitleRepairSlugConflictInput struct {
 type EventReviewHistoricalDuplicateKeepSeparateInput struct {
 	EventReviewResolutionInput
 	KeptEventIDs []int64
+}
+
+type EventReviewHistoricalDuplicateActionInput struct {
+	EventID int64
+	Action  EventReviewLiveActionKind
+	Reason  string
+}
+
+type EventReviewHistoricalDuplicateWithActionsInput struct {
+	EventReviewResolutionInput
+	CanonicalEventID int64
+	Actions          []EventReviewHistoricalDuplicateActionInput
 }
 
 type EventReviewDiscardInput struct {

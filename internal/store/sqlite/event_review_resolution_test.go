@@ -499,6 +499,188 @@ func TestResolveHistoricalDuplicateKeepSeparateRequiresSubmittedKeptEventSet(t *
 	}
 }
 
+func TestResolveHistoricalDuplicateWithActionsOverridesCanonicalAndWithholdsSelectedDuplicate(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedHistoricalDuplicateResolutionFixture(t, db)
+
+	if err := st.ResolveHistoricalDuplicateWithActions(context.Background(), seedstore.EventReviewHistoricalDuplicateWithActionsInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		CanonicalEventID: fixture.loserID,
+		Actions: []seedstore.EventReviewHistoricalDuplicateActionInput{
+			{EventID: fixture.canonicalID, Action: seedstore.EventReviewLiveActionKindWithholdDuplicate},
+			{EventID: fixture.loserID, Action: seedstore.EventReviewLiveActionKindKeepSeparate},
+		},
+	}); err != nil {
+		t.Fatalf("resolve historical duplicate override actions: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	var clusterCanonical sql.NullInt64
+	if err := db.QueryRow(`SELECT canonical_event_id FROM event_review_clusters WHERE id = ?`, fixture.clusterID).Scan(&clusterCanonical); err != nil {
+		t.Fatalf("load cluster canonical: %v", err)
+	}
+	if !clusterCanonical.Valid || clusterCanonical.Int64 != fixture.loserID {
+		t.Fatalf("cluster canonical = %v, want %d", clusterCanonical, fixture.loserID)
+	}
+
+	var oldCanonicalState string
+	var oldCanonicalTarget sql.NullInt64
+	if err := db.QueryRow(`SELECT publication_state, canonical_event_id FROM events WHERE id = ?`, fixture.canonicalID).Scan(&oldCanonicalState, &oldCanonicalTarget); err != nil {
+		t.Fatalf("load old canonical event: %v", err)
+	}
+	if oldCanonicalState != string(domain.PublicationStateWithheld) || !oldCanonicalTarget.Valid || oldCanonicalTarget.Int64 != fixture.loserID {
+		t.Fatalf("old canonical state=%q target=%v, want withheld to %d", oldCanonicalState, oldCanonicalTarget, fixture.loserID)
+	}
+	var survivorState string
+	if err := db.QueryRow(`SELECT publication_state FROM events WHERE id = ?`, fixture.loserID).Scan(&survivorState); err != nil {
+		t.Fatalf("load survivor state: %v", err)
+	}
+	if survivorState != string(domain.PublicationStateReviewed) {
+		t.Fatalf("survivor state = %q, want reviewed", survivorState)
+	}
+
+	var snapshot string
+	if err := db.QueryRow(`SELECT snapshot FROM event_review_resolutions WHERE cluster_id = ?`, fixture.clusterID).Scan(&snapshot); err != nil {
+		t.Fatalf("load resolution snapshot: %v", err)
+	}
+	var got struct {
+		RepairRunID        *int64 `json:"repair_run_id"`
+		CanonicalEventID   *int64 `json:"canonical_event_id"`
+		AppliedLiveActions []struct {
+			EventID int64                               `json:"event_id"`
+			Action  seedstore.EventReviewLiveActionKind `json:"action"`
+		} `json:"applied_live_actions"`
+	}
+	if err := json.Unmarshal([]byte(snapshot), &got); err != nil {
+		t.Fatalf("unmarshal override snapshot: %v", err)
+	}
+	if got.RepairRunID == nil {
+		t.Fatal("repair run id missing from override snapshot")
+	}
+	if got.CanonicalEventID == nil || *got.CanonicalEventID != fixture.loserID {
+		t.Fatalf("snapshot canonical = %v, want %d", got.CanonicalEventID, fixture.loserID)
+	}
+	if len(got.AppliedLiveActions) != 2 || got.AppliedLiveActions[0].Action != seedstore.EventReviewLiveActionKindWithholdDuplicate || got.AppliedLiveActions[1].Action != seedstore.EventReviewLiveActionKindKeepSeparate {
+		t.Fatalf("applied live actions = %#v", got.AppliedLiveActions)
+	}
+}
+
+func TestResolveHistoricalDuplicateWithActionsAllKeepDelegatesToKeepSeparate(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedHistoricalDuplicateResolutionFixture(t, db)
+
+	if err := st.ResolveHistoricalDuplicateWithActions(context.Background(), seedstore.EventReviewHistoricalDuplicateWithActionsInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+		Actions: []seedstore.EventReviewHistoricalDuplicateActionInput{
+			{EventID: fixture.canonicalID, Action: seedstore.EventReviewLiveActionKindKeepSeparate},
+			{EventID: fixture.loserID, Action: seedstore.EventReviewLiveActionKindKeepSeparate},
+		},
+	}); err != nil {
+		t.Fatalf("resolve historical duplicate all-keep override: %v", err)
+	}
+
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusResolved), 2, nil)
+	var snapshot string
+	if err := db.QueryRow(`SELECT snapshot FROM event_review_resolutions WHERE cluster_id = ?`, fixture.clusterID).Scan(&snapshot); err != nil {
+		t.Fatalf("load resolution snapshot: %v", err)
+	}
+	var got struct {
+		RepairRunID                   *int64 `json:"repair_run_id"`
+		AppliedHistoricalKeepSeparate *struct {
+			KeptEvents []struct {
+				EventID int64 `json:"event_id"`
+			} `json:"kept_events"`
+		} `json:"applied_historical_keep_separate"`
+	}
+	if err := json.Unmarshal([]byte(snapshot), &got); err != nil {
+		t.Fatalf("unmarshal all-keep snapshot: %v", err)
+	}
+	if got.RepairRunID != nil {
+		t.Fatalf("repair run id = %v, want nil", *got.RepairRunID)
+	}
+	if got.AppliedHistoricalKeepSeparate == nil || len(got.AppliedHistoricalKeepSeparate.KeptEvents) != 2 {
+		t.Fatalf("historical keep-separate snapshot = %#v", got.AppliedHistoricalKeepSeparate)
+	}
+}
+
+func TestResolveHistoricalDuplicateWithActionsRejectsInvalidActionSets(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   func(fixture historicalDuplicateResolutionFixture) seedstore.EventReviewHistoricalDuplicateWithActionsInput
+		wantErr string
+	}{
+		{
+			name: "missing canonical for withhold",
+			input: func(fixture historicalDuplicateResolutionFixture) seedstore.EventReviewHistoricalDuplicateWithActionsInput {
+				return seedstore.EventReviewHistoricalDuplicateWithActionsInput{
+					Actions: []seedstore.EventReviewHistoricalDuplicateActionInput{
+						{EventID: fixture.canonicalID, Action: seedstore.EventReviewLiveActionKindKeepSeparate},
+						{EventID: fixture.loserID, Action: seedstore.EventReviewLiveActionKindWithholdDuplicate},
+					},
+				}
+			},
+			wantErr: "requires a canonical event",
+		},
+		{
+			name: "unknown event",
+			input: func(fixture historicalDuplicateResolutionFixture) seedstore.EventReviewHistoricalDuplicateWithActionsInput {
+				return seedstore.EventReviewHistoricalDuplicateWithActionsInput{
+					CanonicalEventID: fixture.canonicalID,
+					Actions: []seedstore.EventReviewHistoricalDuplicateActionInput{
+						{EventID: fixture.canonicalID, Action: seedstore.EventReviewLiveActionKindKeepSeparate},
+						{EventID: fixture.loserID + 999, Action: seedstore.EventReviewLiveActionKindWithholdDuplicate},
+					},
+				}
+			},
+			wantErr: "submitted action events do not match",
+		},
+		{
+			name: "canonical withhold action",
+			input: func(fixture historicalDuplicateResolutionFixture) seedstore.EventReviewHistoricalDuplicateWithActionsInput {
+				return seedstore.EventReviewHistoricalDuplicateWithActionsInput{
+					CanonicalEventID: fixture.canonicalID,
+					Actions: []seedstore.EventReviewHistoricalDuplicateActionInput{
+						{EventID: fixture.canonicalID, Action: seedstore.EventReviewLiveActionKindWithholdDuplicate},
+						{EventID: fixture.loserID, Action: seedstore.EventReviewLiveActionKindKeepSeparate},
+					},
+				}
+			},
+			wantErr: "must be keep_separate",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, db := openEventReviewSchemaStore(t)
+			defer db.Close()
+
+			st := mustStoreFromDB(t, db)
+			fixture := seedHistoricalDuplicateResolutionFixture(t, db)
+			input := tc.input(fixture)
+			input.EventReviewResolutionInput = seedstore.EventReviewResolutionInput{ClusterID: fixture.clusterID, ExpectedVersion: 1}
+			err := st.ResolveHistoricalDuplicateWithActions(context.Background(), input)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("resolve override error = %v, want %q", err, tc.wantErr)
+			}
+			assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+			if got := mustCount(t, db, "event_review_resolutions"); got != 0 {
+				t.Fatalf("event_review_resolutions rows = %d, want 0", got)
+			}
+		})
+	}
+}
+
 func TestResolveEventReviewClusterAppliesTitleRepairAndRefreshesExactIdentity(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()

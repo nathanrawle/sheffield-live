@@ -1773,6 +1773,9 @@ func loadEventReviewHistoricalDuplicateReadinessTx(ctx context.Context, q querye
 
 	for _, eventID := range eventIDs {
 		eventReadiness := seedstore.EventReviewHistoricalDuplicateEventReadiness{EventID: eventID}
+		if summary.CanonicalEventID != nil && *summary.CanonicalEventID == eventID {
+			eventReadiness.Canonical = true
+		}
 		if action, ok := actionByEventID[eventID]; ok {
 			eventReadiness.Action = action.Action
 			eventReadiness.EventSlug = strings.TrimSpace(action.EventSlug)

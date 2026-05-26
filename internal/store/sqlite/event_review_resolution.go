@@ -364,30 +364,160 @@ func (s *Store) ResolveHistoricalDuplicateKeepSeparate(ctx context.Context, inpu
 	if !sameInt64Set(expectedIDs, submittedIDs) {
 		return fmt.Errorf("historical duplicate event review cluster %d kept event IDs do not match current cluster events", cluster.ID)
 	}
+	now := time.Now().UTC()
+	if err := resolveHistoricalDuplicateKeepSeparateTx(ctx, tx, cluster, readiness, submittedIDs, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ResolveHistoricalDuplicateWithActions(ctx context.Context, input seedstore.EventReviewHistoricalDuplicateWithActionsInput) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite store is not open")
+	}
+	if input.CanonicalEventID <= 0 && len(input.Actions) == 0 {
+		return s.ResolveEventReviewCluster(ctx, input.EventReviewResolutionInput)
+	}
+	cluster, tx, err := beginOpenEventReviewClusterTx(ctx, s.db, input.EventReviewResolutionInput)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if cluster.ConflictType != historicalDuplicateRepairConflictType {
+		return fmt.Errorf("event review cluster %d conflict type %q is not historical duplicate", cluster.ID, cluster.ConflictType)
+	}
+	evidence, err := loadEventReviewClusterEvidenceSummariesTx(ctx, tx, cluster.ID)
+	if err != nil {
+		return err
+	}
+	storedLiveActions, err := loadEventReviewClusterLiveActionSummariesTx(ctx, tx, cluster.ID)
+	if err != nil {
+		return err
+	}
+	readiness, err := loadEventReviewHistoricalDuplicateReadinessTx(ctx, tx, seedstore.EventReviewClusterSummary{
+		ID:               cluster.ID,
+		Status:           cluster.Status,
+		Version:          cluster.Version,
+		ConflictType:     cluster.ConflictType,
+		ConflictReason:   cluster.ConflictReason,
+		CanonicalEventID: cluster.CanonicalEventID,
+	}, evidence, storedLiveActions)
+	if err != nil {
+		return err
+	}
+	if readiness == nil {
+		return fmt.Errorf("historical duplicate event review cluster %d has no historical duplicate readiness", cluster.ID)
+	}
+
+	actions, keptEventIDs, withholdEventIDs, appliedActions, err := normalizeHistoricalDuplicateOverrideActions(cluster.ID, readiness, input.Actions)
+	if err != nil {
+		return err
+	}
+	if len(withholdEventIDs) == 0 {
+		if !readiness.CanKeepAllSeparate {
+			reasons := strings.Join(readiness.KeepSeparateBlockingReasons, "; ")
+			if reasons == "" {
+				reasons = "historical duplicate cluster is not eligible to keep separate"
+			}
+			return fmt.Errorf("historical duplicate event review cluster %d is not eligible to keep separate: %s", cluster.ID, reasons)
+		}
+		now := time.Now().UTC()
+		if err := resolveHistoricalDuplicateKeepSeparateTx(ctx, tx, cluster, readiness, keptEventIDs, now); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if input.CanonicalEventID <= 0 {
+		return fmt.Errorf("historical duplicate event review cluster %d requires a canonical event for withhold actions", cluster.ID)
+	}
+	canonicalAction, ok := actions[input.CanonicalEventID]
+	if !ok {
+		return fmt.Errorf("historical duplicate event review cluster %d canonical event %d is missing from submitted actions", cluster.ID, input.CanonicalEventID)
+	}
+	if canonicalAction.Action != seedstore.EventReviewLiveActionKindKeepSeparate {
+		return fmt.Errorf("historical duplicate event review cluster %d canonical event %d must be keep_separate", cluster.ID, input.CanonicalEventID)
+	}
+	for _, eventID := range keptEventIDs {
+		if eventID == input.CanonicalEventID {
+			continue
+		}
+		if !historicalDuplicateReadinessEventCanRemain(readiness, eventID) {
+			return fmt.Errorf("historical duplicate event review cluster %d kept event %d is not eligible to remain", cluster.ID, eventID)
+		}
+	}
+
+	now := time.Now().UTC()
+	repairRunNotes := fmt.Sprintf("historical duplicate event review cluster %d override resolution", cluster.ID)
+	repairRunID, err := createHistoricalDuplicateRepairRunTx(ctx, tx, now, repairRunNotes)
+	if err != nil {
+		return err
+	}
+	for _, loserID := range withholdEventIDs {
+		if _, err := withholdHistoricalDuplicateEventTx(ctx, tx, loserID, input.CanonicalEventID, repairRunID, now, historicalDuplicateWithholdOptions{
+			AllowReviewed:          true,
+			DetachLoserSourceLinks: true,
+		}); err != nil {
+			return err
+		}
+	}
+	if err := finishHistoricalDuplicateRepairRunTx(ctx, tx, repairRunID, historicalDuplicateRepairRunStatusSucceeded, repairRunNotes); err != nil {
+		return err
+	}
+
+	appliedSeparations, err := insertHistoricalDuplicateKeptEventSeparationsTx(ctx, tx, keptEventIDs, "historical duplicate override keep separate", now)
+	if err != nil {
+		return err
+	}
+	snapshotCluster := cluster
+	snapshotCluster.CanonicalEventID = &input.CanonicalEventID
+	snapshot, err := marshalEventReviewResolutionSnapshot(snapshotCluster, seedstore.EventReviewResolutionStatusResolved, "", nil, &repairRunID, nil, nil, nil, nil, appliedSeparations, nil, appliedActions, now)
+	if err != nil {
+		return err
+	}
+	if _, err := insertEventReviewResolutionTx(ctx, tx, cluster.ID, seedstore.EventReviewResolutionStatusResolved, snapshot, "", now); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE event_review_clusters
+		SET status = ?, canonical_event_id = ?, version = version + 1, updated_at = ?
+		WHERE id = ?
+			AND version = ?
+			AND status = ?
+	`, string(seedstore.EventReviewClusterStatusResolved), input.CanonicalEventID, formatRFC3339UTC(now), cluster.ID, cluster.Version, string(seedstore.EventReviewClusterStatusOpen))
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected != 1 {
+		return fmt.Errorf("event review cluster %d update was rejected", cluster.ID)
+	}
+	return tx.Commit()
+}
+
+func resolveHistoricalDuplicateKeepSeparateTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, cluster seedstore.EventReviewCluster, readiness *seedstore.EventReviewHistoricalDuplicateReadiness, keptEventIDs []int64, now time.Time) error {
+	keptEventIDs = uniqueInt64s(keptEventIDs)
+	if len(keptEventIDs) < 2 {
+		return fmt.Errorf("historical duplicate event review cluster %d requires at least two kept event IDs", cluster.ID)
+	}
 	eventSlugs := make(map[int64]string, len(readiness.Events))
 	for _, event := range readiness.Events {
 		eventSlugs[event.EventID] = event.EventSlug
 	}
 
-	now := time.Now().UTC()
-	appliedSeparations := make([]eventReviewResolutionAppliedSeparationSnapshot, 0, len(expectedIDs)*(len(expectedIDs)-1)/2)
-	for i := 0; i < len(expectedIDs); i++ {
-		for j := i + 1; j < len(expectedIDs); j++ {
-			separation, err := insertEventReviewSeparationTx(ctx, tx,
-				eventReviewEventSeparationEndpoint(expectedIDs[i]),
-				eventReviewEventSeparationEndpoint(expectedIDs[j]),
-				"historical duplicate keep separate",
-				now,
-			)
-			if err != nil {
-				return err
-			}
-			appliedSeparations = append(appliedSeparations, separation)
-		}
+	appliedSeparations, err := insertHistoricalDuplicateKeptEventSeparationsTx(ctx, tx, keptEventIDs, "historical duplicate keep separate", now)
+	if err != nil {
+		return err
 	}
-
-	keptEvents := make([]eventReviewResolutionKeptHistoricalDuplicateEventSnapshot, 0, len(expectedIDs))
-	for _, eventID := range expectedIDs {
+	keptEvents := make([]eventReviewResolutionKeptHistoricalDuplicateEventSnapshot, 0, len(keptEventIDs))
+	for _, eventID := range keptEventIDs {
 		keptEvents = append(keptEvents, eventReviewResolutionKeptHistoricalDuplicateEventSnapshot{
 			EventID:   eventID,
 			EventSlug: eventSlugs[eventID],
@@ -418,7 +548,103 @@ func (s *Store) ResolveHistoricalDuplicateKeepSeparate(ctx context.Context, inpu
 	if rowsAffected != 1 {
 		return fmt.Errorf("event review cluster %d update was rejected", cluster.ID)
 	}
-	return tx.Commit()
+	return nil
+}
+
+func insertHistoricalDuplicateKeptEventSeparationsTx(ctx context.Context, tx interface {
+	execer
+	queryer
+}, keptEventIDs []int64, reason string, now time.Time) ([]eventReviewResolutionAppliedSeparationSnapshot, error) {
+	keptEventIDs = uniqueInt64s(keptEventIDs)
+	appliedSeparations := make([]eventReviewResolutionAppliedSeparationSnapshot, 0, len(keptEventIDs)*(len(keptEventIDs)-1)/2)
+	for i := 0; i < len(keptEventIDs); i++ {
+		for j := i + 1; j < len(keptEventIDs); j++ {
+			separation, err := insertEventReviewSeparationTx(ctx, tx,
+				eventReviewEventSeparationEndpoint(keptEventIDs[i]),
+				eventReviewEventSeparationEndpoint(keptEventIDs[j]),
+				reason,
+				now,
+			)
+			if err != nil {
+				return nil, err
+			}
+			appliedSeparations = append(appliedSeparations, separation)
+		}
+	}
+	return appliedSeparations, nil
+}
+
+func normalizeHistoricalDuplicateOverrideActions(clusterID int64, readiness *seedstore.EventReviewHistoricalDuplicateReadiness, inputActions []seedstore.EventReviewHistoricalDuplicateActionInput) (map[int64]seedstore.EventReviewHistoricalDuplicateActionInput, []int64, []int64, []eventReviewResolutionAppliedLiveActionSnapshot, error) {
+	expectedIDs := historicalDuplicateReadinessEventIDs(readiness)
+	if len(expectedIDs) < 2 {
+		return nil, nil, nil, nil, fmt.Errorf("historical duplicate event review cluster %d requires at least two current events", clusterID)
+	}
+	if len(inputActions) < 2 {
+		return nil, nil, nil, nil, fmt.Errorf("historical duplicate event review cluster %d requires actions for all current events", clusterID)
+	}
+	eventSlugs := make(map[int64]string, len(readiness.Events))
+	for _, event := range readiness.Events {
+		eventSlugs[event.EventID] = event.EventSlug
+	}
+	actions := make(map[int64]seedstore.EventReviewHistoricalDuplicateActionInput, len(inputActions))
+	submittedIDs := make([]int64, 0, len(inputActions))
+	for _, action := range inputActions {
+		if action.EventID <= 0 {
+			return nil, nil, nil, nil, fmt.Errorf("historical duplicate event review cluster %d has invalid action event ID", clusterID)
+		}
+		if !action.Action.Valid() {
+			return nil, nil, nil, nil, fmt.Errorf("historical duplicate event review cluster %d has unsupported action %q for event %d", clusterID, action.Action, action.EventID)
+		}
+		if _, ok := actions[action.EventID]; ok {
+			return nil, nil, nil, nil, fmt.Errorf("historical duplicate event review cluster %d has duplicate action for event %d", clusterID, action.EventID)
+		}
+		action.Reason = strings.TrimSpace(action.Reason)
+		if action.Reason == "" {
+			switch action.Action {
+			case seedstore.EventReviewLiveActionKindKeepSeparate:
+				action.Reason = "historical duplicate override keep separate"
+			case seedstore.EventReviewLiveActionKindWithholdDuplicate:
+				action.Reason = "historical duplicate override withhold duplicate"
+			}
+		}
+		actions[action.EventID] = action
+		submittedIDs = append(submittedIDs, action.EventID)
+	}
+	if !sameInt64Set(expectedIDs, submittedIDs) {
+		return nil, nil, nil, nil, fmt.Errorf("historical duplicate event review cluster %d submitted action events do not match current cluster events", clusterID)
+	}
+
+	keptEventIDs := make([]int64, 0, len(actions))
+	withholdEventIDs := make([]int64, 0, len(actions))
+	appliedActions := make([]eventReviewResolutionAppliedLiveActionSnapshot, 0, len(actions))
+	for _, eventID := range expectedIDs {
+		action := actions[eventID]
+		appliedActions = append(appliedActions, eventReviewResolutionAppliedLiveActionSnapshot{
+			EventID:   eventID,
+			EventSlug: eventSlugs[eventID],
+			Action:    action.Action,
+			Reason:    action.Reason,
+		})
+		switch action.Action {
+		case seedstore.EventReviewLiveActionKindKeepSeparate:
+			keptEventIDs = append(keptEventIDs, eventID)
+		case seedstore.EventReviewLiveActionKindWithholdDuplicate:
+			withholdEventIDs = append(withholdEventIDs, eventID)
+		}
+	}
+	return actions, keptEventIDs, withholdEventIDs, appliedActions, nil
+}
+
+func historicalDuplicateReadinessEventCanRemain(readiness *seedstore.EventReviewHistoricalDuplicateReadiness, eventID int64) bool {
+	if readiness == nil {
+		return false
+	}
+	for _, event := range readiness.Events {
+		if event.EventID == eventID {
+			return event.KeepEligible
+		}
+	}
+	return false
 }
 
 func (s *Store) ResolveTitleRepairSlugConflict(ctx context.Context, input seedstore.EventReviewTitleRepairSlugConflictInput) error {

@@ -3536,6 +3536,78 @@ func TestAdminEventReviewResolveHistoricalDuplicateKeepSeparatePostsAndRedirects
 	}
 }
 
+func TestAdminEventReviewResolveHistoricalDuplicateActionsPostsAndRedirects(t *testing.T) {
+	stagingKey := "repair-queue-a"
+	store := &eventReviewOnlyStoreStub{
+		detail: store.EventReviewClusterDetail{
+			Summary: store.EventReviewClusterSummary{
+				ID:                41,
+				Status:            store.EventReviewClusterStatusOpen,
+				Version:           3,
+				StagingKey:        &stagingKey,
+				StagingKeyVersion: 3,
+				ConflictType:      "historical_duplicate",
+				ConflictReason:    "reason-a",
+				CanonicalEventID:  int64Ptr(88),
+				EvidenceCount:     2,
+			},
+			HistoricalDuplicateReadiness: &store.EventReviewHistoricalDuplicateReadiness{
+				CanResolveLiveActions: true,
+				Events: []store.EventReviewHistoricalDuplicateEventReadiness{
+					{EventID: 88, EventSlug: "canonical-event", PublicationState: "reviewed", Live: true, Canonical: true, Action: store.EventReviewLiveActionKindKeepSeparate, KeepEligible: true},
+					{EventID: 90, EventSlug: "loser-event", PublicationState: "provisional", Live: true, Action: store.EventReviewLiveActionKindWithholdDuplicate, KeepEligible: true},
+				},
+			},
+		},
+	}
+	server, err := NewServer(testAdminAuthDeps(store))
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	cookie, _ := loginAdmin(t, server, "/admin/review")
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/event-review/41", nil)
+	getReq.AddCookie(cookie)
+	getRR := httptest.NewRecorder()
+	server.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want %d", getRR.Code, http.StatusOK)
+	}
+	body := getRR.Body.String()
+	assertContains(t, body, "Override historical duplicate actions")
+	assertContains(t, body, `name="action" value="resolve_historical_duplicate_actions"`)
+	assertContains(t, body, `name="historical_event_id" value="88"`)
+	assertContains(t, body, `name="historical_action_90"`)
+	csrfToken := extractCSRFToken(t, body)
+
+	form := url.Values{}
+	form.Set("csrf_token", csrfToken)
+	form.Set("expected_version", "3")
+	form.Set("action", "resolve_historical_duplicate_actions")
+	form.Set("canonical_event_id", "88")
+	form.Add("historical_event_id", "88")
+	form.Set("historical_action_88", "keep_separate")
+	form.Add("historical_event_id", "90")
+	form.Set("historical_action_90", "withhold_duplicate")
+	req := httptest.NewRequest(http.MethodPost, "/admin/event-review/41", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d; body %q", rr.Code, http.StatusSeeOther, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "/admin/review?event_review_resolved=1" {
+		t.Fatalf("Location = %q, want resolve redirect", location)
+	}
+	if !store.overrideActionsCalled {
+		t.Fatal("expected override actions store method to be called")
+	}
+	if got := store.overrideActionsInput; got.ClusterID != 41 || got.ExpectedVersion != 3 || got.CanonicalEventID != 88 || len(got.Actions) != 2 || got.Actions[0].EventID != 88 || string(got.Actions[0].Action) != "keep_separate" || got.Actions[1].EventID != 90 || string(got.Actions[1].Action) != "withhold_duplicate" {
+		t.Fatalf("override actions input = %#v", got)
+	}
+}
+
 func TestAdminEventReviewResolveTitleRepairPostsAndRedirects(t *testing.T) {
 	openTime := time.Date(2026, time.May, 15, 11, 0, 0, 0, time.UTC)
 	stagingKey := "repair-queue-title"
@@ -3769,6 +3841,7 @@ func TestAdminEventReviewResolveRejectsInvalidFormsAndCSRF(t *testing.T) {
 		{name: "missing version", form: url.Values{"action": {"resolve_live_actions"}}, want: "expected version is required"},
 		{name: "invalid version", form: url.Values{"expected_version": {"not-a-number"}, "action": {"resolve_live_actions"}}, want: "expected version is required"},
 		{name: "historical keep separate missing kept events", form: url.Values{"expected_version": {"3"}, "action": {"resolve_historical_duplicate_keep_separate"}}, want: "at least two kept event ids are required"},
+		{name: "historical override missing events", form: url.Values{"expected_version": {"3"}, "action": {"resolve_historical_duplicate_actions"}}, want: "at least two historical duplicate event ids are required"},
 		{name: "unknown action", form: url.Values{"expected_version": {"3"}, "action": {"resolve"}}, want: "invalid event review action"},
 		{name: "title repair missing version", form: url.Values{"action": {"resolve_title_repair"}}, want: "expected version is required"},
 		{name: "title repair invalid version", form: url.Values{"expected_version": {"not-a-number"}, "action": {"resolve_title_repair"}}, want: "expected version is required"},
@@ -7572,6 +7645,9 @@ type adminReviewEventReviewStoreStub struct {
 	keepSeparateCalled          bool
 	keepSeparateInput           store.EventReviewHistoricalDuplicateKeepSeparateInput
 	keepSeparateErr             error
+	overrideActionsCalled       bool
+	overrideActionsInput        store.EventReviewHistoricalDuplicateWithActionsInput
+	overrideActionsErr          error
 	titleSlugConflictCalled     bool
 	titleSlugConflictInput      store.EventReviewTitleRepairSlugConflictInput
 	titleSlugConflictErr        error
@@ -7628,6 +7704,12 @@ func (s *adminReviewEventReviewStoreStub) ResolveHistoricalDuplicateKeepSeparate
 	return s.keepSeparateErr
 }
 
+func (s *adminReviewEventReviewStoreStub) ResolveHistoricalDuplicateWithActions(_ context.Context, input store.EventReviewHistoricalDuplicateWithActionsInput) error {
+	s.overrideActionsCalled = true
+	s.overrideActionsInput = input
+	return s.overrideActionsErr
+}
+
 func (s *adminReviewEventReviewStoreStub) ResolveTitleRepairSlugConflict(_ context.Context, input store.EventReviewTitleRepairSlugConflictInput) error {
 	s.titleSlugConflictCalled = true
 	s.titleSlugConflictInput = input
@@ -7675,6 +7757,9 @@ type eventReviewOnlyStoreStub struct {
 	keepSeparateCalled          bool
 	keepSeparateInput           store.EventReviewHistoricalDuplicateKeepSeparateInput
 	keepSeparateErr             error
+	overrideActionsCalled       bool
+	overrideActionsInput        store.EventReviewHistoricalDuplicateWithActionsInput
+	overrideActionsErr          error
 	titleSlugConflictCalled     bool
 	titleSlugConflictInput      store.EventReviewTitleRepairSlugConflictInput
 	titleSlugConflictErr        error
@@ -7765,6 +7850,12 @@ func (s *eventReviewOnlyStoreStub) ResolveHistoricalDuplicateKeepSeparate(_ cont
 	s.keepSeparateCalled = true
 	s.keepSeparateInput = input
 	return s.keepSeparateErr
+}
+
+func (s *eventReviewOnlyStoreStub) ResolveHistoricalDuplicateWithActions(_ context.Context, input store.EventReviewHistoricalDuplicateWithActionsInput) error {
+	s.overrideActionsCalled = true
+	s.overrideActionsInput = input
+	return s.overrideActionsErr
 }
 
 func (s *eventReviewOnlyStoreStub) ResolveTitleRepairSlugConflict(_ context.Context, input store.EventReviewTitleRepairSlugConflictInput) error {
