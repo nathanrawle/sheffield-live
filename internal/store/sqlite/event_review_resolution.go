@@ -357,7 +357,11 @@ func (s *Store) ResolveHistoricalDuplicateKeepSeparate(ctx context.Context, inpu
 	}
 
 	expectedIDs := historicalDuplicateReadinessEventIDs(readiness)
-	if len(input.KeptEventIDs) > 0 && !sameInt64Set(expectedIDs, input.KeptEventIDs) {
+	submittedIDs := uniqueInt64s(input.KeptEventIDs)
+	if len(submittedIDs) < 2 {
+		return fmt.Errorf("historical duplicate event review cluster %d requires at least two kept event IDs", cluster.ID)
+	}
+	if !sameInt64Set(expectedIDs, submittedIDs) {
 		return fmt.Errorf("historical duplicate event review cluster %d kept event IDs do not match current cluster events", cluster.ID)
 	}
 	eventSlugs := make(map[int64]string, len(readiness.Events))

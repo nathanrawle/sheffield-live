@@ -477,6 +477,28 @@ func TestResolveHistoricalDuplicateKeepSeparateUsesEvidenceEventsWhenNoCanonical
 	}
 }
 
+func TestResolveHistoricalDuplicateKeepSeparateRequiresSubmittedKeptEventSet(t *testing.T) {
+	_, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	st := mustStoreFromDB(t, db)
+	fixture := seedHistoricalDuplicateResolutionFixture(t, db)
+
+	err := st.ResolveHistoricalDuplicateKeepSeparate(context.Background(), seedstore.EventReviewHistoricalDuplicateKeepSeparateInput{
+		EventReviewResolutionInput: seedstore.EventReviewResolutionInput{
+			ClusterID:       fixture.clusterID,
+			ExpectedVersion: 1,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "at least two kept event IDs") {
+		t.Fatalf("resolve missing kept IDs error = %v, want kept ID requirement", err)
+	}
+	assertEventReviewClusterState(t, db, fixture.clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	if got := mustCount(t, db, "event_review_resolutions"); got != 0 {
+		t.Fatalf("event_review_resolutions rows = %d, want 0", got)
+	}
+}
+
 func TestResolveEventReviewClusterAppliesTitleRepairAndRefreshesExactIdentity(t *testing.T) {
 	_, db := openEventReviewSchemaStore(t)
 	defer db.Close()

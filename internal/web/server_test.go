@@ -3768,6 +3768,7 @@ func TestAdminEventReviewResolveRejectsInvalidFormsAndCSRF(t *testing.T) {
 	}{
 		{name: "missing version", form: url.Values{"action": {"resolve_live_actions"}}, want: "expected version is required"},
 		{name: "invalid version", form: url.Values{"expected_version": {"not-a-number"}, "action": {"resolve_live_actions"}}, want: "expected version is required"},
+		{name: "historical keep separate missing kept events", form: url.Values{"expected_version": {"3"}, "action": {"resolve_historical_duplicate_keep_separate"}}, want: "at least two kept event ids are required"},
 		{name: "unknown action", form: url.Values{"expected_version": {"3"}, "action": {"resolve"}}, want: "invalid event review action"},
 		{name: "title repair missing version", form: url.Values{"action": {"resolve_title_repair"}}, want: "expected version is required"},
 		{name: "title repair invalid version", form: url.Values{"expected_version": {"not-a-number"}, "action": {"resolve_title_repair"}}, want: "expected version is required"},

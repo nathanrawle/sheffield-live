@@ -2598,6 +2598,9 @@ func parseEventReviewKeepSeparateEventIDs(values []string) ([]int64, error) {
 		seen[id] = struct{}{}
 		ids = append(ids, id)
 	}
+	if len(ids) < 2 {
+		return nil, errors.New("at least two kept event ids are required")
+	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids, nil
 }
