@@ -469,6 +469,14 @@ func applyCanonicalExactAutoResolutionProvenanceTx(ctx context.Context, tx inter
 		}
 	}
 
+	if !recordSupportingProvenance {
+		updatedRecord, ok, err := loadEventRecordByIDTx(ctx, tx, targetRecord.ID)
+		if err != nil || !ok {
+			return eventRecord{}, ok, err
+		}
+		return updatedRecord, true, nil
+	}
+
 	for _, item := range supportingProvenanceCandidates {
 		writeResult, err := ensureEventSourceLinkForSourceIdentityContextTx(ctx, tx, targetRecord.ID, item.candidate.SourceID, item.sourceCtx, sourceLinkAuthoritySupporting, sourceLinkConflictPolicyNoMove, now)
 		if err != nil {

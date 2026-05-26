@@ -1791,6 +1791,27 @@ func TestCanonicalExactAuthoritativeDoesNotHarvestSupportingProvenance(t *testin
 	venueID := lookupStoreVenueID(t, db, "leadmill")
 	insertLegacyEvent(t, db, "authoritative-canonical-exact-leadmill-20260510190000", venueID, authoritativeSourceID, domain.OriginLive)
 	canonicalEventID := lookupEventIDBySlug(t, db, "authoritative-canonical-exact-leadmill-20260510190000")
+	if _, err := db.Exec(`
+		UPDATE events
+		SET genre = ?
+		WHERE id = ?
+	`, "Indie", canonicalEventID); err != nil {
+		t.Fatalf("seed authoritative canonical genre: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO event_genres (
+			event_id,
+			name,
+			rank,
+			score,
+			mention_count,
+			earliest_position,
+			created_at,
+			updated_at
+		) VALUES (?, ?, 1, 1.0, 1, 0, ?, ?)
+	`, canonicalEventID, "Existing genre", "2026-05-15T09:00:00Z", "2026-05-15T09:00:00Z"); err != nil {
+		t.Fatalf("seed authoritative canonical event genre row: %v", err)
+	}
 
 	identityKey := "authoritative-canonical-exact"
 	identityHash := buildEventReviewIdentityKeyHash(seedstore.EventReviewIdentityKeyKindExact, eventReviewIdentityKeyVersion, identityKey)
@@ -1891,6 +1912,25 @@ func TestCanonicalExactAuthoritativeDoesNotHarvestSupportingProvenance(t *testin
 	}
 	if supportingObservationRows != 0 {
 		t.Fatalf("supporting observations in authoritative canonical exact cluster = %d, want 0", supportingObservationRows)
+	}
+	var genreText string
+	if err := db.QueryRow(`SELECT genre FROM events WHERE id = ?`, canonicalEventID).Scan(&genreText); err != nil {
+		t.Fatalf("load authoritative canonical genre: %v", err)
+	}
+	if genreText != "Indie" {
+		t.Fatalf("authoritative canonical genre = %q, want unchanged", genreText)
+	}
+	var eventGenreRows int
+	var eventGenreName string
+	if err := db.QueryRow(`
+		SELECT COUNT(*), COALESCE(MAX(name), '')
+		FROM event_genres
+		WHERE event_id = ?
+	`, canonicalEventID).Scan(&eventGenreRows, &eventGenreName); err != nil {
+		t.Fatalf("load authoritative canonical event genres: %v", err)
+	}
+	if eventGenreRows != 1 || eventGenreName != "Existing genre" {
+		t.Fatalf("authoritative canonical event_genres = %d/%q, want existing row unchanged", eventGenreRows, eventGenreName)
 	}
 }
 
