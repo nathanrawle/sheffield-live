@@ -139,7 +139,7 @@ func TestUpsertEventSourceImagesKeepsOneCurrentImagePerSource(t *testing.T) {
 	}
 }
 
-func TestUpsertEventSecondarySourceInfoRemovesOmittedSourceImages(t *testing.T) {
+func TestReplaceEventSecondarySourceInfoRemovesOmittedSourceImages(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
 	st, err := Open(path)
 	if err != nil {
@@ -149,32 +149,32 @@ func TestUpsertEventSecondarySourceInfoRemovesOmittedSourceImages(t *testing.T) 
 
 	db := mustRawDB(t, path)
 	defer db.Close()
-	eventID := insertEventSourceImageTestEvent(t, db, "source-image-secondary-sync")
+	eventID := insertEventSourceImageTestEvent(t, db, "source-image-secondary-replace")
 	now := time.Date(2026, time.May, 1, 10, 0, 0, 0, time.UTC)
 
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
-	if err := upsertEventSecondarySourceInfoTx(context.Background(), tx, eventID, reviewGroupAuthoritativeLink{}, []review.Candidate{
+	if err := replaceEventSecondarySourceInfoTx(context.Background(), tx, eventID, reviewGroupAuthoritativeLink{}, []review.Candidate{
 		{
 			ExternalID:     "alpha",
-			Name:           "Source Image Secondary Sync",
+			Name:           "Source Image Secondary Replace",
 			SourceName:     "Alpha mirror",
-			SourceURL:      "https://example.test/alpha-secondary-sync",
-			ImageURL:       "/media/events/alpha-secondary-sync.jpg",
-			ImageSourceURL: "https://images.example.test/alpha-secondary-sync.jpg",
+			SourceURL:      "https://example.test/alpha-secondary-replace",
+			ImageURL:       "/media/events/alpha-secondary-replace.jpg",
+			ImageSourceURL: "https://images.example.test/alpha-secondary-replace.jpg",
 			ImageAlt:       "Alpha poster",
 			ImageWidth:     1200,
 			ImageHeight:    800,
 		},
 		{
 			ExternalID:     "bravo",
-			Name:           "Source Image Secondary Sync",
+			Name:           "Source Image Secondary Replace",
 			SourceName:     "Bravo mirror",
-			SourceURL:      "https://example.test/bravo-secondary-sync",
-			ImageURL:       "/media/events/bravo-secondary-sync.jpg",
-			ImageSourceURL: "https://images.example.test/bravo-secondary-sync.jpg",
+			SourceURL:      "https://example.test/bravo-secondary-replace",
+			ImageURL:       "/media/events/bravo-secondary-replace.jpg",
+			ImageSourceURL: "https://images.example.test/bravo-secondary-replace.jpg",
 			ImageAlt:       "Bravo poster",
 			ImageWidth:     1200,
 			ImageHeight:    800,
@@ -193,13 +193,13 @@ func TestUpsertEventSecondarySourceInfoRemovesOmittedSourceImages(t *testing.T) 
 	if err != nil {
 		t.Fatalf("begin recompute tx: %v", err)
 	}
-	if err := upsertEventSecondarySourceInfoTx(context.Background(), tx, eventID, reviewGroupAuthoritativeLink{}, []review.Candidate{{
+	if err := replaceEventSecondarySourceInfoTx(context.Background(), tx, eventID, reviewGroupAuthoritativeLink{}, []review.Candidate{{
 		ExternalID:     "alpha",
-		Name:           "Source Image Secondary Sync",
+		Name:           "Source Image Secondary Replace",
 		SourceName:     "Alpha mirror",
-		SourceURL:      "https://example.test/alpha-secondary-sync",
-		ImageURL:       "/media/events/alpha-secondary-sync-new.jpg",
-		ImageSourceURL: "https://images.example.test/alpha-secondary-sync-new.jpg",
+		SourceURL:      "https://example.test/alpha-secondary-replace",
+		ImageURL:       "/media/events/alpha-secondary-replace-new.jpg",
+		ImageSourceURL: "https://images.example.test/alpha-secondary-replace-new.jpg",
 		ImageAlt:       "Alpha poster updated",
 		ImageWidth:     1600,
 		ImageHeight:    900,
@@ -226,8 +226,82 @@ func TestUpsertEventSecondarySourceInfoRemovesOmittedSourceImages(t *testing.T) 
 	if got, want := sourceName, "Alpha mirror"; got != want {
 		t.Fatalf("remaining source name = %q, want %q", got, want)
 	}
-	if got, want := imageURL, "/media/events/alpha-secondary-sync-new.jpg"; got != want {
+	if got, want := imageURL, "/media/events/alpha-secondary-replace-new.jpg"; got != want {
 		t.Fatalf("remaining image url = %q, want %q", got, want)
+	}
+}
+
+func TestUpsertEventSecondarySourceInfoPreservesIndependentSourceImages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	db := mustRawDB(t, path)
+	defer db.Close()
+	eventID := insertEventSourceImageTestEvent(t, db, "source-image-secondary-upsert")
+	now := time.Date(2026, time.May, 1, 10, 0, 0, 0, time.UTC)
+
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := upsertEventSecondarySourceInfoTx(context.Background(), tx, eventID, reviewGroupAuthoritativeLink{}, []review.Candidate{{
+		ExternalID:     "alpha",
+		Name:           "Source Image Secondary Upsert",
+		SourceName:     "Alpha mirror",
+		SourceURL:      "https://example.test/alpha-secondary-upsert",
+		ImageURL:       "/media/events/alpha-secondary-upsert.jpg",
+		ImageSourceURL: "https://images.example.test/alpha-secondary-upsert.jpg",
+		ImageAlt:       "Alpha poster",
+		ImageWidth:     1200,
+		ImageHeight:    800,
+	}}, now); err != nil {
+		t.Fatalf("upsert initial secondary source image: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit initial secondary source image: %v", err)
+	}
+
+	tx, err = db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin independent tx: %v", err)
+	}
+	if err := upsertEventSecondarySourceInfoTx(context.Background(), tx, eventID, reviewGroupAuthoritativeLink{}, []review.Candidate{{
+		ExternalID:     "bravo",
+		Name:           "Source Image Secondary Upsert",
+		SourceName:     "Bravo mirror",
+		SourceURL:      "https://example.test/bravo-secondary-upsert",
+		ImageURL:       "/media/events/bravo-secondary-upsert.jpg",
+		ImageSourceURL: "https://images.example.test/bravo-secondary-upsert.jpg",
+		ImageAlt:       "Bravo poster",
+		ImageWidth:     1200,
+		ImageHeight:    800,
+	}}, now.Add(time.Hour)); err != nil {
+		t.Fatalf("upsert independent secondary source image: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit independent secondary source image: %v", err)
+	}
+
+	images, err := st.EventSourceImagesByEventSlug(context.Background(), "source-image-secondary-upsert")
+	if err != nil {
+		t.Fatalf("load source images: %v", err)
+	}
+	if len(images) != 2 {
+		t.Fatalf("event source images = %d, want 2", len(images))
+	}
+	bySource := make(map[string]seedstore.EventImage, len(images))
+	for _, image := range images {
+		bySource[image.SourceName] = image
+	}
+	if got, want := bySource["Alpha mirror"].ImageURL, "/media/events/alpha-secondary-upsert.jpg"; got != want {
+		t.Fatalf("alpha image url = %q, want %q", got, want)
+	}
+	if got, want := bySource["Bravo mirror"].ImageURL, "/media/events/bravo-secondary-upsert.jpg"; got != want {
+		t.Fatalf("bravo image url = %q, want %q", got, want)
 	}
 }
 
