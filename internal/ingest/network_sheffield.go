@@ -8,7 +8,8 @@ import (
 	"strings"
 )
 
-const networkSheffieldVenueSlug = "network-sheffield"
+const networkVenueSlug = "network"
+const networkVenueName = "Network"
 
 var networkSheffieldDetailPathPattern = regexp.MustCompile(`^/event/[^/]+/?$`)
 var networkSheffieldRoomPattern = regexp.MustCompile(`(?i)\bnetwork\s*([123])\b`)
@@ -152,16 +153,16 @@ func networkSheffieldVenueEvidence(title, locationName string) (string, string, 
 	}
 
 	if room := networkSheffieldRoomText(title); room != "" && (locationName == "" || locationRoom != "" || locationVenue != "") {
-		return room, room, []RoomCandidate{{Slug: networkSheffieldRoomSlug(room), Name: room}}, true
+		return networkVenueName, room, []RoomCandidate{{Slug: networkSheffieldRoomSlug(room), Name: room}}, true
 	}
 	if locationRoom != "" {
-		return locationRoom, locationRoom, []RoomCandidate{{Slug: networkSheffieldRoomSlug(locationRoom), Name: locationRoom}}, true
+		return networkVenueName, locationRoom, []RoomCandidate{{Slug: networkSheffieldRoomSlug(locationRoom), Name: locationRoom}}, true
 	}
 	if locationVenue != "" {
-		return locationVenue, "", nil, true
+		return networkVenueName, "", nil, true
 	}
 	if venue := networkSheffieldVenueText(title); venue != "" {
-		return venue, "", nil, true
+		return networkVenueName, "", nil, true
 	}
 	return "", "", nil, false
 }
@@ -172,9 +173,9 @@ func networkSheffieldVenueText(value string) string {
 	case text == "":
 		return ""
 	case strings.Contains(text, "network sheffield"):
-		return "Network Sheffield"
+		return networkVenueName
 	case networkSheffieldVenuePattern.MatchString(text):
-		return "Network"
+		return networkVenueName
 	default:
 		return ""
 	}
@@ -185,10 +186,10 @@ func networkSheffieldVenueSlugFromText(value string) string {
 		return ""
 	}
 	if networkSheffieldRoomText(value) != "" {
-		return networkSheffieldVenueSlug
+		return networkVenueSlug
 	}
 	if networkSheffieldVenueText(value) != "" {
-		return networkSheffieldVenueSlug
+		return networkVenueSlug
 	}
 	return ""
 }

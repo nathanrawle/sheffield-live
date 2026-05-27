@@ -15,7 +15,7 @@ var eventTitleVenueAliases = map[string][]string{
 	"leadmill":           {"The Leadmill", "Leadmill"},
 	"octagon-centre":     {"Octagon", "Octagon Centre", "The Octagon", "The Octagon Centre"},
 	"lescar":             {"The Lescar", "Lescar"},
-	"network-sheffield":  {"Network", "Network Sheffield", "Network 1", "Network 2", "Network 3"},
+	"network":            {"Network", "Network Sheffield", "Network 1", "Network 2", "Network 3"},
 	"firth-hall":         {"Firth Hall"},
 	"drama-studio":       {"Drama Studio"},
 	"greystones":         {"The Greystones", "Greystones"},

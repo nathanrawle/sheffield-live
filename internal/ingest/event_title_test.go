@@ -112,6 +112,24 @@ func TestStripVenueNameFromEventTitle(t *testing.T) {
 			want:      "Frog Lord",
 		},
 		{
+			name:      "network room suffix",
+			title:     "GODETH | Network 3",
+			venueSlug: "network",
+			want:      "GODETH",
+		},
+		{
+			name:      "network sheffield suffix",
+			title:     "Park Drive - Network Sheffield",
+			venueSlug: "network",
+			want:      "Park Drive",
+		},
+		{
+			name:      "network venue suffix",
+			title:     "Club Night @ Network",
+			venueSlug: "network",
+			want:      "Club Night",
+		},
+		{
 			name:      "bare prefix is preserved",
 			title:     "Cafe No. 9 Late Show",
 			venueSlug: "cafe-no-9",

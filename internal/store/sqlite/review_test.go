@@ -1826,6 +1826,102 @@ func TestPromoteSingletonReviewClusterIfMissingTreatsUniversityMultiVenueAsAutho
 	}
 }
 
+func TestPromoteSingletonReviewClusterIfMissingPromotesNetworkRoomUnderCanonicalVenue(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	sourceName := "Network Sheffield manual ingest"
+	sourceURL := "https://www.networksheffield.co.uk/event/godeth-network-sheffield/"
+	sourceEventKey, ok := ingest.SourceIdentityKey(sourceURL)
+	if !ok {
+		t.Fatalf("source identity key not available for %q", sourceURL)
+	}
+
+	slug, promoted, err := st.PromoteSingletonReviewClusterIfMissing(ctx, ingest.ReviewStageClusterInput{
+		Title:                       "Network Sheffield singleton",
+		SourceName:                  sourceName,
+		SourceURL:                   sourceURL,
+		AuthoritativeSourceName:     sourceName,
+		AuthoritativeSourceURL:      sourceURL,
+		AuthoritativeSourceEventKey: sourceEventKey,
+		Candidates: []review.CandidateInput{{
+			ExternalID:       sourceURL,
+			Name:             "GODETH",
+			VenueSlug:        "network",
+			VenueText:        "Network",
+			VenueLocationRaw: "Network, 14 Matilda St, Sheffield City Centre, Sheffield S1, UK",
+			RoomText:         "Network 3",
+			Rooms: []domain.VenueRoom{{
+				VenueSlug: "network",
+				Slug:      "network-3",
+				Name:      "Network 3",
+			}},
+			StartAt:     "2026-07-25T19:00:00Z",
+			Status:      "Listed",
+			Description: "Live music at Network.",
+			SourceName:  sourceName,
+			SourceURL:   sourceURL,
+			CalendarURL: sourceURL,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote network singleton: %v", err)
+	}
+	if !promoted {
+		t.Fatal("promoted = false, want true")
+	}
+	if slug == "" {
+		t.Fatal("slug = empty, want promoted authoritative event")
+	}
+
+	venue, ok := st.VenueBySlug("network")
+	if !ok {
+		t.Fatal("network venue not found")
+	}
+	if got, want := venue.Name, "Network"; got != want {
+		t.Fatalf("venue name = %q, want %q", got, want)
+	}
+	if got, want := venue.ValidationState, domain.ValidationStateProvisional; got != want {
+		t.Fatalf("venue validation state = %q, want %q", got, want)
+	}
+	if _, ok := st.VenueBySlug("network-sheffield"); ok {
+		t.Fatal("legacy network-sheffield venue was created")
+	}
+
+	event, ok := st.EventBySlug(slug)
+	if !ok {
+		t.Fatalf("event %q not found", slug)
+	}
+	if got, want := event.VenueSlug, "network"; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+	if got, want := event.RoomText, "Network 3"; got != want {
+		t.Fatalf("room text = %q, want %q", got, want)
+	}
+	if got, want := review.RoomSlugsValue(event.Rooms), "network-3"; got != want {
+		t.Fatalf("room slugs = %q, want %q", got, want)
+	}
+	if len(event.Rooms) != 1 || event.Rooms[0].VenueSlug != "network" {
+		t.Fatalf("event rooms = %#v, want one room under network", event.Rooms)
+	}
+	if got, want := event.SourceName, sourceName; got != want {
+		t.Fatalf("source name = %q, want %q", got, want)
+	}
+	if got, want := event.PublicationState, domain.PublicationStateReviewed; got != want {
+		t.Fatalf("publication state = %q, want %q", got, want)
+	}
+}
+
 func mustReviewCatalog(t *testing.T) *ingest.Catalog {
 	t.Helper()
 
