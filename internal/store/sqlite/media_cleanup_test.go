@@ -167,6 +167,65 @@ func TestCleanupMediaRetainsOpenReviewEvidenceWithInvalidPayloads(t *testing.T) 
 	}
 }
 
+func TestCleanupMediaDeletesPassedSourceImagesAndRetainsFutureSourceImages(t *testing.T) {
+	ctx := context.Background()
+	st, db := openMediaCleanupFixture(t)
+
+	sourceID := insertMediaCleanupSource(t, db, "Media cleanup source", "https://example.test/source-images")
+	passedSourceID := insertMediaCleanupSource(t, db, "Passed source image", "https://example.test/passed-source-image")
+	futureSourceID := insertMediaCleanupSource(t, db, "Future source image", "https://example.test/future-source-image")
+	venueID := mediaCleanupVenueID(t, db, "leadmill")
+	copiedAt := time.Date(2026, time.May, 1, 10, 0, 0, 0, time.UTC)
+
+	saveMediaCleanupAsset(t, ctx, st, "https://images.example.test/passed-source.jpg", "/media/events/passed-source.jpg", "events/passed-source.jpg", copiedAt)
+	saveMediaCleanupAsset(t, ctx, st, "https://images.example.test/future-source.jpg", "/media/events/future-source.jpg", "events/future-source.jpg", copiedAt)
+
+	insertMediaCleanupEvent(t, db, mediaCleanupEventInput{
+		SourceID: sourceID,
+		VenueID:  venueID,
+		Slug:     "passed-source-image",
+		Name:     "Passed Source Image",
+		Start:    time.Date(2026, time.May, 1, 19, 0, 0, 0, time.UTC),
+		End:      time.Date(2026, time.May, 1, 22, 0, 0, 0, time.UTC),
+	})
+	insertMediaCleanupEvent(t, db, mediaCleanupEventInput{
+		SourceID: sourceID,
+		VenueID:  venueID,
+		Slug:     "future-source-image",
+		Name:     "Future Source Image",
+		Start:    time.Date(2026, time.May, 25, 19, 0, 0, 0, time.UTC),
+		End:      time.Date(2026, time.May, 25, 22, 0, 0, 0, time.UTC),
+	})
+	passedEventID := mediaCleanupEventID(t, db, "passed-source-image")
+	futureEventID := mediaCleanupEventID(t, db, "future-source-image")
+	insertEventSourceImageRow(t, db, passedEventID, passedSourceID, "uid:passed-source", "/media/events/passed-source.jpg", "https://images.example.test/passed-source.jpg", "Passed source", 640, 480, 50, 50)
+	insertEventSourceImageRow(t, db, futureEventID, futureSourceID, "uid:future-source", "/media/events/future-source.jpg", "https://images.example.test/future-source.jpg", "Future source", 640, 480, 50, 50)
+
+	report, err := st.CleanupMedia(ctx, MediaCleanupOptions{
+		Apply:          true,
+		Now:            time.Date(2026, time.May, 20, 12, 0, 0, 0, time.UTC),
+		MediaURLPrefix: "/media",
+		ExistingFiles:  []string{"events/passed-source.jpg", "events/future-source.jpg"},
+	})
+	if err != nil {
+		t.Fatalf("cleanup media: %v", err)
+	}
+
+	if report.ClearedEventImages != 0 {
+		t.Fatalf("cleared event images = %d, want 0", report.ClearedEventImages)
+	}
+	if report.DeletedAssetRows != 1 {
+		t.Fatalf("deleted asset rows = %d, want 1", report.DeletedAssetRows)
+	}
+	if got, want := report.FilesToDelete, []string{"events/passed-source.jpg"}; !equalStringSlices(got, want) {
+		t.Fatalf("files to delete = %#v, want %#v", got, want)
+	}
+	assertMediaCleanupSourceImageCount(t, db, "passed-source-image", 0)
+	assertMediaCleanupSourceImageCount(t, db, "future-source-image", 1)
+	assertMediaCleanupAssetExists(t, st, "https://images.example.test/passed-source.jpg", false)
+	assertMediaCleanupAssetExists(t, st, "https://images.example.test/future-source.jpg", true)
+}
+
 func TestCleanupMediaOpenReviewEvidenceAllowsEqualStartAndEnd(t *testing.T) {
 	ctx := context.Background()
 	st, db := openMediaCleanupFixture(t)
@@ -301,6 +360,16 @@ func mediaCleanupVenueID(t *testing.T, db *sql.DB, slug string) int64 {
 	return venueID
 }
 
+func mediaCleanupEventID(t *testing.T, db *sql.DB, slug string) int64 {
+	t.Helper()
+
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, slug).Scan(&eventID); err != nil {
+		t.Fatalf("lookup event %q: %v", slug, err)
+	}
+	return eventID
+}
+
 type mediaCleanupEventInput struct {
 	SourceID         int64
 	VenueID          int64
@@ -405,6 +474,23 @@ func assertMediaCleanupAssetExists(t *testing.T, st *Store, sourceURL string, wa
 	}
 	if ok != want {
 		t.Fatalf("image asset %q exists = %v, want %v", sourceURL, ok, want)
+	}
+}
+
+func assertMediaCleanupSourceImageCount(t *testing.T, db *sql.DB, slug string, want int) {
+	t.Helper()
+
+	var got int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM event_source_images i
+		JOIN events e ON e.id = i.event_id
+		WHERE e.slug = ?
+	`, slug).Scan(&got); err != nil {
+		t.Fatalf("count event source images for %q: %v", slug, err)
+	}
+	if got != want {
+		t.Fatalf("event source images for %q = %d, want %d", slug, got, want)
 	}
 }
 

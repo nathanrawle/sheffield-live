@@ -1926,6 +1926,9 @@ func replaceEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 	if err := deleteEventSecondarySourceInfoForEventTx(ctx, tx, eventID); err != nil {
 		return err
 	}
+	if err := deleteEventSourceImagesForEventTx(ctx, tx, eventID); err != nil {
+		return err
+	}
 	return upsertEventSecondarySourceInfoTx(ctx, tx, eventID, primary, candidates, now)
 }
 
@@ -1990,7 +1993,7 @@ func upsertEventSecondarySourceInfoTx(ctx context.Context, tx interface {
 			return err
 		}
 	}
-	return nil
+	return upsertEventSourceImagesTx(ctx, tx, eventID, primary, candidates, now)
 }
 
 func primarySourceIdentity(event domain.Event) reviewGroupAuthoritativeLink {

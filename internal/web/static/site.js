@@ -184,3 +184,64 @@
     document.fonts.ready.then(scheduleRender);
   }
 })();
+
+(() => {
+  const carousels = document.querySelectorAll("[data-event-carousel]");
+  if (carousels.length === 0) {
+    return;
+  }
+
+  carousels.forEach((carousel) => {
+    const slides = Array.from(carousel.querySelectorAll("[data-carousel-slide]"));
+    const controls = carousel.querySelector("[data-carousel-controls]");
+    const prev = carousel.querySelector("[data-carousel-prev]");
+    const next = carousel.querySelector("[data-carousel-next]");
+    const dots = Array.from(carousel.querySelectorAll("[data-carousel-dot]"));
+    if (slides.length < 2 || !controls || !prev || !next || dots.length !== slides.length) {
+      return;
+    }
+
+    let active = Math.max(0, slides.findIndex((slide) => !slide.hidden));
+    if (active >= slides.length) {
+      active = 0;
+    }
+
+    function show(index) {
+      active = (index + slides.length) % slides.length;
+      slides.forEach((slide, slideIndex) => {
+        const selected = slideIndex === active;
+        slide.hidden = !selected;
+        slide.classList.toggle("is-active", selected);
+        slide.setAttribute("aria-hidden", selected ? "false" : "true");
+      });
+      dots.forEach((dot, dotIndex) => {
+        const selected = dotIndex === active;
+        dot.classList.toggle("is-active", selected);
+        if (selected) {
+          dot.setAttribute("aria-current", "true");
+        } else {
+          dot.removeAttribute("aria-current");
+        }
+      });
+    }
+
+    prev.addEventListener("click", () => show(active - 1));
+    next.addEventListener("click", () => show(active + 1));
+    dots.forEach((dot, dotIndex) => {
+      dot.addEventListener("click", () => show(dotIndex));
+    });
+    carousel.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        show(active - 1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        show(active + 1);
+      }
+    });
+
+    show(active);
+    controls.hidden = false;
+    carousel.classList.add("is-ready");
+  });
+})();

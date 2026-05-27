@@ -79,6 +79,7 @@ func runWithLogger(logger *slog.Logger) error {
 		ImportRunStore:            st,
 		ReplayStore:               st,
 		EventSecondarySourceStore: st,
+		EventSourceImagesStore:    st,
 		EventGenreStore:           st,
 		GenreConfigurationStore:   st,
 		ReadyChecker:              st,

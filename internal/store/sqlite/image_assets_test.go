@@ -175,6 +175,12 @@ func TestImageAssetFocusRoundTripListAndUpdatePreservesExplicitZeroZero(t *testi
 	`, "zero-focus-event", venueID, sourceID, "Zero Focus Event", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Zero focus description", "/media/events/zero.jpg", sourceURL, "Zero focus", 1200, 800, 0, 0, "2026-05-09T10:00:00Z", string(domain.OriginLive), string(domain.PublicationStateReviewed)); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, "zero-focus-event").Scan(&eventID); err != nil {
+		t.Fatalf("lookup event id: %v", err)
+	}
+	sourceImageSourceID := insertMediaCleanupSource(t, db, "Zero focus source image", "https://example.test/zero-source-image")
+	insertEventSourceImageRow(t, db, eventID, sourceImageSourceID, "uid:zero-source", "/media/events/zero.jpg", sourceURL, "Zero source", 1200, 800, 0, 0)
 	groupID := mustInsertReviewGroupRow(t, db, `
 		INSERT INTO review_groups (
 			title,
@@ -218,6 +224,7 @@ func TestImageAssetFocusRoundTripListAndUpdatePreservesExplicitZeroZero(t *testi
 	}
 	assertStoredImageAssetFocus(t, db, sourceURL, 0, 0)
 	assertStoredFocus(t, db, "events", "image_source_url", sourceURL, 0, 0)
+	assertStoredFocus(t, db, "event_source_images", "image_source_url", sourceURL, 0, 0)
 	assertStoredFocus(t, db, "review_candidates", "image_source_url", sourceURL, 0, 0)
 }
 
@@ -278,6 +285,14 @@ func TestUpdateImageAssetFocusUpdatesDenormalizedRows(t *testing.T) {
 	`, "poster-show", venueID, sourceID, "Poster Show", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Poster description.", "/media/events/poster.jpg", sourceURL, "Poster", "2026-05-09T10:00:00Z", string(domain.OriginLive)); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
+	var eventID int64
+	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, "poster-show").Scan(&eventID); err != nil {
+		t.Fatalf("lookup event id: %v", err)
+	}
+	sourceImageSourceID := insertMediaCleanupSource(t, db, "Poster source image", "https://example.test/poster-source-image")
+	publicOnlySourceID := insertMediaCleanupSource(t, db, "Poster public source image", "https://example.test/poster-public-source-image")
+	insertEventSourceImageRow(t, db, eventID, sourceImageSourceID, "uid:poster-source", "/media/events/poster.jpg", sourceURL, "Poster source", 1200, 800, 50, 50)
+	insertEventSourceImageRow(t, db, eventID, publicOnlySourceID, "uid:poster-public", "/media/events/poster.jpg", "", "Poster public", 1200, 800, 50, 50)
 	groupID := mustInsertReviewGroupRow(t, db, `
 		INSERT INTO review_groups (
 			title,
@@ -325,6 +340,8 @@ func TestUpdateImageAssetFocusUpdatesDenormalizedRows(t *testing.T) {
 		t.Fatalf("asset focus = %d,%d, want 25,75", asset.FocusX, asset.FocusY)
 	}
 	assertStoredFocus(t, db, "events", "image_source_url", sourceURL, 25, 75)
+	assertStoredFocus(t, db, "event_source_images", "source_identity_key", "uid:poster-source", 25, 75)
+	assertStoredFocus(t, db, "event_source_images", "source_identity_key", "uid:poster-public", 25, 75)
 	assertStoredFocus(t, db, "review_candidates", "image_source_url", sourceURL, 25, 75)
 }
 
