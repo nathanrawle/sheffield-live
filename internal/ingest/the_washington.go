@@ -268,13 +268,7 @@ func theWashingtonCandidateFromAPI(pageURL string, item theWashingtonAPIEvent, s
 }
 
 func theWashingtonOccurrenceUID(pageURL string, item theWashingtonAPIEvent) string {
-	if id := strings.TrimSpace(item.ID); id != "" {
-		if calendarID := theWashingtonGoogleCalendarIDFromAPIURL(pageURL); calendarID != "" {
-			return "google-calendar:" + calendarID + ":" + id
-		}
-		return "google-calendar:" + id
-	}
-	return firstNonEmpty(item.HtmlLink, item.ICalUID)
+	return GoogleCalendarOccurrenceUID(theWashingtonGoogleCalendarIDFromAPIURL(pageURL), item.ID, item.HtmlLink, item.ICalUID)
 }
 
 func theWashingtonVenueSlugFromText(value string) string {

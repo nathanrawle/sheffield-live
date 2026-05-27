@@ -864,30 +864,33 @@ func singletonResolvedEventFromReviewStageClusterInput(input ingest.ReviewStageC
 
 	candidateInput := input.Candidates[0]
 	selectedCandidate := review.Candidate{
-		ID:               1,
-		ExternalID:       strings.TrimSpace(candidateInput.ExternalID),
-		Name:             strings.TrimSpace(candidateInput.Name),
-		VenueSlug:        strings.TrimSpace(candidateInput.VenueSlug),
-		VenueText:        strings.TrimSpace(candidateInput.VenueText),
-		VenueLocationRaw: strings.TrimSpace(candidateInput.VenueLocationRaw),
-		RoomText:         strings.TrimSpace(candidateInput.RoomText),
-		Rooms:            append([]domain.VenueRoom(nil), candidateInput.Rooms...),
-		StartAt:          strings.TrimSpace(candidateInput.StartAt),
-		EndAt:            strings.TrimSpace(candidateInput.EndAt),
-		Genre:            strings.TrimSpace(candidateInput.Genre),
-		Status:           strings.TrimSpace(candidateInput.Status),
-		Description:      strings.TrimSpace(candidateInput.Description),
-		ImageURL:         strings.TrimSpace(candidateInput.ImageURL),
-		ImageSourceURL:   strings.TrimSpace(candidateInput.ImageSourceURL),
-		ImageAlt:         strings.TrimSpace(candidateInput.ImageAlt),
-		ImageWidth:       candidateInput.ImageWidth,
-		ImageHeight:      candidateInput.ImageHeight,
-		ImageFocusX:      candidateInput.ImageFocusX,
-		ImageFocusY:      candidateInput.ImageFocusY,
-		SourceName:       strings.TrimSpace(candidateInput.SourceName),
-		SourceURL:        strings.TrimSpace(candidateInput.SourceURL),
-		CalendarURL:      strings.TrimSpace(candidateInput.CalendarURL),
-		Provenance:       strings.TrimSpace(candidateInput.Provenance),
+		ID:                                1,
+		ExternalID:                        strings.TrimSpace(candidateInput.ExternalID),
+		ExternalIDSourceIdentityDisabled:  candidateInput.ExternalIDSourceIdentityDisabled,
+		Name:                              strings.TrimSpace(candidateInput.Name),
+		VenueSlug:                         strings.TrimSpace(candidateInput.VenueSlug),
+		VenueText:                         strings.TrimSpace(candidateInput.VenueText),
+		VenueLocationRaw:                  strings.TrimSpace(candidateInput.VenueLocationRaw),
+		RoomText:                          strings.TrimSpace(candidateInput.RoomText),
+		Rooms:                             append([]domain.VenueRoom(nil), candidateInput.Rooms...),
+		StartAt:                           strings.TrimSpace(candidateInput.StartAt),
+		EndAt:                             strings.TrimSpace(candidateInput.EndAt),
+		Genre:                             strings.TrimSpace(candidateInput.Genre),
+		Status:                            strings.TrimSpace(candidateInput.Status),
+		Description:                       strings.TrimSpace(candidateInput.Description),
+		ImageURL:                          strings.TrimSpace(candidateInput.ImageURL),
+		ImageSourceURL:                    strings.TrimSpace(candidateInput.ImageSourceURL),
+		ImageAlt:                          strings.TrimSpace(candidateInput.ImageAlt),
+		ImageWidth:                        candidateInput.ImageWidth,
+		ImageHeight:                       candidateInput.ImageHeight,
+		ImageFocusX:                       candidateInput.ImageFocusX,
+		ImageFocusY:                       candidateInput.ImageFocusY,
+		SourceName:                        strings.TrimSpace(candidateInput.SourceName),
+		SourceURL:                         strings.TrimSpace(candidateInput.SourceURL),
+		SourceURLSourceIdentityDisabled:   candidateInput.SourceURLSourceIdentityDisabled,
+		CalendarURL:                       strings.TrimSpace(candidateInput.CalendarURL),
+		CalendarURLSourceIdentityDisabled: candidateInput.CalendarURLSourceIdentityDisabled,
+		Provenance:                        strings.TrimSpace(candidateInput.Provenance),
 	}
 	selected := make(map[review.Field]review.Candidate, len(review.CanonicalFields))
 	for _, field := range review.CanonicalFields {
@@ -907,7 +910,7 @@ func authoritativeSourceEventKeyFromClusterInput(input ingest.ReviewStageCluster
 		return ""
 	}
 	candidate := input.Candidates[0]
-	identities := ingest.SourceIdentities(sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL))
+	identities := reviewCandidateSourceIdentities(candidate)
 	if key := identities.PrimaryKey(); key != "" {
 		return key
 	}

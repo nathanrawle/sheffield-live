@@ -113,62 +113,68 @@ type Group struct {
 }
 
 type Candidate struct {
-	ID               int64
-	GroupID          int64
-	Position         int
-	CanonicalEventID int64
-	ExistingEventID  int64
-	ExternalID       string
-	Name             string
-	VenueSlug        string
-	VenueText        string `json:"-"`
-	VenueLocationRaw string `json:"-"`
-	RoomText         string `json:"-"`
-	Rooms            []domain.VenueRoom
-	StartAt          string
-	EndAt            string
-	Genre            string
-	Status           string
-	Description      string
-	ImageURL         string
-	ImageSourceURL   string
-	ImageAlt         string
-	ImageWidth       int
-	ImageHeight      int
-	ImageFocusX      int
-	ImageFocusY      int
-	SourceName       string
-	SourceURL        string
-	CalendarURL      string
-	Provenance       string
+	ID                                int64
+	GroupID                           int64
+	Position                          int
+	CanonicalEventID                  int64
+	ExistingEventID                   int64
+	ExternalID                        string
+	ExternalIDSourceIdentityDisabled  bool
+	Name                              string
+	VenueSlug                         string
+	VenueText                         string `json:"-"`
+	VenueLocationRaw                  string `json:"-"`
+	RoomText                          string `json:"-"`
+	Rooms                             []domain.VenueRoom
+	StartAt                           string
+	EndAt                             string
+	Genre                             string
+	Status                            string
+	Description                       string
+	ImageURL                          string
+	ImageSourceURL                    string
+	ImageAlt                          string
+	ImageWidth                        int
+	ImageHeight                       int
+	ImageFocusX                       int
+	ImageFocusY                       int
+	SourceName                        string
+	SourceURL                         string
+	SourceURLSourceIdentityDisabled   bool
+	CalendarURL                       string
+	CalendarURLSourceIdentityDisabled bool
+	Provenance                        string
 }
 
 type CandidateInput struct {
-	CanonicalEventID int64
-	ExistingEventID  int64
-	ExternalID       string
-	Name             string
-	VenueSlug        string
-	VenueText        string `json:"-"`
-	VenueLocationRaw string `json:"-"`
-	RoomText         string `json:"-"`
-	Rooms            []domain.VenueRoom
-	StartAt          string
-	EndAt            string
-	Genre            string
-	Status           string
-	Description      string
-	ImageURL         string
-	ImageSourceURL   string
-	ImageAlt         string
-	ImageWidth       int
-	ImageHeight      int
-	ImageFocusX      int
-	ImageFocusY      int
-	SourceName       string
-	SourceURL        string
-	CalendarURL      string
-	Provenance       string
+	CanonicalEventID                  int64
+	ExistingEventID                   int64
+	ExternalID                        string
+	ExternalIDSourceIdentityDisabled  bool
+	Name                              string
+	VenueSlug                         string
+	VenueText                         string `json:"-"`
+	VenueLocationRaw                  string `json:"-"`
+	RoomText                          string `json:"-"`
+	Rooms                             []domain.VenueRoom
+	StartAt                           string
+	EndAt                             string
+	Genre                             string
+	Status                            string
+	Description                       string
+	ImageURL                          string
+	ImageSourceURL                    string
+	ImageAlt                          string
+	ImageWidth                        int
+	ImageHeight                       int
+	ImageFocusX                       int
+	ImageFocusY                       int
+	SourceName                        string
+	SourceURL                         string
+	SourceURLSourceIdentityDisabled   bool
+	CalendarURL                       string
+	CalendarURLSourceIdentityDisabled bool
+	Provenance                        string
 }
 
 type DraftChoice struct {

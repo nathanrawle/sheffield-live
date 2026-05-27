@@ -144,10 +144,11 @@ func parseICSProperty(line string) (icsProperty, bool) {
 
 func parseEvent(properties []icsProperty) (EventCandidate, ParseSkip) {
 	uid := cleanICSValue(firstValue(properties, "UID"))
+	occurrenceUID := icsOccurrenceUID(uid, properties)
 	summary := cleanICSValue(firstValue(properties, "SUMMARY"))
 	rawLocation := strings.TrimSpace(firstValue(properties, "LOCATION"))
 	location := cleanICSValue(rawLocation)
-	skip := ParseSkip{UID: uid, Summary: summary}
+	skip := ParseSkip{UID: occurrenceUID, Summary: summary}
 
 	if summary == "" {
 		skip.Reason = "missing summary"
@@ -190,7 +191,7 @@ func parseEvent(properties []icsProperty) (EventCandidate, ParseSkip) {
 	}
 
 	return EventCandidate{
-		UID:            uid,
+		UID:            occurrenceUID,
 		Summary:        summary,
 		Description:    cleanICSValue(firstValue(properties, "DESCRIPTION")),
 		Location:       location,
@@ -202,6 +203,40 @@ func parseEvent(properties []icsProperty) (EventCandidate, ParseSkip) {
 		StartAt:        formatTime(startAt),
 		EndAt:          endText,
 	}, ParseSkip{}
+}
+
+func icsOccurrenceUID(uid string, properties []icsProperty) string {
+	uid = cleanICSValue(uid)
+	if uid == "" {
+		return ""
+	}
+	recurrenceID, ok := firstProperty(properties, "RECURRENCE-ID")
+	if !ok {
+		return uid
+	}
+	normalized := icsRecurrenceIDIdentity(recurrenceID)
+	if normalized == "" {
+		return uid
+	}
+	return "ics:" + uid + ":" + normalized
+}
+
+func icsRecurrenceIDIdentity(property icsProperty) string {
+	if parsed, reason, err := parseICSTime(property); err == nil && reason == "" {
+		return formatTime(parsed)
+	}
+	value := cleanICSValue(property.value)
+	if value == "" {
+		return ""
+	}
+	parts := []string{"raw=" + value}
+	if tzid := strings.TrimSpace(property.params["TZID"]); tzid != "" {
+		parts = append(parts, "TZID="+tzid)
+	}
+	if valueType := strings.TrimSpace(property.params["VALUE"]); valueType != "" {
+		parts = append(parts, "VALUE="+valueType)
+	}
+	return strings.Join(parts, "|")
 }
 
 func firstICSImageURL(properties []icsProperty) string {

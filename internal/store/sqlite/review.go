@@ -1240,11 +1240,39 @@ func authoritativeSourceCandidateForApply(selected map[review.Field]review.Candi
 }
 
 func reviewCandidateSourceIdentities(candidate review.CandidateInput) ingest.SourceIdentitySet {
-	return ingest.SourceIdentities(sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL))
+	return ingest.SourceIdentities(sourceIdentityInputFromCandidateInput(candidate))
 }
 
 func reviewStoredCandidateSourceIdentities(candidate review.Candidate) ingest.SourceIdentitySet {
-	return ingest.SourceIdentities(sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL))
+	return ingest.SourceIdentities(sourceIdentityInputFromCandidate(candidate))
+}
+
+func sourceIdentityInputFromCandidateInput(candidate review.CandidateInput) ingest.SourceIdentityInput {
+	input := sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL)
+	if candidate.ExternalIDSourceIdentityDisabled {
+		input.ExternalID = ""
+	}
+	if candidate.SourceURLSourceIdentityDisabled {
+		input.SourceURL = ""
+	}
+	if candidate.CalendarURLSourceIdentityDisabled {
+		input.CalendarURL = ""
+	}
+	return input
+}
+
+func sourceIdentityInputFromCandidate(candidate review.Candidate) ingest.SourceIdentityInput {
+	input := sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL)
+	if candidate.ExternalIDSourceIdentityDisabled {
+		input.ExternalID = ""
+	}
+	if candidate.SourceURLSourceIdentityDisabled {
+		input.SourceURL = ""
+	}
+	if candidate.CalendarURLSourceIdentityDisabled {
+		input.CalendarURL = ""
+	}
+	return input
 }
 
 func sourceIdentityInputFromCandidateValues(externalID, sourceURL, calendarURL string) ingest.SourceIdentityInput {

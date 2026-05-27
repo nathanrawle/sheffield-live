@@ -176,6 +176,21 @@ func TestSourceIdentityKey(t *testing.T) {
 	}
 }
 
+func TestGoogleCalendarOccurrenceUID(t *testing.T) {
+	if got, want := GoogleCalendarOccurrenceUID("calendar-1", "event-1", "https://example.test/event/1", "series-1"), "google-calendar:calendar-1:event-1"; got != want {
+		t.Fatalf("uid with calendar id = %q, want %q", got, want)
+	}
+	if got, want := GoogleCalendarOccurrenceUID("", "event-1", "https://example.test/event/1", "series-1"), "google-calendar:event-1"; got != want {
+		t.Fatalf("uid without calendar id = %q, want %q", got, want)
+	}
+	if got, want := GoogleCalendarOccurrenceUID("calendar-1", "", "https://example.test/event/1", "series-1"), "https://example.test/event/1"; got != want {
+		t.Fatalf("url fallback = %q, want %q", got, want)
+	}
+	if got, want := GoogleCalendarOccurrenceUID("calendar-1", "", "", "series-1"), "series-1"; got != want {
+		t.Fatalf("ical uid fallback = %q, want %q", got, want)
+	}
+}
+
 func TestSourceIdentities(t *testing.T) {
 	t.Run("dedupes url identities and keeps stable order", func(t *testing.T) {
 		set := SourceIdentities(SourceIdentityInput{

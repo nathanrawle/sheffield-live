@@ -40,7 +40,7 @@ func TestReviewClustersFromReportClustersByUID(t *testing.T) {
 					Summary:  "Second listing",
 					Location: "Sidney & Matilda",
 					Status:   "TENTATIVE",
-					StartAt:  "2026-05-02T19:00:00Z",
+					StartAt:  "2026-05-01T19:00:00Z",
 				},
 				{
 					UID:      "single-uid",
@@ -83,6 +83,81 @@ func TestReviewClustersFromReportClustersByUID(t *testing.T) {
 	if got, want := len(clusters[1].Candidates), 1; got != want {
 		t.Fatalf("second cluster candidates = %d, want %d", got, want)
 	}
+}
+
+func TestReviewClustersFromReportSplitsUnsafeUIDByStart(t *testing.T) {
+	report := successfulReviewStageReport(
+		CalendarReport{
+			URL: "https://calendar.example.test/recurring.ics",
+			Candidates: []EventCandidate{
+				{
+					UID:      "series-uid",
+					Summary:  "Recurring One",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-01T20:00:00+01:00",
+				},
+				{
+					UID:      "series-uid",
+					Summary:  "Recurring Two",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-08T19:00:00Z",
+				},
+			},
+		},
+	)
+
+	clusters := ReviewClustersFromReport(report)
+	if got, want := len(clusters), 2; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	assertCandidateNames(t, clusters[0].Candidates, []string{"Recurring One"})
+	assertCandidateNames(t, clusters[1].Candidates, []string{"Recurring Two"})
+	for i, cluster := range clusters {
+		if got, want := cluster.Candidates[0].ExternalID, "series-uid"; got != want {
+			t.Fatalf("cluster %d external id = %q, want %q", i, got, want)
+		}
+		if !cluster.Candidates[0].ExternalIDSourceIdentityDisabled {
+			t.Fatalf("cluster %d external ID source identity disabled = false, want true", i)
+		}
+		if !cluster.Candidates[0].SourceURLSourceIdentityDisabled {
+			t.Fatalf("cluster %d source URL source identity disabled = false, want true", i)
+		}
+	}
+}
+
+func TestReviewClustersFromReportGroupsUnsafeUIDSameStartTitleVariants(t *testing.T) {
+	report := successfulReviewStageReport(
+		CalendarReport{
+			URL: "https://calendar.example.test/recurring.ics",
+			Candidates: []EventCandidate{
+				{
+					UID:      "series-uid",
+					Summary:  "Recurring One",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-01T19:00:00Z",
+				},
+				{
+					UID:      "series-uid",
+					Summary:  "Recurring One Updated",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-01T19:00:00Z",
+				},
+				{
+					UID:      "series-uid",
+					Summary:  "Recurring Two",
+					Location: "Sidney & Matilda",
+					StartAt:  "2026-05-08T19:00:00Z",
+				},
+			},
+		},
+	)
+
+	clusters := ReviewClustersFromReport(report)
+	if got, want := len(clusters), 2; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	assertCandidateNames(t, clusters[0].Candidates, []string{"Recurring One", "Recurring One Updated"})
+	assertCandidateNames(t, clusters[1].Candidates, []string{"Recurring Two"})
 }
 
 func TestReviewClustersFromReportStagingKeyIsStableForSameContent(t *testing.T) {
@@ -387,6 +462,102 @@ func TestReviewStageEventReviewEvidenceInputsUseNormalizedURLIdentityKey(t *test
 	}
 	if inputs[0].WeakEvidence {
 		t.Fatalf("weak evidence = true, want false")
+	}
+}
+
+func TestReviewStageUnsafeUIDWithoutEventURLDoesNotEmitSourceIdentity(t *testing.T) {
+	clusters := ReviewClustersFromReport(successfulReviewStageReport(CalendarReport{
+		URL: "https://calendar.example.test/recurring.ics",
+		Candidates: []EventCandidate{
+			{
+				UID:      "series-uid",
+				Summary:  "Recurring One",
+				Location: "Sidney & Matilda",
+				StartAt:  "2026-05-01T19:00:00Z",
+			},
+			{
+				UID:      "series-uid",
+				Summary:  "Recurring Two",
+				Location: "Sidney & Matilda",
+				StartAt:  "2026-05-08T19:00:00Z",
+			},
+		},
+	}))
+
+	if got, want := len(clusters), 2; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	inputs := ReviewStageClusterEventReviewEvidenceInputs(clusters[0])
+	if got, want := len(inputs), 1; got != want {
+		t.Fatalf("inputs = %d, want %d", got, want)
+	}
+	if got := inputs[0].SourceIdentityKeys; len(got) != 0 {
+		t.Fatalf("source identity keys = %#v, want none", got)
+	}
+	if got := len(inputs[0].ExactIdentityKeys); got != 1 {
+		t.Fatalf("exact identity keys = %#v, want one", inputs[0].ExactIdentityKeys)
+	}
+	if inputs[0].WeakEvidence {
+		t.Fatal("weak evidence = true, want false")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(inputs[0].Payload), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got, want := payload["candidate_external_id"], "series-uid"; got != want {
+		t.Fatalf("payload external ID = %#v, want %q", got, want)
+	}
+	if got, want := payload["candidate_external_id_source_identity_disabled"], true; got != want {
+		t.Fatalf("payload external ID disabled = %#v, want %v", got, want)
+	}
+	if got, want := payload["candidate_source_url_source_identity_disabled"], true; got != want {
+		t.Fatalf("payload source URL disabled = %#v, want %v", got, want)
+	}
+	if got, want := payload["candidate_calendar_url_source_identity_disabled"], true; got != want {
+		t.Fatalf("payload calendar URL disabled = %#v, want %v", got, want)
+	}
+}
+
+func TestReviewStageUnsafeUIDWithEventURLUsesURLIdentityAndAuthority(t *testing.T) {
+	clusters := ReviewClustersFromReport(successfulReviewStageReport(CalendarReport{
+		URL: "https://calendar.example.test/recurring.ics",
+		Candidates: []EventCandidate{
+			{
+				UID:      "series-uid",
+				Summary:  "Recurring One",
+				Location: "Sidney & Matilda",
+				URL:      "https://example.test/event/one",
+				StartAt:  "2026-05-01T19:00:00Z",
+			},
+			{
+				UID:      "series-uid",
+				Summary:  "Recurring Two",
+				Location: "Sidney & Matilda",
+				URL:      "https://example.test/event/two",
+				StartAt:  "2026-05-08T19:00:00Z",
+			},
+		},
+	}))
+
+	if got, want := len(clusters), 2; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceEventKey, "url:https://example.test/event/one"; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].AuthoritativeSourceURL, "https://example.test/event/one"; got != want {
+		t.Fatalf("authoritative source URL = %q, want %q", got, want)
+	}
+	inputs := ReviewStageClusterEventReviewEvidenceInputs(clusters[0])
+	if got, want := inputs[0].SourceIdentityKeys, []string{"url:https://example.test/event/one"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("source identity keys = %#v, want %#v", got, want)
+	}
+	if !clusters[0].Candidates[0].ExternalIDSourceIdentityDisabled {
+		t.Fatal("external ID disabled = false, want true")
+	}
+	if clusters[0].Candidates[0].SourceURLSourceIdentityDisabled {
+		t.Fatal("source URL disabled = true, want false")
 	}
 }
 
@@ -1082,7 +1253,7 @@ func TestReviewClustersFromReportSkipsAuthoritativeGroupMetadataWhenCandidatesDi
 						Summary:  "Two",
 						Location: "Sidney & Matilda",
 						URL:      "https://example.test/two",
-						StartAt:  "2026-05-01T19:05:00Z",
+						StartAt:  "2026-05-01T19:00:00Z",
 						EndAt:    "2026-05-01T22:05:00Z",
 					},
 				},
@@ -1293,7 +1464,7 @@ func TestReviewClustersFromReportPreservesStableOrder(t *testing.T) {
 					UID:      "uid-b",
 					Summary:  "B second",
 					Location: "Venue B",
-					StartAt:  "2026-05-01T20:00:00Z",
+					StartAt:  "2026-05-01T19:00:00Z",
 				},
 				{
 					Summary:  "A FIRST",
@@ -1310,7 +1481,7 @@ func TestReviewClustersFromReportPreservesStableOrder(t *testing.T) {
 					UID:      "uid-c",
 					Summary:  "C second",
 					Location: "Venue C",
-					StartAt:  "2026-05-03T20:00:00Z",
+					StartAt:  "2026-05-03T19:00:00Z",
 				},
 			},
 		},

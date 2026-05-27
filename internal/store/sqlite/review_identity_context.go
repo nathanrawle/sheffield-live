@@ -53,31 +53,34 @@ func reviewSourceIdentityContextForSelectedCandidate(mode reviewSourceIdentityMo
 
 func reviewCandidateInputFromCandidate(candidate review.Candidate) review.CandidateInput {
 	return review.CandidateInput{
-		CanonicalEventID: candidate.CanonicalEventID,
-		ExistingEventID:  candidate.ExistingEventID,
-		ExternalID:       strings.TrimSpace(candidate.ExternalID),
-		Name:             strings.TrimSpace(candidate.Name),
-		VenueSlug:        strings.TrimSpace(candidate.VenueSlug),
-		VenueText:        strings.TrimSpace(candidate.VenueText),
-		VenueLocationRaw: strings.TrimSpace(candidate.VenueLocationRaw),
-		RoomText:         strings.TrimSpace(candidate.RoomText),
-		Rooms:            append([]domain.VenueRoom(nil), candidate.Rooms...),
-		StartAt:          strings.TrimSpace(candidate.StartAt),
-		EndAt:            strings.TrimSpace(candidate.EndAt),
-		Genre:            strings.TrimSpace(candidate.Genre),
-		Status:           strings.TrimSpace(candidate.Status),
-		Description:      strings.TrimSpace(candidate.Description),
-		ImageURL:         strings.TrimSpace(candidate.ImageURL),
-		ImageSourceURL:   strings.TrimSpace(candidate.ImageSourceURL),
-		ImageAlt:         strings.TrimSpace(candidate.ImageAlt),
-		ImageWidth:       candidate.ImageWidth,
-		ImageHeight:      candidate.ImageHeight,
-		ImageFocusX:      candidate.ImageFocusX,
-		ImageFocusY:      candidate.ImageFocusY,
-		SourceName:       strings.TrimSpace(candidate.SourceName),
-		SourceURL:        strings.TrimSpace(candidate.SourceURL),
-		CalendarURL:      strings.TrimSpace(candidate.CalendarURL),
-		Provenance:       strings.TrimSpace(candidate.Provenance),
+		CanonicalEventID:                  candidate.CanonicalEventID,
+		ExistingEventID:                   candidate.ExistingEventID,
+		ExternalID:                        strings.TrimSpace(candidate.ExternalID),
+		ExternalIDSourceIdentityDisabled:  candidate.ExternalIDSourceIdentityDisabled,
+		Name:                              strings.TrimSpace(candidate.Name),
+		VenueSlug:                         strings.TrimSpace(candidate.VenueSlug),
+		VenueText:                         strings.TrimSpace(candidate.VenueText),
+		VenueLocationRaw:                  strings.TrimSpace(candidate.VenueLocationRaw),
+		RoomText:                          strings.TrimSpace(candidate.RoomText),
+		Rooms:                             append([]domain.VenueRoom(nil), candidate.Rooms...),
+		StartAt:                           strings.TrimSpace(candidate.StartAt),
+		EndAt:                             strings.TrimSpace(candidate.EndAt),
+		Genre:                             strings.TrimSpace(candidate.Genre),
+		Status:                            strings.TrimSpace(candidate.Status),
+		Description:                       strings.TrimSpace(candidate.Description),
+		ImageURL:                          strings.TrimSpace(candidate.ImageURL),
+		ImageSourceURL:                    strings.TrimSpace(candidate.ImageSourceURL),
+		ImageAlt:                          strings.TrimSpace(candidate.ImageAlt),
+		ImageWidth:                        candidate.ImageWidth,
+		ImageHeight:                       candidate.ImageHeight,
+		ImageFocusX:                       candidate.ImageFocusX,
+		ImageFocusY:                       candidate.ImageFocusY,
+		SourceName:                        strings.TrimSpace(candidate.SourceName),
+		SourceURL:                         strings.TrimSpace(candidate.SourceURL),
+		SourceURLSourceIdentityDisabled:   candidate.SourceURLSourceIdentityDisabled,
+		CalendarURL:                       strings.TrimSpace(candidate.CalendarURL),
+		CalendarURLSourceIdentityDisabled: candidate.CalendarURLSourceIdentityDisabled,
+		Provenance:                        strings.TrimSpace(candidate.Provenance),
 	}
 }
 
@@ -89,9 +92,14 @@ func reviewCandidateInputSourceIdentities(mode reviewSourceIdentityMode, sourceU
 	switch mode {
 	case reviewSourceIdentityAuthoritative:
 		fallback := sourceIdentityInputForKey(authoritativeSourceEventKey)
-		fallback.SourceURL = strings.TrimSpace(sourceURL)
+		if !candidate.SourceURLSourceIdentityDisabled {
+			fallback.SourceURL = strings.TrimSpace(sourceURL)
+		}
 		return ingest.SourceIdentities(fallback)
 	default:
+		if candidate.SourceURLSourceIdentityDisabled {
+			return ingest.SourceIdentitySet{}
+		}
 		return ingest.SourceIdentities(ingest.SourceIdentityInput{SourceURL: strings.TrimSpace(sourceURL)})
 	}
 }

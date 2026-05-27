@@ -94,6 +94,18 @@ func SourceIdentities(input SourceIdentityInput) SourceIdentitySet {
 	return SourceIdentitySet{identities: identities}
 }
 
+func GoogleCalendarOccurrenceUID(calendarID, eventID, eventURL, iCalUID string) string {
+	eventID = strings.TrimSpace(eventID)
+	if eventID != "" {
+		calendarID = strings.TrimSpace(calendarID)
+		if calendarID != "" {
+			return "google-calendar:" + calendarID + ":" + eventID
+		}
+		return "google-calendar:" + eventID
+	}
+	return firstNonEmpty(eventURL, iCalUID)
+}
+
 func SourceIdentitiesFromKeys(keys []string) SourceIdentitySet {
 	identities := make([]SourceIdentity, 0, len(keys))
 	seen := make(map[string]struct{}, len(keys))

@@ -80,6 +80,14 @@ Add a new Go family only when the source needs new parsing or link-extraction be
 Snapshot payloads are stored as JSON envelopes that contain the response body in base64, response metadata, a captured-body SHA-256, and a truncation flag.
 Copied image files are not snapshot payloads. They are local media assets keyed by source image URL so replay can reuse the copied asset metadata, including focus point, without fetching remote image bytes.
 
+## Source Identity Contract
+
+Parser `EventCandidate.UID` values are source identity material. They must identify the concrete event occurrence whenever the source exposes occurrence identity. Do not put a series-level recurrence ID in `UID` when multiple dated occurrences share it; use the source's occurrence ID, or combine the series ID with a normalized recurrence instance value when that is the only stable occurrence discriminator.
+
+Review staging defensively detects repeated non-empty UIDs that appear with more than one parsed UTC start time in the same ingest report. Such UIDs are kept in candidate payloads for provenance/debugging, but they are withheld from source identity keys and authoritative source event keys. If the candidate has a real per-event listing URL, that URL can still become the source identity; inherited source pages, shared feed URLs, and unsafe recurrence IDs must not.
+
+Generic calendar parsers follow that contract: Google Calendar API candidates prefer `calendar id + event.id`, and generic ICS candidates combine `UID + RECURRENCE-ID` for recurrence overrides. New source parsers should preserve the same rule so current and future recurring feeds cannot collapse separate occurrences into one downstream event.
+
 ## Review Staging
 
 `cmd/ingest` can stage event-review clusters from a successful ingest report.
