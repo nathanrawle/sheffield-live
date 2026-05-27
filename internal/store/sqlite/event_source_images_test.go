@@ -284,9 +284,11 @@ func TestOpenBackfillsEventSourceImagesOnlyFromResolvedReviewCandidates(t *testi
 	canonicalSourceID := insertMediaCleanupSource(t, db, "Primary candidate source", "https://example.test/primary-candidate-backfill")
 	eventID := insertEventSourceImageTestEventWithSource(t, db, "source-image-candidate-backfill", canonicalSourceID)
 	openGroupID := insertReviewGroupForEventSourceImageBackfill(t, db, "Open candidate backfill", review.StatusOpen)
-	insertReviewCandidateForEventSourceImageBackfill(t, db, openGroupID, eventID, "Open mirror", "https://example.test/open-candidate-backfill", "/media/events/open-candidate-backfill.jpg")
+	insertReviewCandidateForEventSourceImageBackfill(t, db, openGroupID, eventID, "Open mirror", "https://example.test/open-candidate-backfill", "", "/media/events/open-candidate-backfill.jpg")
 	resolvedGroupID := insertReviewGroupForEventSourceImageBackfill(t, db, "Resolved candidate backfill", review.StatusResolved)
-	insertReviewCandidateForEventSourceImageBackfill(t, db, resolvedGroupID, eventID, "Resolved mirror", "https://example.test/resolved-candidate-backfill", "/media/events/resolved-candidate-backfill.jpg")
+	insertReviewCandidateForEventSourceImageBackfill(t, db, resolvedGroupID, eventID, "Resolved mirror", "https://example.test/resolved-candidate-backfill", "", "/media/events/resolved-candidate-backfill.jpg")
+	calendarGroupID := insertReviewGroupForEventSourceImageBackfill(t, db, "Calendar candidate backfill", review.StatusResolved)
+	insertReviewCandidateForEventSourceImageBackfill(t, db, calendarGroupID, eventID, "Calendar mirror", "", "https://calendar.example.test/candidate-backfill.ics", "/media/events/calendar-candidate-backfill.jpg")
 	if err := db.Close(); err != nil {
 		t.Fatalf("close raw db: %v", err)
 	}
@@ -304,14 +306,24 @@ func TestOpenBackfillsEventSourceImagesOnlyFromResolvedReviewCandidates(t *testi
 	if err != nil {
 		t.Fatalf("load backfilled candidate source images: %v", err)
 	}
-	if len(images) != 1 {
-		t.Fatalf("backfilled candidate images = %d, want 1", len(images))
+	if len(images) != 2 {
+		t.Fatalf("backfilled candidate images = %d, want 2", len(images))
 	}
-	if got, want := images[0].ImageURL, "/media/events/resolved-candidate-backfill.jpg"; got != want {
-		t.Fatalf("backfilled candidate image = %q, want %q", got, want)
+	bySource := make(map[string]seedstore.EventImage, len(images))
+	for _, image := range images {
+		bySource[image.SourceName] = image
 	}
-	if got, want := images[0].SourceName, "Resolved mirror"; got != want {
-		t.Fatalf("backfilled candidate source = %q, want %q", got, want)
+	if _, ok := bySource["Open mirror"]; ok {
+		t.Fatal("open review candidate image was backfilled")
+	}
+	if got, want := bySource["Resolved mirror"].ImageURL, "/media/events/resolved-candidate-backfill.jpg"; got != want {
+		t.Fatalf("resolved candidate image = %q, want %q", got, want)
+	}
+	if got, want := bySource["Calendar mirror"].ListingURL, "https://calendar.example.test/candidate-backfill.ics"; got != want {
+		t.Fatalf("calendar candidate source url = %q, want %q", got, want)
+	}
+	if got, want := bySource["Calendar mirror"].ImageURL, "/media/events/calendar-candidate-backfill.jpg"; got != want {
+		t.Fatalf("calendar candidate image = %q, want %q", got, want)
 	}
 }
 
@@ -387,8 +399,12 @@ func insertReviewGroupForEventSourceImageBackfill(t *testing.T, db *sql.DB, titl
 	return id
 }
 
-func insertReviewCandidateForEventSourceImageBackfill(t *testing.T, db *sql.DB, groupID, eventID int64, sourceName, sourceURL, imageURL string) {
+func insertReviewCandidateForEventSourceImageBackfill(t *testing.T, db *sql.DB, groupID, eventID int64, sourceName, sourceURL, calendarURL, imageURL string) {
 	t.Helper()
+	identityURL := sourceURL
+	if identityURL == "" {
+		identityURL = calendarURL
+	}
 	if _, err := db.Exec(`
 		INSERT INTO review_candidates (
 			group_id,
@@ -403,6 +419,7 @@ func insertReviewCandidateForEventSourceImageBackfill(t *testing.T, db *sql.DB, 
 			description,
 			source_name,
 			source_url,
+			calendar_url,
 			provenance,
 			canonical_event_id,
 			image_url,
@@ -412,8 +429,8 @@ func insertReviewCandidateForEventSourceImageBackfill(t *testing.T, db *sql.DB, 
 			image_height,
 			image_focus_x,
 			image_focus_y
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, groupID, 1, sourceURL, "Candidate Backfill", "leadmill", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Candidate description", sourceName, sourceURL, "fixture", eventID, imageURL, sourceURL+"/image.jpg", "Candidate poster", 1200, 800, 30, 70); err != nil {
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, groupID, 1, identityURL, "Candidate Backfill", "leadmill", "2026-05-10T19:00:00Z", "2026-05-10T22:00:00Z", "Indie", "Listed", "Candidate description", sourceName, sourceURL, calendarURL, "fixture", eventID, imageURL, identityURL+"/image.jpg", "Candidate poster", 1200, 800, 30, 70); err != nil {
 		t.Fatalf("insert review candidate: %v", err)
 	}
 }

@@ -417,6 +417,10 @@ func backfillEventSourceImagesFromReviewCandidatesTx(ctx context.Context, tx int
 		}
 		sourceName = strings.TrimSpace(sourceName)
 		sourceURL = strings.TrimSpace(sourceURL)
+		calendarURL = strings.TrimSpace(calendarURL)
+		if sourceName == "" || sourceURL == "" {
+			sourceURL = calendarURL
+		}
 		if sourceName == "" || sourceURL == "" {
 			continue
 		}
