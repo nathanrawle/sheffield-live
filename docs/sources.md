@@ -188,7 +188,7 @@ Treat the secondary and do-not-add sections as a decision backlog, not as implem
 #### Network Sheffield
 
 - Suggested source key: `network-sheffield`
-- Suggested venue slug: `network-sheffield` if filtering to Network only.
+- Suggested venue slug: `network` if filtering to Network only.
 - Primary pages: `https://www.networksheffield.co.uk/events/` and `https://www.networksheffield.co.uk/event/`
 - Detail-page example from research: `https://www.networksheffield.co.uk/event/in-the-know-festival/`
 - Venue evidence: official site lists Network Sheffield at 14 Matilda Street, Sheffield S1 4QD.
@@ -196,7 +196,7 @@ Treat the secondary and do-not-add sections as a decision backlog, not as implem
 - Why it matters: large active city-centre live music and club venue with many listings.
 - Likely ingest shape: `mode: linked_detail_pages`, custom archive/detail link extractor, and custom detail-page parser. The site looks WordPress-like and detail pages expose title, start/end time, venue, description, image, and address.
 - Authority note: do not blindly set one `owned_venue_slug` if the parser includes offsite or adjacent venue labels such as The Arundel Emporium or Earl's Yard. Either filter to Network-owned rooms, model rooms under Network, or extend the catalog authority model before treating the whole feed as authoritative.
-- Implementation status: implemented as `config/sources/10-network-sheffield.yaml` with `mode: linked_detail_pages` and `owned_venue_slug: network-sheffield`. The parser filters to Network/Network Sheffield/Network 1/2/3 evidence, emits room evidence for rooms 1-3, skips offsite/adjacent venues, and uses the official Network detail URL as source identity rather than external ticket URLs.
+- Implementation status: implemented as `config/sources/10-network-sheffield.yaml` with `mode: linked_detail_pages` and `owned_venue_slug: network`. The parser filters to Network/Network Sheffield/Network 1/2/3 evidence, stages those candidates under canonical venue slug `network`, emits room evidence for rooms 1-3, skips offsite/adjacent venues, and uses the official Network detail URL as source identity rather than external ticket URLs.
 
 #### Alder
 

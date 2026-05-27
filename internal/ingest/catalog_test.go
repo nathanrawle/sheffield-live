@@ -66,6 +66,9 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	if got, want := cfg.VenueNormalizerFamily, "network_sheffield"; got != want {
 		t.Fatalf("network sheffield venue normalizer family = %q, want %q", got, want)
 	}
+	if got, want := cfg.OwnedVenueSlug, "network"; got != want {
+		t.Fatalf("network sheffield owned venue slug = %q, want %q", got, want)
+	}
 
 	cfg, err = catalog.ConfigForSource(AlderSource)
 	if err != nil {

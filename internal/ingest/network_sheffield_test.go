@@ -43,7 +43,7 @@ func TestNetworkSheffieldDetailPageParsesNetworkAndRoomLabels(t *testing.T) {
 			pageURL:       "https://www.networksheffield.co.uk/event/godeth-network-sheffield/",
 			fixture:       "network_sheffield_detail_room.html",
 			wantSummary:   "GODETH | Network 3",
-			wantLocation:  "Network 3",
+			wantLocation:  "Network",
 			wantRoomText:  "Network 3",
 			wantRoomSlugs: "network-3",
 			wantUID:       "https://www.networksheffield.co.uk/event/godeth-network-sheffield/",
@@ -92,7 +92,7 @@ func TestNetworkSheffieldDetailPageParsesNetworkAndRoomLabels(t *testing.T) {
 			if got, want := candidate.URL, tc.pageURL; got != want {
 				t.Fatalf("url = %q, want %q", got, want)
 			}
-			if got, want := VenueSlugForSourceLocation(NetworkSheffieldSource, candidate.Location), networkSheffieldVenueSlug; got != want {
+			if got, want := VenueSlugForSourceLocation(NetworkSheffieldSource, candidate.Location), networkVenueSlug; got != want {
 				t.Fatalf("venue slug = %q, want %q", got, want)
 			}
 		})
@@ -191,13 +191,13 @@ func TestNetworkSheffieldDetailPageAcceptsNetworkSheffieldVenueLabel(t *testing.
 	}
 
 	candidate := result.Candidates[0]
-	if got, want := candidate.Location, "Network Sheffield"; got != want {
+	if got, want := candidate.Location, "Network"; got != want {
 		t.Fatalf("location = %q, want %q", got, want)
 	}
 	if got, want := candidate.Summary, "Network Sheffield Launch Party"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
-	if got, want := VenueSlugForSourceLocation(NetworkSheffieldSource, candidate.Location), networkSheffieldVenueSlug; got != want {
+	if got, want := VenueSlugForSourceLocation(NetworkSheffieldSource, candidate.Location), networkVenueSlug; got != want {
 		t.Fatalf("venue slug = %q, want %q", got, want)
 	}
 }
@@ -369,10 +369,13 @@ func TestRunManualNetworkSheffieldParsesListingAndSkipsAdjacentPages(t *testing.
 		t.Fatal("room-specific cluster not found")
 	}
 	roomCandidate := roomCluster.Candidates[0]
-	if got, want := roomCandidate.VenueText, "Network 3"; got != want {
+	if got, want := roomCandidate.VenueSlug, "network"; got != want {
+		t.Fatalf("room venue slug = %q, want %q", got, want)
+	}
+	if got, want := roomCandidate.VenueText, "Network"; got != want {
 		t.Fatalf("room venue text = %q, want %q", got, want)
 	}
-	if got, want := roomCandidate.VenueLocationRaw, "Network 3, 14 Matilda St, Sheffield City Centre, Sheffield S1, UK"; got != want {
+	if got, want := roomCandidate.VenueLocationRaw, "Network, 14 Matilda St, Sheffield City Centre, Sheffield S1, UK"; got != want {
 		t.Fatalf("room venue location raw = %q, want %q", got, want)
 	}
 	if got, want := roomCandidate.RoomText, "Network 3"; got != want {
@@ -380,6 +383,9 @@ func TestRunManualNetworkSheffieldParsesListingAndSkipsAdjacentPages(t *testing.
 	}
 	if got, want := review.RoomSlugsValue(roomCandidate.Rooms), "network-3"; got != want {
 		t.Fatalf("room slugs = %q, want %q", got, want)
+	}
+	if len(roomCandidate.Rooms) != 1 || roomCandidate.Rooms[0].VenueSlug != "network" {
+		t.Fatalf("room venue slugs = %#v, want one room under network", roomCandidate.Rooms)
 	}
 	if got, want := roomCluster.AuthoritativeSourceName, "Network Sheffield manual ingest"; got != want {
 		t.Fatalf("authoritative source name = %q, want %q", got, want)
@@ -396,6 +402,9 @@ func TestRunManualNetworkSheffieldParsesListingAndSkipsAdjacentPages(t *testing.
 
 	if len(plainCluster.Candidates) != 1 {
 		t.Fatal("plain cluster not found")
+	}
+	if got, want := plainCluster.Candidates[0].VenueSlug, "network"; got != want {
+		t.Fatalf("plain venue slug = %q, want %q", got, want)
 	}
 	if got, want := plainCluster.Candidates[0].VenueText, "Network"; got != want {
 		t.Fatalf("plain venue text = %q, want %q", got, want)
@@ -538,7 +547,7 @@ func TestReplayImportRunRebuildsNetworkSheffieldReportFromLinkedDetailSnapshots(
 	if roomCalendar == nil || len(roomCalendar.Candidates) != 1 {
 		t.Fatalf("room replay calendar = %#v, want one candidate", roomCalendar)
 	}
-	if got, want := roomCalendar.Candidates[0].Location, "Network 3"; got != want {
+	if got, want := roomCalendar.Candidates[0].Location, "Network"; got != want {
 		t.Fatalf("room location = %q, want %q", got, want)
 	}
 	if got, want := roomCalendar.Candidates[0].RoomText, "Network 3"; got != want {
