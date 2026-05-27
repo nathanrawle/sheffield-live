@@ -9,6 +9,7 @@ import (
 )
 
 const theWashingtonExpectedAPIURLLimit10 = "https://www.googleapis.com/calendar/v3/calendars/c_u2bs6ittml6rm5k0l5qjt3pn1o%40group.calendar.google.com/events?key=AIzaSyAVR1AfCKKfQrAZj_ErEY5UEy0QLG0AHAc&singleEvents=true&orderBy=startTime&maxResults=10&timeMin=2026-05-24T23%3A00%3A00Z"
+const theWashingtonExpectedAPIEventID = "_8ksj6h9k6sq3gba664pjeb9k85142ba18cq32b9n64pk2h9o8h0k4gq48k_20260526T200000Z"
 
 func freezeTheWashingtonClock(t *testing.T) {
 	setTheWashingtonClock(t, time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC))
@@ -23,6 +24,10 @@ func setTheWashingtonClock(t *testing.T, now time.Time) {
 	t.Cleanup(func() {
 		theWashingtonNow = old
 	})
+}
+
+func expectedTheWashingtonOccurrenceUID(id string) string {
+	return "google-calendar:" + theWashingtonOfficialCalendarID + ":" + id
 }
 
 func TestTheWashingtonDiscoveryFixturesPointToTheCalendarPage(t *testing.T) {
@@ -67,6 +72,9 @@ func TestParseTheWashingtonAPIDetailPageParsesMusicEventAndSkipsUnsupportedItems
 	}
 
 	candidate := result.Candidates[0]
+	if got, want := candidate.UID, expectedTheWashingtonOccurrenceUID(theWashingtonExpectedAPIEventID); got != want {
+		t.Fatalf("uid = %q, want %q", got, want)
+	}
 	if got, want := candidate.Summary, "[DJ] FIESTA!"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
@@ -93,6 +101,167 @@ func TestParseTheWashingtonAPIDetailPageParsesMusicEventAndSkipsUnsupportedItems
 	}
 	if got, want := result.Skips[2].Reason, "unsupported venue"; got != want {
 		t.Fatalf("third skip reason = %q, want %q", got, want)
+	}
+}
+
+func TestParseTheWashingtonAPIDetailPageUsesOccurrenceIdentityForRecurringEvents(t *testing.T) {
+	firstID := "fiesta-series_20260602T200000Z"
+	secondID := "fiesta-series_20260609T200000Z"
+	result := ParseTheWashingtonAPIDetailPage(theWashingtonExpectedAPIURLLimit10, []byte(`{
+  "items": [
+    {
+      "id": "fiesta-series_20260602T200000Z",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=fiesta-20260602",
+      "summary": "[DJ] FIESTA!",
+      "description": "DJ recurring set.",
+      "start": {"dateTime": "2026-06-02T21:00:00+01:00"},
+      "end": {"dateTime": "2026-06-03T03:00:00+01:00"},
+      "iCalUID": "fiesta-series@google.com"
+    },
+    {
+      "id": "fiesta-series_20260609T200000Z",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=fiesta-20260609",
+      "summary": "[DJ] FIESTA!",
+      "description": "DJ recurring set.",
+      "start": {"dateTime": "2026-06-09T21:00:00+01:00"},
+      "end": {"dateTime": "2026-06-10T03:00:00+01:00"},
+      "iCalUID": "fiesta-series@google.com"
+    }
+  ]
+}`))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Skips), 0; got != want {
+		t.Fatalf("skips = %#v, want none", result.Skips)
+	}
+	if got, want := len(result.Candidates), 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+
+	wantUIDs := []string{
+		expectedTheWashingtonOccurrenceUID(firstID),
+		expectedTheWashingtonOccurrenceUID(secondID),
+	}
+	for i, candidate := range result.Candidates {
+		if got, want := candidate.UID, wantUIDs[i]; got != want {
+			t.Fatalf("candidate %d uid = %q, want %q", i, got, want)
+		}
+		if got, want := candidate.LocationRaw, theWashingtonSourceVenueEvidence; got != want {
+			t.Fatalf("candidate %d location raw = %q, want %q", i, got, want)
+		}
+	}
+
+	catalog, err := LoadRepoCatalog()
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+	clusters := ReviewClustersFromReportWithCatalog(catalog, Report{
+		Source:      TheWashingtonSource,
+		SourceURL:   "https://thewashington.pub/cal.html",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL:        theWashingtonExpectedAPIURLLimit10,
+				Candidates: result.Candidates,
+			},
+		},
+	})
+
+	if got, want := len(clusters), 2; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	for i, cluster := range clusters {
+		if got, want := len(cluster.Candidates), 1; got != want {
+			t.Fatalf("cluster %d candidates = %d, want %d", i, got, want)
+		}
+		if got, want := cluster.Candidates[0].ExternalID, wantUIDs[i]; got != want {
+			t.Fatalf("cluster %d external id = %q, want %q", i, got, want)
+		}
+		if got, want := cluster.Candidates[0].VenueSlug, TheWashingtonSource; got != want {
+			t.Fatalf("cluster %d venue slug = %q, want %q", i, got, want)
+		}
+		if got, want := cluster.AuthoritativeSourceName, "The Washington manual ingest"; got != want {
+			t.Fatalf("cluster %d authoritative source name = %q, want %q", i, got, want)
+		}
+		if got, want := cluster.AuthoritativeSourceEventKey, "uid:"+wantUIDs[i]; got != want {
+			t.Fatalf("cluster %d authoritative event key = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestReviewStageTheWashingtonSameOccurrenceDuplicatesStillGroup(t *testing.T) {
+	occurrenceID := "fiesta-series_20260602T200000Z"
+	result := ParseTheWashingtonAPIDetailPage(theWashingtonExpectedAPIURLLimit10, []byte(`{
+  "items": [
+    {
+      "id": "fiesta-series_20260602T200000Z",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=fiesta-20260602",
+      "summary": "[DJ] FIESTA!",
+      "description": "DJ recurring set.",
+      "start": {"dateTime": "2026-06-02T21:00:00+01:00"},
+      "end": {"dateTime": "2026-06-03T03:00:00+01:00"},
+      "iCalUID": "fiesta-series@google.com"
+    },
+    {
+      "id": "fiesta-series_20260602T200000Z",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=fiesta-20260602",
+      "summary": "[DJ] FIESTA!",
+      "description": "Duplicate feed row for the same DJ set.",
+      "start": {"dateTime": "2026-06-02T21:00:00+01:00"},
+      "end": {"dateTime": "2026-06-03T03:00:00+01:00"},
+      "iCalUID": "fiesta-series@google.com"
+    }
+  ]
+}`))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+
+	catalog, err := LoadRepoCatalog()
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+	clusters := ReviewClustersFromReportWithCatalog(catalog, Report{
+		Source:      TheWashingtonSource,
+		SourceURL:   "https://thewashington.pub/cal.html",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL:        theWashingtonExpectedAPIURLLimit10,
+				Candidates: result.Candidates,
+			},
+		},
+	})
+
+	if got, want := len(clusters), 1; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	if got, want := len(clusters[0].Candidates), 2; got != want {
+		t.Fatalf("cluster candidates = %d, want %d", got, want)
+	}
+	wantUID := expectedTheWashingtonOccurrenceUID(occurrenceID)
+	for i, candidate := range clusters[0].Candidates {
+		if got, want := candidate.ExternalID, wantUID; got != want {
+			t.Fatalf("candidate %d external id = %q, want %q", i, got, want)
+		}
+		if got, want := candidate.VenueSlug, TheWashingtonSource; got != want {
+			t.Fatalf("candidate %d venue slug = %q, want %q", i, got, want)
+		}
+	}
+	if got, want := clusters[0].AuthoritativeSourceEventKey, "uid:"+wantUID; got != want {
+		t.Fatalf("authoritative event key = %q, want %q", got, want)
 	}
 }
 
@@ -257,13 +426,14 @@ func TestReviewStageTheWashingtonIsAuthoritativeOwnedVenue(t *testing.T) {
 				URL: theWashingtonExpectedAPIURLLimit10,
 				Candidates: []EventCandidate{
 					{
-						UID:      "E93E4748-F137-4ABA-AC41-713AE8DABCDE",
-						Summary:  "[DJ] FIESTA!",
-						Location: theWashingtonVenueName,
-						URL:      "https://www.google.com/calendar/event?eid=Xzhrc2o2aDlrNnNxM2diYTY2NHBqZWI5azg1MTQyYmExOGNxMzJiOW42NHBrMmg5bzhoMGs0Z3E0OGtfMjAyNjA1MjZUMjAwMDAwWiBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc",
-						StartAt:  "2026-05-26T20:00:00Z",
-						EndAt:    "2026-05-27T02:00:00Z",
-						Status:   "CONFIRMED",
+						UID:         expectedTheWashingtonOccurrenceUID(theWashingtonExpectedAPIEventID),
+						Summary:     "[DJ] FIESTA!",
+						Location:    theWashingtonVenueName,
+						LocationRaw: theWashingtonSourceVenueEvidence,
+						URL:         "https://www.google.com/calendar/event?eid=Xzhrc2o2aDlrNnNxM2diYTY2NHBqZWI5azg1MTQyYmExOGNxMzJiOW42NHBrMmg5bzhoMGs0Z3E0OGtfMjAyNjA1MjZUMjAwMDAwWiBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc",
+						StartAt:     "2026-05-26T20:00:00Z",
+						EndAt:       "2026-05-27T02:00:00Z",
+						Status:      "CONFIRMED",
 					},
 				},
 			},
@@ -285,7 +455,7 @@ func TestReviewStageTheWashingtonIsAuthoritativeOwnedVenue(t *testing.T) {
 	if got, want := cluster.AuthoritativeSourceURL, "https://www.google.com/calendar/event?eid=Xzhrc2o2aDlrNnNxM2diYTY2NHBqZWI5azg1MTQyYmExOGNxMzJiOW42NHBrMmg5bzhoMGs0Z3E0OGtfMjAyNjA1MjZUMjAwMDAwWiBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc"; got != want {
 		t.Fatalf("authoritative source url = %q, want %q", got, want)
 	}
-	if got, want := cluster.AuthoritativeSourceEventKey, "uid:E93E4748-F137-4ABA-AC41-713AE8DABCDE"; got != want {
+	if got, want := cluster.AuthoritativeSourceEventKey, "uid:"+expectedTheWashingtonOccurrenceUID(theWashingtonExpectedAPIEventID); got != want {
 		t.Fatalf("authoritative source event key = %q, want %q", got, want)
 	}
 }

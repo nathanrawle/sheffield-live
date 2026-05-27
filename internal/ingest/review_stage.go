@@ -32,6 +32,15 @@ type ReviewStageClusterInput struct {
 	Candidates                  []review.CandidateInput
 }
 
+type reviewStagePreparedCandidate struct {
+	Calendar  CalendarReport
+	Candidate EventCandidate
+}
+
+type reviewStageUIDSafety struct {
+	unsafe map[string]struct{}
+}
+
 func ReviewClustersFromReport(report Report) []ReviewStageClusterInput {
 	catalog, err := DefaultCatalog()
 	if err != nil {
@@ -50,28 +59,29 @@ func ReviewClustersFromReportWithCatalog(catalog *Catalog, report Report) []Revi
 
 	clusters := make(map[string]*ReviewStageClusterInput)
 	var order []string
+	preparedCandidates := reviewStagePreparedCandidates(catalog, report)
+	uidSafety := newReviewStageUIDSafety(preparedCandidates)
 
-	for _, calendar := range report.Calendars {
-		for _, candidate := range calendar.Candidates {
-			candidate.Summary = cleanEventCandidateSummaryForCatalog(catalog, report.Source, candidate)
-			key, ok := reviewStageKey(catalog, report.Source, candidate)
-			if !ok {
-				continue
-			}
-
-			cluster, exists := clusters[key]
-			if !exists {
-				cluster = &ReviewStageClusterInput{
-					SourceName: reviewStageSourceName(catalog, report),
-					SourceURL:  reviewStageFirstNonEmpty(calendar.URL, report.SourceURL),
-					Notes:      reviewStageNotes(report),
-				}
-				clusters[key] = cluster
-				order = append(order, key)
-			}
-
-			cluster.Candidates = append(cluster.Candidates, reviewStageCandidateInput(catalog, report, calendar, candidate))
+	for _, prepared := range preparedCandidates {
+		calendar := prepared.Calendar
+		candidate := prepared.Candidate
+		key, ok := reviewStageKey(catalog, report.Source, candidate, uidSafety)
+		if !ok {
+			continue
 		}
+
+		cluster, exists := clusters[key]
+		if !exists {
+			cluster = &ReviewStageClusterInput{
+				SourceName: reviewStageSourceName(catalog, report),
+				SourceURL:  reviewStageFirstNonEmpty(calendar.URL, report.SourceURL),
+				Notes:      reviewStageNotes(report),
+			}
+			clusters[key] = cluster
+			order = append(order, key)
+		}
+
+		cluster.Candidates = append(cluster.Candidates, reviewStageCandidateInput(catalog, report, calendar, candidate, uidSafety))
 	}
 
 	result := make([]ReviewStageClusterInput, 0, len(order))
@@ -85,6 +95,67 @@ func ReviewClustersFromReportWithCatalog(catalog *Catalog, report Report) []Revi
 		result = append(result, *cluster)
 	}
 	return result
+}
+
+func reviewStagePreparedCandidates(catalog *Catalog, report Report) []reviewStagePreparedCandidate {
+	var out []reviewStagePreparedCandidate
+	for _, calendar := range report.Calendars {
+		for _, candidate := range calendar.Candidates {
+			candidate.Summary = cleanEventCandidateSummaryForCatalog(catalog, report.Source, candidate)
+			out = append(out, reviewStagePreparedCandidate{
+				Calendar:  calendar,
+				Candidate: candidate,
+			})
+		}
+	}
+	return out
+}
+
+func newReviewStageUIDSafety(candidates []reviewStagePreparedCandidate) reviewStageUIDSafety {
+	startsByUID := make(map[string]map[string]struct{})
+	for _, prepared := range candidates {
+		uid := strings.TrimSpace(prepared.Candidate.UID)
+		if uid == "" {
+			continue
+		}
+		startAt, ok := reviewStageNormalizedStartAt(prepared.Candidate.StartAt)
+		if !ok {
+			continue
+		}
+		if startsByUID[uid] == nil {
+			startsByUID[uid] = make(map[string]struct{})
+		}
+		startsByUID[uid][startAt] = struct{}{}
+	}
+
+	unsafe := make(map[string]struct{})
+	for uid, starts := range startsByUID {
+		if len(starts) > 1 {
+			unsafe[uid] = struct{}{}
+		}
+	}
+	return reviewStageUIDSafety{unsafe: unsafe}
+}
+
+func (s reviewStageUIDSafety) isUnsafe(uid string) bool {
+	uid = strings.TrimSpace(uid)
+	if uid == "" || len(s.unsafe) == 0 {
+		return false
+	}
+	_, ok := s.unsafe[uid]
+	return ok
+}
+
+func reviewStageNormalizedStartAt(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return "", false
+	}
+	return parsed.UTC().Format(time.RFC3339), true
 }
 
 func reviewStageAuthoritativeSource(catalog *Catalog, source, baseSourceName, baseSourceURL string, candidates []review.CandidateInput) (string, string, string) {
@@ -123,7 +194,7 @@ func reviewStageAuthoritativeSource(catalog *Catalog, source, baseSourceName, ba
 			return "", "", ""
 		}
 		candidateSourceName := reviewStageFirstNonEmpty(candidate.SourceName, baseSourceName, authoritativeSourceName)
-		candidateSourceURL := reviewStageFirstNonEmpty(candidate.CalendarURL, candidate.SourceURL, baseSourceURL, authoritativeSourceURL)
+		candidateSourceURL := reviewStageAuthoritativeSourceURL(candidate, baseSourceURL, authoritativeSourceURL)
 		if candidateSourceName == "" || candidateSourceURL == "" {
 			return "", "", ""
 		}
@@ -140,16 +211,65 @@ func reviewStageAuthoritativeSource(catalog *Catalog, source, baseSourceName, ba
 	return authoritativeSourceName, authoritativeSourceURL, authoritativeSourceEventKey
 }
 
-func reviewStageAuthoritativeSourceEventKey(candidate review.CandidateInput) string {
-	if key, ok := SourceIdentityKey(candidate.ExternalID); ok {
-		return key
+func reviewStageAuthoritativeSourceURL(candidate review.CandidateInput, baseSourceURL, authoritativeSourceURL string) string {
+	var values []string
+	if !candidate.CalendarURLSourceIdentityDisabled {
+		values = append(values, candidate.CalendarURL)
 	}
-	if reviewStageHasRealSourceURL(candidate.Provenance) {
+	if !candidate.SourceURLSourceIdentityDisabled {
+		values = append(values, candidate.SourceURL)
+	}
+	values = append(values, baseSourceURL, authoritativeSourceURL)
+	return reviewStageFirstNonEmpty(values...)
+}
+
+func reviewStageAuthoritativeSourceEventKey(candidate review.CandidateInput) string {
+	if !candidate.ExternalIDSourceIdentityDisabled {
+		if key, ok := SourceIdentityKey(candidate.ExternalID); ok {
+			return key
+		}
+	}
+	if !candidate.SourceURLSourceIdentityDisabled && (candidate.ExternalIDSourceIdentityDisabled || reviewStageHasRealSourceURL(candidate.Provenance)) {
 		if normalized, ok := NormalizeEventIdentityURL(candidate.SourceURL); ok {
 			return "url:" + normalized
 		}
 	}
+	if !candidate.CalendarURLSourceIdentityDisabled {
+		if key, ok := SourceIdentityKey(candidate.CalendarURL); ok {
+			return key
+		}
+	}
 	return ""
+}
+
+func reviewStageCandidateSourceIdentityInput(candidate review.CandidateInput) SourceIdentityInput {
+	input := SourceIdentityInput{
+		ExternalID:  strings.TrimSpace(candidate.ExternalID),
+		SourceURL:   strings.TrimSpace(candidate.SourceURL),
+		CalendarURL: strings.TrimSpace(candidate.CalendarURL),
+	}
+	if candidate.ExternalIDSourceIdentityDisabled {
+		input.ExternalID = ""
+	}
+	if candidate.SourceURLSourceIdentityDisabled {
+		input.SourceURL = ""
+	}
+	if candidate.CalendarURLSourceIdentityDisabled {
+		input.CalendarURL = ""
+	}
+	return input
+}
+
+func reviewStageCandidateSourceIdentities(candidate review.CandidateInput) SourceIdentitySet {
+	return SourceIdentities(reviewStageCandidateSourceIdentityInput(candidate))
+}
+
+func reviewStageCandidateSourceIdentityKey(candidate review.CandidateInput) (string, bool) {
+	identities := reviewStageCandidateSourceIdentities(candidate)
+	if key := identities.PrimaryKey(); key != "" {
+		return key, true
+	}
+	return "", false
 }
 
 func reviewStageHasRealSourceURL(provenance string) bool {
@@ -184,6 +304,15 @@ func reviewStageCandidateFingerprint(candidate review.CandidateInput) string {
 	sum := sha256.New()
 	writeReviewStageHashPart(sum, "review-stage-candidate:v2")
 	writeReviewStageHashPart(sum, candidate.ExternalID)
+	if candidate.ExternalIDSourceIdentityDisabled {
+		writeReviewStageHashPart(sum, "external-id-source-identity-disabled")
+	}
+	if candidate.SourceURLSourceIdentityDisabled {
+		writeReviewStageHashPart(sum, "source-url-source-identity-disabled")
+	}
+	if candidate.CalendarURLSourceIdentityDisabled {
+		writeReviewStageHashPart(sum, "calendar-url-source-identity-disabled")
+	}
 	writeReviewStageHashPart(sum, candidate.Name)
 	writeReviewStageHashPart(sum, candidate.VenueSlug)
 	writeReviewStageHashPart(sum, candidate.StartAt)
@@ -198,9 +327,20 @@ func writeReviewStageHashPart(sum interface{ Write([]byte) (int, error) }, value
 	_, _ = fmt.Fprintf(sum, "%d:%s\x00", len(value), value)
 }
 
-func reviewStageKey(catalog *Catalog, source string, candidate EventCandidate) (string, bool) {
+func reviewStageKey(catalog *Catalog, source string, candidate EventCandidate, uidSafety reviewStageUIDSafety) (string, bool) {
 	if uid := strings.TrimSpace(candidate.UID); uid != "" {
-		return "uid\x00" + uid, true
+		if uidSafety.isUnsafe(uid) {
+			if startAt, ok := reviewStageNormalizedStartAt(candidate.StartAt); ok {
+				return strings.Join([]string{
+					"unsafe_uid_occurrence",
+					uid,
+					startAt,
+					reviewStageVenueSlug(catalog, source, candidate),
+				}, "\x00"), true
+			}
+		} else {
+			return "uid\x00" + uid, true
+		}
 	}
 
 	summary := normalizeReviewStageText(candidate.Summary)
@@ -217,32 +357,59 @@ func reviewStageKey(catalog *Catalog, source string, candidate EventCandidate) (
 	}, "\x00"), true
 }
 
-func reviewStageCandidateInput(catalog *Catalog, report Report, calendar CalendarReport, candidate EventCandidate) review.CandidateInput {
+func reviewStageCandidateInput(catalog *Catalog, report Report, calendar CalendarReport, candidate EventCandidate, uidSafety reviewStageUIDSafety) review.CandidateInput {
+	sourceURL := reviewStageOfficialSourceURL(report, calendar, candidate)
+	calendarURL := reviewStageCalendarURL(calendar, candidate)
+	externalIDDisabled, sourceURLDisabled, calendarURLDisabled := reviewStageCandidateIdentityDisabledFlags(candidate, sourceURL, calendarURL, uidSafety)
 	return review.CandidateInput{
-		ExternalID:       strings.TrimSpace(candidate.UID),
-		Name:             strings.TrimSpace(candidate.Summary),
-		VenueSlug:        reviewStageVenueSlug(catalog, report.Source, candidate),
-		VenueText:        strings.TrimSpace(candidate.Location),
-		VenueLocationRaw: candidate.LocationRaw,
-		RoomText:         strings.TrimSpace(candidate.RoomText),
-		Rooms:            reviewStageRooms(catalog, report.Source, candidate),
-		StartAt:          strings.TrimSpace(candidate.StartAt),
-		EndAt:            strings.TrimSpace(candidate.EndAt),
-		Genre:            "",
-		Status:           reviewStageStatus(candidate.Status),
-		Description:      strings.TrimSpace(candidate.Description),
-		ImageURL:         strings.TrimSpace(candidate.ImageURL),
-		ImageSourceURL:   strings.TrimSpace(candidate.ImageSourceURL),
-		ImageAlt:         strings.TrimSpace(candidate.ImageAlt),
-		ImageWidth:       candidate.ImageWidth,
-		ImageHeight:      candidate.ImageHeight,
-		ImageFocusX:      candidate.ImageFocusX,
-		ImageFocusY:      candidate.ImageFocusY,
-		SourceName:       reviewStageSourceName(catalog, report),
-		SourceURL:        reviewStageOfficialSourceURL(report, calendar, candidate),
-		CalendarURL:      reviewStageCalendarURL(calendar, candidate),
-		Provenance:       reviewStageProvenance(report, calendar, candidate),
+		ExternalID:                        strings.TrimSpace(candidate.UID),
+		ExternalIDSourceIdentityDisabled:  externalIDDisabled,
+		Name:                              strings.TrimSpace(candidate.Summary),
+		VenueSlug:                         reviewStageVenueSlug(catalog, report.Source, candidate),
+		VenueText:                         strings.TrimSpace(candidate.Location),
+		VenueLocationRaw:                  candidate.LocationRaw,
+		RoomText:                          strings.TrimSpace(candidate.RoomText),
+		Rooms:                             reviewStageRooms(catalog, report.Source, candidate),
+		StartAt:                           strings.TrimSpace(candidate.StartAt),
+		EndAt:                             strings.TrimSpace(candidate.EndAt),
+		Genre:                             "",
+		Status:                            reviewStageStatus(candidate.Status),
+		Description:                       strings.TrimSpace(candidate.Description),
+		ImageURL:                          strings.TrimSpace(candidate.ImageURL),
+		ImageSourceURL:                    strings.TrimSpace(candidate.ImageSourceURL),
+		ImageAlt:                          strings.TrimSpace(candidate.ImageAlt),
+		ImageWidth:                        candidate.ImageWidth,
+		ImageHeight:                       candidate.ImageHeight,
+		ImageFocusX:                       candidate.ImageFocusX,
+		ImageFocusY:                       candidate.ImageFocusY,
+		SourceName:                        reviewStageSourceName(catalog, report),
+		SourceURL:                         sourceURL,
+		SourceURLSourceIdentityDisabled:   sourceURLDisabled,
+		CalendarURL:                       calendarURL,
+		CalendarURLSourceIdentityDisabled: calendarURLDisabled,
+		Provenance:                        reviewStageProvenance(report, calendar, candidate),
 	}
+}
+
+func reviewStageCandidateIdentityDisabledFlags(candidate EventCandidate, sourceURL, calendarURL string, uidSafety reviewStageUIDSafety) (bool, bool, bool) {
+	if !uidSafety.isUnsafe(candidate.UID) {
+		return false, false, false
+	}
+
+	sourceURLDisabled := true
+	candidateURL := strings.TrimSpace(candidate.URL)
+	if candidateURL != "" && strings.TrimSpace(sourceURL) == candidateURL {
+		if _, ok := NormalizeEventIdentityURL(candidateURL); ok {
+			sourceURLDisabled = false
+		}
+	}
+
+	calendarURLDisabled := true
+	if _, ok := normalizeAllowedCalendarIdentityURL(calendarURL); ok {
+		calendarURLDisabled = false
+	}
+
+	return true, sourceURLDisabled, calendarURLDisabled
 }
 
 func reviewStageRooms(catalog *Catalog, source string, candidate EventCandidate) []domain.VenueRoom {
@@ -284,6 +451,10 @@ func reviewStageOfficialSourceURL(report Report, calendar CalendarReport, candid
 }
 
 func reviewStageCalendarURL(calendar CalendarReport, candidate EventCandidate) string {
+	candidateURL := strings.TrimSpace(candidate.URL)
+	if _, ok := normalizeAllowedCalendarIdentityURL(candidateURL); ok {
+		return candidateURL
+	}
 	for _, value := range []string{calendar.URL, candidate.URL} {
 		value = strings.TrimSpace(value)
 		if IsCalendarURL(value) {
@@ -378,37 +549,40 @@ func reviewStageVenueSlugValue(candidate EventCandidate) string {
 }
 
 type reviewStageEventReviewEvidencePayload struct {
-	GroupTitle                       string                    `json:"group_title"`
-	GroupSourceName                  string                    `json:"group_source_name"`
-	GroupSourceURL                   string                    `json:"group_source_url"`
-	SourceAuthority                  string                    `json:"source_authority"`
-	GroupAuthoritativeSourceName     string                    `json:"group_authoritative_source_name,omitempty"`
-	GroupAuthoritativeSourceURL      string                    `json:"group_authoritative_source_url,omitempty"`
-	GroupAuthoritativeSourceEventKey string                    `json:"group_authoritative_source_event_key,omitempty"`
-	GroupNotes                       string                    `json:"group_notes,omitempty"`
-	SourceName                       string                    `json:"source_name"`
-	SourceURL                        string                    `json:"source_url,omitempty"`
-	CalendarURL                      string                    `json:"calendar_url,omitempty"`
-	Provenance                       string                    `json:"provenance,omitempty"`
-	CandidateExternalID              string                    `json:"candidate_external_id,omitempty"`
-	CandidateTitle                   string                    `json:"candidate_title,omitempty"`
-	CandidateVenueSlug               string                    `json:"candidate_venue_slug,omitempty"`
-	CandidateVenueText               string                    `json:"candidate_venue_text,omitempty"`
-	CandidateVenueLocationRaw        string                    `json:"candidate_venue_location_raw,omitempty"`
-	CandidateRoomText                string                    `json:"candidate_room_text,omitempty"`
-	CandidateRooms                   []reviewStageEvidenceRoom `json:"candidate_rooms,omitempty"`
-	CandidateStartAt                 string                    `json:"candidate_start_at,omitempty"`
-	CandidateEndAt                   string                    `json:"candidate_end_at,omitempty"`
-	CandidateGenre                   string                    `json:"candidate_genre,omitempty"`
-	CandidateStatus                  string                    `json:"candidate_status,omitempty"`
-	CandidateDescription             string                    `json:"candidate_description,omitempty"`
-	CandidateImageURL                string                    `json:"candidate_image_url,omitempty"`
-	CandidateImageSourceURL          string                    `json:"candidate_image_source_url,omitempty"`
-	CandidateImageAlt                string                    `json:"candidate_image_alt,omitempty"`
-	CandidateImageWidth              int                       `json:"candidate_image_width,omitempty"`
-	CandidateImageHeight             int                       `json:"candidate_image_height,omitempty"`
-	CandidateImageFocusX             int                       `json:"candidate_image_focus_x,omitempty"`
-	CandidateImageFocusY             int                       `json:"candidate_image_focus_y,omitempty"`
+	GroupTitle                                 string                    `json:"group_title"`
+	GroupSourceName                            string                    `json:"group_source_name"`
+	GroupSourceURL                             string                    `json:"group_source_url"`
+	SourceAuthority                            string                    `json:"source_authority"`
+	GroupAuthoritativeSourceName               string                    `json:"group_authoritative_source_name,omitempty"`
+	GroupAuthoritativeSourceURL                string                    `json:"group_authoritative_source_url,omitempty"`
+	GroupAuthoritativeSourceEventKey           string                    `json:"group_authoritative_source_event_key,omitempty"`
+	GroupNotes                                 string                    `json:"group_notes,omitempty"`
+	SourceName                                 string                    `json:"source_name"`
+	SourceURL                                  string                    `json:"source_url,omitempty"`
+	CalendarURL                                string                    `json:"calendar_url,omitempty"`
+	Provenance                                 string                    `json:"provenance,omitempty"`
+	CandidateExternalID                        string                    `json:"candidate_external_id,omitempty"`
+	CandidateExternalIDSourceIdentityDisabled  bool                      `json:"candidate_external_id_source_identity_disabled,omitempty"`
+	CandidateTitle                             string                    `json:"candidate_title,omitempty"`
+	CandidateVenueSlug                         string                    `json:"candidate_venue_slug,omitempty"`
+	CandidateVenueText                         string                    `json:"candidate_venue_text,omitempty"`
+	CandidateVenueLocationRaw                  string                    `json:"candidate_venue_location_raw,omitempty"`
+	CandidateRoomText                          string                    `json:"candidate_room_text,omitempty"`
+	CandidateRooms                             []reviewStageEvidenceRoom `json:"candidate_rooms,omitempty"`
+	CandidateStartAt                           string                    `json:"candidate_start_at,omitempty"`
+	CandidateEndAt                             string                    `json:"candidate_end_at,omitempty"`
+	CandidateGenre                             string                    `json:"candidate_genre,omitempty"`
+	CandidateStatus                            string                    `json:"candidate_status,omitempty"`
+	CandidateDescription                       string                    `json:"candidate_description,omitempty"`
+	CandidateImageURL                          string                    `json:"candidate_image_url,omitempty"`
+	CandidateImageSourceURL                    string                    `json:"candidate_image_source_url,omitempty"`
+	CandidateImageAlt                          string                    `json:"candidate_image_alt,omitempty"`
+	CandidateImageWidth                        int                       `json:"candidate_image_width,omitempty"`
+	CandidateImageHeight                       int                       `json:"candidate_image_height,omitempty"`
+	CandidateImageFocusX                       int                       `json:"candidate_image_focus_x,omitempty"`
+	CandidateImageFocusY                       int                       `json:"candidate_image_focus_y,omitempty"`
+	CandidateSourceURLSourceIdentityDisabled   bool                      `json:"candidate_source_url_source_identity_disabled,omitempty"`
+	CandidateCalendarURLSourceIdentityDisabled bool                      `json:"candidate_calendar_url_source_identity_disabled,omitempty"`
 }
 
 type reviewStageEvidenceRoom struct {
@@ -444,54 +618,60 @@ func reviewStageClusterEventReviewEvidenceInput(cluster ReviewStageClusterInput,
 		CalendarURL:                      strings.TrimSpace(candidate.CalendarURL),
 		Provenance:                       strings.TrimSpace(candidate.Provenance),
 		CandidateExternalID:              strings.TrimSpace(candidate.ExternalID),
-		CandidateTitle:                   strings.TrimSpace(candidate.Name),
-		CandidateVenueSlug:               strings.TrimSpace(candidate.VenueSlug),
-		CandidateVenueText:               strings.TrimSpace(candidate.VenueText),
-		CandidateVenueLocationRaw:        strings.TrimSpace(candidate.VenueLocationRaw),
-		CandidateRoomText:                strings.TrimSpace(candidate.RoomText),
-		CandidateRooms:                   reviewStageEvidenceRooms(candidate.Rooms),
-		CandidateStartAt:                 strings.TrimSpace(candidate.StartAt),
-		CandidateEndAt:                   strings.TrimSpace(candidate.EndAt),
-		CandidateGenre:                   strings.TrimSpace(candidate.Genre),
-		CandidateStatus:                  strings.TrimSpace(candidate.Status),
-		CandidateDescription:             strings.TrimSpace(candidate.Description),
-		CandidateImageURL:                strings.TrimSpace(candidate.ImageURL),
-		CandidateImageSourceURL:          strings.TrimSpace(candidate.ImageSourceURL),
-		CandidateImageAlt:                strings.TrimSpace(candidate.ImageAlt),
-		CandidateImageWidth:              candidate.ImageWidth,
-		CandidateImageHeight:             candidate.ImageHeight,
-		CandidateImageFocusX:             candidate.ImageFocusX,
-		CandidateImageFocusY:             candidate.ImageFocusY,
+		CandidateExternalIDSourceIdentityDisabled: candidate.ExternalIDSourceIdentityDisabled,
+		CandidateTitle:                             strings.TrimSpace(candidate.Name),
+		CandidateVenueSlug:                         strings.TrimSpace(candidate.VenueSlug),
+		CandidateVenueText:                         strings.TrimSpace(candidate.VenueText),
+		CandidateVenueLocationRaw:                  strings.TrimSpace(candidate.VenueLocationRaw),
+		CandidateRoomText:                          strings.TrimSpace(candidate.RoomText),
+		CandidateRooms:                             reviewStageEvidenceRooms(candidate.Rooms),
+		CandidateStartAt:                           strings.TrimSpace(candidate.StartAt),
+		CandidateEndAt:                             strings.TrimSpace(candidate.EndAt),
+		CandidateGenre:                             strings.TrimSpace(candidate.Genre),
+		CandidateStatus:                            strings.TrimSpace(candidate.Status),
+		CandidateDescription:                       strings.TrimSpace(candidate.Description),
+		CandidateImageURL:                          strings.TrimSpace(candidate.ImageURL),
+		CandidateImageSourceURL:                    strings.TrimSpace(candidate.ImageSourceURL),
+		CandidateImageAlt:                          strings.TrimSpace(candidate.ImageAlt),
+		CandidateImageWidth:                        candidate.ImageWidth,
+		CandidateImageHeight:                       candidate.ImageHeight,
+		CandidateImageFocusX:                       candidate.ImageFocusX,
+		CandidateImageFocusY:                       candidate.ImageFocusY,
+		CandidateSourceURLSourceIdentityDisabled:   candidate.SourceURLSourceIdentityDisabled,
+		CandidateCalendarURLSourceIdentityDisabled: candidate.CalendarURLSourceIdentityDisabled,
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
 	sourceIdentityKeys, exactIdentityKeys, weakEvidence, weakReason := reviewStageClusterEvidenceIdentityKeys(cluster, candidate)
 	fingerprintMaterialBytes, _ := json.Marshal(reviewStageEventReviewEvidenceFingerprintMaterial{
-		SourceAuthority:           string(sourceAuthority),
-		SourceURL:                 sourceURL,
-		CalendarURL:               strings.TrimSpace(candidate.CalendarURL),
-		Provenance:                strings.TrimSpace(candidate.Provenance),
-		CandidateExternalID:       strings.TrimSpace(candidate.ExternalID),
-		CandidateTitle:            normalizeReviewStageDisplay(candidate.Name),
-		CandidateVenueSlug:        strings.TrimSpace(candidate.VenueSlug),
-		CandidateVenueText:        strings.TrimSpace(candidate.VenueText),
-		CandidateVenueLocationRaw: strings.TrimSpace(candidate.VenueLocationRaw),
-		CandidateRoomText:         strings.TrimSpace(candidate.RoomText),
-		CandidateRooms:            reviewStageEvidenceRooms(candidate.Rooms),
-		CandidateStartAt:          strings.TrimSpace(candidate.StartAt),
-		CandidateEndAt:            strings.TrimSpace(candidate.EndAt),
-		CandidateGenre:            strings.TrimSpace(candidate.Genre),
-		CandidateStatus:           strings.TrimSpace(candidate.Status),
-		CandidateDescription:      strings.TrimSpace(candidate.Description),
-		CandidateImageURL:         strings.TrimSpace(candidate.ImageURL),
-		CandidateImageSourceURL:   strings.TrimSpace(candidate.ImageSourceURL),
-		CandidateImageAlt:         strings.TrimSpace(candidate.ImageAlt),
-		CandidateImageWidth:       candidate.ImageWidth,
-		CandidateImageHeight:      candidate.ImageHeight,
-		CandidateImageFocusX:      candidate.ImageFocusX,
-		CandidateImageFocusY:      candidate.ImageFocusY,
-		SourceIdentityKeys:        reviewStageUniqueSortedKeys(sourceIdentityKeys),
-		ExactIdentityKeys:         reviewStageUniqueSortedKeys(exactIdentityKeys),
+		SourceAuthority:     string(sourceAuthority),
+		SourceURL:           sourceURL,
+		CalendarURL:         strings.TrimSpace(candidate.CalendarURL),
+		Provenance:          strings.TrimSpace(candidate.Provenance),
+		CandidateExternalID: strings.TrimSpace(candidate.ExternalID),
+		CandidateExternalIDSourceIdentityDisabled: candidate.ExternalIDSourceIdentityDisabled,
+		CandidateTitle:                             normalizeReviewStageDisplay(candidate.Name),
+		CandidateVenueSlug:                         strings.TrimSpace(candidate.VenueSlug),
+		CandidateVenueText:                         strings.TrimSpace(candidate.VenueText),
+		CandidateVenueLocationRaw:                  strings.TrimSpace(candidate.VenueLocationRaw),
+		CandidateRoomText:                          strings.TrimSpace(candidate.RoomText),
+		CandidateRooms:                             reviewStageEvidenceRooms(candidate.Rooms),
+		CandidateStartAt:                           strings.TrimSpace(candidate.StartAt),
+		CandidateEndAt:                             strings.TrimSpace(candidate.EndAt),
+		CandidateGenre:                             strings.TrimSpace(candidate.Genre),
+		CandidateStatus:                            strings.TrimSpace(candidate.Status),
+		CandidateDescription:                       strings.TrimSpace(candidate.Description),
+		CandidateImageURL:                          strings.TrimSpace(candidate.ImageURL),
+		CandidateImageSourceURL:                    strings.TrimSpace(candidate.ImageSourceURL),
+		CandidateImageAlt:                          strings.TrimSpace(candidate.ImageAlt),
+		CandidateImageWidth:                        candidate.ImageWidth,
+		CandidateImageHeight:                       candidate.ImageHeight,
+		CandidateImageFocusX:                       candidate.ImageFocusX,
+		CandidateImageFocusY:                       candidate.ImageFocusY,
+		CandidateSourceURLSourceIdentityDisabled:   candidate.SourceURLSourceIdentityDisabled,
+		CandidateCalendarURLSourceIdentityDisabled: candidate.CalendarURLSourceIdentityDisabled,
+		SourceIdentityKeys:                         reviewStageUniqueSortedKeys(sourceIdentityKeys),
+		ExactIdentityKeys:                          reviewStageUniqueSortedKeys(exactIdentityKeys),
 	})
 
 	return seedstore.StageEventReviewEvidenceInput{
@@ -547,11 +727,7 @@ func reviewStageClusterEvidenceIdentityKeys(cluster ReviewStageClusterInput, can
 }
 
 func reviewStageEventReviewSourceIdentityKeys(cluster ReviewStageClusterInput, candidate review.CandidateInput) []string {
-	identities := SourceIdentities(SourceIdentityInput{
-		ExternalID:  candidate.ExternalID,
-		SourceURL:   candidate.SourceURL,
-		CalendarURL: candidate.CalendarURL,
-	})
+	identities := reviewStageCandidateSourceIdentities(candidate)
 	keys := append([]string(nil), identities.Keys()...)
 	if key := strings.TrimSpace(cluster.AuthoritativeSourceEventKey); key != "" {
 		keys = append(keys, key)
@@ -577,31 +753,34 @@ func reviewStageExactIdentityKeys(candidate review.CandidateInput) []string {
 }
 
 type reviewStageEventReviewEvidenceFingerprintMaterial struct {
-	SourceAuthority           string                    `json:"source_authority,omitempty"`
-	SourceURL                 string                    `json:"source_url,omitempty"`
-	CalendarURL               string                    `json:"calendar_url,omitempty"`
-	Provenance                string                    `json:"provenance,omitempty"`
-	CandidateExternalID       string                    `json:"candidate_external_id,omitempty"`
-	CandidateTitle            string                    `json:"candidate_title,omitempty"`
-	CandidateVenueSlug        string                    `json:"candidate_venue_slug,omitempty"`
-	CandidateVenueText        string                    `json:"candidate_venue_text,omitempty"`
-	CandidateVenueLocationRaw string                    `json:"candidate_venue_location_raw,omitempty"`
-	CandidateRoomText         string                    `json:"candidate_room_text,omitempty"`
-	CandidateRooms            []reviewStageEvidenceRoom `json:"candidate_rooms,omitempty"`
-	CandidateStartAt          string                    `json:"candidate_start_at,omitempty"`
-	CandidateEndAt            string                    `json:"candidate_end_at,omitempty"`
-	CandidateGenre            string                    `json:"candidate_genre,omitempty"`
-	CandidateStatus           string                    `json:"candidate_status,omitempty"`
-	CandidateDescription      string                    `json:"candidate_description,omitempty"`
-	CandidateImageURL         string                    `json:"candidate_image_url,omitempty"`
-	CandidateImageSourceURL   string                    `json:"candidate_image_source_url,omitempty"`
-	CandidateImageAlt         string                    `json:"candidate_image_alt,omitempty"`
-	CandidateImageWidth       int                       `json:"candidate_image_width,omitempty"`
-	CandidateImageHeight      int                       `json:"candidate_image_height,omitempty"`
-	CandidateImageFocusX      int                       `json:"candidate_image_focus_x,omitempty"`
-	CandidateImageFocusY      int                       `json:"candidate_image_focus_y,omitempty"`
-	SourceIdentityKeys        []string                  `json:"source_identity_keys,omitempty"`
-	ExactIdentityKeys         []string                  `json:"exact_identity_keys,omitempty"`
+	SourceAuthority                            string                    `json:"source_authority,omitempty"`
+	SourceURL                                  string                    `json:"source_url,omitempty"`
+	CalendarURL                                string                    `json:"calendar_url,omitempty"`
+	Provenance                                 string                    `json:"provenance,omitempty"`
+	CandidateExternalID                        string                    `json:"candidate_external_id,omitempty"`
+	CandidateExternalIDSourceIdentityDisabled  bool                      `json:"candidate_external_id_source_identity_disabled,omitempty"`
+	CandidateTitle                             string                    `json:"candidate_title,omitempty"`
+	CandidateVenueSlug                         string                    `json:"candidate_venue_slug,omitempty"`
+	CandidateVenueText                         string                    `json:"candidate_venue_text,omitempty"`
+	CandidateVenueLocationRaw                  string                    `json:"candidate_venue_location_raw,omitempty"`
+	CandidateRoomText                          string                    `json:"candidate_room_text,omitempty"`
+	CandidateRooms                             []reviewStageEvidenceRoom `json:"candidate_rooms,omitempty"`
+	CandidateStartAt                           string                    `json:"candidate_start_at,omitempty"`
+	CandidateEndAt                             string                    `json:"candidate_end_at,omitempty"`
+	CandidateGenre                             string                    `json:"candidate_genre,omitempty"`
+	CandidateStatus                            string                    `json:"candidate_status,omitempty"`
+	CandidateDescription                       string                    `json:"candidate_description,omitempty"`
+	CandidateImageURL                          string                    `json:"candidate_image_url,omitempty"`
+	CandidateImageSourceURL                    string                    `json:"candidate_image_source_url,omitempty"`
+	CandidateImageAlt                          string                    `json:"candidate_image_alt,omitempty"`
+	CandidateImageWidth                        int                       `json:"candidate_image_width,omitempty"`
+	CandidateImageHeight                       int                       `json:"candidate_image_height,omitempty"`
+	CandidateImageFocusX                       int                       `json:"candidate_image_focus_x,omitempty"`
+	CandidateImageFocusY                       int                       `json:"candidate_image_focus_y,omitempty"`
+	CandidateSourceURLSourceIdentityDisabled   bool                      `json:"candidate_source_url_source_identity_disabled,omitempty"`
+	CandidateCalendarURLSourceIdentityDisabled bool                      `json:"candidate_calendar_url_source_identity_disabled,omitempty"`
+	SourceIdentityKeys                         []string                  `json:"source_identity_keys,omitempty"`
+	ExactIdentityKeys                          []string                  `json:"exact_identity_keys,omitempty"`
 }
 
 func reviewStageEventReviewEvidenceFingerprint(material []byte) string {

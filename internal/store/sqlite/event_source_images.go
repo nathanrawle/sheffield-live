@@ -103,7 +103,7 @@ func upsertEventSourceImagesTx(ctx context.Context, tx interface {
 			return err
 		}
 		sourceIdentityKey := reviewStoredCandidateSourceIdentities(candidate).PrimaryKey()
-		if sourceIdentityKey == "" {
+		if sourceIdentityKey == "" && eventSourceImageCandidateSourceIdentityFallbackAllowed(candidate, sourceURL) {
 			sourceIdentityKey = ingest.SourceIdentities(ingest.SourceIdentityInput{SourceURL: sourceURL}).PrimaryKey()
 		}
 		if strings.TrimSpace(candidate.ImageURL) == "" {
@@ -131,6 +131,20 @@ func upsertEventSourceImagesTx(ctx context.Context, tx interface {
 		}
 	}
 	return nil
+}
+
+func eventSourceImageCandidateSourceIdentityFallbackAllowed(candidate review.Candidate, sourceURL string) bool {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" {
+		return false
+	}
+	if candidateSourceURL := strings.TrimSpace(candidate.SourceURL); candidateSourceURL != "" && candidateSourceURL == sourceURL {
+		return !candidate.SourceURLSourceIdentityDisabled
+	}
+	if candidateCalendarURL := strings.TrimSpace(candidate.CalendarURL); candidateCalendarURL != "" && candidateCalendarURL == sourceURL {
+		return !candidate.CalendarURLSourceIdentityDisabled
+	}
+	return true
 }
 
 func eventSourceImageCandidateSource(candidate review.Candidate) (sourceName, sourceURL, authoritativeMatchURL string) {
@@ -307,7 +321,14 @@ func backfillEventSourceImagesFromReviewEvidenceTx(ctx context.Context, tx inter
 		if strings.TrimSpace(parsed.ImageURL) == "" {
 			continue
 		}
-		sourceIdentityKey := ingest.SourceIdentities(sourceIdentityInputFromCandidateValues(parsed.ExternalID, firstNonEmptyReviewString(parsed.SourceURL, sourceURL), parsed.CalendarURL)).PrimaryKey()
+		sourceIdentityKey := reviewCandidateSourceIdentities(review.CandidateInput{
+			ExternalID:                        parsed.ExternalID,
+			ExternalIDSourceIdentityDisabled:  parsed.ExternalIDSourceIdentityDisabled,
+			SourceURL:                         firstNonEmptyReviewString(parsed.SourceURL, sourceURL),
+			SourceURLSourceIdentityDisabled:   parsed.SourceURLSourceIdentityDisabled,
+			CalendarURL:                       parsed.CalendarURL,
+			CalendarURLSourceIdentityDisabled: parsed.CalendarURLSourceIdentityDisabled,
+		}).PrimaryKey()
 		createdAt := parseBackfillTime(createdAtText, now)
 		updatedAt := parseBackfillTime(updatedAtText, createdAt)
 		if err := upsertEventSourceImageRowTx(ctx, tx, eventSourceImageInput{

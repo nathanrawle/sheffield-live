@@ -81,6 +81,60 @@ func TestParseICSExtractsImageURL(t *testing.T) {
 	}
 }
 
+func TestParseICSUsesRecurrenceIDForOccurrenceUID(t *testing.T) {
+	result := ParseICS([]byte("BEGIN:VCALENDAR\n" +
+		"BEGIN:VEVENT\n" +
+		"UID:series-show\n" +
+		"RECURRENCE-ID;TZID=Europe/London:20260508T200000\n" +
+		"SUMMARY:Series Show\n" +
+		"LOCATION:Sidney & Matilda\n" +
+		"DTSTART;TZID=Europe/London:20260508T200000\n" +
+		"END:VEVENT\n" +
+		"BEGIN:VEVENT\n" +
+		"UID:series-show\n" +
+		"RECURRENCE-ID;TZID=Europe/London:20260515T200000\n" +
+		"SUMMARY:Series Show\n" +
+		"LOCATION:Sidney & Matilda\n" +
+		"DTSTART;TZID=Europe/London:20260515T200000\n" +
+		"END:VEVENT\n" +
+		"END:VCALENDAR\n"))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 2; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := result.Candidates[0].UID, "ics:series-show:2026-05-08T19:00:00Z"; got != want {
+		t.Fatalf("first uid = %q, want %q", got, want)
+	}
+	if got, want := result.Candidates[1].UID, "ics:series-show:2026-05-15T19:00:00Z"; got != want {
+		t.Fatalf("second uid = %q, want %q", got, want)
+	}
+}
+
+func TestParseICSUsesRawRecurrenceIDFallbackForUnsupportedRecurrenceID(t *testing.T) {
+	result := ParseICS([]byte("BEGIN:VCALENDAR\n" +
+		"BEGIN:VEVENT\n" +
+		"UID:series-show\n" +
+		"RECURRENCE-ID;TZID=Europe/Paris;VALUE=DATE-TIME:20260508T200000\n" +
+		"SUMMARY:Series Show\n" +
+		"LOCATION:Sidney & Matilda\n" +
+		"DTSTART;TZID=Europe/London:20260508T200000\n" +
+		"END:VEVENT\n" +
+		"END:VCALENDAR\n"))
+
+	if got, want := len(result.Errors), 0; got != want {
+		t.Fatalf("errors = %#v, want none", result.Errors)
+	}
+	if got, want := len(result.Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+	if got, want := result.Candidates[0].UID, "ics:series-show:raw=20260508T200000|TZID=Europe/Paris|VALUE=DATE-TIME"; got != want {
+		t.Fatalf("uid = %q, want %q", got, want)
+	}
+}
+
 func TestParseICSUnescapesHTMLEntities(t *testing.T) {
 	result := ParseICS([]byte("BEGIN:VCALENDAR\n" +
 		"BEGIN:VEVENT\n" +

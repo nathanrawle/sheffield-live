@@ -314,21 +314,24 @@ func recordEventReviewClusterObservationsForStageInputTx(ctx context.Context, tx
 	}
 
 	candidate := review.CandidateInput{
-		ExternalID:  strings.TrimSpace(parsed.ExternalID),
-		Name:        strings.TrimSpace(parsed.Title),
-		VenueSlug:   strings.TrimSpace(parsed.VenueSlug),
-		VenueText:   strings.TrimSpace(parsed.VenueText),
-		RoomText:    strings.TrimSpace(parsed.RoomText),
-		Rooms:       parsedRoomsFromImportReviewPayload(parsed.Rooms),
-		StartAt:     strings.TrimSpace(parsed.StartAt),
-		EndAt:       strings.TrimSpace(parsed.EndAt),
-		Genre:       strings.TrimSpace(parsed.Genre),
-		Status:      strings.TrimSpace(parsed.Status),
-		Description: strings.TrimSpace(parsed.Description),
-		SourceName:  firstNonEmptyImportReviewText(parsed.SourceName, stageInput.SourceName),
-		SourceURL:   firstNonEmptyImportReviewText(parsed.SourceURL, stageInput.SourceURL),
-		CalendarURL: strings.TrimSpace(parsed.CalendarURL),
-		Provenance:  strings.TrimSpace(parsed.Provenance),
+		ExternalID:                        strings.TrimSpace(parsed.ExternalID),
+		ExternalIDSourceIdentityDisabled:  parsed.ExternalIDSourceIdentityDisabled,
+		Name:                              strings.TrimSpace(parsed.Title),
+		VenueSlug:                         strings.TrimSpace(parsed.VenueSlug),
+		VenueText:                         strings.TrimSpace(parsed.VenueText),
+		RoomText:                          strings.TrimSpace(parsed.RoomText),
+		Rooms:                             parsedRoomsFromImportReviewPayload(parsed.Rooms),
+		StartAt:                           strings.TrimSpace(parsed.StartAt),
+		EndAt:                             strings.TrimSpace(parsed.EndAt),
+		Genre:                             strings.TrimSpace(parsed.Genre),
+		Status:                            strings.TrimSpace(parsed.Status),
+		Description:                       strings.TrimSpace(parsed.Description),
+		SourceName:                        firstNonEmptyImportReviewText(parsed.SourceName, stageInput.SourceName),
+		SourceURL:                         firstNonEmptyImportReviewText(parsed.SourceURL, stageInput.SourceURL),
+		SourceURLSourceIdentityDisabled:   parsed.SourceURLSourceIdentityDisabled,
+		CalendarURL:                       strings.TrimSpace(parsed.CalendarURL),
+		CalendarURLSourceIdentityDisabled: parsed.CalendarURLSourceIdentityDisabled,
+		Provenance:                        strings.TrimSpace(parsed.Provenance),
 	}
 	sourceCtx := reviewSourceIdentityContextForCandidateInput(reviewSourceIdentitySupporting, stageInput.SourceName, stageInput.SourceURL, "", "", "", candidate, "event_review_import_staging")
 	if sourceCtx.PrimaryObservationKey == "" {
@@ -1240,11 +1243,39 @@ func authoritativeSourceCandidateForApply(selected map[review.Field]review.Candi
 }
 
 func reviewCandidateSourceIdentities(candidate review.CandidateInput) ingest.SourceIdentitySet {
-	return ingest.SourceIdentities(sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL))
+	return ingest.SourceIdentities(sourceIdentityInputFromCandidateInput(candidate))
 }
 
 func reviewStoredCandidateSourceIdentities(candidate review.Candidate) ingest.SourceIdentitySet {
-	return ingest.SourceIdentities(sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL))
+	return ingest.SourceIdentities(sourceIdentityInputFromCandidate(candidate))
+}
+
+func sourceIdentityInputFromCandidateInput(candidate review.CandidateInput) ingest.SourceIdentityInput {
+	input := sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL)
+	if candidate.ExternalIDSourceIdentityDisabled {
+		input.ExternalID = ""
+	}
+	if candidate.SourceURLSourceIdentityDisabled {
+		input.SourceURL = ""
+	}
+	if candidate.CalendarURLSourceIdentityDisabled {
+		input.CalendarURL = ""
+	}
+	return input
+}
+
+func sourceIdentityInputFromCandidate(candidate review.Candidate) ingest.SourceIdentityInput {
+	input := sourceIdentityInputFromCandidateValues(candidate.ExternalID, candidate.SourceURL, candidate.CalendarURL)
+	if candidate.ExternalIDSourceIdentityDisabled {
+		input.ExternalID = ""
+	}
+	if candidate.SourceURLSourceIdentityDisabled {
+		input.SourceURL = ""
+	}
+	if candidate.CalendarURLSourceIdentityDisabled {
+		input.CalendarURL = ""
+	}
+	return input
 }
 
 func sourceIdentityInputFromCandidateValues(externalID, sourceURL, calendarURL string) ingest.SourceIdentityInput {

@@ -983,28 +983,31 @@ func buildImportReviewCandidateMaterialTx(ctx context.Context, tx interface {
 	}
 
 	candidateInput := review.CandidateInput{
-		ExternalID:     strings.TrimSpace(parsed.ExternalID),
-		Name:           strings.TrimSpace(parsed.Title),
-		VenueSlug:      strings.TrimSpace(parsed.VenueSlug),
-		VenueText:      strings.TrimSpace(parsed.VenueText),
-		RoomText:       strings.TrimSpace(parsed.RoomText),
-		Rooms:          parsedRoomsFromImportReviewPayload(parsed.Rooms),
-		StartAt:        formatRFC3339UTC(start),
-		EndAt:          nullableImportReviewEndAt(end),
-		Genre:          strings.TrimSpace(parsed.Genre),
-		Status:         strings.TrimSpace(parsed.Status),
-		Description:    strings.TrimSpace(parsed.Description),
-		ImageURL:       strings.TrimSpace(parsed.ImageURL),
-		ImageSourceURL: strings.TrimSpace(parsed.ImageSourceURL),
-		ImageAlt:       strings.TrimSpace(parsed.ImageAlt),
-		ImageWidth:     parsed.ImageWidth,
-		ImageHeight:    parsed.ImageHeight,
-		ImageFocusX:    parsed.ImageFocusX,
-		ImageFocusY:    parsed.ImageFocusY,
-		SourceName:     firstNonEmptyImportReviewText(parsed.SourceName, evidence.SourceName),
-		SourceURL:      firstNonEmptyImportReviewText(parsed.SourceURL, evidence.SourceURL),
-		CalendarURL:    strings.TrimSpace(parsed.CalendarURL),
-		Provenance:     strings.TrimSpace(parsed.Provenance),
+		ExternalID:                        strings.TrimSpace(parsed.ExternalID),
+		ExternalIDSourceIdentityDisabled:  parsed.ExternalIDSourceIdentityDisabled,
+		Name:                              strings.TrimSpace(parsed.Title),
+		VenueSlug:                         strings.TrimSpace(parsed.VenueSlug),
+		VenueText:                         strings.TrimSpace(parsed.VenueText),
+		RoomText:                          strings.TrimSpace(parsed.RoomText),
+		Rooms:                             parsedRoomsFromImportReviewPayload(parsed.Rooms),
+		StartAt:                           formatRFC3339UTC(start),
+		EndAt:                             nullableImportReviewEndAt(end),
+		Genre:                             strings.TrimSpace(parsed.Genre),
+		Status:                            strings.TrimSpace(parsed.Status),
+		Description:                       strings.TrimSpace(parsed.Description),
+		ImageURL:                          strings.TrimSpace(parsed.ImageURL),
+		ImageSourceURL:                    strings.TrimSpace(parsed.ImageSourceURL),
+		ImageAlt:                          strings.TrimSpace(parsed.ImageAlt),
+		ImageWidth:                        parsed.ImageWidth,
+		ImageHeight:                       parsed.ImageHeight,
+		ImageFocusX:                       parsed.ImageFocusX,
+		ImageFocusY:                       parsed.ImageFocusY,
+		SourceName:                        firstNonEmptyImportReviewText(parsed.SourceName, evidence.SourceName),
+		SourceURL:                         firstNonEmptyImportReviewText(parsed.SourceURL, evidence.SourceURL),
+		SourceURLSourceIdentityDisabled:   parsed.SourceURLSourceIdentityDisabled,
+		CalendarURL:                       strings.TrimSpace(parsed.CalendarURL),
+		CalendarURLSourceIdentityDisabled: parsed.CalendarURLSourceIdentityDisabled,
+		Provenance:                        strings.TrimSpace(parsed.Provenance),
 	}
 	if candidateInput.SourceName == "" {
 		candidateInput.SourceName = strings.TrimSpace(evidence.SourceName)
@@ -1081,28 +1084,31 @@ func buildImportReviewCandidateMaterialTx(ctx context.Context, tx interface {
 	}
 
 	candidate := review.Candidate{
-		ExternalID:     candidateInput.ExternalID,
-		Name:           candidateInput.Name,
-		VenueSlug:      candidateInput.VenueSlug,
-		VenueText:      candidateInput.VenueText,
-		RoomText:       candidateInput.RoomText,
-		Rooms:          append([]domain.VenueRoom(nil), candidateInput.Rooms...),
-		StartAt:        candidateInput.StartAt,
-		EndAt:          candidateInput.EndAt,
-		Genre:          candidateInput.Genre,
-		Status:         candidateInput.Status,
-		Description:    candidateInput.Description,
-		ImageURL:       candidateInput.ImageURL,
-		ImageSourceURL: candidateInput.ImageSourceURL,
-		ImageAlt:       candidateInput.ImageAlt,
-		ImageWidth:     candidateInput.ImageWidth,
-		ImageHeight:    candidateInput.ImageHeight,
-		ImageFocusX:    candidateInput.ImageFocusX,
-		ImageFocusY:    candidateInput.ImageFocusY,
-		SourceName:     candidateInput.SourceName,
-		SourceURL:      candidateInput.SourceURL,
-		CalendarURL:    candidateInput.CalendarURL,
-		Provenance:     candidateInput.Provenance,
+		ExternalID:                        candidateInput.ExternalID,
+		ExternalIDSourceIdentityDisabled:  candidateInput.ExternalIDSourceIdentityDisabled,
+		Name:                              candidateInput.Name,
+		VenueSlug:                         candidateInput.VenueSlug,
+		VenueText:                         candidateInput.VenueText,
+		RoomText:                          candidateInput.RoomText,
+		Rooms:                             append([]domain.VenueRoom(nil), candidateInput.Rooms...),
+		StartAt:                           candidateInput.StartAt,
+		EndAt:                             candidateInput.EndAt,
+		Genre:                             candidateInput.Genre,
+		Status:                            candidateInput.Status,
+		Description:                       candidateInput.Description,
+		ImageURL:                          candidateInput.ImageURL,
+		ImageSourceURL:                    candidateInput.ImageSourceURL,
+		ImageAlt:                          candidateInput.ImageAlt,
+		ImageWidth:                        candidateInput.ImageWidth,
+		ImageHeight:                       candidateInput.ImageHeight,
+		ImageFocusX:                       candidateInput.ImageFocusX,
+		ImageFocusY:                       candidateInput.ImageFocusY,
+		SourceName:                        candidateInput.SourceName,
+		SourceURL:                         candidateInput.SourceURL,
+		SourceURLSourceIdentityDisabled:   candidateInput.SourceURLSourceIdentityDisabled,
+		CalendarURL:                       candidateInput.CalendarURL,
+		CalendarURLSourceIdentityDisabled: candidateInput.CalendarURLSourceIdentityDisabled,
+		Provenance:                        candidateInput.Provenance,
 	}
 
 	return importReviewCandidateMaterial{
@@ -2315,29 +2321,32 @@ func countEventsTx(ctx context.Context, q queryer) (int, error) {
 }
 
 type eventReviewImportReviewListingPayload struct {
-	SourceAuthority string                                      `json:"source_authority"`
-	SourceName      string                                      `json:"source_name,omitempty"`
-	SourceURL       string                                      `json:"source_url,omitempty"`
-	CalendarURL     string                                      `json:"calendar_url,omitempty"`
-	Provenance      string                                      `json:"provenance,omitempty"`
-	ExternalID      string                                      `json:"candidate_external_id,omitempty"`
-	Title           string                                      `json:"candidate_title,omitempty"`
-	VenueSlug       string                                      `json:"candidate_venue_slug,omitempty"`
-	VenueText       string                                      `json:"candidate_venue_text,omitempty"`
-	RoomText        string                                      `json:"candidate_room_text,omitempty"`
-	Rooms           []eventReviewImportReviewListingRoomPayload `json:"candidate_rooms,omitempty"`
-	StartAt         string                                      `json:"candidate_start_at,omitempty"`
-	EndAt           string                                      `json:"candidate_end_at,omitempty"`
-	Genre           string                                      `json:"candidate_genre,omitempty"`
-	Status          string                                      `json:"candidate_status,omitempty"`
-	Description     string                                      `json:"candidate_description,omitempty"`
-	ImageURL        string                                      `json:"candidate_image_url,omitempty"`
-	ImageSourceURL  string                                      `json:"candidate_image_source_url,omitempty"`
-	ImageAlt        string                                      `json:"candidate_image_alt,omitempty"`
-	ImageWidth      int                                         `json:"candidate_image_width,omitempty"`
-	ImageHeight     int                                         `json:"candidate_image_height,omitempty"`
-	ImageFocusX     int                                         `json:"candidate_image_focus_x,omitempty"`
-	ImageFocusY     int                                         `json:"candidate_image_focus_y,omitempty"`
+	SourceAuthority                   string                                      `json:"source_authority"`
+	SourceName                        string                                      `json:"source_name,omitempty"`
+	SourceURL                         string                                      `json:"source_url,omitempty"`
+	CalendarURL                       string                                      `json:"calendar_url,omitempty"`
+	Provenance                        string                                      `json:"provenance,omitempty"`
+	ExternalID                        string                                      `json:"candidate_external_id,omitempty"`
+	ExternalIDSourceIdentityDisabled  bool                                        `json:"candidate_external_id_source_identity_disabled,omitempty"`
+	Title                             string                                      `json:"candidate_title,omitempty"`
+	VenueSlug                         string                                      `json:"candidate_venue_slug,omitempty"`
+	VenueText                         string                                      `json:"candidate_venue_text,omitempty"`
+	RoomText                          string                                      `json:"candidate_room_text,omitempty"`
+	Rooms                             []eventReviewImportReviewListingRoomPayload `json:"candidate_rooms,omitempty"`
+	StartAt                           string                                      `json:"candidate_start_at,omitempty"`
+	EndAt                             string                                      `json:"candidate_end_at,omitempty"`
+	Genre                             string                                      `json:"candidate_genre,omitempty"`
+	Status                            string                                      `json:"candidate_status,omitempty"`
+	Description                       string                                      `json:"candidate_description,omitempty"`
+	ImageURL                          string                                      `json:"candidate_image_url,omitempty"`
+	ImageSourceURL                    string                                      `json:"candidate_image_source_url,omitempty"`
+	ImageAlt                          string                                      `json:"candidate_image_alt,omitempty"`
+	ImageWidth                        int                                         `json:"candidate_image_width,omitempty"`
+	ImageHeight                       int                                         `json:"candidate_image_height,omitempty"`
+	ImageFocusX                       int                                         `json:"candidate_image_focus_x,omitempty"`
+	ImageFocusY                       int                                         `json:"candidate_image_focus_y,omitempty"`
+	SourceURLSourceIdentityDisabled   bool                                        `json:"candidate_source_url_source_identity_disabled,omitempty"`
+	CalendarURLSourceIdentityDisabled bool                                        `json:"candidate_calendar_url_source_identity_disabled,omitempty"`
 }
 
 type eventReviewImportReviewListingRoomPayload struct {

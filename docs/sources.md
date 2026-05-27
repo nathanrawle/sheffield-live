@@ -80,6 +80,14 @@ Add a new Go family only when the source needs new parsing or link-extraction be
 Snapshot payloads are stored as JSON envelopes that contain the response body in base64, response metadata, a captured-body SHA-256, and a truncation flag.
 Copied image files are not snapshot payloads. They are local media assets keyed by source image URL so replay can reuse the copied asset metadata, including focus point, without fetching remote image bytes.
 
+## Source Identity Contract
+
+Parser `EventCandidate.UID` values are source identity material. They must identify the concrete event occurrence whenever the source exposes occurrence identity. Do not put a series-level recurrence ID in `UID` when multiple dated occurrences share it; use the source's occurrence ID, or combine the series ID with a normalized recurrence instance value when that is the only stable occurrence discriminator.
+
+Review staging defensively detects repeated non-empty UIDs that appear with more than one parsed UTC start time in the same ingest report. Such UIDs are kept in candidate payloads for provenance/debugging, but they are withheld from source identity keys and authoritative source event keys. If the candidate has a real per-event listing URL, that URL can still become the source identity; inherited source pages, shared feed URLs, and unsafe recurrence IDs must not.
+
+Generic calendar parsers follow that contract: Google Calendar API candidates prefer `calendar id + event.id`, and generic ICS candidates combine `UID + RECURRENCE-ID` for recurrence overrides. New source parsers should preserve the same rule so current and future recurring feeds cannot collapse separate occurrences into one downstream event.
+
 ## Review Staging
 
 `cmd/ingest` can stage event-review clusters from a successful ingest report.
@@ -181,8 +189,9 @@ Treat the secondary and do-not-add sections as a decision backlog, not as implem
 - Why it matters: longstanding city-centre live music pub with regular grassroots gigs and DJ nights. Treat as high priority despite source-shape uncertainty.
 - Likely ingest shape: high priority discovery task before parser implementation. Inspect the rendered page, image metadata, scripts, social links, and any network/API calls to find the venue-owned event source behind the official `EVENTS` page. If no venue-owned structured source exists, document whether a venue-managed social/ticket source is acceptable before adding YAML.
 - Authority note: do not use Sheffield Gigs, DesignMyNight, Gigseekr, or venue directories as the authoritative source. They are useful cross-checks only.
-- Implementation status: implemented as `config/sources/09-the-washington.yaml` with `mode: linked_detail_pages`, `linked_page_link_extractor: the_washington_api_links`, `linked_page_parser: the_washington_api`, and `owned_venue_slug: the-washington`.
+- Implementation status: implemented as `config/sources/09-the-washington.yaml` with `mode: linked_detail_pages`, `linked_page_link_extractor: the_washington_api_links`, `linked_page_parser: the_washington_api`, `venue_normalizer: the_washington`, and `owned_venue_slug: the-washington`.
 - Source contract: The Washington's live official Google Calendar API feed currently omits per-event `location` fields. Requiring per-event venue evidence would make the official source produce no candidates. The implementation therefore treats only the known official embedded Washington calendar ID as source-level venue evidence. Location-less events from any other Google Calendar ID remain skipped.
+- Identity contract: The parser uses the Google Calendar API `event.id` scoped to the calendar ID as the candidate UID. Google `iCalUID` is series-level for recurring events and must not be treated as one event occurrence.
 - Risk note: this source depends on the official page's embedded FullCalendar/Google Calendar API shape. If the public API key, calendar ID, or embed structure changes, update fixtures and parser tests before relying on new output.
 
 #### Network Sheffield

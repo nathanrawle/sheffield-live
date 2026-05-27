@@ -1955,29 +1955,32 @@ func historicalDuplicateReadinessEventIDs(readiness *seedstore.EventReviewHistor
 }
 
 type eventReviewImportCandidatePayload struct {
-	SourceAuthority string                                      `json:"source_authority"`
-	SourceName      string                                      `json:"source_name,omitempty"`
-	SourceURL       string                                      `json:"source_url,omitempty"`
-	ExternalID      string                                      `json:"candidate_external_id"`
-	Title           string                                      `json:"candidate_title"`
-	VenueSlug       string                                      `json:"candidate_venue_slug"`
-	VenueText       string                                      `json:"candidate_venue_text"`
-	RoomText        string                                      `json:"candidate_room_text,omitempty"`
-	Rooms           []eventReviewImportReviewListingRoomPayload `json:"candidate_rooms,omitempty"`
-	StartAt         string                                      `json:"candidate_start_at"`
-	EndAt           string                                      `json:"candidate_end_at"`
-	Genre           string                                      `json:"candidate_genre,omitempty"`
-	Status          string                                      `json:"candidate_status,omitempty"`
-	Description     string                                      `json:"candidate_description,omitempty"`
-	ImageURL        string                                      `json:"candidate_image_url,omitempty"`
-	ImageSourceURL  string                                      `json:"candidate_image_source_url,omitempty"`
-	ImageAlt        string                                      `json:"candidate_image_alt,omitempty"`
-	ImageWidth      int                                         `json:"candidate_image_width,omitempty"`
-	ImageHeight     int                                         `json:"candidate_image_height,omitempty"`
-	ImageFocusX     int                                         `json:"candidate_image_focus_x,omitempty"`
-	ImageFocusY     int                                         `json:"candidate_image_focus_y,omitempty"`
-	CalendarURL     string                                      `json:"calendar_url"`
-	Provenance      string                                      `json:"provenance,omitempty"`
+	SourceAuthority                   string                                      `json:"source_authority"`
+	SourceName                        string                                      `json:"source_name,omitempty"`
+	SourceURL                         string                                      `json:"source_url,omitempty"`
+	ExternalID                        string                                      `json:"candidate_external_id"`
+	ExternalIDSourceIdentityDisabled  bool                                        `json:"candidate_external_id_source_identity_disabled,omitempty"`
+	Title                             string                                      `json:"candidate_title"`
+	VenueSlug                         string                                      `json:"candidate_venue_slug"`
+	VenueText                         string                                      `json:"candidate_venue_text"`
+	RoomText                          string                                      `json:"candidate_room_text,omitempty"`
+	Rooms                             []eventReviewImportReviewListingRoomPayload `json:"candidate_rooms,omitempty"`
+	StartAt                           string                                      `json:"candidate_start_at"`
+	EndAt                             string                                      `json:"candidate_end_at"`
+	Genre                             string                                      `json:"candidate_genre,omitempty"`
+	Status                            string                                      `json:"candidate_status,omitempty"`
+	Description                       string                                      `json:"candidate_description,omitempty"`
+	ImageURL                          string                                      `json:"candidate_image_url,omitempty"`
+	ImageSourceURL                    string                                      `json:"candidate_image_source_url,omitempty"`
+	ImageAlt                          string                                      `json:"candidate_image_alt,omitempty"`
+	ImageWidth                        int                                         `json:"candidate_image_width,omitempty"`
+	ImageHeight                       int                                         `json:"candidate_image_height,omitempty"`
+	ImageFocusX                       int                                         `json:"candidate_image_focus_x,omitempty"`
+	ImageFocusY                       int                                         `json:"candidate_image_focus_y,omitempty"`
+	CalendarURL                       string                                      `json:"calendar_url"`
+	SourceURLSourceIdentityDisabled   bool                                        `json:"candidate_source_url_source_identity_disabled,omitempty"`
+	CalendarURLSourceIdentityDisabled bool                                        `json:"candidate_calendar_url_source_identity_disabled,omitempty"`
+	Provenance                        string                                      `json:"provenance,omitempty"`
 }
 
 type eventReviewImportComparisonCandidate struct {
