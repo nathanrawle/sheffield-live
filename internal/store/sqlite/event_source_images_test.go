@@ -327,6 +327,48 @@ func TestOpenBackfillsEventSourceImagesOnlyFromResolvedReviewCandidates(t *testi
 	}
 }
 
+func TestOpenSkipsEventSourceImageBackfillForPassedEvents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+
+	db := mustRawDB(t, path)
+	canonicalSourceID := insertMediaCleanupSource(t, db, "Primary passed source", "https://example.test/primary-passed-backfill")
+	eventID := insertEventSourceImageTestEventWithSource(t, db, "source-image-passed-backfill", canonicalSourceID)
+	setEventSourceImageTestEventTimes(t, db, eventID, time.Date(2000, time.May, 10, 19, 0, 0, 0, time.UTC), time.Date(2000, time.May, 10, 22, 0, 0, 0, time.UTC))
+	supportingSourceID := insertMediaCleanupSource(t, db, "Passed supporting source", "https://example.test/passed-supporting")
+	when := time.Date(2026, time.May, 1, 10, 0, 0, 0, time.UTC)
+	clusterID := insertEventReviewClusterAt(t, db, string(seedstore.EventReviewClusterStatusResolved), nil, 0, &eventID, "import_review", "ingest_candidate", when)
+	payload := `{"candidate_external_id":"passed-supporting","candidate_title":"Passed Backfill","candidate_start_at":"2000-05-10T19:00:00Z","candidate_image_url":"/media/events/passed-evidence-backfill.jpg","candidate_image_source_url":"https://images.example.test/passed-evidence-backfill.jpg","source_url":"https://example.test/passed-supporting"}`
+	evidenceID := insertEventReviewEvidenceOK(t, db, supportingSourceID, nil, "source-image-passed-backfill-evidence", payload)
+	insertEventReviewClusterEvidenceOK(t, db, clusterID, evidenceID, true, when, nil, "test")
+	insertEventReviewResolutionOK(t, db, clusterID, seedstore.EventReviewResolutionStatusResolved, "{}", "")
+	groupID := insertReviewGroupForEventSourceImageBackfill(t, db, "Passed candidate backfill", review.StatusResolved)
+	insertReviewCandidateForEventSourceImageBackfill(t, db, groupID, eventID, "Passed candidate source", "https://example.test/passed-candidate", "", "/media/events/passed-candidate-backfill.jpg")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	images, err := st.EventSourceImagesByEventSlug(context.Background(), "source-image-passed-backfill")
+	if err != nil {
+		t.Fatalf("load passed event source images: %v", err)
+	}
+	if len(images) != 0 {
+		t.Fatalf("passed event backfilled images = %d, want 0", len(images))
+	}
+}
+
 func insertEventSourceImageTestEvent(t *testing.T, db *sql.DB, slug string) int64 {
 	t.Helper()
 	sourceID := insertMediaCleanupSource(t, db, "Canonical source "+slug, "https://example.test/"+slug+"/canonical")
@@ -341,14 +383,26 @@ func insertEventSourceImageTestEventWithSource(t *testing.T, db *sql.DB, slug st
 		VenueID:  venueID,
 		Slug:     slug,
 		Name:     "Source Image Test",
-		Start:    time.Date(2026, time.May, 10, 19, 0, 0, 0, time.UTC),
-		End:      time.Date(2026, time.May, 10, 22, 0, 0, 0, time.UTC),
+		Start:    time.Date(2099, time.May, 10, 19, 0, 0, 0, time.UTC),
+		End:      time.Date(2099, time.May, 10, 22, 0, 0, 0, time.UTC),
 	})
 	var eventID int64
 	if err := db.QueryRow(`SELECT id FROM events WHERE slug = ?`, slug).Scan(&eventID); err != nil {
 		t.Fatalf("lookup event id: %v", err)
 	}
 	return eventID
+}
+
+func setEventSourceImageTestEventTimes(t *testing.T, db *sql.DB, eventID int64, start, end time.Time) {
+	t.Helper()
+	if _, err := db.Exec(`
+		UPDATE events
+		SET start_at = ?,
+			end_at = ?
+		WHERE id = ?
+	`, formatRFC3339UTC(start), formatRFC3339UTC(end), eventID); err != nil {
+		t.Fatalf("update event times: %v", err)
+	}
 }
 
 func insertEventSourceImageRow(t *testing.T, db *sql.DB, eventID, sourceID int64, identityKey, imageURL, imageSourceURL, alt string, width, height, focusX, focusY int) {

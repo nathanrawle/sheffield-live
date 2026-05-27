@@ -278,21 +278,27 @@ func backfillEventSourceImagesTx(ctx context.Context, tx interface {
 	queryer
 }) error {
 	now := time.Now().UTC()
-	if err := backfillEventSourceImagesFromReviewEvidenceTx(ctx, tx, now); err != nil {
+	loc, err := time.LoadLocation(mediaCleanupLocationName)
+	if err != nil {
 		return err
 	}
-	return backfillEventSourceImagesFromReviewCandidatesTx(ctx, tx, now)
+	if err := backfillEventSourceImagesFromReviewEvidenceTx(ctx, tx, now, loc); err != nil {
+		return err
+	}
+	return backfillEventSourceImagesFromReviewCandidatesTx(ctx, tx, now, loc)
 }
 
 func backfillEventSourceImagesFromReviewEvidenceTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, now time.Time) error {
+}, now time.Time, loc *time.Location) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
 			COALESCE(ev.event_id, c.canonical_event_id) AS target_event_id,
 			ev.source_id,
 			target.source_id AS canonical_source_id,
+			target.start_at,
+			COALESCE(target.end_at, ''),
 			s.url,
 			ev.payload,
 			ev.created_at,
@@ -319,12 +325,21 @@ func backfillEventSourceImagesFromReviewEvidenceTx(ctx context.Context, tx inter
 		var eventID int64
 		var sourceID int64
 		var canonicalSourceID int64
+		var startText string
+		var endText string
 		var sourceURL string
 		var payload string
 		var createdAtText string
 		var updatedAtText string
-		if err := rows.Scan(&eventID, &sourceID, &canonicalSourceID, &sourceURL, &payload, &createdAtText, &updatedAtText); err != nil {
+		if err := rows.Scan(&eventID, &sourceID, &canonicalSourceID, &startText, &endText, &sourceURL, &payload, &createdAtText, &updatedAtText); err != nil {
 			return err
+		}
+		active, err := eventSourceImageBackfillEventActive(startText, endText, now, loc)
+		if err != nil {
+			return err
+		}
+		if !active {
+			continue
 		}
 		if sourceID == canonicalSourceID {
 			continue
@@ -363,11 +378,13 @@ func backfillEventSourceImagesFromReviewEvidenceTx(ctx context.Context, tx inter
 func backfillEventSourceImagesFromReviewCandidatesTx(ctx context.Context, tx interface {
 	execer
 	queryer
-}, now time.Time) error {
+}, now time.Time, loc *time.Location) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
 			c.canonical_event_id,
 			target.source_id AS canonical_source_id,
+			target.start_at,
+			COALESCE(target.end_at, ''),
 			c.external_id,
 			c.source_name,
 			c.source_url,
@@ -399,6 +416,8 @@ func backfillEventSourceImagesFromReviewCandidatesTx(ctx context.Context, tx int
 	for rows.Next() {
 		var eventID int64
 		var canonicalSourceID int64
+		var startText string
+		var endText string
 		var externalID string
 		var sourceName string
 		var sourceURL string
@@ -412,8 +431,15 @@ func backfillEventSourceImagesFromReviewCandidatesTx(ctx context.Context, tx int
 		var imageFocusY int
 		var createdAtText string
 		var updatedAtText string
-		if err := rows.Scan(&eventID, &canonicalSourceID, &externalID, &sourceName, &sourceURL, &calendarURL, &imageURL, &imageSourceURL, &imageAlt, &imageWidth, &imageHeight, &imageFocusX, &imageFocusY, &createdAtText, &updatedAtText); err != nil {
+		if err := rows.Scan(&eventID, &canonicalSourceID, &startText, &endText, &externalID, &sourceName, &sourceURL, &calendarURL, &imageURL, &imageSourceURL, &imageAlt, &imageWidth, &imageHeight, &imageFocusX, &imageFocusY, &createdAtText, &updatedAtText); err != nil {
 			return err
+		}
+		active, err := eventSourceImageBackfillEventActive(startText, endText, now, loc)
+		if err != nil {
+			return err
+		}
+		if !active {
+			continue
 		}
 		sourceName = strings.TrimSpace(sourceName)
 		sourceURL = strings.TrimSpace(sourceURL)
@@ -453,6 +479,25 @@ func backfillEventSourceImagesFromReviewCandidatesTx(ctx context.Context, tx int
 		}
 	}
 	return rows.Err()
+}
+
+func eventSourceImageBackfillEventActive(startText, endText string, now time.Time, loc *time.Location) (bool, error) {
+	start, err := parseRFC3339UTC(startText)
+	if err != nil {
+		return false, err
+	}
+	var end time.Time
+	if endText = strings.TrimSpace(endText); endText != "" {
+		end, err = parseRFC3339UTC(endText)
+		if err != nil {
+			return false, err
+		}
+	}
+	displayEnd, ok := mediaCleanupDisplayEnd(start, end, loc)
+	if !ok {
+		return false, errors.New("invalid event display end")
+	}
+	return displayEnd.After(now), nil
 }
 
 func parseBackfillTime(value string, fallback time.Time) time.Time {
