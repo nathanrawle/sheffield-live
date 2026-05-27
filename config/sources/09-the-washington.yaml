@@ -9,3 +9,4 @@ linked_detail_pages:
   secondary_source_name: The Washington Google Calendar API
   linked_page_link_extractor: the_washington_api_links
   linked_page_parser: the_washington_api
+  venue_normalizer: the_washington

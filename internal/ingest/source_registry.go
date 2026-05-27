@@ -69,6 +69,7 @@ var venueNormalizerFamilies = map[string]venueNormalizerFunc{
 	"default":           VenueSlugFromText,
 	"leadmill":          func(value string) string { return VenueSlugFromText(leadmillVenueText(value)) },
 	"network_sheffield": func(value string) string { return networkSheffieldVenueSlugFromText(value) },
+	"the_washington":    func(value string) string { return theWashingtonVenueSlugFromText(value) },
 	"university_performance_venues": func(value string) string {
 		slug, _, _ := universityPerformanceVenuesVenueSlugFromText(value)
 		return slug

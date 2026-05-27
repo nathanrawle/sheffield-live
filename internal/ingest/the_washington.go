@@ -151,22 +151,28 @@ func theWashingtonCalendarURLTimeMin(pageURL string) (time.Time, bool) {
 }
 
 func theWashingtonHasOfficialCalendarSourceEvidence(pageURL string) bool {
+	return theWashingtonGoogleCalendarIDFromAPIURL(pageURL) == theWashingtonOfficialCalendarID
+}
+
+func theWashingtonGoogleCalendarIDFromAPIURL(pageURL string) string {
 	parsed, err := url.Parse(pageURL)
 	if err != nil {
-		return false
+		return ""
 	}
 	if !strings.EqualFold(parsed.Host, "www.googleapis.com") {
-		return false
+		return ""
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(parts) != 5 {
-		return false
+		return ""
 	}
-	return parts[0] == "calendar" &&
+	if parts[0] == "calendar" &&
 		parts[1] == "v3" &&
 		parts[2] == "calendars" &&
-		parts[3] == theWashingtonOfficialCalendarID &&
-		parts[4] == "events"
+		parts[4] == "events" {
+		return strings.TrimSpace(parts[3])
+	}
+	return ""
 }
 
 type theWashingtonAPIFeed struct {
@@ -193,7 +199,8 @@ type theWashingtonAPIEvent struct {
 
 func theWashingtonCandidateFromAPI(pageURL string, item theWashingtonAPIEvent, sourceVenueEvidence bool) (EventCandidate, ParseSkip, bool, error) {
 	title := strings.TrimSpace(item.Summary)
-	skip := ParseSkip{UID: strings.TrimSpace(firstNonEmpty(item.ICalUID, item.ID)), Summary: title}
+	uid := theWashingtonOccurrenceUID(pageURL, item)
+	skip := ParseSkip{UID: uid, Summary: title}
 	if title == "" {
 		skip.Reason = "missing event name"
 		return EventCandidate{}, skip, true, nil
@@ -248,7 +255,7 @@ func theWashingtonCandidateFromAPI(pageURL string, item theWashingtonAPIEvent, s
 	}
 
 	return EventCandidate{
-		UID:         firstNonEmpty(item.ICalUID, item.ID, officialURL),
+		UID:         uid,
 		Summary:     title,
 		Description: semanticDescriptionText(item.Description),
 		Location:    theWashingtonVenueName,
@@ -258,6 +265,23 @@ func theWashingtonCandidateFromAPI(pageURL string, item theWashingtonAPIEvent, s
 		StartAt:     formatTime(startAt),
 		EndAt:       endAt,
 	}, ParseSkip{}, true, nil
+}
+
+func theWashingtonOccurrenceUID(pageURL string, item theWashingtonAPIEvent) string {
+	if id := strings.TrimSpace(item.ID); id != "" {
+		if calendarID := theWashingtonGoogleCalendarIDFromAPIURL(pageURL); calendarID != "" {
+			return "google-calendar:" + calendarID + ":" + id
+		}
+		return "google-calendar:" + id
+	}
+	return firstNonEmpty(item.HtmlLink, item.ICalUID)
+}
+
+func theWashingtonVenueSlugFromText(value string) string {
+	if theWashingtonVenuePattern.MatchString(value) {
+		return TheWashingtonSource
+	}
+	return VenueSlugFromText(value)
 }
 
 func theWashingtonHasMusicSignal(value string) bool {
