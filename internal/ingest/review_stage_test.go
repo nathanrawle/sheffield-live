@@ -285,6 +285,48 @@ func TestReviewClustersFromReportStagingKeyChangesWhenStableContentChanges(t *te
 	}
 }
 
+func TestReviewClustersFromReportStagingKeyChangesWhenUIDBecomesUnsafe(t *testing.T) {
+	safe := ReviewClustersFromReport(successfulReviewStageReport(CalendarReport{
+		URL: "https://calendar.example.test/recurring.ics",
+		Candidates: []EventCandidate{{
+			UID:      "series-uid",
+			Summary:  "Recurring One",
+			Location: "Sidney & Matilda",
+			StartAt:  "2026-05-01T19:00:00Z",
+		}},
+	}))
+	unsafe := ReviewClustersFromReport(successfulReviewStageReport(CalendarReport{
+		URL: "https://calendar.example.test/recurring.ics",
+		Candidates: []EventCandidate{
+			{
+				UID:      "series-uid",
+				Summary:  "Recurring One",
+				Location: "Sidney & Matilda",
+				StartAt:  "2026-05-01T19:00:00Z",
+			},
+			{
+				UID:      "series-uid",
+				Summary:  "Recurring Two",
+				Location: "Sidney & Matilda",
+				StartAt:  "2026-05-08T19:00:00Z",
+			},
+		},
+	}))
+
+	if got, want := len(safe), 1; got != want {
+		t.Fatalf("safe clusters = %d, want %d", got, want)
+	}
+	if got, want := len(unsafe), 2; got != want {
+		t.Fatalf("unsafe clusters = %d, want %d", got, want)
+	}
+	if !unsafe[0].Candidates[0].ExternalIDSourceIdentityDisabled {
+		t.Fatal("unsafe external ID disabled = false, want true")
+	}
+	if got, want := safe[0].StagingKey == unsafe[0].StagingKey, false; got != want {
+		t.Fatalf("staging key unchanged after UID became unsafe = %v, want %v", got, want)
+	}
+}
+
 func TestReviewClustersFromReportStagingKeyIsOrderInsensitiveForDuplicateCandidates(t *testing.T) {
 	base := ReviewStageClusterInput{
 		Title:      "Duplicate review",

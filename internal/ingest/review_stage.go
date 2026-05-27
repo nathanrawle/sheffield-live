@@ -304,6 +304,15 @@ func reviewStageCandidateFingerprint(candidate review.CandidateInput) string {
 	sum := sha256.New()
 	writeReviewStageHashPart(sum, "review-stage-candidate:v2")
 	writeReviewStageHashPart(sum, candidate.ExternalID)
+	if candidate.ExternalIDSourceIdentityDisabled {
+		writeReviewStageHashPart(sum, "external-id-source-identity-disabled")
+	}
+	if candidate.SourceURLSourceIdentityDisabled {
+		writeReviewStageHashPart(sum, "source-url-source-identity-disabled")
+	}
+	if candidate.CalendarURLSourceIdentityDisabled {
+		writeReviewStageHashPart(sum, "calendar-url-source-identity-disabled")
+	}
 	writeReviewStageHashPart(sum, candidate.Name)
 	writeReviewStageHashPart(sum, candidate.VenueSlug)
 	writeReviewStageHashPart(sum, candidate.StartAt)
