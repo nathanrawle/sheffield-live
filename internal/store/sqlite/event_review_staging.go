@@ -914,7 +914,7 @@ func authoritativeSourceEventKeyFromClusterInput(input ingest.ReviewStageCluster
 	if key := identities.PrimaryKey(); key != "" {
 		return key
 	}
-	return strings.TrimSpace(input.AuthoritativeSourceEventKey)
+	return reviewCandidateAuthoritativeSourceEventKey(candidate, input.AuthoritativeSourceEventKey)
 }
 
 func reviewStageClusterAuthoritativeSource(input ingest.ReviewStageClusterInput) (reviewGroupAuthoritativeLink, bool) {

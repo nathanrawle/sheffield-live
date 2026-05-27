@@ -91,7 +91,7 @@ func reviewCandidateInputSourceIdentities(mode reviewSourceIdentityMode, sourceU
 	}
 	switch mode {
 	case reviewSourceIdentityAuthoritative:
-		fallback := sourceIdentityInputForKey(authoritativeSourceEventKey)
+		fallback := sourceIdentityInputForCandidateAuthoritativeFallback(candidate, authoritativeSourceEventKey)
 		if !candidate.SourceURLSourceIdentityDisabled {
 			fallback.SourceURL = strings.TrimSpace(sourceURL)
 		}
@@ -102,6 +102,24 @@ func reviewCandidateInputSourceIdentities(mode reviewSourceIdentityMode, sourceU
 		}
 		return ingest.SourceIdentities(ingest.SourceIdentityInput{SourceURL: strings.TrimSpace(sourceURL)})
 	}
+}
+
+func sourceIdentityInputForCandidateAuthoritativeFallback(candidate review.CandidateInput, authoritativeSourceEventKey string) ingest.SourceIdentityInput {
+	input := sourceIdentityInputForKey(authoritativeSourceEventKey)
+	if candidate.ExternalIDSourceIdentityDisabled {
+		input.ExternalID = ""
+	}
+	if candidate.SourceURLSourceIdentityDisabled {
+		input.SourceURL = ""
+	}
+	if candidate.CalendarURLSourceIdentityDisabled {
+		input.CalendarURL = ""
+	}
+	return input
+}
+
+func reviewCandidateAuthoritativeSourceEventKey(candidate review.CandidateInput, authoritativeSourceEventKey string) string {
+	return ingest.SourceIdentities(sourceIdentityInputForCandidateAuthoritativeFallback(candidate, authoritativeSourceEventKey)).PrimaryKey()
 }
 
 func firstNonEmptyReviewString(values ...string) string {

@@ -64,6 +64,15 @@ func TestReviewCandidateInputSourceIdentitiesSkipsDisabledFallbackURL(t *testing
 	if got := reviewCandidateInputSourceIdentities(reviewSourceIdentityAuthoritative, sourceURL, "", candidate).Keys(); len(got) != 0 {
 		t.Fatalf("authoritative fallback keys = %#v, want none", got)
 	}
+	if got := reviewCandidateInputSourceIdentities(reviewSourceIdentityAuthoritative, sourceURL, "uid:series-uid", candidate).Keys(); len(got) != 0 {
+		t.Fatalf("authoritative UID fallback keys = %#v, want none", got)
+	}
+	if got := authoritativeSourceEventKeyFromClusterInput(ingest.ReviewStageClusterInput{
+		AuthoritativeSourceEventKey: "uid:series-uid",
+		Candidates:                  []review.CandidateInput{candidate},
+	}); got != "" {
+		t.Fatalf("authoritative source event key = %q, want empty", got)
+	}
 
 	candidate.SourceURLSourceIdentityDisabled = false
 	want := []string{mustSourceIdentityKey(t, sourceURL)}
@@ -157,6 +166,48 @@ func TestBuildImportReviewCandidateMaterialPreservesIdentityFlags(t *testing.T) 
 	}
 	if got := material.SourceCtx.Identities.Keys(); len(got) != 0 {
 		t.Fatalf("materialized source context keys = %#v, want none", got)
+	}
+}
+
+func TestStageEventReviewEvidenceObservationsHonorIdentityFlags(t *testing.T) {
+	ctx := context.Background()
+	st, db := openEventReviewSchemaStore(t)
+	defer st.Close()
+
+	sourceID := insertStoreTestSource(t, db)
+	runID := mustCreateImportRun(t, st, "identity flag observations")
+	payload := mustJSONPayload(t, map[string]any{
+		"source_authority":      string(seedstore.SourceAuthoritySupporting),
+		"source_name":           "Fixture source",
+		"source_url":            "https://example.test/shared-listing",
+		"candidate_external_id": "series-uid",
+		"candidate_external_id_source_identity_disabled": true,
+		"candidate_source_url_source_identity_disabled":  true,
+		"candidate_title":      "Flagged Observation",
+		"candidate_venue_slug": "leadmill",
+		"candidate_start_at":   "2026-05-01T19:00:00Z",
+		"candidate_end_at":     "2026-05-01T21:00:00Z",
+	})
+
+	if _, err := st.StageEventReviewEvidence(ctx, seedstore.StageEventReviewEvidenceInput{
+		RunRef:              seedstore.EventReviewRunRef{Kind: seedstore.EventReviewRunKindImport, ID: runID},
+		SourceID:            sourceID,
+		SourceName:          "Fixture source",
+		SourceURL:           "https://example.test/shared-listing",
+		SourceAuthority:     seedstore.SourceAuthoritySupporting,
+		EvidenceFingerprint: "flagged-observation",
+		Payload:             payload,
+		ExactIdentityKeys:   []string{"exact-flagged-observation"},
+		StagingKey:          eventReviewTestStagingKey("flagged-observation"),
+		StagingKeyVersion:   1,
+		ConflictType:        seedstore.EventReviewConflictTypeImportReview,
+		ConflictReason:      seedstore.EventReviewConflictReasonIngestCandidate,
+	}); err != nil {
+		t.Fatalf("stage flagged evidence: %v", err)
+	}
+
+	if got := mustCount(t, db, "event_source_attribute_observations"); got != 0 {
+		t.Fatalf("event source attribute observations = %d, want 0", got)
 	}
 }
 

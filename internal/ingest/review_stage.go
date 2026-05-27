@@ -442,6 +442,10 @@ func reviewStageOfficialSourceURL(report Report, calendar CalendarReport, candid
 }
 
 func reviewStageCalendarURL(calendar CalendarReport, candidate EventCandidate) string {
+	candidateURL := strings.TrimSpace(candidate.URL)
+	if _, ok := normalizeAllowedCalendarIdentityURL(candidateURL); ok {
+		return candidateURL
+	}
 	for _, value := range []string{calendar.URL, candidate.URL} {
 		value = strings.TrimSpace(value)
 		if IsCalendarURL(value) {

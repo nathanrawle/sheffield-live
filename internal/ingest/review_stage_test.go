@@ -561,6 +561,47 @@ func TestReviewStageUnsafeUIDWithEventURLUsesURLIdentityAndAuthority(t *testing.
 	}
 }
 
+func TestReviewStageUnsafeUIDPrefersPerEventCalendarURL(t *testing.T) {
+	report := successfulReviewStageReport(CalendarReport{
+		URL: "https://calendar.example.test/shared.ics",
+		Candidates: []EventCandidate{
+			{
+				UID:      "series-uid",
+				Summary:  "Recurring One",
+				Location: "Sidney & Matilda",
+				URL:      "https://www.sidneyandmatilda.com/events/recurring-one?format=ical",
+				StartAt:  "2026-05-01T19:00:00Z",
+			},
+			{
+				UID:      "series-uid",
+				Summary:  "Recurring Two",
+				Location: "Sidney & Matilda",
+				URL:      "https://www.sidneyandmatilda.com/events/recurring-two?format=ical",
+				StartAt:  "2026-05-08T19:00:00Z",
+			},
+		},
+	})
+
+	clusters := ReviewClustersFromReport(report)
+	if got, want := len(clusters), 2; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	wantKey := "url:https://www.sidneyandmatilda.com/events/recurring-one?format=ical"
+	if got, want := clusters[0].AuthoritativeSourceEventKey, wantKey; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+	if got, want := clusters[0].Candidates[0].CalendarURL, "https://www.sidneyandmatilda.com/events/recurring-one?format=ical"; got != want {
+		t.Fatalf("candidate calendar URL = %q, want %q", got, want)
+	}
+	if clusters[0].Candidates[0].CalendarURLSourceIdentityDisabled {
+		t.Fatal("calendar URL disabled = true, want false")
+	}
+	inputs := ReviewStageClusterEventReviewEvidenceInputs(clusters[0])
+	if got, want := inputs[0].SourceIdentityKeys, []string{wantKey}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("source identity keys = %#v, want %#v", got, want)
+	}
+}
+
 func TestReviewStageEventReviewEvidenceInputsDeriveExactIdentityKey(t *testing.T) {
 	inputs := ReviewStageClusterEventReviewEvidenceInputs(ReviewStageClusterInput{
 		Title:      "Duplicate review: Exact",
