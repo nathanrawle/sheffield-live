@@ -128,7 +128,7 @@ func TestReviewStageAuthoritativeSourceForHallamshireHotel(t *testing.T) {
 	}
 }
 
-func TestReviewStageHallamshireHotelRequiresVenueEvidenceForAuthority(t *testing.T) {
+func TestReviewStageHallamshireHotelDefaultsMissingLocationToOwnedVenue(t *testing.T) {
 	catalog, err := LoadRepoCatalog()
 	if err != nil {
 		t.Fatalf("load catalog: %v", err)
@@ -148,6 +148,98 @@ func TestReviewStageHallamshireHotelRequiresVenueEvidenceForAuthority(t *testing
 						Summary: "GIG: No Location Example",
 						StartAt: "2026-12-06T19:00:00Z",
 						Status:  "CONFIRMED",
+					},
+				},
+			},
+		},
+	}
+
+	clusters := ReviewClustersFromReportWithCatalog(catalog, report)
+	if got, want := len(clusters), 1; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	cluster := clusters[0]
+	if got, want := cluster.Candidates[0].VenueSlug, HallamshireHotelSource; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+	if got := cluster.Candidates[0].VenueText; got != "" {
+		t.Fatalf("venue text = %q, want blank", got)
+	}
+	if got := cluster.Candidates[0].VenueLocationRaw; got != "" {
+		t.Fatalf("venue location raw = %q, want blank", got)
+	}
+	if got, want := cluster.AuthoritativeSourceName, "Hallamshire Hotel manual ingest"; got != want {
+		t.Fatalf("authoritative source name = %q, want %q", got, want)
+	}
+	if got, want := cluster.AuthoritativeSourceURL, "https://calendar.google.com/calendar/ical/c_3bc79a2475a0c9540838a74d401458962aedd23ae8ff89c01a88258efcd4972%40group.calendar.google.com/public/basic.ics"; got != want {
+		t.Fatalf("authoritative source url = %q, want %q", got, want)
+	}
+	if got, want := cluster.AuthoritativeSourceEventKey, "uid:hallamshire-no-location@google.com"; got != want {
+		t.Fatalf("authoritative source event key = %q, want %q", got, want)
+	}
+}
+
+func TestReviewStageHallamshireHotelDoesNotDefaultExplicitWrongLocation(t *testing.T) {
+	catalog, err := LoadRepoCatalog()
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	report := Report{
+		Source:      HallamshireHotelSource,
+		SourceURL:   "https://hallamshirehotel.pub/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://calendar.google.com/calendar/ical/c_3bc79a2475a0c9540838a74d401458962aedd23ae8ff89c01a88258efcd4972%40group.calendar.google.com/public/basic.ics",
+				Candidates: []EventCandidate{
+					{
+						UID:      "hallamshire-wrong-location@google.com",
+						Summary:  "GIG: Wrong Location Example",
+						Location: "Wrong Hall",
+						StartAt:  "2026-12-06T19:00:00Z",
+						Status:   "CONFIRMED",
+					},
+				},
+			},
+		},
+	}
+
+	clusters := ReviewClustersFromReportWithCatalog(catalog, report)
+	if got, want := len(clusters), 1; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	cluster := clusters[0]
+	if got, want := cluster.Candidates[0].VenueSlug, "wrong-hall"; got != want {
+		t.Fatalf("venue slug = %q, want %q", got, want)
+	}
+	if cluster.AuthoritativeSourceName != "" || cluster.AuthoritativeSourceURL != "" || cluster.AuthoritativeSourceEventKey != "" {
+		t.Fatalf("authoritative source = (%q, %q, %q), want empty", cluster.AuthoritativeSourceName, cluster.AuthoritativeSourceURL, cluster.AuthoritativeSourceEventKey)
+	}
+}
+
+func TestReviewStageHallamshireHotelDoesNotDefaultExplicitUnnormalizableLocation(t *testing.T) {
+	catalog, err := LoadRepoCatalog()
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	report := Report{
+		Source:      HallamshireHotelSource,
+		SourceURL:   "https://hallamshirehotel.pub/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://calendar.google.com/calendar/ical/c_3bc79a2475a0c9540838a74d401458962aedd23ae8ff89c01a88258efcd4972%40group.calendar.google.com/public/basic.ics",
+				Candidates: []EventCandidate{
+					{
+						UID:      "hallamshire-unnormalizable-location@google.com",
+						Summary:  "GIG: Unnormalizable Location Example",
+						Location: "!!!",
+						StartAt:  "2026-12-06T19:00:00Z",
+						Status:   "CONFIRMED",
 					},
 				},
 			},

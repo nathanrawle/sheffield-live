@@ -81,8 +81,8 @@ func TestParseTheWashingtonAPIDetailPageParsesMusicEventAndSkipsUnsupportedItems
 	if got, want := candidate.Location, theWashingtonVenueName; got != want {
 		t.Fatalf("location = %q, want %q", got, want)
 	}
-	if got, want := candidate.LocationRaw, theWashingtonSourceVenueEvidence; got != want {
-		t.Fatalf("location raw = %q, want %q", got, want)
+	if got := candidate.LocationRaw; got != "" {
+		t.Fatalf("location raw = %q, want blank", got)
 	}
 	if got, want := candidate.URL, "https://www.google.com/calendar/event?eid=Xzhrc2o2aDlrNnNxM2diYTY2NHBqZWI5azg1MTQyYmExOGNxMzJiOW42NHBrMmg5bzhoMGs0Z3E0OGtfMjAyNjA1MjZUMjAwMDAwWiBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc"; got != want {
 		t.Fatalf("url = %q, want %q", got, want)
@@ -150,8 +150,8 @@ func TestParseTheWashingtonAPIDetailPageUsesOccurrenceIdentityForRecurringEvents
 		if got, want := candidate.UID, wantUIDs[i]; got != want {
 			t.Fatalf("candidate %d uid = %q, want %q", i, got, want)
 		}
-		if got, want := candidate.LocationRaw, theWashingtonSourceVenueEvidence; got != want {
-			t.Fatalf("candidate %d location raw = %q, want %q", i, got, want)
+		if got := candidate.LocationRaw; got != "" {
+			t.Fatalf("candidate %d location raw = %q, want blank", i, got)
 		}
 	}
 
@@ -405,6 +405,9 @@ func TestRunManualTheWashingtonDiscoversAndParsesCalendarAPI(t *testing.T) {
 	if got, want := report.Calendars[0].Candidates[0].Location, theWashingtonVenueName; got != want {
 		t.Fatalf("location = %q, want %q", got, want)
 	}
+	if got := report.Calendars[0].Candidates[0].LocationRaw; got != "" {
+		t.Fatalf("location raw = %q, want blank", got)
+	}
 	if got, want := report.Calendars[0].Candidates[0].URL, "https://www.google.com/calendar/event?eid=Xzhrc2o2aDlrNnNxM2diYTY2NHBqZWI5azg1MTQyYmExOGNxMzJiOW42NHBrMmg5bzhoMGs0Z3E0OGtfMjAyNjA1MjZUMjAwMDAwWiBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc"; got != want {
 		t.Fatalf("candidate url = %q, want %q", got, want)
 	}
@@ -429,7 +432,6 @@ func TestReviewStageTheWashingtonIsAuthoritativeOwnedVenue(t *testing.T) {
 						UID:         expectedTheWashingtonOccurrenceUID(theWashingtonExpectedAPIEventID),
 						Summary:     "[DJ] FIESTA!",
 						Location:    theWashingtonVenueName,
-						LocationRaw: theWashingtonSourceVenueEvidence,
 						URL:         "https://www.google.com/calendar/event?eid=Xzhrc2o2aDlrNnNxM2diYTY2NHBqZWI5azg1MTQyYmExOGNxMzJiOW42NHBrMmg5bzhoMGs0Z3E0OGtfMjAyNjA1MjZUMjAwMDAwWiBjX3UyYnM2aXR0bWw2cm01azBsNXFqdDNwbjFvQGc",
 						StartAt:     "2026-05-26T20:00:00Z",
 						EndAt:       "2026-05-27T02:00:00Z",

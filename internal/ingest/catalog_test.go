@@ -55,6 +55,9 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	if got, want := cfg.ICSParserFamily, "generic"; got != want {
 		t.Fatalf("hallamshire hotel ics parser family = %q, want %q", got, want)
 	}
+	if !cfg.DefaultMissingLocationToOwnedVenue {
+		t.Fatal("hallamshire hotel default_missing_location_to_owned_venue = false, want true")
+	}
 
 	cfg, err = catalog.ConfigForSource(NetworkSheffieldSource)
 	if err != nil {
@@ -161,6 +164,23 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	}
 	if got, want := cfg.OwnedVenueSlug, TheWashingtonSource; got != want {
 		t.Fatalf("the washington owned venue slug = %q, want %q", got, want)
+	}
+	if !cfg.DefaultMissingLocationToOwnedVenue {
+		t.Fatal("the washington default_missing_location_to_owned_venue = false, want true")
+	}
+
+	defaultMissingLocationSources := map[string]bool{
+		HallamshireHotelSource: true,
+		TheWashingtonSource:    true,
+	}
+	for _, source := range catalog.Keys() {
+		cfg, err := catalog.ConfigForSource(source)
+		if err != nil {
+			t.Fatalf("config for %s: %v", source, err)
+		}
+		if got, want := cfg.DefaultMissingLocationToOwnedVenue, defaultMissingLocationSources[source]; got != want {
+			t.Fatalf("%s default_missing_location_to_owned_venue = %v, want %v", source, got, want)
+		}
 	}
 }
 
@@ -327,6 +347,40 @@ source_page:
 `) + "\n",
 			},
 			wantErr: "guarded_near_match_window_minutes must not be negative",
+		},
+		{
+			name: "missing-location default without owned venue",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+default_missing_location_to_owned_venue: true
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+`) + "\n",
+			},
+			wantErr: "default_missing_location_to_owned_venue requires owned_venue_slug",
+		},
+		{
+			name: "missing-location default with owned venue list",
+			files: map[string]string{
+				"01-one.yaml": strings.TrimSpace(`
+key: one
+name: One
+url: https://one.example.test/
+review_stage_source_name: One manual ingest
+owned_venue_slugs:
+  - one
+default_missing_location_to_owned_venue: true
+mode: source_page
+source_page:
+  source_page_parser: yellow_arch_jsonld
+`) + "\n",
+			},
+			wantErr: "default_missing_location_to_owned_venue cannot be used with owned_venue_slugs",
 		},
 	}
 

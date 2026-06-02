@@ -1314,6 +1314,50 @@ func TestReviewStageVenueSlugUsesSourceNormalizer(t *testing.T) {
 	}
 }
 
+func TestReviewClustersFromDefaultSourceDoesNotDefaultMissingLocation(t *testing.T) {
+	catalog, err := DefaultCatalog()
+	if err != nil {
+		t.Fatalf("default catalog: %v", err)
+	}
+
+	report := Report{
+		Source:      DefaultSource,
+		SourceURL:   "https://www.sidneyandmatilda.com/",
+		ImportRunID: 42,
+		Status:      importStatusSucceeded,
+		Calendars: []CalendarReport{
+			{
+				URL: "https://calendar.example.test/one.ics",
+				Candidates: []EventCandidate{
+					{
+						UID:     "missing-location",
+						Summary: "Missing Location",
+						StartAt: "2026-05-01T19:00:00Z",
+						EndAt:   "2026-05-01T22:00:00Z",
+					},
+				},
+			},
+		},
+	}
+
+	clusters := ReviewClustersFromReportWithCatalog(catalog, report)
+	if got, want := len(clusters), 1; got != want {
+		t.Fatalf("clusters = %d, want %d", got, want)
+	}
+	if got := clusters[0].Candidates[0].VenueSlug; got != "" {
+		t.Fatalf("venue slug = %q, want blank", got)
+	}
+	if got := clusters[0].AuthoritativeSourceName; got != "" {
+		t.Fatalf("authoritative source name = %q, want empty", got)
+	}
+	if got := clusters[0].AuthoritativeSourceURL; got != "" {
+		t.Fatalf("authoritative source url = %q, want empty", got)
+	}
+	if got := clusters[0].AuthoritativeSourceEventKey; got != "" {
+		t.Fatalf("authoritative source event key = %q, want empty", got)
+	}
+}
+
 func TestReviewClustersFromReportSkipsAuthoritativeGroupMetadataWhenCandidatesDisagree(t *testing.T) {
 	report := Report{
 		Source:      DefaultSource,
