@@ -534,18 +534,23 @@ func reviewStageFirstNonEmpty(values ...string) string {
 }
 
 func reviewStageVenueSlug(catalog *Catalog, source string, candidate EventCandidate) string {
-	value := reviewStageVenueSlugValue(candidate)
+	if head := VenueLocationEvidenceHead(candidate.LocationRaw); head != "" {
+		return reviewStageVenueSlugFromValue(catalog, source, head)
+	}
+	if location := strings.TrimSpace(candidate.Location); location != "" {
+		return reviewStageVenueSlugFromValue(catalog, source, location)
+	}
+	if catalog == nil {
+		return ""
+	}
+	return catalog.DefaultMissingLocationToOwnedVenueForSource(source)
+}
+
+func reviewStageVenueSlugFromValue(catalog *Catalog, source, value string) string {
 	if catalog == nil {
 		return VenueSlugFromText(value)
 	}
 	return catalog.VenueSlugForSourceLocation(source, value)
-}
-
-func reviewStageVenueSlugValue(candidate EventCandidate) string {
-	if head := VenueLocationEvidenceHead(candidate.LocationRaw); head != "" {
-		return head
-	}
-	return strings.TrimSpace(candidate.Location)
 }
 
 type reviewStageEventReviewEvidencePayload struct {
