@@ -4,6 +4,7 @@ url: https://hallamshirehotel.pub/
 review_stage_source_name: Hallamshire Hotel manual ingest
 import_run_notes: manual Hallamshire Hotel snapshot + ICS parse report
 owned_venue_slug: hallamshire-hotel
+default_missing_location_to_owned_venue: true
 mode: linked_ics
 linked_ics:
   secondary_source_name: Hallamshire Hotel Google Calendar ICS

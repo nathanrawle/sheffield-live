@@ -44,6 +44,7 @@ type sourceConfig struct {
 	URL                                            string
 	OwnedVenueSlug                                 string
 	OwnedVenueSlugs                                []string
+	DefaultMissingLocationToOwnedVenue             bool
 	NonAuthoritativeSingletonVenueSlug             string
 	NonAuthoritativeSingletonAutoPromotionDisabled bool
 	GuardedNearMatchDisabled                       bool
@@ -139,6 +140,7 @@ type sourceDefinition struct {
 	ImportRunNotes                                 string                              `yaml:"import_run_notes"`
 	OwnedVenueSlug                                 string                              `yaml:"owned_venue_slug"`
 	OwnedVenueSlugs                                []string                            `yaml:"owned_venue_slugs"`
+	DefaultMissingLocationToOwnedVenue             bool                                `yaml:"default_missing_location_to_owned_venue"`
 	NonAuthoritativeSingletonVenueSlug             string                              `yaml:"non_authoritative_singleton_venue_slug"`
 	NonAuthoritativeSingletonAutoPromotionDisabled bool                                `yaml:"non_authoritative_singleton_auto_promotion_disabled"`
 	GuardedNearMatchDisabled                       bool                                `yaml:"guarded_near_match_disabled"`
@@ -259,6 +261,7 @@ func sourceConfigFromDefinition(def sourceDefinition) (sourceConfig, error) {
 		URL:                                strings.TrimSpace(def.URL),
 		OwnedVenueSlug:                     strings.TrimSpace(def.OwnedVenueSlug),
 		OwnedVenueSlugs:                    normalizeSourceVenueSlugs(def.OwnedVenueSlugs),
+		DefaultMissingLocationToOwnedVenue: def.DefaultMissingLocationToOwnedVenue,
 		NonAuthoritativeSingletonVenueSlug: strings.TrimSpace(def.NonAuthoritativeSingletonVenueSlug),
 		NonAuthoritativeSingletonAutoPromotionDisabled: def.NonAuthoritativeSingletonAutoPromotionDisabled,
 		GuardedNearMatchDisabled:                       def.GuardedNearMatchDisabled,
@@ -289,6 +292,14 @@ func sourceConfigFromDefinition(def sourceDefinition) (sourceConfig, error) {
 	}
 	if len(cfg.OwnedVenueSlugs) > 0 && cfg.NonAuthoritativeSingletonVenueSlug != "" {
 		return sourceConfig{}, errors.New("owned_venue_slugs and non_authoritative_singleton_venue_slug cannot both be set")
+	}
+	if cfg.DefaultMissingLocationToOwnedVenue {
+		switch {
+		case len(cfg.OwnedVenueSlugs) > 0:
+			return sourceConfig{}, errors.New("default_missing_location_to_owned_venue cannot be used with owned_venue_slugs")
+		case cfg.OwnedVenueSlug == "":
+			return sourceConfig{}, errors.New("default_missing_location_to_owned_venue requires owned_venue_slug")
+		}
 	}
 	if cfg.GuardedNearMatchWindowMinutes < 0 {
 		return sourceConfig{}, errors.New("guarded_near_match_window_minutes must not be negative")
@@ -452,6 +463,14 @@ func (c *Catalog) OwnedVenueSlugsForSource(source string) []string {
 		return nil
 	}
 	return cfg.ownedVenueSlugs()
+}
+
+func (c *Catalog) DefaultMissingLocationToOwnedVenueForSource(source string) string {
+	cfg, err := c.configForSource(source)
+	if err != nil || !cfg.DefaultMissingLocationToOwnedVenue {
+		return ""
+	}
+	return cfg.ownedVenueSlug()
 }
 
 func (c *Catalog) ReviewStageSourceNameForSource(source string) string {
