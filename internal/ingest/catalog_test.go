@@ -169,13 +169,17 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 		t.Fatal("the washington default_missing_location_to_owned_venue = false, want true")
 	}
 
-	for _, source := range []string{DefaultSource, UniversityOfSheffieldPerformanceVenuesSource} {
+	defaultMissingLocationSources := map[string]bool{
+		HallamshireHotelSource: true,
+		TheWashingtonSource:    true,
+	}
+	for _, source := range catalog.Keys() {
 		cfg, err := catalog.ConfigForSource(source)
 		if err != nil {
 			t.Fatalf("config for %s: %v", source, err)
 		}
-		if cfg.DefaultMissingLocationToOwnedVenue {
-			t.Fatalf("%s default_missing_location_to_owned_venue = true, want false", source)
+		if got, want := cfg.DefaultMissingLocationToOwnedVenue, defaultMissingLocationSources[source]; got != want {
+			t.Fatalf("%s default_missing_location_to_owned_venue = %v, want %v", source, got, want)
 		}
 	}
 }
