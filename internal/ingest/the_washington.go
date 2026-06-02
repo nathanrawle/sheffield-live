@@ -12,7 +12,6 @@ import (
 
 const theWashingtonVenueName = "The Washington"
 const theWashingtonOfficialCalendarID = "c_u2bs6ittml6rm5k0l5qjt3pn1o@group.calendar.google.com"
-const theWashingtonSourceVenueEvidence = "The Washington (official embedded calendar)"
 
 var theWashingtonCalendarIDPattern = regexp.MustCompile(`(?i)googleCalendarId\s*:\s*['"]([^'"]+)['"]`)
 var theWashingtonCalendarAPIKeyPattern = regexp.MustCompile(`(?i)googleCalendarApiKey\s*:\s*['"]([^'"]+)['"]`)
@@ -236,7 +235,6 @@ func theWashingtonCandidateFromAPI(pageURL string, item theWashingtonAPIEvent, s
 			skip.Reason = "missing venue evidence"
 			return EventCandidate{}, skip, true, nil
 		}
-		rawLocation = theWashingtonSourceVenueEvidence
 	} else if !theWashingtonVenuePattern.MatchString(rawLocation) {
 		skip.Reason = "unsupported venue"
 		return EventCandidate{}, skip, true, nil

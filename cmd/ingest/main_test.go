@@ -609,6 +609,145 @@ func TestCreateEventReviewClustersFromReportAutoPromotesOwnedSingletonAtNewProvi
 	}
 }
 
+func TestCreateEventReviewClustersFromReportAutoPromotesWashingtonWithoutExistingVenue(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+	runID, _, _ := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+
+	report := ingest.Report{
+		Source:      ingest.TheWashingtonSource,
+		SourceURL:   "https://thewashington.pub/cal.html",
+		ImportRunID: runID,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://www.googleapis.com/calendar/v3/calendars/c_u2bs6ittml6rm5k0l5qjt3pn1o%40group.calendar.google.com/events",
+			Candidates: []ingest.EventCandidate{{
+				UID:      "google-calendar:c_u2bs6ittml6rm5k0l5qjt3pn1o@group.calendar.google.com:washington-singleton",
+				Summary:  "[DJ] Washington Singleton",
+				Location: "The Washington",
+				URL:      "https://www.google.com/calendar/event?eid=washington-singleton",
+				StartAt:  "2026-06-24T20:00:00Z",
+				EndAt:    "2026-06-25T02:00:00Z",
+				Status:   "CONFIRMED",
+			}},
+		}},
+	}
+
+	stage, err := createEventReviewClustersFromReport(ctx, st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create event-review clusters: %v", err)
+	}
+
+	if got, want := stage.AutoPromotedCount, 1; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 0; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+
+	venue, ok := st.VenueBySlug("the-washington")
+	if !ok {
+		t.Fatal("provisional The Washington venue not found")
+	}
+	if got, want := venue.Name, "The Washington"; got != want {
+		t.Fatalf("venue name = %q, want %q", got, want)
+	}
+	if got, want := venue.ValidationState, domain.ValidationStateProvisional; got != want {
+		t.Fatalf("venue validation state = %q, want %q", got, want)
+	}
+	if _, ok := st.VenueBySlug("the-washington-official-embedded-calendar"); ok {
+		t.Fatal("marker-derived Washington venue was created")
+	}
+
+	event, ok := st.EventBySlug(stage.AutoPromoted[0].EventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", stage.AutoPromoted[0].EventSlug)
+	}
+	if got, want := event.VenueSlug, "the-washington"; got != want {
+		t.Fatalf("event venue slug = %q, want %q", got, want)
+	}
+	if got, want := event.PublicationState, domain.PublicationStateReviewed; got != want {
+		t.Fatalf("event publication state = %q, want %q", got, want)
+	}
+}
+
+func TestCreateEventReviewClustersFromReportAutoPromotesHallamshireMissingLocationWithoutExistingVenue(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	}()
+	runID, _, _ := createFinishedImportRunForCLITest(t, ctx, st, "succeeded")
+
+	report := ingest.Report{
+		Source:      ingest.HallamshireHotelSource,
+		SourceURL:   "https://hallamshirehotel.pub/",
+		ImportRunID: runID,
+		Status:      "succeeded",
+		Calendars: []ingest.CalendarReport{{
+			URL: "https://calendar.google.com/calendar/ical/c_3bc79a2475a0c9540838a74d401458962aedd23ae8ff89c01a88258efcd4972%40group.calendar.google.com/public/basic.ics",
+			Candidates: []ingest.EventCandidate{{
+				UID:     "hallamshire-missing-location-singleton@google.com",
+				Summary: "GIG: Hallamshire Missing Location",
+				StartAt: "2026-06-25T19:00:00Z",
+				EndAt:   "2026-06-25T22:00:00Z",
+				Status:  "CONFIRMED",
+			}},
+		}},
+	}
+
+	stage, err := createEventReviewClustersFromReport(ctx, st, testSourceCatalog(t), report)
+	if err != nil {
+		t.Fatalf("create event-review clusters: %v", err)
+	}
+
+	if got, want := stage.AutoPromotedCount, 1; got != want {
+		t.Fatalf("auto promoted count = %d, want %d", got, want)
+	}
+	if got, want := stage.ReviewCandidateCount, 0; got != want {
+		t.Fatalf("review candidate count = %d, want %d", got, want)
+	}
+
+	venue, ok := st.VenueBySlug("hallamshire-hotel")
+	if !ok {
+		t.Fatal("provisional Hallamshire Hotel venue not found")
+	}
+	if got, want := venue.Name, "Hallamshire Hotel"; got != want {
+		t.Fatalf("venue name = %q, want %q", got, want)
+	}
+	if got, want := venue.ValidationState, domain.ValidationStateProvisional; got != want {
+		t.Fatalf("venue validation state = %q, want %q", got, want)
+	}
+
+	event, ok := st.EventBySlug(stage.AutoPromoted[0].EventSlug)
+	if !ok {
+		t.Fatalf("missing published event %q", stage.AutoPromoted[0].EventSlug)
+	}
+	if got, want := event.VenueSlug, "hallamshire-hotel"; got != want {
+		t.Fatalf("event venue slug = %q, want %q", got, want)
+	}
+	if got, want := event.PublicationState, domain.PublicationStateReviewed; got != want {
+		t.Fatalf("event publication state = %q, want %q", got, want)
+	}
+}
+
 func TestCreateEventReviewClustersFromReportStagesOwnedSingletonWhenProvisionalVenueSlugDiffers(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sheffield-live.db")
