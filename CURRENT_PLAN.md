@@ -1,11 +1,12 @@
 # Current Plan: Issue #47 Hallamshire Hotel All-Day ICS
 
-Updated: 2026-06-03T09:48:26Z
+Updated: 2026-06-03T09:50:03Z
 
 ## Agents
 
 - Architect: `019e8a82-da3a-73d0-b7a2-d9fe461a7149`
 - Reviewer: `019e8a82-dab9-7b01-b42f-866d87780b46`
+- Pull Request: `#48` (`https://github.com/nathanrawle/sheffield-live/pull/48`)
 
 ## Objective
 
@@ -43,7 +44,7 @@ Fix GitHub issue #47 by making Hallamshire Hotel ingest keep current/future live
 - [x] Ask reviewer to review test coverage and final diff; address actionworthy comments.
 - [x] Run focused validation (`go test ./internal/ingest` and relevant CLI/store tests).
 - [x] Run broader validation (`go test ./...`) when focused checks pass.
-- [ ] Push branch and open a ready-to-review PR.
+- [x] Push branch and open a ready-to-review PR.
 - [ ] Wait 5 minutes, then poll every 5 minutes for PR comments/reactions.
 - [ ] Address actionworthy comments until reviewer/Codex bot has no more changes.
 - [ ] Stop when the Codex bot gives a thumbs up. If the bot leaves no emoji, toggle draft and ready-for-review once.
