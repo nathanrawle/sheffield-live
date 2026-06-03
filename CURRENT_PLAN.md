@@ -1,6 +1,6 @@
 # Current Plan: Issue #47 Hallamshire Hotel All-Day ICS
 
-Updated: 2026-06-02T22:50:58Z
+Updated: 2026-06-03T09:48:26Z
 
 ## Agents
 
@@ -39,10 +39,10 @@ Fix GitHub issue #47 by making Hallamshire Hotel ingest keep current/future live
 - [x] Ask reviewer to review parser/config diff; address actionworthy comments.
 - [x] Implement trusted Hallamshire detail enrichment and detail-time merge.
 - [x] Ask reviewer to review enrichment diff; address actionworthy comments.
-- [ ] Add/adjust focused tests for parser, enrichment, review staging, and replay parity.
-- [ ] Ask reviewer to review test coverage and final diff; address actionworthy comments.
-- [ ] Run focused validation (`go test ./internal/ingest` and relevant CLI/store tests).
-- [ ] Run broader validation (`go test ./...`) when focused checks pass.
+- [x] Add/adjust focused tests for parser, enrichment, review staging, and replay parity.
+- [x] Ask reviewer to review test coverage and final diff; address actionworthy comments.
+- [x] Run focused validation (`go test ./internal/ingest` and relevant CLI/store tests).
+- [x] Run broader validation (`go test ./...`) when focused checks pass.
 - [ ] Push branch and open a ready-to-review PR.
 - [ ] Wait 5 minutes, then poll every 5 minutes for PR comments/reactions.
 - [ ] Address actionworthy comments until reviewer/Codex bot has no more changes.
