@@ -926,6 +926,154 @@ func TestReplayImportRunEnrichesSidneyDescriptionsFromDetailSnapshots(t *testing
 	}
 }
 
+func TestReplayImportRunEnrichesHallamshireAllDayFromDetailSnapshots(t *testing.T) {
+	finishedAt := time.Date(2026, 6, 1, 12, 30, 0, 0, time.UTC)
+	homepageURL := "https://hallamshirehotel.pub/"
+	icsURL := "https://calendar.google.com/calendar/ical/c_3bc79a2475a0c9540838a74d401458962aedd23ae8ff89c01a88258efcd4972%40group.calendar.google.com/public/basic.ics"
+	detailURL := "https://www.fatsoma.com/e/test/hallamshire-band"
+	icsBody := []byte(strings.Join([]string{
+		"BEGIN:VCALENDAR",
+		"BEGIN:VEVENT",
+		"DTSTART;VALUE=DATE:20261009",
+		"DTEND;VALUE=DATE:20261010",
+		"UID:detail@google.com",
+		"SUMMARY:GIG: Hallamshire Band",
+		"DESCRIPTION:https://www.fatsoma.com/e/test/hallamshire-band",
+		"LOCATION:Hallamshire Hotel",
+		"END:VEVENT",
+		"END:VCALENDAR",
+		"",
+	}, "\n"))
+
+	store := fakeReplayStore{
+		run: ReplayRun{
+			ID:         188,
+			StartedAt:  time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			FinishedAt: &finishedAt,
+			Status:     "succeeded",
+			Notes:      "links=1 candidates=1 skips=0 errors=0",
+			Snapshots: []ReplaySnapshot{
+				{
+					ID:         481,
+					SourceName: "Hallamshire Hotel listings",
+					SourceURL:  homepageURL,
+					CapturedAt: time.Date(2026, 6, 1, 12, 1, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         homepageURL,
+						FinalURL:    homepageURL,
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body:        []byte(`<a href="` + icsURL + `">Google Calendar ICS</a>`),
+						CapturedAt:  time.Date(2026, 6, 1, 12, 1, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         482,
+					SourceName: "Hallamshire Hotel Google Calendar ICS",
+					SourceURL:  icsURL,
+					CapturedAt: time.Date(2026, 6, 1, 12, 2, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         icsURL,
+						FinalURL:    icsURL,
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/calendar",
+						Body:        icsBody,
+						CapturedAt:  time.Date(2026, 6, 1, 12, 2, 0, 0, time.UTC),
+					}, nil),
+				},
+				{
+					ID:         483,
+					SourceName: "Hallamshire Hotel listings event details",
+					SourceURL:  detailURL,
+					CapturedAt: time.Date(2026, 6, 1, 12, 3, 0, 0, time.UTC),
+					Payload: mustReplaySnapshotPayload(t, FetchResult{
+						URL:         detailURL,
+						FinalURL:    detailURL,
+						Status:      "200 OK",
+						StatusCode:  200,
+						ContentType: "text/html",
+						Body: []byte(`
+							<html>
+							  <head><link rel="canonical" href="https://www.fatsoma.com/e/test/hallamshire-band"></head>
+							  <body>
+							    <script type="application/ld+json">
+							      {
+							        "@context":"https://schema.org",
+							        "@type":"Event",
+							        "name":"Hallamshire Band",
+							        "url":"https://www.fatsoma.com/e/test/hallamshire-band",
+							        "startDate":"2026-10-09T18:00:00Z",
+							        "endDate":"2026-10-09T22:00:00Z",
+							        "description":"Detail description. More detail.",
+							        "image":"https://cdn.example.test/hallamshire.jpg"
+							      }
+							    </script>
+							  </body>
+							</html>
+						`),
+						CapturedAt: time.Date(2026, 6, 1, 12, 3, 0, 0, time.UTC),
+					}, nil),
+				},
+			},
+		},
+	}
+
+	report, err := ReplayImportRun(context.Background(), store, 188, ReplayOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("replay import run: %v", err)
+	}
+
+	if got, want := report.Status, importStatusSucceeded; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := report.Source, HallamshireHotelSource; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+	if got, want := report.SourceURL, homepageURL; got != want {
+		t.Fatalf("source url = %q, want %q", got, want)
+	}
+	if got, want := report.Totals.Snapshots, 3; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	if got, want := len(report.Links), 1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if got, want := report.Links[0], icsURL; got != want {
+		t.Fatalf("link = %q, want %q", got, want)
+	}
+	if got, want := len(report.Calendars), 1; got != want {
+		t.Fatalf("calendars = %d, want %d", got, want)
+	}
+	if got, want := len(report.Calendars[0].Candidates), 1; got != want {
+		t.Fatalf("candidates = %d, want %d", got, want)
+	}
+
+	candidate := report.Calendars[0].Candidates[0]
+	if got, want := candidate.StartAt, "2026-10-09T18:00:00Z"; got != want {
+		t.Fatalf("start = %q, want %q", got, want)
+	}
+	if got, want := candidate.EndAt, "2026-10-09T22:00:00Z"; got != want {
+		t.Fatalf("end = %q, want %q", got, want)
+	}
+	if candidate.StartAtInferred || candidate.StartAtBasis != "" {
+		t.Fatalf("inferred fields = (%v, %q), want cleared after detail enrichment", candidate.StartAtInferred, candidate.StartAtBasis)
+	}
+	if got, want := candidate.Description, "Detail description. More detail."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+	if got, want := candidate.ImageSourceURL, "https://cdn.example.test/hallamshire.jpg"; got != want {
+		t.Fatalf("image source url = %q, want %q", got, want)
+	}
+	if got, want := candidate.URL, detailURL; got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+	if !candidate.SourceURLSourceIdentityDisabled {
+		t.Fatal("source URL identity disabled = false, want true")
+	}
+}
+
 func TestReplayImportRunRebuildsJazzAtTheLescarReportFromSourcePageSnapshot(t *testing.T) {
 	finishedAt := time.Date(2026, 4, 23, 19, 30, 0, 0, time.UTC)
 	store := fakeReplayStore{

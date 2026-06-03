@@ -2141,6 +2141,69 @@ func TestStageEventReviewEvidenceDoesNotAutoResolveCanonicalFieldMismatch(t *tes
 	}
 }
 
+func TestStageEventReviewEvidenceDoesNotAutoResolveCanonicalExactMatchWithInferredStart(t *testing.T) {
+	ctx := context.Background()
+	st, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	sourceID := insertStoreTestSource(t, db)
+	venueID := lookupStoreVenueID(t, db, "leadmill")
+	insertLegacyEvent(t, db, "canonical-inferred-leadmill-20260510190000", venueID, sourceID, domain.OriginLive)
+	canonicalEventID := lookupEventIDBySlug(t, db, "canonical-inferred-leadmill-20260510190000")
+
+	identityKey := "canonical-inferred"
+	identityHash := buildEventReviewIdentityKeyHash(seedstore.EventReviewIdentityKeyKindExact, eventReviewIdentityKeyVersion, identityKey)
+	identityKeyID := insertEventReviewIdentityKeyOK(t, db, identityHash, seedstore.EventReviewIdentityKeyKindExact, identityKey)
+	clusterID := insertEventReviewClusterOK(t, db, string(seedstore.EventReviewClusterStatusOpen), nil, nil, &canonicalEventID)
+	if _, err := insertEventReviewClusterIdentityKey(t, db, clusterID, identityKeyID, true, time.Date(2026, time.May, 15, 10, 5, 0, 0, time.UTC), nil); err != nil {
+		t.Fatalf("insert canonical inferred identity link: %v", err)
+	}
+
+	beforeResolutions := mustCount(t, db, "event_review_resolutions")
+	runID := mustCreateImportRun(t, st, "canonical inferred")
+	result, err := st.StageEventReviewEvidence(ctx, seedstore.StageEventReviewEvidenceInput{
+		RunRef:              seedstore.EventReviewRunRef{Kind: seedstore.EventReviewRunKindImport, ID: runID},
+		SourceID:            sourceID,
+		SourceName:          "Store test source",
+		SourceURL:           "https://example.test/store-test",
+		SourceAuthority:     seedstore.SourceAuthoritySupporting,
+		EvidenceFingerprint: "canonical-inferred-fingerprint",
+		Payload: `{
+			"source_authority":"supporting",
+			"source_name":"Store test source",
+			"source_url":"https://example.test/store-test",
+			"candidate_external_id":"canonical-inferred",
+			"candidate_title":"Legacy Event",
+			"candidate_venue_slug":"leadmill",
+			"candidate_start_at":"2026-05-10T19:00:00Z",
+			"candidate_start_at_inferred":true,
+			"candidate_start_at_basis":"source fallback 20:00 Europe/London",
+			"candidate_end_at":"2026-05-10T22:00:00Z",
+			"candidate_genre":"Indie",
+			"candidate_status":"Listed",
+			"candidate_description":"Legacy event",
+			"calendar_url":"https://example.test/calendar.ics"
+		}`,
+		ExactIdentityKeys: []string{identityKey},
+		StagingKey:        eventReviewTestStagingKey("canonical-inferred-fingerprint"),
+		StagingKeyVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("stage canonical inferred evidence: %v", err)
+	}
+	resolution, err := st.FinalizeOpenEventReviewClusterRestage(ctx, result.ClusterID, []int64{result.EvidenceID})
+	if err != nil {
+		t.Fatalf("finalize canonical inferred cluster: %v", err)
+	}
+	if resolution != nil {
+		t.Fatalf("canonical inferred auto-resolution = %#v, want nil", resolution)
+	}
+	assertEventReviewClusterState(t, db, clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	if got := mustCount(t, db, "event_review_resolutions"); got != beforeResolutions {
+		t.Fatalf("event_review_resolutions rows = %d, want %d", got, beforeResolutions)
+	}
+}
+
 func TestStageEventReviewEvidenceAutoResolvesUnanimousDuplicateWithAuthoritativeCandidate(t *testing.T) {
 	ctx := context.Background()
 	st, db := openEventReviewSchemaStore(t)
@@ -2269,6 +2332,83 @@ func TestStageEventReviewEvidenceAutoResolvesUnanimousDuplicateWithAuthoritative
 	}
 	if !replay.AutoResolved || replay.AutoResolvedResult != "unanimous_duplicate" || replay.CanonicalEventSlug != "live-unanimous-duplicate-leadmill-20260510190000" {
 		t.Fatalf("unanimous duplicate replay result = %#v, want terminal auto-resolution metadata", replay)
+	}
+}
+
+func TestStageEventReviewEvidenceDoesNotAutoResolveUnanimousDuplicateWithInferredStart(t *testing.T) {
+	ctx := context.Background()
+	st, db := openEventReviewSchemaStore(t)
+	defer db.Close()
+
+	sourceID := insertStoreTestSource(t, db)
+	venueID := lookupStoreVenueID(t, db, "leadmill")
+	insertLegacyEvent(t, db, "inferred-unanimous-duplicate-leadmill-20260510190000", venueID, sourceID, domain.OriginLive)
+
+	identityKey := "inferred-unanimous-duplicate-match"
+	identityHash := buildEventReviewIdentityKeyHash(seedstore.EventReviewIdentityKeyKindExact, eventReviewIdentityKeyVersion, identityKey)
+	identityKeyID := insertEventReviewIdentityKeyOK(t, db, identityHash, seedstore.EventReviewIdentityKeyKindExact, identityKey)
+	clusterID := insertEventReviewClusterOK(t, db, string(seedstore.EventReviewClusterStatusOpen), nil, nil, nil)
+	if _, err := insertEventReviewClusterIdentityKey(t, db, clusterID, identityKeyID, true, time.Date(2026, time.May, 15, 10, 15, 0, 0, time.UTC), nil); err != nil {
+		t.Fatalf("insert inferred unanimous identity link: %v", err)
+	}
+	firstEvidenceID := insertEventReviewEvidenceOK(t, db, sourceID, nil, "inferred-unanimous-duplicate-evidence-1", `{
+		"source_authority":"supporting",
+		"source_name":"Store test source",
+		"source_url":"https://example.test/store-test",
+		"candidate_external_id":"inferred-unanimous-duplicate",
+		"candidate_title":"Legacy Event",
+		"candidate_venue_slug":"leadmill",
+		"candidate_start_at":"2026-05-10T19:00:00Z",
+		"candidate_end_at":"2026-05-10T22:00:00Z",
+		"candidate_genre":"Indie",
+		"candidate_status":"Listed",
+		"candidate_description":"Legacy event",
+		"calendar_url":"https://example.test/calendar.ics"
+	}`)
+	insertEventReviewClusterEvidenceOK(t, db, clusterID, firstEvidenceID, true, time.Date(2026, time.May, 15, 10, 16, 0, 0, time.UTC), nil, "seed evidence")
+
+	beforeResolutions := mustCount(t, db, "event_review_resolutions")
+	runID := mustCreateImportRun(t, st, "inferred unanimous duplicate")
+	result, err := st.StageEventReviewEvidence(ctx, seedstore.StageEventReviewEvidenceInput{
+		RunRef:              seedstore.EventReviewRunRef{Kind: seedstore.EventReviewRunKindImport, ID: runID},
+		SourceID:            sourceID,
+		SourceName:          "Store test source",
+		SourceURL:           "https://example.test/store-test",
+		SourceAuthority:     seedstore.SourceAuthorityAuthoritative,
+		EvidenceFingerprint: "inferred-unanimous-duplicate-evidence-2",
+		Payload: `{
+			"source_authority":"authoritative",
+			"source_name":"Store test source",
+			"source_url":"https://example.test/store-test",
+			"candidate_external_id":"inferred-unanimous-duplicate",
+			"candidate_title":"Legacy Event",
+			"candidate_venue_slug":"leadmill",
+			"candidate_start_at":"2026-05-10T19:00:00Z",
+			"candidate_start_at_inferred":true,
+			"candidate_start_at_basis":"source fallback 20:00 Europe/London",
+			"candidate_end_at":"2026-05-10T22:00:00Z",
+			"candidate_genre":"Indie",
+			"candidate_status":"Listed",
+			"candidate_description":"Legacy event",
+			"calendar_url":"https://example.test/calendar.ics"
+		}`,
+		ExactIdentityKeys: []string{identityKey},
+		StagingKey:        eventReviewTestStagingKey("inferred-unanimous-duplicate-evidence-2"),
+		StagingKeyVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("stage inferred unanimous duplicate evidence: %v", err)
+	}
+	resolution, err := st.FinalizeOpenEventReviewClusterRestage(ctx, result.ClusterID, []int64{firstEvidenceID, result.EvidenceID})
+	if err != nil {
+		t.Fatalf("finalize inferred unanimous duplicate cluster: %v", err)
+	}
+	if resolution != nil {
+		t.Fatalf("inferred unanimous duplicate auto-resolution = %#v, want nil", resolution)
+	}
+	assertEventReviewClusterState(t, db, clusterID, string(seedstore.EventReviewClusterStatusOpen), 1, nil)
+	if got := mustCount(t, db, "event_review_resolutions"); got != beforeResolutions {
+		t.Fatalf("event_review_resolutions rows = %d, want %d", got, beforeResolutions)
 	}
 }
 

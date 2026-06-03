@@ -326,6 +326,8 @@ func recordEventReviewClusterObservationsForStageInputTx(ctx context.Context, tx
 		Genre:                             strings.TrimSpace(parsed.Genre),
 		Status:                            strings.TrimSpace(parsed.Status),
 		Description:                       strings.TrimSpace(parsed.Description),
+		StartAtInferred:                   parsed.StartAtInferred,
+		StartAtBasis:                      strings.TrimSpace(parsed.StartAtBasis),
 		SourceName:                        firstNonEmptyImportReviewText(parsed.SourceName, stageInput.SourceName),
 		SourceURL:                         firstNonEmptyImportReviewText(parsed.SourceURL, stageInput.SourceURL),
 		SourceURLSourceIdentityDisabled:   parsed.SourceURLSourceIdentityDisabled,

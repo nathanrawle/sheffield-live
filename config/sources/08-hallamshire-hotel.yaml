@@ -9,4 +9,4 @@ mode: linked_ics
 linked_ics:
   secondary_source_name: Hallamshire Hotel Google Calendar ICS
   ics_link_extractor: hallamshire_hotel_cfg_filestring
-  ics_parser: generic
+  ics_parser: hallamshire_hotel

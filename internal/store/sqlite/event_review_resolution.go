@@ -995,6 +995,8 @@ func buildImportReviewCandidateMaterialTx(ctx context.Context, tx interface {
 		Genre:                             strings.TrimSpace(parsed.Genre),
 		Status:                            strings.TrimSpace(parsed.Status),
 		Description:                       strings.TrimSpace(parsed.Description),
+		StartAtInferred:                   parsed.StartAtInferred,
+		StartAtBasis:                      strings.TrimSpace(parsed.StartAtBasis),
 		ImageURL:                          strings.TrimSpace(parsed.ImageURL),
 		ImageSourceURL:                    strings.TrimSpace(parsed.ImageSourceURL),
 		ImageAlt:                          strings.TrimSpace(parsed.ImageAlt),
@@ -1096,6 +1098,8 @@ func buildImportReviewCandidateMaterialTx(ctx context.Context, tx interface {
 		Genre:                             candidateInput.Genre,
 		Status:                            candidateInput.Status,
 		Description:                       candidateInput.Description,
+		StartAtInferred:                   candidateInput.StartAtInferred,
+		StartAtBasis:                      candidateInput.StartAtBasis,
 		ImageURL:                          candidateInput.ImageURL,
 		ImageSourceURL:                    candidateInput.ImageSourceURL,
 		ImageAlt:                          candidateInput.ImageAlt,
@@ -2338,6 +2342,8 @@ type eventReviewImportReviewListingPayload struct {
 	Genre                             string                                      `json:"candidate_genre,omitempty"`
 	Status                            string                                      `json:"candidate_status,omitempty"`
 	Description                       string                                      `json:"candidate_description,omitempty"`
+	StartAtInferred                   bool                                        `json:"candidate_start_at_inferred,omitempty"`
+	StartAtBasis                      string                                      `json:"candidate_start_at_basis,omitempty"`
 	ImageURL                          string                                      `json:"candidate_image_url,omitempty"`
 	ImageSourceURL                    string                                      `json:"candidate_image_source_url,omitempty"`
 	ImageAlt                          string                                      `json:"candidate_image_alt,omitempty"`

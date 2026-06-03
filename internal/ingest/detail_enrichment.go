@@ -12,15 +12,18 @@ import (
 )
 
 type eventDetailDescription struct {
-	URL            string
-	URLAliases     []string
-	Summary        string
-	StartAt        string
-	Description    string
-	ImageSourceURL string
-	ImageAlt       string
-	ImageWidth     int
-	ImageHeight    int
+	URL                      string
+	URLAliases               []string
+	Summary                  string
+	StartAt                  string
+	EndAt                    string
+	Description              string
+	ImageSourceURL           string
+	ImageAlt                 string
+	ImageWidth               int
+	ImageHeight              int
+	DisableSourceURLIdentity bool
+	ReplaceInferredStart     bool
 }
 
 type liveDetailDescriptionResult struct {
@@ -38,11 +41,14 @@ var (
 	sidneyDetailTextPattern       = regexp.MustCompile(`(?is)<body\b[^>]*>(.*?)</body>`)
 	sidneyContentContainerPattern = regexp.MustCompile(`(?is)<div\b[^>]*class\s*=\s*["'][^"']*\beventitem-column-content\b[^"']*["'][^>]*>(.*?)<div\b[^>]*class\s*=\s*["'][^"']*\beventitem-content-footer\b`)
 	sidneyHTMLContentPattern      = regexp.MustCompile(`(?is)<div\b[^>]*class\s*=\s*["'][^"']*\bsqs-html-content\b[^"']*["'][^>]*>(.*?)</div>`)
+	hallamshireOrdinalPattern     = regexp.MustCompile(`(?i)(\d{1,2})(?:st|nd|rd|th)`)
+	hallamshireClockPattern       = regexp.MustCompile(`(?i)\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b`)
+	hallamshireDetailDatePattern  = regexp.MustCompile(`(?i)\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\s+\d{1,2}(?:st|nd|rd|th)?\s+[a-z]+\s*,?\s*20\d{2}\b|\b\d{1,2}(?:st|nd|rd|th)?\s+[a-z]+\s*,?\s*20\d{2}\b`)
 )
 
 func sourceSupportsDetailDescriptionEnrichment(cfg sourceConfig) bool {
 	switch cfg.Key {
-	case CafeNo9Source, DefaultSource, YellowArchSource:
+	case CafeNo9Source, DefaultSource, HallamshireHotelSource, YellowArchSource:
 		return true
 	default:
 		return false
@@ -88,7 +94,7 @@ func liveDetailDescriptionsForCandidates(ctx context.Context, st Store, fetcher 
 		}
 		detail := parseDetailDescriptionForSource(cfg, firstNonEmpty(fetchResult.FinalURL, fetchResult.URL), fetchResult.Body)
 		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, fetchResult.URL, fetchResult.FinalURL, detail.URL)
-		if strings.TrimSpace(detail.Description) == "" && strings.TrimSpace(detail.ImageSourceURL) == "" {
+		if !detailHasUsefulEnrichment(detail) {
 			continue
 		}
 		result.Descriptions = append(result.Descriptions, detail)
@@ -123,7 +129,7 @@ func replayDetailDescriptionsForSource(decoded []decodedReplaySnapshot, cfg sour
 		}
 		detail := parseDetailDescriptionForSource(cfg, firstNonEmpty(snapshot.envelope.Metadata.FinalURL, snapshot.envelope.Metadata.URL), snapshot.body)
 		detail.URLAliases = appendDetailURLAliases(detail.URLAliases, snapshot.envelope.Metadata.URL, snapshot.envelope.Metadata.FinalURL, detail.URL)
-		if strings.TrimSpace(detail.Description) == "" && strings.TrimSpace(detail.ImageSourceURL) == "" {
+		if !detailHasUsefulEnrichment(detail) {
 			continue
 		}
 		result.Descriptions = append(result.Descriptions, detail)
@@ -135,6 +141,8 @@ func detailLinksForSource(cfg sourceConfig, pageURL string, body []byte, candida
 	switch cfg.Key {
 	case CafeNo9Source, YellowArchSource:
 		return detailLinksFromCandidateURLs(candidates, limit)
+	case HallamshireHotelSource:
+		return hallamshireHotelDetailLinksFromCandidateURLs(candidates, limit)
 	case DefaultSource:
 		links, err := ExtractSidneyAndMatildaEventDetailLinks(pageURL, body, limit)
 		if err != nil {
@@ -167,6 +175,35 @@ func detailLinksFromCandidateURLs(candidates []EventCandidate, limit int) []stri
 	return links
 }
 
+func hallamshireHotelDetailLinksFromCandidateURLs(candidates []EventCandidate, limit int) []string {
+	links := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		link, ok := hallamshireHotelTrustedDetailURL(candidate.URL)
+		if !ok {
+			continue
+		}
+		key := detailURLKey(link)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		links = append(links, link)
+		if limit > 0 && len(links) >= limit {
+			break
+		}
+	}
+	return links
+}
+
+func detailHasUsefulEnrichment(detail eventDetailDescription) bool {
+	return strings.TrimSpace(detail.Description) != "" ||
+		strings.TrimSpace(detail.ImageSourceURL) != "" ||
+		strings.TrimSpace(detail.StartAt) != "" ||
+		strings.TrimSpace(detail.EndAt) != "" ||
+		(detail.DisableSourceURLIdentity && strings.TrimSpace(detail.URL) != "")
+}
+
 func mergeDetailDescriptions(candidates []EventCandidate, details []eventDetailDescription) []EventCandidate {
 	return mergeDetailDescriptionsWithPreference(candidates, details, true)
 }
@@ -181,11 +218,15 @@ func mergeDetailDescriptionsWithPreference(candidates []EventCandidate, details 
 	for _, detail := range details {
 		description := strings.TrimSpace(detail.Description)
 		imageURL := strings.TrimSpace(detail.ImageSourceURL)
-		if description == "" && imageURL == "" {
+		startAt := strings.TrimSpace(detail.StartAt)
+		endAt := strings.TrimSpace(detail.EndAt)
+		if description == "" && imageURL == "" && startAt == "" && endAt == "" && !detail.DisableSourceURLIdentity {
 			continue
 		}
 		detail.Description = description
 		detail.ImageSourceURL = imageURL
+		detail.StartAt = startAt
+		detail.EndAt = endAt
 		for _, alias := range appendDetailURLAliases(detail.URLAliases, detail.URL) {
 			key := detailURLKey(alias)
 			if key == "" {
@@ -230,12 +271,46 @@ func mergeDetailIntoCandidate(candidate *EventCandidate, detail eventDetailDescr
 		candidate.ImageWidth = detail.ImageWidth
 		candidate.ImageHeight = detail.ImageHeight
 	}
+	if detail.DisableSourceURLIdentity && strings.TrimSpace(detail.URL) != "" {
+		candidate.URL = strings.TrimSpace(detail.URL)
+		candidate.SourceURLSourceIdentityDisabled = true
+	}
+	if detail.ReplaceInferredStart && candidate.StartAtInferred && hallamshireDetailStartMatchesCandidateDate(candidate.StartAt, detail.StartAt) {
+		candidate.StartAt = strings.TrimSpace(detail.StartAt)
+		candidate.StartAtInferred = false
+		candidate.StartAtBasis = ""
+		if strings.TrimSpace(detail.EndAt) != "" {
+			candidate.EndAt = strings.TrimSpace(detail.EndAt)
+		}
+	}
+}
+
+func hallamshireDetailStartMatchesCandidateDate(candidateStart, detailStart string) bool {
+	candidateTime, err := time.Parse(time.RFC3339, strings.TrimSpace(candidateStart))
+	if err != nil {
+		return false
+	}
+	detailTime, err := time.Parse(time.RFC3339, strings.TrimSpace(detailStart))
+	if err != nil {
+		return false
+	}
+	loc, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		return false
+	}
+	candidateLocal := candidateTime.In(loc)
+	detailLocal := detailTime.In(loc)
+	return candidateLocal.Year() == detailLocal.Year() &&
+		candidateLocal.Month() == detailLocal.Month() &&
+		candidateLocal.Day() == detailLocal.Day()
 }
 
 func parseDetailDescriptionForSource(cfg sourceConfig, pageURL string, body []byte) eventDetailDescription {
 	switch cfg.Key {
 	case CafeNo9Source:
 		return ParseCafeNo9DetailPage(pageURL, body)
+	case HallamshireHotelSource:
+		return ParseHallamshireHotelDetailPage(pageURL, body)
 	case DefaultSource:
 		return ParseSidneyAndMatildaDetailPage(pageURL, body)
 	case YellowArchSource:
@@ -260,6 +335,199 @@ func ParseCafeNo9DetailPage(pageURL string, raw []byte) eventDetailDescription {
 	}
 	detail.Description = htmlParagraphText(match[1])
 	return detail
+}
+
+func ParseHallamshireHotelDetailPage(pageURL string, raw []byte) eventDetailDescription {
+	detail := hallamshireHotelBaseDetail(pageURL, raw)
+	lines := htmlLines(raw)
+	visibleStartAt := hallamshireHotelVisibleDetailStartAt(lines)
+	visibleDescription := ""
+	if match := cafe9EventInfoPattern.FindSubmatch(raw); len(match) >= 2 {
+		visibleDescription = htmlParagraphText(match[1])
+	}
+	if structured := parseHallamshireHotelStructuredDetail(pageURL, raw); detailHasUsefulEnrichment(structured) {
+		structured.URL = firstNonEmpty(structured.URL, detail.URL)
+		structured.URLAliases = appendDetailURLAliases(detail.URLAliases, structured.URLAliases...)
+		structured.Summary = firstNonEmpty(structured.Summary, detail.Summary)
+		structured.StartAt = firstNonEmpty(structured.StartAt, visibleStartAt)
+		structured.Description = firstNonEmpty(structured.Description, visibleDescription)
+		structured.ImageSourceURL = firstNonEmpty(structured.ImageSourceURL, detail.ImageSourceURL)
+		structured.ImageAlt = firstNonEmpty(structured.ImageAlt, detail.ImageAlt)
+		structured.DisableSourceURLIdentity = structured.DisableSourceURLIdentity || detail.DisableSourceURLIdentity
+		structured.ReplaceInferredStart = true
+		return structured
+	}
+
+	detail.StartAt = visibleStartAt
+	detail.Description = visibleDescription
+	detail.ReplaceInferredStart = true
+	return detail
+}
+
+func hallamshireHotelBaseDetail(pageURL string, raw []byte) eventDetailDescription {
+	pageURL = strings.TrimSpace(pageURL)
+	detailURL := ""
+	disableSourceURLIdentity := false
+	aliases := appendDetailURLAliases(nil, pageURL)
+	if canonicalURL := firstCanonicalLink(pageURL, raw); canonicalURL != "" {
+		aliases = appendDetailURLAliases(aliases, canonicalURL)
+		if trusted, ok := hallamshireHotelTrustedDetailURL(canonicalURL); ok {
+			detailURL = trusted
+			disableSourceURLIdentity = true
+		}
+	}
+	if detailURL == "" {
+		detailURL = pageURL
+	}
+	if trusted, ok := hallamshireHotelTrustedDetailURL(detailURL); ok {
+		detailURL = trusted
+		disableSourceURLIdentity = true
+	} else {
+		detailURL = ""
+	}
+	summary := firstHTMLHeadingText(raw)
+	return eventDetailDescription{
+		URL:                      detailURL,
+		URLAliases:               aliases,
+		Summary:                  summary,
+		ImageSourceURL:           firstDocumentImageURL(pageURL, raw),
+		ImageAlt:                 summary,
+		DisableSourceURLIdentity: disableSourceURLIdentity,
+	}
+}
+
+func parseHallamshireHotelStructuredDetail(pageURL string, raw []byte) eventDetailDescription {
+	matches := yellowArchJSONLDPattern.FindAllSubmatch(raw, -1)
+	for _, match := range matches {
+		nodes, found, err := parseYellowArchJSONLDScript(match[1])
+		if err != nil || !found {
+			continue
+		}
+		for _, node := range nodes {
+			detail := hallamshireHotelStructuredDetailFromNode(pageURL, node)
+			if detailHasUsefulEnrichment(detail) {
+				return detail
+			}
+		}
+	}
+	return eventDetailDescription{}
+}
+
+func hallamshireHotelStructuredDetailFromNode(pageURL string, node map[string]any) eventDetailDescription {
+	name := yellowArchJSONString(node["name"])
+	description := cleanStructuredDescription(yellowArchJSONString(node["description"]))
+	if !descriptionLooksClean(description) {
+		description = ""
+	}
+	startAt := ""
+	if startText := yellowArchJSONString(node["startDate"]); startText != "" {
+		if parsed, err := parseHallamshireHotelStructuredDateTime(startText); err == nil {
+			startAt = formatTime(parsed)
+		}
+	}
+	endAt := ""
+	if endText := yellowArchJSONString(node["endDate"]); endText != "" {
+		if parsed, err := parseHallamshireHotelStructuredDateTime(endText); err == nil {
+			endAt = formatTime(parsed)
+		}
+	}
+
+	rawURL := yellowArchJSONString(node["url"])
+	detailURL := hallamshireHotelFirstTrustedDetailURL(rawURL, pageURL)
+	return eventDetailDescription{
+		URL:                      detailURL,
+		URLAliases:               appendDetailURLAliases(nil, rawURL, pageURL),
+		Summary:                  name,
+		StartAt:                  startAt,
+		EndAt:                    endAt,
+		Description:              description,
+		ImageSourceURL:           resolveImageSourceURL(pageURL, jsonLDImageURL(node["image"])),
+		ImageAlt:                 name,
+		DisableSourceURLIdentity: detailURL != "",
+		ReplaceInferredStart:     true,
+	}
+}
+
+func parseHallamshireHotelStructuredDateTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("empty datetime")
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC(), nil
+	}
+	if parsed, err := time.Parse("2006-01-02T15:04Z07:00", value); err == nil {
+		return parsed.UTC(), nil
+	}
+	loc, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		return time.Time{}, err
+	}
+	for _, layout := range []string{
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+	} {
+		parsed, err := time.ParseInLocation(layout, value, loc)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported Hallamshire detail datetime %q", value)
+}
+
+func hallamshireHotelVisibleDetailStartAt(lines []string) string {
+	for i, line := range lines {
+		if !strings.Contains(line, "20") {
+			continue
+		}
+		for j := i; j < len(lines) && j <= i+3; j++ {
+			timeText := hallamshireClockPattern.FindString(lines[j])
+			if timeText == "" {
+				continue
+			}
+			if parsed, err := parseHallamshireHotelDetailDateTime(line, timeText); err == nil {
+				return formatTime(parsed)
+			}
+		}
+	}
+	text := strings.Join(lines, "\n")
+	for _, match := range hallamshireDetailDatePattern.FindAllStringIndex(text, -1) {
+		dateText := text[match[0]:match[1]]
+		end := match[1] + 80
+		if end > len(text) {
+			end = len(text)
+		}
+		if timeText := hallamshireClockPattern.FindString(text[match[1]:end]); timeText != "" {
+			if parsed, err := parseHallamshireHotelDetailDateTime(dateText, timeText); err == nil {
+				return formatTime(parsed)
+			}
+		}
+	}
+	return ""
+}
+
+func parseHallamshireHotelDetailDateTime(dateText, timeText string) (time.Time, error) {
+	loc, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		return time.Time{}, err
+	}
+	dateText = hallamshireOrdinalPattern.ReplaceAllString(strings.TrimSpace(dateText), "$1")
+	dateText = strings.ReplaceAll(dateText, ",", "")
+	value := strings.Join(strings.Fields(dateText+" "+timeText), " ")
+	for _, layout := range []string{
+		"Monday 2 January 2006 3:04pm",
+		"Monday 2 January 2006 3pm",
+		"Monday 2 January 2006 15:04",
+		"2 January 2006 3:04pm",
+		"2 January 2006 3pm",
+		"2 January 2006 15:04",
+	} {
+		parsed, err := time.ParseInLocation(layout, value, loc)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported Hallamshire detail datetime %q", value)
 }
 
 func ParseYellowArchDetailPage(pageURL string, raw []byte) eventDetailDescription {

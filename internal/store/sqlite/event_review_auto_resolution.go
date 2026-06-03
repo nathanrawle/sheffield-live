@@ -53,6 +53,8 @@ type eventReviewClusterEvidencePayload struct {
 	CandidateGenre                             string                           `json:"candidate_genre,omitempty"`
 	CandidateStatus                            string                           `json:"candidate_status,omitempty"`
 	CandidateDescription                       string                           `json:"candidate_description,omitempty"`
+	CandidateStartAtInferred                   bool                             `json:"candidate_start_at_inferred,omitempty"`
+	CandidateStartAtBasis                      string                           `json:"candidate_start_at_basis,omitempty"`
 	CandidateImageURL                          string                           `json:"candidate_image_url,omitempty"`
 	CandidateImageSourceURL                    string                           `json:"candidate_image_source_url,omitempty"`
 	CandidateImageAlt                          string                           `json:"candidate_image_alt,omitempty"`
@@ -82,6 +84,9 @@ func maybeAutoResolveEventReviewClusterTx(ctx context.Context, tx interface {
 	if err != nil || len(parsed) == 0 {
 		return nil, nil
 	}
+	if !eventReviewClusterAutoResolutionCandidatesEligible(parsed) {
+		return nil, nil
+	}
 
 	hasCanonical := cluster.CanonicalEventID != nil && *cluster.CanonicalEventID > 0
 	if hasCanonical {
@@ -97,6 +102,15 @@ func maybeAutoResolveEventReviewClusterTx(ctx context.Context, tx interface {
 		return autoResolveEventReviewClusterUnanimousDuplicateTx(ctx, tx, cluster, parsed, scope, sourceMetadata, now)
 	}
 	return nil, nil
+}
+
+func eventReviewClusterAutoResolutionCandidatesEligible(candidates []eventReviewClusterAutoResolutionCandidate) bool {
+	for _, candidate := range candidates {
+		if candidate.CandidateInput.StartAtInferred || candidate.Candidate.StartAtInferred {
+			return false
+		}
+	}
+	return true
 }
 
 func eventReviewClusterCandidatesMatchCanonicalEvent(candidates []eventReviewClusterAutoResolutionCandidate, event domain.Event) bool {
@@ -223,6 +237,8 @@ func parseEventReviewClusterAutoResolutionCandidate(row seedstore.EventReviewClu
 		Genre:                             strings.TrimSpace(payload.CandidateGenre),
 		Status:                            strings.TrimSpace(payload.CandidateStatus),
 		Description:                       strings.TrimSpace(payload.CandidateDescription),
+		StartAtInferred:                   payload.CandidateStartAtInferred,
+		StartAtBasis:                      strings.TrimSpace(payload.CandidateStartAtBasis),
 		ImageURL:                          strings.TrimSpace(payload.CandidateImageURL),
 		ImageSourceURL:                    strings.TrimSpace(payload.CandidateImageSourceURL),
 		ImageAlt:                          strings.TrimSpace(payload.CandidateImageAlt),
@@ -255,6 +271,8 @@ func parseEventReviewClusterAutoResolutionCandidate(row seedstore.EventReviewClu
 			Genre:                             candidateInput.Genre,
 			Status:                            candidateInput.Status,
 			Description:                       candidateInput.Description,
+			StartAtInferred:                   candidateInput.StartAtInferred,
+			StartAtBasis:                      candidateInput.StartAtBasis,
 			ImageURL:                          candidateInput.ImageURL,
 			ImageSourceURL:                    candidateInput.ImageSourceURL,
 			ImageAlt:                          candidateInput.ImageAlt,
