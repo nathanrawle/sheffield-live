@@ -17,8 +17,16 @@ SUMMARY:GIG: No Location Example
 END:VEVENT
 BEGIN:VEVENT
 DTSTART;VALUE=DATE:20261206
-UID:hallamshire-skip@google.com
+DTEND;VALUE=DATE:20261207
+UID:hallamshire-all-day@google.com
 SUMMARY:GIG: All-Day Hallamshire
+LOCATION:Hallamshire Hotel
+END:VEVENT
+BEGIN:VEVENT
+DTSTART;VALUE=DATE:20261207
+DTEND;VALUE=DATE:20261208
+UID:hallamshire-quiz@google.com
+SUMMARY:QUIZ: Hallamshire Quiz
 LOCATION:Hallamshire Hotel
 END:VEVENT
 END:VCALENDAR

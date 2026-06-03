@@ -52,7 +52,7 @@ func TestLoadRepoCatalogIncludesCurrentSourcesInOrder(t *testing.T) {
 	if got, want := cfg.ICSLinkExtractorFamily, "hallamshire_hotel_cfg_filestring"; got != want {
 		t.Fatalf("hallamshire hotel ics link extractor family = %q, want %q", got, want)
 	}
-	if got, want := cfg.ICSParserFamily, "generic"; got != want {
+	if got, want := cfg.ICSParserFamily, "hallamshire_hotel"; got != want {
 		t.Fatalf("hallamshire hotel ics parser family = %q, want %q", got, want)
 	}
 	if !cfg.DefaultMissingLocationToOwnedVenue {
