@@ -337,6 +337,29 @@ func TestParseHallamshireHotelDetailPageTreatsNoOffsetStructuredTimesAsLondon(t 
 	}
 }
 
+func TestParseHallamshireHotelDetailPageAcceptsOffsetTimesWithoutSeconds(t *testing.T) {
+	detail := ParseHallamshireHotelDetailPage("https://www.fatsoma.com/e/test/offset-band", []byte(`
+		<script type="application/ld+json">
+		  {
+		    "@context":"https://schema.org",
+		    "@type":"Event",
+		    "name":"Offset Band",
+		    "url":"https://www.fatsoma.com/e/test/offset-band",
+		    "startDate":"2026-06-05T19:30+01:00",
+		    "endDate":"2026-06-05T22:30+01:00",
+		    "description":"Offset band detail."
+		  }
+		</script>
+	`))
+
+	if got, want := detail.StartAt, "2026-06-05T18:30:00Z"; got != want {
+		t.Fatalf("start = %q, want %q", got, want)
+	}
+	if got, want := detail.EndAt, "2026-06-05T21:30:00Z"; got != want {
+		t.Fatalf("end = %q, want %q", got, want)
+	}
+}
+
 func TestParseHallamshireHotelDetailPageFillsStructuredMissingStartFromVisibleDate(t *testing.T) {
 	detail := ParseHallamshireHotelDetailPage("https://www.wegottickets.com/event/700002", []byte(`
 		<html>

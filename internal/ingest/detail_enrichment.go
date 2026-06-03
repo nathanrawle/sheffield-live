@@ -456,6 +456,9 @@ func parseHallamshireHotelStructuredDateTime(value string) (time.Time, error) {
 	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
 		return parsed.UTC(), nil
 	}
+	if parsed, err := time.Parse("2006-01-02T15:04Z07:00", value); err == nil {
+		return parsed.UTC(), nil
+	}
 	loc, err := time.LoadLocation("Europe/London")
 	if err != nil {
 		return time.Time{}, err
