@@ -672,6 +672,32 @@ func TestReviewStageEventReviewEvidenceInputsDeriveExactIdentityKey(t *testing.T
 	}
 }
 
+func TestReviewStageEventReviewEvidenceInputsSkipExactIdentityKeyForInferredStart(t *testing.T) {
+	inputs := ReviewStageClusterEventReviewEvidenceInputs(ReviewStageClusterInput{
+		Title:      "Duplicate review: Inferred exact",
+		SourceName: "Fixture ingest",
+		SourceURL:  "https://source.example.test/events/",
+		Candidates: []review.CandidateInput{{
+			ExternalID:      "inferred-start",
+			Name:            "The Inferred Title",
+			VenueSlug:       "leadmill",
+			StartAt:         "2026-05-01T18:30:00Z",
+			StartAtInferred: true,
+			StartAtBasis:    "source fallback 19:30 Europe/London",
+		}},
+	})
+
+	if got, want := len(inputs), 1; got != want {
+		t.Fatalf("inputs = %d, want %d", got, want)
+	}
+	if got := inputs[0].ExactIdentityKeys; len(got) != 0 {
+		t.Fatalf("exact identity keys = %#v, want none", got)
+	}
+	if inputs[0].WeakEvidence {
+		t.Fatalf("weak evidence = true, want false")
+	}
+}
+
 func TestReviewStageEventReviewEvidenceFingerprintChangesWithSourceMetadata(t *testing.T) {
 	base := ReviewStageClusterEventReviewEvidenceInputs(ReviewStageClusterInput{
 		Title:      "Duplicate review: Fingerprint",

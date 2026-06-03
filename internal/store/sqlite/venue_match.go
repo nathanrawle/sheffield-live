@@ -339,6 +339,8 @@ func reviewCandidateFromInput(input review.CandidateInput) review.Candidate {
 		Genre:                             strings.TrimSpace(input.Genre),
 		Status:                            strings.TrimSpace(input.Status),
 		Description:                       strings.TrimSpace(input.Description),
+		StartAtInferred:                   input.StartAtInferred,
+		StartAtBasis:                      strings.TrimSpace(input.StartAtBasis),
 		SourceName:                        strings.TrimSpace(input.SourceName),
 		SourceURL:                         strings.TrimSpace(input.SourceURL),
 		SourceURLSourceIdentityDisabled:   input.SourceURLSourceIdentityDisabled,

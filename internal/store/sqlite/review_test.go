@@ -1922,6 +1922,99 @@ func TestPromoteSingletonReviewClusterIfMissingPromotesNetworkRoomUnderCanonical
 	}
 }
 
+func TestPromoteSingletonReviewClusterIfMissingSkipsInferredAuthoritativeStart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	sourceName := "Fixture authoritative manual ingest"
+	sourceURL := "https://fixture.example.test/calendar.ics"
+	beforeEvents := mustCount(t, st.db, "events")
+
+	slug, promoted, err := st.PromoteSingletonReviewClusterIfMissing(ctx, ingest.ReviewStageClusterInput{
+		Title:                       "Fixture authoritative singleton",
+		SourceName:                  sourceName,
+		SourceURL:                   sourceURL,
+		AuthoritativeSourceName:     sourceName,
+		AuthoritativeSourceURL:      sourceURL,
+		AuthoritativeSourceEventKey: "uid:fixture-inferred",
+		Candidates: []review.CandidateInput{{
+			ExternalID:      "fixture-inferred",
+			Name:            "Fixture Inferred",
+			VenueSlug:       "leadmill",
+			StartAt:         "2026-05-10T18:30:00Z",
+			StartAtInferred: true,
+			StartAtBasis:    "source fallback 19:30 Europe/London",
+			Status:          "Listed",
+			SourceName:      sourceName,
+			SourceURL:       sourceURL,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote inferred authoritative singleton: %v", err)
+	}
+	if promoted || slug != "" {
+		t.Fatalf("promotion = (%q, %v), want no-op", slug, promoted)
+	}
+	if got := mustCount(t, st.db, "events"); got != beforeEvents {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents)
+	}
+}
+
+func TestPromoteSingletonReviewClusterIfMissingSkipsInferredSupportingStart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sheffield-live.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	}()
+
+	sourceName := "Fixture supporting manual ingest"
+	sourceURL := "https://fixture.example.test/listings/"
+	beforeEvents := mustCount(t, st.db, "events")
+
+	slug, promoted, err := st.PromoteSingletonReviewClusterIfMissing(ctx, ingest.ReviewStageClusterInput{
+		Title:      "Fixture supporting singleton",
+		SourceName: sourceName,
+		SourceURL:  sourceURL,
+		Candidates: []review.CandidateInput{{
+			ExternalID:      "fixture-inferred",
+			Name:            "Fixture Inferred",
+			VenueSlug:       "leadmill",
+			StartAt:         "2026-05-10T18:30:00Z",
+			StartAtInferred: true,
+			StartAtBasis:    "source fallback 19:30 Europe/London",
+			Status:          "Listed",
+			SourceName:      sourceName,
+			SourceURL:       sourceURL,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promote inferred supporting singleton: %v", err)
+	}
+	if promoted || slug != "" {
+		t.Fatalf("promotion = (%q, %v), want no-op", slug, promoted)
+	}
+	if got := mustCount(t, st.db, "events"); got != beforeEvents {
+		t.Fatalf("events rows = %d, want %d", got, beforeEvents)
+	}
+}
+
 func mustReviewCatalog(t *testing.T) *ingest.Catalog {
 	t.Helper()
 

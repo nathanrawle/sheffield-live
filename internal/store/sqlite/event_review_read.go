@@ -1970,6 +1970,8 @@ type eventReviewImportCandidatePayload struct {
 	Genre                             string                                      `json:"candidate_genre,omitempty"`
 	Status                            string                                      `json:"candidate_status,omitempty"`
 	Description                       string                                      `json:"candidate_description,omitempty"`
+	StartAtInferred                   bool                                        `json:"candidate_start_at_inferred,omitempty"`
+	StartAtBasis                      string                                      `json:"candidate_start_at_basis,omitempty"`
 	ImageURL                          string                                      `json:"candidate_image_url,omitempty"`
 	ImageSourceURL                    string                                      `json:"candidate_image_source_url,omitempty"`
 	ImageAlt                          string                                      `json:"candidate_image_alt,omitempty"`

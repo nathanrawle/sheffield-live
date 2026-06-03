@@ -131,6 +131,8 @@ type Candidate struct {
 	Genre                             string
 	Status                            string
 	Description                       string
+	StartAtInferred                   bool
+	StartAtBasis                      string
 	ImageURL                          string
 	ImageSourceURL                    string
 	ImageAlt                          string
@@ -162,6 +164,8 @@ type CandidateInput struct {
 	Genre                             string
 	Status                            string
 	Description                       string
+	StartAtInferred                   bool
+	StartAtBasis                      string
 	ImageURL                          string
 	ImageSourceURL                    string
 	ImageAlt                          string

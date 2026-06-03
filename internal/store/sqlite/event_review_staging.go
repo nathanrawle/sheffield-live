@@ -538,6 +538,9 @@ func (s *Store) PromoteSingletonReviewClusterIfMissing(ctx context.Context, inpu
 	if s == nil || s.db == nil {
 		return "", false, errors.New("sqlite store is not open")
 	}
+	if singletonReviewStageStartAtInferred(input) {
+		return "", false, nil
+	}
 	now := time.Now().UTC()
 	authoritativeSourceKey := authoritativeSingletonSourceEventKeyForClusterInput(s.sourceMetadata, input)
 
@@ -550,6 +553,10 @@ func (s *Store) PromoteSingletonReviewClusterIfMissing(ctx context.Context, inpu
 		return eventSlug, applied, err
 	}
 	return eventSlug, true, nil
+}
+
+func singletonReviewStageStartAtInferred(input ingest.ReviewStageClusterInput) bool {
+	return len(input.Candidates) == 1 && input.Candidates[0].StartAtInferred
 }
 
 func (s *Store) promoteAuthoritativeSingletonReviewClusterIfMissing(ctx context.Context, input ingest.ReviewStageClusterInput, now time.Time) (string, bool, error) {
@@ -878,6 +885,8 @@ func singletonResolvedEventFromReviewStageClusterInput(input ingest.ReviewStageC
 		Genre:                             strings.TrimSpace(candidateInput.Genre),
 		Status:                            strings.TrimSpace(candidateInput.Status),
 		Description:                       strings.TrimSpace(candidateInput.Description),
+		StartAtInferred:                   candidateInput.StartAtInferred,
+		StartAtBasis:                      strings.TrimSpace(candidateInput.StartAtBasis),
 		ImageURL:                          strings.TrimSpace(candidateInput.ImageURL),
 		ImageSourceURL:                    strings.TrimSpace(candidateInput.ImageSourceURL),
 		ImageAlt:                          strings.TrimSpace(candidateInput.ImageAlt),

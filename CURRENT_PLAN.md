@@ -32,9 +32,9 @@ Fix GitHub issue #47 by making Hallamshire Hotel ingest keep current/future live
 - [x] Start requested architect and reviewer agents.
 - [x] Draft plan and request architect evaluation.
 - [x] Incorporate architect feedback and get refined plan accepted.
-- [ ] Commit the approved plan file.
-- [ ] Implement explicit inferred-start metadata and review-stage payload/provenance/auto-promotion gate.
-- [ ] Ask reviewer to review metadata/auto-promotion diff; address actionworthy comments.
+- [x] Commit the approved plan file.
+- [x] Implement explicit inferred-start metadata and review-stage payload/provenance/auto-promotion gate.
+- [x] Ask reviewer to review metadata/auto-promotion diff; address actionworthy comments.
 - [ ] Implement Hallamshire-specific ICS parser and config switch.
 - [ ] Ask reviewer to review parser/config diff; address actionworthy comments.
 - [ ] Implement trusted Hallamshire detail enrichment and detail-time merge.

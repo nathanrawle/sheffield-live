@@ -68,6 +68,8 @@ func reviewCandidateInputFromCandidate(candidate review.Candidate) review.Candid
 		Genre:                             strings.TrimSpace(candidate.Genre),
 		Status:                            strings.TrimSpace(candidate.Status),
 		Description:                       strings.TrimSpace(candidate.Description),
+		StartAtInferred:                   candidate.StartAtInferred,
+		StartAtBasis:                      strings.TrimSpace(candidate.StartAtBasis),
 		ImageURL:                          strings.TrimSpace(candidate.ImageURL),
 		ImageSourceURL:                    strings.TrimSpace(candidate.ImageSourceURL),
 		ImageAlt:                          strings.TrimSpace(candidate.ImageAlt),

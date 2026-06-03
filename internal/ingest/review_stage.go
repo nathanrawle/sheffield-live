@@ -375,6 +375,8 @@ func reviewStageCandidateInput(catalog *Catalog, report Report, calendar Calenda
 		Genre:                             "",
 		Status:                            reviewStageStatus(candidate.Status),
 		Description:                       strings.TrimSpace(candidate.Description),
+		StartAtInferred:                   candidate.StartAtInferred,
+		StartAtBasis:                      strings.TrimSpace(candidate.StartAtBasis),
 		ImageURL:                          strings.TrimSpace(candidate.ImageURL),
 		ImageSourceURL:                    strings.TrimSpace(candidate.ImageSourceURL),
 		ImageAlt:                          strings.TrimSpace(candidate.ImageAlt),
@@ -392,13 +394,14 @@ func reviewStageCandidateInput(catalog *Catalog, report Report, calendar Calenda
 }
 
 func reviewStageCandidateIdentityDisabledFlags(candidate EventCandidate, sourceURL, calendarURL string, uidSafety reviewStageUIDSafety) (bool, bool, bool) {
+	sourceURLDisabled := candidate.SourceURLSourceIdentityDisabled
 	if !uidSafety.isUnsafe(candidate.UID) {
-		return false, false, false
+		return false, sourceURLDisabled, false
 	}
 
-	sourceURLDisabled := true
+	sourceURLDisabled = true
 	candidateURL := strings.TrimSpace(candidate.URL)
-	if candidateURL != "" && strings.TrimSpace(sourceURL) == candidateURL {
+	if !candidate.SourceURLSourceIdentityDisabled && candidateURL != "" && strings.TrimSpace(sourceURL) == candidateURL {
 		if _, ok := NormalizeEventIdentityURL(candidateURL); ok {
 			sourceURLDisabled = false
 		}
@@ -510,6 +513,13 @@ func reviewStageProvenance(report Report, calendar CalendarReport, candidate Eve
 	} else if candidate.URL != "" {
 		parts = append(parts, "URL "+candidate.URL)
 	}
+	if candidate.StartAtInferred {
+		basis := strings.TrimSpace(candidate.StartAtBasis)
+		if basis == "" {
+			basis = "source-specific fallback"
+		}
+		parts = append(parts, "start time inferred: "+basis)
+	}
 	if len(parts) == 0 {
 		return "manual ingest"
 	}
@@ -576,6 +586,8 @@ type reviewStageEventReviewEvidencePayload struct {
 	CandidateRooms                             []reviewStageEvidenceRoom `json:"candidate_rooms,omitempty"`
 	CandidateStartAt                           string                    `json:"candidate_start_at,omitempty"`
 	CandidateEndAt                             string                    `json:"candidate_end_at,omitempty"`
+	CandidateStartAtInferred                   bool                      `json:"candidate_start_at_inferred,omitempty"`
+	CandidateStartAtBasis                      string                    `json:"candidate_start_at_basis,omitempty"`
 	CandidateGenre                             string                    `json:"candidate_genre,omitempty"`
 	CandidateStatus                            string                    `json:"candidate_status,omitempty"`
 	CandidateDescription                       string                    `json:"candidate_description,omitempty"`
@@ -632,6 +644,8 @@ func reviewStageClusterEventReviewEvidenceInput(cluster ReviewStageClusterInput,
 		CandidateRooms:                             reviewStageEvidenceRooms(candidate.Rooms),
 		CandidateStartAt:                           strings.TrimSpace(candidate.StartAt),
 		CandidateEndAt:                             strings.TrimSpace(candidate.EndAt),
+		CandidateStartAtInferred:                   candidate.StartAtInferred,
+		CandidateStartAtBasis:                      strings.TrimSpace(candidate.StartAtBasis),
 		CandidateGenre:                             strings.TrimSpace(candidate.Genre),
 		CandidateStatus:                            strings.TrimSpace(candidate.Status),
 		CandidateDescription:                       strings.TrimSpace(candidate.Description),
@@ -663,6 +677,8 @@ func reviewStageClusterEventReviewEvidenceInput(cluster ReviewStageClusterInput,
 		CandidateRooms:                             reviewStageEvidenceRooms(candidate.Rooms),
 		CandidateStartAt:                           strings.TrimSpace(candidate.StartAt),
 		CandidateEndAt:                             strings.TrimSpace(candidate.EndAt),
+		CandidateStartAtInferred:                   candidate.StartAtInferred,
+		CandidateStartAtBasis:                      strings.TrimSpace(candidate.StartAtBasis),
 		CandidateGenre:                             strings.TrimSpace(candidate.Genre),
 		CandidateStatus:                            strings.TrimSpace(candidate.Status),
 		CandidateDescription:                       strings.TrimSpace(candidate.Description),
@@ -741,6 +757,9 @@ func reviewStageEventReviewSourceIdentityKeys(cluster ReviewStageClusterInput, c
 }
 
 func reviewStageExactIdentityKeys(candidate review.CandidateInput) []string {
+	if candidate.StartAtInferred {
+		return nil
+	}
 	startAt := strings.TrimSpace(candidate.StartAt)
 	venueSlug := strings.TrimSpace(candidate.VenueSlug)
 	if startAt == "" || venueSlug == "" || strings.TrimSpace(candidate.Name) == "" {
@@ -772,6 +791,8 @@ type reviewStageEventReviewEvidenceFingerprintMaterial struct {
 	CandidateRooms                             []reviewStageEvidenceRoom `json:"candidate_rooms,omitempty"`
 	CandidateStartAt                           string                    `json:"candidate_start_at,omitempty"`
 	CandidateEndAt                             string                    `json:"candidate_end_at,omitempty"`
+	CandidateStartAtInferred                   bool                      `json:"candidate_start_at_inferred,omitempty"`
+	CandidateStartAtBasis                      string                    `json:"candidate_start_at_basis,omitempty"`
 	CandidateGenre                             string                    `json:"candidate_genre,omitempty"`
 	CandidateStatus                            string                    `json:"candidate_status,omitempty"`
 	CandidateDescription                       string                    `json:"candidate_description,omitempty"`
