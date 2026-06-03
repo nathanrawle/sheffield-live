@@ -37,8 +37,8 @@ Fix GitHub issue #47 by making Hallamshire Hotel ingest keep current/future live
 - [x] Ask reviewer to review metadata/auto-promotion diff; address actionworthy comments.
 - [x] Implement Hallamshire-specific ICS parser and config switch.
 - [x] Ask reviewer to review parser/config diff; address actionworthy comments.
-- [ ] Implement trusted Hallamshire detail enrichment and detail-time merge.
-- [ ] Ask reviewer to review enrichment diff; address actionworthy comments.
+- [x] Implement trusted Hallamshire detail enrichment and detail-time merge.
+- [x] Ask reviewer to review enrichment diff; address actionworthy comments.
 - [ ] Add/adjust focused tests for parser, enrichment, review staging, and replay parity.
 - [ ] Ask reviewer to review test coverage and final diff; address actionworthy comments.
 - [ ] Run focused validation (`go test ./internal/ingest` and relevant CLI/store tests).

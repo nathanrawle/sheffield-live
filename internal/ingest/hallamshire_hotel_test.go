@@ -269,6 +269,309 @@ func TestParseHallamshireHotelICSIgnoresUntrustedDetailURLs(t *testing.T) {
 	}
 }
 
+func TestParseHallamshireHotelDetailPageUsesStructuredEventData(t *testing.T) {
+	detail := ParseHallamshireHotelDetailPage("https://www.fatsoma.com/e/test/hallamshire-band", []byte(`
+		<html>
+		  <head>
+		    <link rel="canonical" href="https://www.fatsoma.com/e/test/hallamshire-band">
+		    <script type="application/ld+json">
+		      {
+		        "@context":"https://schema.org",
+		        "@type":"Event",
+		        "name":"Hallamshire Band",
+		        "url":"https://www.fatsoma.com/e/test/hallamshire-band",
+		        "startDate":"2026-10-09T18:00:00Z",
+		        "endDate":"2026-10-09T22:00:00Z",
+		        "description":"First paragraph.<br><br>Second paragraph.",
+		        "image":"https://cdn.example.test/hallamshire.jpg"
+		      }
+		    </script>
+		  </head>
+		  <body><h1>Fallback Heading</h1></body>
+		</html>
+	`))
+
+	if got, want := detail.URL, "https://www.fatsoma.com/e/test/hallamshire-band"; got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+	if !detail.DisableSourceURLIdentity {
+		t.Fatal("disable source url identity = false, want true")
+	}
+	if got, want := detail.Summary, "Hallamshire Band"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+	if got, want := detail.StartAt, "2026-10-09T18:00:00Z"; got != want {
+		t.Fatalf("start = %q, want %q", got, want)
+	}
+	if got, want := detail.EndAt, "2026-10-09T22:00:00Z"; got != want {
+		t.Fatalf("end = %q, want %q", got, want)
+	}
+	if got, want := detail.Description, "First paragraph.\n\nSecond paragraph."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+	if got, want := detail.ImageSourceURL, "https://cdn.example.test/hallamshire.jpg"; got != want {
+		t.Fatalf("image = %q, want %q", got, want)
+	}
+}
+
+func TestParseHallamshireHotelDetailPageTreatsNoOffsetStructuredTimesAsLondon(t *testing.T) {
+	detail := ParseHallamshireHotelDetailPage("https://www.fatsoma.com/e/test/summer-band", []byte(`
+		<script type="application/ld+json">
+		  {
+		    "@context":"https://schema.org",
+		    "@type":"Event",
+		    "name":"Summer Band",
+		    "url":"https://www.fatsoma.com/e/test/summer-band",
+		    "startDate":"2026-06-05T19:30",
+		    "endDate":"2026-06-05T22:30",
+		    "description":"Summer band detail."
+		  }
+		</script>
+	`))
+
+	if got, want := detail.StartAt, "2026-06-05T18:30:00Z"; got != want {
+		t.Fatalf("start = %q, want %q", got, want)
+	}
+	if got, want := detail.EndAt, "2026-06-05T21:30:00Z"; got != want {
+		t.Fatalf("end = %q, want %q", got, want)
+	}
+}
+
+func TestParseHallamshireHotelDetailPageFillsStructuredMissingStartFromVisibleDate(t *testing.T) {
+	detail := ParseHallamshireHotelDetailPage("https://www.wegottickets.com/event/700002", []byte(`
+		<html>
+		  <head>
+		    <script type="application/ld+json">
+		      {
+		        "@context":"https://schema.org",
+		        "@type":"Event",
+		        "name":"Visible Date Band",
+		        "url":"https://www.wegottickets.com/event/700002",
+		        "description":"Structured description without a start date."
+		      }
+		    </script>
+		  </head>
+		  <body>
+		    <h1>Visible Date Band</h1>
+		    <table>
+		      <tr><td>Friday 5th June, 2026</td></tr>
+		      <tr><td>7:30pm</td></tr>
+		    </table>
+		  </body>
+		</html>
+	`))
+
+	if got, want := detail.StartAt, "2026-06-05T18:30:00Z"; got != want {
+		t.Fatalf("start = %q, want %q", got, want)
+	}
+	if got, want := detail.Description, "Structured description without a start date."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}
+
+func TestParseHallamshireHotelDetailPageParsesWeGotTicketsVisibleDate(t *testing.T) {
+	detail := ParseHallamshireHotelDetailPage("https://www.wegottickets.com/event/700001", []byte(`
+		<html>
+		  <head>
+		    <link rel="canonical" href="/event/700001">
+		    <meta property="og:image" content="/images/event.jpg">
+		  </head>
+		  <body>
+		    <h1>WeGot Band</h1>
+		    <table>
+		      <tr><td>Saturday 7th March, 2026</td></tr>
+		      <tr><td>7:30pm</td></tr>
+		    </table>
+		    <h2>Event information</h2>
+		    <p>Doors and live music.</p>
+		    <h2>Venue information</h2>
+		  </body>
+		</html>
+	`))
+
+	if got, want := detail.URL, "https://www.wegottickets.com/event/700001"; got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+	if got, want := detail.StartAt, "2026-03-07T19:30:00Z"; got != want {
+		t.Fatalf("start = %q, want %q", got, want)
+	}
+	if got, want := detail.Description, "Doors and live music."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+	if got, want := detail.ImageSourceURL, "https://www.wegottickets.com/images/event.jpg"; got != want {
+		t.Fatalf("image = %q, want %q", got, want)
+	}
+}
+
+func TestMergeHallamshireDetailReplacesOnlyInferredStart(t *testing.T) {
+	detail := eventDetailDescription{
+		URL:                      "https://www.fatsoma.com/e/test/hallamshire-band",
+		URLAliases:               []string{"https://www.fatsoma.com/e/test/hallamshire-band"},
+		Summary:                  "Hallamshire Band",
+		StartAt:                  "2026-10-09T18:00:00Z",
+		EndAt:                    "2026-10-09T22:00:00Z",
+		Description:              "Detail description.",
+		ImageSourceURL:           "https://cdn.example.test/hallamshire.jpg",
+		ImageAlt:                 "Hallamshire Band",
+		DisableSourceURLIdentity: true,
+		ReplaceInferredStart:     true,
+	}
+	candidates := []EventCandidate{
+		{
+			UID:             "inferred@google.com",
+			Summary:         "Hallamshire Band",
+			URL:             "https://www.fatsoma.com/e/test/hallamshire-band",
+			StartAt:         "2026-10-09T18:30:00Z",
+			StartAtInferred: true,
+			StartAtBasis:    hallamshireHotelAllDayFallbackBasis,
+		},
+		{
+			UID:     "timed@google.com",
+			Summary: "Hallamshire Band",
+			URL:     "https://www.fatsoma.com/e/test/hallamshire-band",
+			StartAt: "2026-10-09T18:30:00Z",
+		},
+	}
+
+	merged := mergeDetailDescriptions(candidates, []eventDetailDescription{detail})
+
+	inferred := merged[0]
+	if got, want := inferred.StartAt, "2026-10-09T18:00:00Z"; got != want {
+		t.Fatalf("inferred start = %q, want %q", got, want)
+	}
+	if inferred.StartAtInferred || inferred.StartAtBasis != "" {
+		t.Fatalf("inferred flags = (%v, %q), want cleared", inferred.StartAtInferred, inferred.StartAtBasis)
+	}
+	if got, want := inferred.EndAt, "2026-10-09T22:00:00Z"; got != want {
+		t.Fatalf("inferred end = %q, want %q", got, want)
+	}
+	if got, want := inferred.Description, "Detail description."; got != want {
+		t.Fatalf("inferred description = %q, want %q", got, want)
+	}
+	if !inferred.SourceURLSourceIdentityDisabled {
+		t.Fatal("inferred source URL identity disabled = false, want true")
+	}
+
+	timed := merged[1]
+	if got, want := timed.StartAt, "2026-10-09T18:30:00Z"; got != want {
+		t.Fatalf("timed start = %q, want %q", got, want)
+	}
+	if timed.StartAtInferred || timed.StartAtBasis != "" {
+		t.Fatalf("timed inferred flags = (%v, %q), want unset", timed.StartAtInferred, timed.StartAtBasis)
+	}
+
+	noPolicy := mergeDetailDescriptions([]EventCandidate{{
+		UID:             "no-policy@google.com",
+		Summary:         "No Policy Band",
+		URL:             "https://detail.example.test/no-policy",
+		StartAt:         "2026-10-09T18:30:00Z",
+		StartAtInferred: true,
+		StartAtBasis:    hallamshireHotelAllDayFallbackBasis,
+	}}, []eventDetailDescription{{
+		URL:     "https://detail.example.test/no-policy",
+		StartAt: "2026-10-09T18:00:00Z",
+		EndAt:   "2026-10-09T22:00:00Z",
+	}})
+	if got, want := noPolicy[0].StartAt, "2026-10-09T18:30:00Z"; got != want {
+		t.Fatalf("no-policy start = %q, want %q", got, want)
+	}
+	if !noPolicy[0].StartAtInferred || noPolicy[0].StartAtBasis == "" {
+		t.Fatalf("no-policy inferred fields = (%v, %q), want preserved", noPolicy[0].StartAtInferred, noPolicy[0].StartAtBasis)
+	}
+}
+
+func TestRunManualHallamshireHotelEnrichesAllDayFromTrustedDetailPage(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{now: time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)}
+	homepageURL := "https://hallamshirehotel.pub/"
+	icsURL := "https://calendar.google.com/calendar/ical/c_3bc79a2475a0c9540838a74d401458962aedd23ae8ff89c01a88258efcd4972%40group.calendar.google.com/public/basic.ics"
+	detailURL := "https://www.fatsoma.com/e/test/hallamshire-band"
+	fetcher := fakeFetcher{
+		results: map[string]FetchResult{
+			homepageURL: {
+				URL:         homepageURL,
+				FinalURL:    homepageURL,
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body:        readFixture(t, "hallamshire.html"),
+				CapturedAt:  time.Date(2026, 5, 24, 12, 1, 0, 0, time.UTC),
+			},
+			icsURL: {
+				URL:         icsURL,
+				FinalURL:    icsURL,
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/calendar",
+				Body: []byte("BEGIN:VCALENDAR\n" +
+					"BEGIN:VEVENT\n" +
+					"DTSTART;VALUE=DATE:20261009\n" +
+					"DTEND;VALUE=DATE:20261010\n" +
+					"UID:detail@google.com\n" +
+					"SUMMARY:GIG: Hallamshire Band\n" +
+					"DESCRIPTION:https://www.fatsoma.com/e/test/hallamshire-band\n" +
+					"LOCATION:Hallamshire Hotel\n" +
+					"END:VEVENT\n" +
+					"END:VCALENDAR\n"),
+				CapturedAt: time.Date(2026, 5, 24, 12, 2, 0, 0, time.UTC),
+			},
+			detailURL: {
+				URL:         detailURL,
+				FinalURL:    detailURL,
+				Status:      "200 OK",
+				StatusCode:  200,
+				ContentType: "text/html",
+				Body: []byte(`
+					<script type="application/ld+json">
+					  {
+					    "@context":"https://schema.org",
+					    "@type":"Event",
+					    "name":"Hallamshire Band",
+					    "url":"https://www.fatsoma.com/e/test/hallamshire-band",
+					    "startDate":"2026-10-09T18:00:00Z",
+					    "endDate":"2026-10-09T22:00:00Z",
+					    "description":"Detail description. More detail.",
+					    "image":"https://cdn.example.test/hallamshire.jpg"
+					  }
+					</script>
+				`),
+				CapturedAt: time.Date(2026, 5, 24, 12, 3, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	report, err := RunManual(ctx, store, fetcher, Options{Source: HallamshireHotelSource, Limit: 1})
+	if err != nil {
+		t.Fatalf("run manual: %v; report = %#v", err, report)
+	}
+
+	if got, want := len(store.snapshots), 3; got != want {
+		t.Fatalf("snapshots = %d, want %d", got, want)
+	}
+	candidate := report.Calendars[0].Candidates[0]
+	if got, want := candidate.StartAt, "2026-10-09T18:00:00Z"; got != want {
+		t.Fatalf("start = %q, want %q", got, want)
+	}
+	if candidate.StartAtInferred || candidate.StartAtBasis != "" {
+		t.Fatalf("inferred fields = (%v, %q), want cleared", candidate.StartAtInferred, candidate.StartAtBasis)
+	}
+	if got, want := candidate.EndAt, "2026-10-09T22:00:00Z"; got != want {
+		t.Fatalf("end = %q, want %q", got, want)
+	}
+	if got, want := candidate.Description, "Detail description. More detail."; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+	if got, want := candidate.ImageSourceURL, "https://cdn.example.test/hallamshire.jpg"; got != want {
+		t.Fatalf("image = %q, want %q", got, want)
+	}
+	if got, want := candidate.URL, detailURL; got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+	if !candidate.SourceURLSourceIdentityDisabled {
+		t.Fatal("source URL identity disabled = false, want true")
+	}
+}
+
 func TestReviewStageAuthoritativeSourceForHallamshireHotel(t *testing.T) {
 	catalog, err := LoadRepoCatalog()
 	if err != nil {
